@@ -16,10 +16,11 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
 - [x] Repo conectado, primeiro push (branch main)
 - [x] Banco: PostGIS + schema 001 (clientes, operadores, veiculos, bases, geofences, posicoes_atuais, alertas, eventos), RLS habilitado
 - [x] Lib de conexão: admin (service_role, backend), browser e server (anon, RLS)
+- [x] **Fase 1 (seed):** 2 clientes (Nutry 4096, Benassi 4586), 95+346 veículos, 1072 favelas do SABREN (geofence point-in-polygon testado). Coluna geofences.geom relaxada para `geography(geometry)` (aceita MultiPolygon: Rocinha/Alemão).
 
 ## Próximos passos
-- [ ] Seed: cadastrar Nutry Max como cliente + importar favelas do SABREN como geofences
 - [ ] Motor: API route que busca a Unitrac, roda os detectores e grava em alertas/posicoes_atuais
+- [ ] Detector PARADA LONGA (>= 1h30 parado em qualquer lugar, sem exceção, pras 2 frotas) + coluna `parado_desde`
 - [ ] Despertador (cron 1 min) chamando o motor
 - [ ] Tela de Segurança (Realtime): alertas ativos, mapa, histórico
 - [ ] Auth dos operadores + policies RLS por papel/cliente

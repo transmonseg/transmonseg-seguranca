@@ -25,20 +25,20 @@ Next.js + git/push · PostGIS + schema 001 (clientes, operadores, veiculos, base
 
 ---
 
-## FASE 1 — Dados base (seed)
-Objetivo: a Nutry, sua frota e as favelas do RJ dentro do banco, visíveis numa página de debug.
+## FASE 1 — Dados base (seed) — MULTI-CLIENTE (Nutry + Benassi)
+Objetivo: os DOIS clientes (Nutry e Benassi), suas frotas e as favelas do RJ dentro do banco, visíveis numa página de debug. A API Unitrac é aberta; pega cada frota pelo `cod_user_unitrac` (Nutry 4096, Benassi 4586).
 
-### Tarefa 1.1 — Seed do cliente Nutry e da base
-- **Arquivos:** Create `scripts/seed/01_nutry.mjs`
-- **Fazer:** inserir em `clientes` a Nutry (`nome='Nutry Max'`, `cod_user_unitrac='4096'`, `empresa_cod_unitrac='722'`); inserir em `bases` a base Penha Circular (lat -22.8151, lng -43.2779, raio 250) via `ST_SetSRID(ST_MakePoint(lng,lat),4326)::geography`. Idempotente (on conflict do nothing).
-- **Verificação:** `node --env-file=.env.local scripts/seed/01_nutry.mjs` imprime "1 cliente, 1 base". Query confirma.
-- **Aceite:** cliente e base existem, sem duplicar ao rodar 2x.
+### Tarefa 1.1 — Seed dos clientes (Nutry + Benassi) e base
+- **Arquivos:** Create `scripts/seed/01_clientes.mjs`
+- **Fazer:** inserir em `clientes`: Nutry (`nome='Nutry Max'`, `cod_user_unitrac='4096'`, `empresa_cod_unitrac='722'`) e Benassi (`nome='Benassi'`, `cod_user_unitrac='4586'`, `empresa_cod_unitrac=null`). Inserir em `bases` a base da Nutry "Penha Circular" (lat -22.8151, lng -43.2779, raio 250) via `ST_SetSRID(ST_MakePoint(lng,lat),4326)::geography`. (Base da Benassi: desconhecida por ora, deixar sem base.) Idempotente (`on conflict (cod_user_unitrac) do nothing`).
+- **Verificação:** rodar; imprime "2 clientes, 1 base". Query confirma.
+- **Aceite:** os dois clientes e a base da Nutry existem, sem duplicar ao rodar 2x.
 
-### Tarefa 1.2 — Importar a frota da Nutry (Unitrac)
+### Tarefa 1.2 — Importar as frotas (Nutry + Benassi)
 - **Arquivos:** Create `scripts/seed/02_veiculos.mjs`
-- **Fazer:** GET `datalayer.portalunitrac.com/veiculos/masn/4096`, mapear (cv, placa, grupo), inserir em `veiculos` ligados ao cliente Nutry. Idempotente por (cliente_id, cv).
-- **Verificação:** rodar; imprime nº de veículos (~95). Query `select count(*) from veiculos`.
-- **Aceite:** ~95 veículos da Nutry no banco.
+- **Fazer:** para CADA cliente (4096 e 4586): GET `datalayer.portalunitrac.com/veiculos/masn/{cod}`, mapear (cv, placa, gvn=grupo), inserir em `veiculos` ligados ao cliente certo. Idempotente por (cliente_id, cv).
+- **Verificação:** rodar; imprime nº por cliente (Nutry ~95, Benassi ~346). Query `select cliente_id, count(*) from veiculos group by cliente_id`.
+- **Aceite:** as duas frotas no banco, ligadas ao cliente correto.
 
 ### Tarefa 1.3 — Importar favelas do SABREN como geofences
 - **Arquivos:** Create `scripts/seed/03_favelas.mjs`
@@ -59,9 +59,15 @@ Objetivo: uma API route que busca a Unitrac, roda os detectores básicos e grava
 
 ### Tarefa 2.1 — Detectores como funções puras (com testes)
 - **Arquivos:** Create `src/lib/detectores.ts`, Test `src/lib/detectores.test.ts` (Vitest)
-- **Fazer:** funções puras que recebem o objeto de posição normalizado e retornam `{nivel, tipo, motivo, score}`: `detectarPanico`, `detectarBau`, `detectarJammer` (atraso alto + ignição), `detectarExcessoVelocidade`, `detectarParadaAnomala` (parado + fora de base/alvo — favela/POI entram na fase 6). Função `avaliar(pos, contexto)` que combina e devolve o alerta de maior severidade.
-- **Verificação:** instalar vitest; escrever testes para cada função (casos: pânico=1 → crítico; atraso 30min+ignição → jammer; etc). `npx vitest run` PASSA.
+- **Fazer:** funções puras que recebem o objeto de posição normalizado e retornam `{nivel, tipo, motivo, score}`: `detectarPanico`, `detectarBau`, `detectarJammer` (atraso alto + ignição), `detectarExcessoVelocidade`, `detectarParadaAnomala` (parado + fora de base/alvo — favela/POI entram na fase 6), e **`detectarParadaLonga`** (parado há >= 90 min em QUALQUER lugar, sem exceção — recebe `parado_min`; nível 'atencao', tipo 'parada_longa', motivo "Parado há Xh Ymin, contatar equipe"; vale para TODOS os clientes). Função `avaliar(pos, contexto)` que combina e devolve o alerta de maior severidade.
+- **Verificação:** instalar vitest; escrever testes para cada função (casos: pânico=1 → crítico; atraso 30min+ignição → jammer; **parado 95min → parada_longa atenção**; parado 40min → nada). `npx vitest run` PASSA.
 - **Aceite:** todos os testes verdes.
+
+### Tarefa 2.1b — Coluna `parado_desde` (rastrear duração da parada)
+- **Arquivos:** Create `scripts/migrations/002b_parado_desde.sql`
+- **Fazer:** `alter table posicoes_atuais add column if not exists parado_desde timestamptz;`. O motor (2.4) seta: se o veículo está parado (vel 0) e continua na mesma posição (raio ~50m) do ciclo anterior, mantém `parado_desde`; se moveu, seta `parado_desde = now()`. A duração = `now() - parado_desde` alimenta `detectarParadaLonga`.
+- **Verificação:** aplicar migration; coluna existe.
+- **Aceite:** coluna criada.
 
 ### Tarefa 2.2 — Cliente Unitrac
 - **Arquivos:** Create `src/lib/unitrac.ts`
@@ -113,10 +119,11 @@ Objetivo: a central que o operador vigia, em tempo real, bonita.
 ---
 
 ## FASE 4 — Cron + Deploy
-### Tarefa 4.1 — Deploy na Vercel
-- **Fazer:** `vercel`/conectar repo; configurar env vars (URL, anon, service_role, MOTOR_SECRET, DATABASE_URL) no painel Vercel.
-- **Verificação (CHROME):** abrir a URL de produção, screenshot.
-- **Aceite:** app no ar igual ao local.
+### Tarefa 4.1 — Deploy na Vercel (FEITO PELO USUÁRIO)
+- **Quem faz:** o USUÁRIO conecta o repo e clica em deploy na Vercel. Claude NÃO faz o deploy.
+- **Claude prepara:** garante que o projeto builda (`npm run build` ok), cria `vercel.json` se preciso, e entrega ao usuário a LISTA EXATA de env vars pra colar no painel Vercel (NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, MOTOR_SECRET, DATABASE_URL) com os valores corretos.
+- **Verificação (CHROME):** após o usuário deployar, abrir a URL de produção e conferir.
+- **Aceite:** app no ar; Claude guiou, usuário deployou.
 
 ### Tarefa 4.2 — Despertador (cron 1 min)
 - **Fazer:** configurar cron-job.org (ou GitHub Actions schedule) para POST em `/api/motor` com o header secreto, a cada 1 min.
