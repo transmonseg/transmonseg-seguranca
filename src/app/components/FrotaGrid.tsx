@@ -25,14 +25,8 @@ interface FrotaItem {
   semComunicacao: boolean;
 }
 
-interface ClienteOpcao {
-  id: string;
-  nome: string;
-}
-
 interface FrotaGridProps {
   itens: FrotaItem[];
-  clientes: ClienteOpcao[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -54,7 +48,7 @@ function formataAtraso(min: number): string {
 /* ------------------------------------------------------------------ */
 
 function IconIgnicao({ on }: { on: boolean }) {
-  /* Power button icon — diferente do alerta circular */
+  /* Power button icon */
   return (
     <svg
       width="12"
@@ -198,7 +192,7 @@ function CardVeiculo({ item }: { item: FrotaItem }) {
               {item.placa}
             </p>
             <p className="text-xs mt-1 truncate max-w-[100px]" style={{ color: "var(--text-muted)", fontSize: "10px" }}>
-              {item.clienteNome}
+              {item.cv}
             </p>
           </div>
 
@@ -267,9 +261,7 @@ function CardVeiculo({ item }: { item: FrotaItem }) {
               className="flex items-center gap-1"
               style={{ color: "var(--text-dim)", fontSize: "9px", letterSpacing: "0.05em" }}
             >
-              <span style={{ color: offline ? "var(--text-dim)" : "var(--text-dim)" }}>
-                <IconSpeed />
-              </span>
+              <IconSpeed />
               vel.
             </span>
             <span
@@ -286,9 +278,7 @@ function CardVeiculo({ item }: { item: FrotaItem }) {
               className="flex items-center gap-1"
               style={{ color: "var(--text-dim)", fontSize: "9px", letterSpacing: "0.05em" }}
             >
-              <span style={{ color: offline ? "var(--text-dim)" : "var(--text-dim)" }}>
-                <IconClock />
-              </span>
+              <IconClock />
               atraso
             </span>
             <span
@@ -312,16 +302,32 @@ function CardVeiculo({ item }: { item: FrotaItem }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Grid principal com filtro                                            */
+/* Tipos de filtro por nivel                                            */
 /* ------------------------------------------------------------------ */
 
-export default function FrotaGrid({ itens, clientes }: FrotaGridProps) {
-  const [filtroCliente, setFiltroCliente] = useState("todos");
+type FiltroNivel = "todos" | "alerta" | "atencao" | "em-rota";
 
-  const itensFiltrados =
-    filtroCliente === "todos"
-      ? itens
-      : itens.filter((i) => i.clienteId === filtroCliente);
+const FILTROS: { id: FiltroNivel; label: string }[] = [
+  { id: "todos",   label: "Todos" },
+  { id: "alerta",  label: "Alerta" },
+  { id: "atencao", label: "Atencao" },
+  { id: "em-rota", label: "Em rota" },
+];
+
+/* ------------------------------------------------------------------ */
+/* Grid principal com filtro por nivel                                  */
+/* ------------------------------------------------------------------ */
+
+export default function FrotaGrid({ itens }: FrotaGridProps) {
+  const [filtroNivel, setFiltroNivel] = useState<FiltroNivel>("todos");
+
+  const itensFiltrados = itens.filter((i) => {
+    const offline = i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao;
+    if (filtroNivel === "alerta")  return !offline && i.nivel === "vermelho";
+    if (filtroNivel === "atencao") return !offline && i.nivel === "amarelo";
+    if (filtroNivel === "em-rota") return !offline && i.ignicao;
+    return true;
+  });
 
   const itensOrdenados = [...itensFiltrados].sort((a, b) => {
     const aOffline = a.atraso_min > LIMIAR_SEM_COM_MIN || a.semComunicacao;
@@ -334,29 +340,29 @@ export default function FrotaGrid({ itens, clientes }: FrotaGridProps) {
     return ordemNivel[a.nivel] - ordemNivel[b.nivel];
   });
 
-  const totalOffline = itensFiltrados.filter(
+  const totalOffline = itens.filter(
     (i) => i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao
   ).length;
 
-  const totalVermelho = itensFiltrados.filter(
+  const totalVermelho = itens.filter(
     (i) => !(i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao) && i.nivel === "vermelho"
   ).length;
 
   return (
     <div className="space-y-5">
-      {/* Filtro: segmented control */}
+      {/* Filtro por nivel: segmented control */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div
           className="inline-flex rounded-lg p-0.5 gap-0.5"
           style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          {clientes.map((c) => (
+          {FILTROS.map((f) => (
             <button
-              key={c.id}
-              onClick={() => setFiltroCliente(c.id)}
+              key={f.id}
+              onClick={() => setFiltroNivel(f.id)}
               className="rounded-md text-xs font-medium transition-all duration-150 cursor-pointer"
               style={
-                filtroCliente === c.id
+                filtroNivel === f.id
                   ? {
                       padding: "5px 14px",
                       backgroundColor: "var(--accent-dim)",
@@ -373,7 +379,7 @@ export default function FrotaGrid({ itens, clientes }: FrotaGridProps) {
                     }
               }
             >
-              {c.nome}
+              {f.label}
             </button>
           ))}
         </div>
@@ -402,7 +408,7 @@ export default function FrotaGrid({ itens, clientes }: FrotaGridProps) {
           className="flex items-center justify-center py-16 rounded-xl border text-sm"
           style={{ backgroundColor: "var(--card)", borderColor: "var(--border)", color: "var(--text-muted)" }}
         >
-          Nenhum veiculo neste cliente.
+          Nenhum veiculo neste filtro.
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">

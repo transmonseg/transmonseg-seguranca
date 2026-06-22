@@ -2,11 +2,11 @@
  * Pagina principal — Transmonseg Central
  *
  * Server Component que le dados do Supabase via createAdminClient (service_role).
- * Motivo: as tabelas tem RLS habilitado mas sem policies ativas, entao o cliente
- * anonimo nao consegue ler. Quando a fase de autenticacao for implementada, isto
- * sera substituido pelo cliente anonimo + policies RLS adequadas.
+ * O cliente ativo e determinado pelo query param ?cliente=<cod_user_unitrac>.
+ * Toda a tela (metricas, alertas, frota) reflete somente o cliente selecionado.
  */
 
+import Link from "next/link";
 import { createAdminClient } from "@/lib/supabase/admin";
 import FrotaGrid from "./components/FrotaGrid";
 
@@ -184,6 +184,15 @@ function IconCheck({ size = 16 }: { size?: number }) {
   );
 }
 
+function IconChevronRight({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Icone de tipo de alerta                                              */
 /* ------------------------------------------------------------------ */
@@ -200,6 +209,83 @@ function IconTipoAlerta({ tipo }: { tipo: string }) {
     return <IconPause size={14} />;
   }
   return <IconAlertCircle size={14} />;
+}
+
+/* ------------------------------------------------------------------ */
+/* Componente: SeletorCliente                                           */
+/* ------------------------------------------------------------------ */
+
+function SeletorCliente({
+  clientes,
+  clienteAtualId,
+  veiculosPorCliente,
+}: {
+  clientes: Cliente[];
+  clienteAtualId: string;
+  veiculosPorCliente: Record<string, number>;
+}) {
+  return (
+    <div
+      className="rounded-2xl border p-1 flex items-stretch gap-1 flex-wrap sm:flex-nowrap"
+      style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
+      role="tablist"
+      aria-label="Selecionar cliente"
+    >
+      {clientes.map((c) => {
+        const ativo = c.id === clienteAtualId;
+        const nVeics = veiculosPorCliente[c.id] ?? 0;
+        return (
+          <Link
+            key={c.id}
+            href={`?cliente=${c.cod_user_unitrac}`}
+            role="tab"
+            aria-selected={ativo}
+            className="flex-1 min-w-[140px] flex items-center justify-between gap-3 px-5 py-3.5 rounded-xl transition-all duration-150 no-underline"
+            style={
+              ativo
+                ? {
+                    backgroundColor: "var(--accent-dim)",
+                    border: "1px solid var(--accent)",
+                    color: "var(--accent)",
+                  }
+                : {
+                    backgroundColor: "transparent",
+                    border: "1px solid transparent",
+                    color: "var(--text-muted)",
+                  }
+            }
+          >
+            {/* Nome e icone */}
+            <div className="flex items-center gap-2.5">
+              <span style={{ color: ativo ? "var(--accent)" : "var(--text-dim)" }}>
+                <IconTruck size={15} />
+              </span>
+              <span
+                className="text-sm font-semibold leading-none"
+                style={{ color: ativo ? "var(--accent)" : "var(--text-muted)" }}
+              >
+                {c.nome}
+              </span>
+            </div>
+
+            {/* Numero de veiculos */}
+            <span
+              className="num-mono text-xs font-bold flex-shrink-0 px-2 py-0.5 rounded-md"
+              style={{
+                fontFamily: "var(--font-geist-mono, monospace)",
+                backgroundColor: ativo
+                  ? "color-mix(in srgb, var(--accent) 15%, transparent)"
+                  : "var(--border)",
+                color: ativo ? "var(--accent)" : "var(--text-dim)",
+              }}
+            >
+              {nVeics}
+            </span>
+          </Link>
+        );
+      })}
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -261,92 +347,6 @@ function MetricaDestaque({
 }
 
 /* ------------------------------------------------------------------ */
-/* Componente: PainelCliente                                            */
-/* ------------------------------------------------------------------ */
-
-function PainelCliente({
-  nome,
-  total,
-  vermelho,
-  amarelo,
-  parados,
-}: {
-  nome: string;
-  total: number;
-  vermelho: number;
-  amarelo: number;
-  parados: number;
-}) {
-  const ativos = total - parados;
-  const pctVermelho = total > 0 ? (vermelho / total) * 100 : 0;
-  const pctAmarelo = total > 0 ? (amarelo / total) * 100 : 0;
-  const pctAtivos = total > 0 ? (ativos / total) * 100 : 0;
-
-  return (
-    <div
-      className="rounded-xl border px-5 py-4 flex flex-col gap-3"
-      style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
-    >
-      {/* Cabecalho do painel */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span style={{ color: "var(--accent)" }}>
-            <IconTruck size={14} />
-          </span>
-          <span className="text-sm font-semibold" style={{ color: "var(--text)" }}>
-            {nome}
-          </span>
-        </div>
-        <span
-          className="num-mono text-xl font-bold"
-          style={{ color: "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
-        >
-          {total}
-        </span>
-      </div>
-
-      {/* Barra de composicao */}
-      <div className="h-1.5 rounded-full overflow-hidden flex" style={{ backgroundColor: "var(--border)" }}>
-        {pctVermelho > 0 && (
-          <div className="h-full rounded-full" style={{ width: `${pctVermelho}%`, backgroundColor: "var(--vermelho)" }} />
-        )}
-        {pctAmarelo > 0 && (
-          <div className="h-full" style={{ width: `${pctAmarelo}%`, backgroundColor: "var(--amarelo)" }} />
-        )}
-        {pctAtivos > 0 && (
-          <div className="h-full" style={{ width: `${Math.max(0, pctAtivos - pctVermelho - pctAmarelo)}%`, backgroundColor: "var(--verde)", opacity: 0.4 }} />
-        )}
-      </div>
-
-      {/* Indicadores */}
-      <div className="flex items-center gap-4 flex-wrap">
-        {vermelho > 0 && (
-          <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: "var(--vermelho)" }} />
-            <span className="num-mono text-xs font-semibold" style={{ color: "var(--vermelho)", fontFamily: "var(--font-geist-mono, monospace)" }}>
-              {vermelho} critico{vermelho > 1 ? "s" : ""}
-            </span>
-          </div>
-        )}
-        {amarelo > 0 && (
-          <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: "var(--amarelo)" }} />
-            <span className="num-mono text-xs font-semibold" style={{ color: "var(--amarelo)", fontFamily: "var(--font-geist-mono, monospace)" }}>
-              {amarelo} atencao
-            </span>
-          </div>
-        )}
-        <div className="flex items-center gap-1.5 ml-auto">
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {parados} parado{parados !== 1 ? "s" : ""}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Componente: RowAlerta                                                */
 /* ------------------------------------------------------------------ */
 
@@ -354,14 +354,12 @@ function RowAlerta({
   nivel,
   tipo,
   placa,
-  clienteNome,
   motivo,
   desde,
 }: {
   nivel: NivelRisco;
   tipo: string;
   placa: string;
-  clienteNome: string;
   motivo: string | null;
   desde: string;
 }) {
@@ -386,16 +384,13 @@ function RowAlerta({
         <IconTipoAlerta tipo={tipo} />
       </span>
 
-      {/* Placa + cliente */}
+      {/* Placa */}
       <div className="flex-shrink-0 min-w-[90px]">
         <p
           className="num-mono text-sm font-bold tracking-wider leading-none"
           style={{ color: "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
         >
           {placa}
-        </p>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-          {clienteNome}
         </p>
       </div>
 
@@ -455,7 +450,12 @@ function SectionLabel({ children, dot }: { children: React.ReactNode; dot?: stri
 /* Pagina principal                                                      */
 /* ------------------------------------------------------------------ */
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const { cliente: clienteParam } = await searchParams;
   const supabase = createAdminClient();
 
   // Busca paralela de todas as entidades necessarias
@@ -465,7 +465,7 @@ export default async function DashboardPage() {
     { data: posicoesRaw },
     { data: alertasRaw },
   ] = await Promise.all([
-    supabase.from("clientes").select("id, nome, cod_user_unitrac"),
+    supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
     supabase.from("veiculos").select("id, cliente_id, placa, cv"),
     supabase.from("posicoes_atuais").select(
       "veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, parado_desde, updated_at"
@@ -474,41 +474,50 @@ export default async function DashboardPage() {
   ]);
 
   const clientes: Cliente[] = clientesRaw ?? [];
-  const veiculos: Veiculo[] = veiculosRaw ?? [];
-  const posicoes: PosicaoAtual[] = posicoesRaw ?? [];
-  const alertas: Alerta[] = alertasRaw ?? [];
-
-  // Indices rapidos
-  const clienteById = new Map(clientes.map((c) => [c.id, c]));
-  const veiculoById = new Map(veiculos.map((v) => [v.id, v]));
-  const posicaoPorVeiculo = new Map(posicoes.map((p) => [p.veiculo_id, p]));
+  const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
+  const todasPosicoes: PosicaoAtual[] = posicoesRaw ?? [];
+  const todosAlertas: Alerta[] = alertasRaw ?? [];
 
   // ------------------------------------------------------------------
-  // Metricas globais
+  // Determinar cliente ativo
+  // ------------------------------------------------------------------
+  const codParam = typeof clienteParam === "string" ? clienteParam : undefined;
+  const clienteAtivo: Cliente =
+    (codParam && clientes.find((c) => c.cod_user_unitrac === codParam)) ||
+    clientes[0];
+
+  // Mapa de quantidade de veiculos por cliente (para o seletor)
+  const veiculosPorCliente: Record<string, number> = {};
+  for (const c of clientes) {
+    veiculosPorCliente[c.id] = todosVeiculos.filter((v) => v.cliente_id === c.id).length;
+  }
+
+  // ------------------------------------------------------------------
+  // Filtrar dados para o cliente ativo
+  // ------------------------------------------------------------------
+  const veiculos = todosVeiculos.filter((v) => v.cliente_id === clienteAtivo.id);
+  const veiculoIds = new Set(veiculos.map((v) => v.id));
+
+  const posicaoPorVeiculo = new Map(
+    todasPosicoes
+      .filter((p) => veiculoIds.has(p.veiculo_id))
+      .map((p) => [p.veiculo_id, p])
+  );
+
+  const alertas = todosAlertas.filter((a) => a.cliente_id === clienteAtivo.id);
+
+  const veiculoById = new Map(veiculos.map((v) => [v.id, v]));
+
+  // ------------------------------------------------------------------
+  // Metricas do cliente ativo
   // ------------------------------------------------------------------
   const totalFrota = veiculos.length;
+  const posicoes = Array.from(posicaoPorVeiculo.values());
   const veiculosComunicando = posicoes.length;
   const emAlertaVermelho = posicoes.filter((p) => p.nivel === "vermelho").length;
   const emAtencaoAmarelo  = posicoes.filter((p) => p.nivel === "amarelo").length;
   const parados = posicoes.filter((p) => !p.ignicao).length;
   const semComunicacao = totalFrota - veiculosComunicando;
-
-  // Resumo por cliente
-  const resumoPorCliente: Record<
-    string,
-    { nome: string; total: number; vermelho: number; amarelo: number; parados: number }
-  > = {};
-  for (const cliente of clientes) {
-    const veicsDeste = veiculos.filter((v) => v.cliente_id === cliente.id);
-    const posDeste = veicsDeste.map((v) => posicaoPorVeiculo.get(v.id)).filter(Boolean) as PosicaoAtual[];
-    resumoPorCliente[cliente.id] = {
-      nome: cliente.nome,
-      total:    posDeste.length,
-      vermelho: posDeste.filter((p) => p.nivel === "vermelho").length,
-      amarelo:  posDeste.filter((p) => p.nivel === "amarelo").length,
-      parados:  posDeste.filter((p) => !p.ignicao).length,
-    };
-  }
 
   // ------------------------------------------------------------------
   // Dados de frota para o grid (enriquecidos)
@@ -516,12 +525,11 @@ export default async function DashboardPage() {
   const frotaItems = veiculos
     .map((v) => {
       const pos = posicaoPorVeiculo.get(v.id);
-      const cliente = clienteById.get(v.cliente_id);
       return {
         id: v.id,
         placa: v.placa,
         cv: v.cv,
-        clienteNome: cliente?.nome ?? "Desconhecido",
+        clienteNome: clienteAtivo.nome,
         clienteId: v.cliente_id,
         nivel: (pos?.nivel ?? "verde") as NivelRisco,
         motivo: pos?.motivo ?? null,
@@ -540,29 +548,20 @@ export default async function DashboardPage() {
       return ordem[a.nivel] - ordem[b.nivel];
     });
 
-  // Alertas enriquecidos
-  const alertasEnriquecidos = alertas.map((a) => {
-    const veiculo = veiculoById.get(a.veiculo_id);
-    const cliente = clienteById.get(a.cliente_id);
-    return {
-      ...a,
-      placa: veiculo?.placa ?? "?????",
-      clienteNome: cliente?.nome ?? "Desconhecido",
-    };
-  });
-
-  // Ordenar alertas: vermelho primeiro
-  alertasEnriquecidos.sort((a, b) => {
-    if (a.nivel === "vermelho" && b.nivel !== "vermelho") return -1;
-    if (a.nivel !== "vermelho" && b.nivel === "vermelho") return 1;
-    return 0;
-  });
-
-  // IDs de clientes para o filtro
-  const clientesParaFiltro = [
-    { id: "todos", nome: "Todos" },
-    ...clientes.map((c) => ({ id: c.id, nome: c.nome })),
-  ];
+  // Alertas enriquecidos (ja filtrados por cliente ativo)
+  const alertasEnriquecidos = alertas
+    .map((a) => {
+      const veiculo = veiculoById.get(a.veiculo_id);
+      return {
+        ...a,
+        placa: veiculo?.placa ?? "?????",
+      };
+    })
+    .sort((a, b) => {
+      if (a.nivel === "vermelho" && b.nivel !== "vermelho") return -1;
+      if (a.nivel !== "vermelho" && b.nivel === "vermelho") return 1;
+      return 0;
+    });
 
   /* ---------------------------------------------------------------- */
   /* Render                                                            */
@@ -572,13 +571,30 @@ export default async function DashboardPage() {
     <div className="px-4 sm:px-6 lg:px-8 py-8 max-w-screen-xl mx-auto space-y-10">
 
       {/* ============================================================
-          PAINEL DE STATUS — metricas chave
+          SELETOR DE CLIENTE — comanda a tela inteira
+          ============================================================ */}
+      <section aria-label="Selecionar cliente">
+        <div className="mb-2 flex items-center gap-2" style={{ color: "var(--text-dim)" }}>
+          <IconShield size={12} />
+          <span className="text-xs font-medium uppercase tracking-widest" style={{ letterSpacing: "0.1em" }}>
+            Cliente ativo
+          </span>
+        </div>
+        <SeletorCliente
+          clientes={clientes}
+          clienteAtualId={clienteAtivo.id}
+          veiculosPorCliente={veiculosPorCliente}
+        />
+      </section>
+
+      {/* ============================================================
+          PAINEL DE STATUS — metricas do cliente ativo
           ============================================================ */}
       <section aria-label="Status operacional">
         <SectionLabel>Status operacional</SectionLabel>
 
         {/* Grid de metricas */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <MetricaDestaque
             label="Monitorados"
             valor={veiculosComunicando}
@@ -606,29 +622,10 @@ export default async function DashboardPage() {
             icone={<IconPause size={15} />}
           />
         </div>
-
-        {/* Paineis por cliente */}
-        {clientes.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {clientes.map((c) => {
-              const r = resumoPorCliente[c.id];
-              return (
-                <PainelCliente
-                  key={c.id}
-                  nome={r.nome}
-                  total={r.total}
-                  vermelho={r.vermelho}
-                  amarelo={r.amarelo}
-                  parados={r.parados}
-                />
-              );
-            })}
-          </div>
-        )}
       </section>
 
       {/* ============================================================
-          ALERTAS ATIVOS
+          ALERTAS ATIVOS — somente do cliente ativo
           ============================================================ */}
       <section aria-label="Alertas ativos">
         <div className="flex items-center gap-3 mb-4">
@@ -695,7 +692,6 @@ export default async function DashboardPage() {
                 nivel={a.nivel}
                 tipo={a.tipo}
                 placa={a.placa}
-                clienteNome={a.clienteNome}
                 motivo={a.motivo}
                 desde={a.desde}
               />
@@ -705,16 +701,13 @@ export default async function DashboardPage() {
       </section>
 
       {/* ============================================================
-          FROTA — grid com filtro por cliente (Client Component)
+          FROTA — grid filtrado pelo cliente ativo (Client Component)
           ============================================================ */}
       <section aria-label="Frota monitorada">
         <SectionLabel>
           Frota monitorada
         </SectionLabel>
-        <FrotaGrid
-          itens={frotaItems}
-          clientes={clientesParaFiltro}
-        />
+        <FrotaGrid itens={frotaItems} />
       </section>
 
     </div>
