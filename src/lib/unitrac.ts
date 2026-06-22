@@ -49,6 +49,53 @@ export async function buscarPosicoes(cvs: string[]): Promise<unknown[]> {
   return data.Posicoes;
 }
 
+// Tipo retornado pela API de alvos (/mapa_servicos/alvos).
+export type AlvoUnitrac = {
+  placa: string;
+  alvosituacaoservico: number; // 1 = feito, 0 = pendente
+  [key: string]: unknown;
+};
+
+// Resultado agrupado por placa.
+export type EntregasPlaca = {
+  feitos: number;
+  total: number;
+};
+
+// Busca alvos (paradas/entregas) de uma lista de CVs.
+// POST /mapa_servicos/alvos — body = array de CV como strings.
+export async function buscarAlvos(cvs: string[]): Promise<AlvoUnitrac[]> {
+  const res = await fetch(`${BASE_URL}/mapa_servicos/alvos`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(cvs),
+  });
+  if (!res.ok) {
+    throw new Error(`buscarAlvos HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as { alvos?: AlvoUnitrac[] };
+  return data.alvos ?? [];
+}
+
+// Agrupa alvos retornados pela API por placa.
+// Retorna Map<placa, { feitos, total }>.
+export function agruparAlvosPorPlaca(alvos: AlvoUnitrac[]): Map<string, EntregasPlaca> {
+  const mapa = new Map<string, EntregasPlaca>();
+  for (const alvo of alvos) {
+    const placa = alvo.placa;
+    const entrada = mapa.get(placa) ?? { feitos: 0, total: 0 };
+    entrada.total += 1;
+    if (alvo.alvosituacaoservico === 1) {
+      entrada.feitos += 1;
+    }
+    mapa.set(placa, entrada);
+  }
+  return mapa;
+}
+
 // Normaliza uma posição bruta da Unitrac para o tipo interno.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizar(p: Record<string, any>): PosicaoNormalizada {

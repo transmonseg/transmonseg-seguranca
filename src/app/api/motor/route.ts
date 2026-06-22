@@ -3,11 +3,15 @@
 
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { buscarPosicoes, normalizar } from "@/lib/unitrac";
+import { buscarAlvos, agruparAlvosPorPlaca, normalizar } from "@/lib/unitrac";
+import type { EntregasPlaca } from "@/lib/unitrac";
 import { avaliar, detectarJammer, emHorarioOperacao } from "@/lib/detectores";
 
 // Timeout para chamadas Unitrac (20 segundos)
 const TIMEOUT_UNITRAC_MS = 20_000;
+
+// Limite de geocodes novos (Nominatim) por ciclo do motor
+const LIMITE_GEOCODES_NOVOS = 8;
 
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
@@ -59,6 +63,85 @@ async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
   }
 }
 
+// ─── buscarAlvos com timeout ───────────────────────────────────────────────
+async function buscarAlvosComTimeout(cvs: string[]): Promise<Map<string, EntregasPlaca>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_UNITRAC_MS);
+  try {
+    const alvos = await buscarAlvos(cvs);
+    clearTimeout(timer);
+    return agruparAlvosPorPlaca(alvos);
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
+// ─── Geocode reverso via Nominatim com cache em banco ─────────────────────
+// Retorna o endereco formatado (3 primeiras partes do display_name) ou null.
+async function geocodeReverso(
+  lat: number,
+  lng: number,
+  pool: pg.Pool,
+  contadorNovos: { valor: number }
+): Promise<string | null> {
+  // Arredondar a 4 casas para usar como chave de cache
+  const latR = Math.round(lat * 10000) / 10000;
+  const lngR = Math.round(lng * 10000) / 10000;
+
+  // Consultar cache no banco
+  const pgClient = await pool.connect();
+  try {
+    const { rows } = await pgClient.query<{ endereco: string }>(
+      `SELECT endereco FROM geocode_cache WHERE lat = $1 AND lng = $2 LIMIT 1`,
+      [latR, lngR]
+    );
+    if (rows.length > 0) {
+      return rows[0].endereco;
+    }
+  } finally {
+    pgClient.release();
+  }
+
+  // Cache miss: verificar orçamento antes de chamar Nominatim
+  if (contadorNovos.valor >= LIMITE_GEOCODES_NOVOS) {
+    return null;
+  }
+  contadorNovos.valor += 1;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=pt-BR`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "TransmonsegCentral/1.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as { display_name?: string };
+    if (!data.display_name) return null;
+
+    // Usar as 3 primeiras partes do display_name separadas por virgula
+    const partes = data.display_name.split(",").map((p) => p.trim());
+    const endereco = partes.slice(0, 3).join(", ");
+
+    // Salvar no cache
+    const pgSave = await pool.connect();
+    try {
+      await pgSave.query(
+        `INSERT INTO geocode_cache (lat, lng, endereco) VALUES ($1, $2, $3)
+         ON CONFLICT (lat, lng) DO NOTHING`,
+        [latR, lngR, endereco]
+      );
+    } finally {
+      pgSave.release();
+    }
+
+    return endereco;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Distancia Haversine em metros entre dois pontos WGS-84 ─────────────────
 function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6_371_000; // raio medio da Terra em metros
@@ -86,6 +169,9 @@ export async function POST(request: Request) {
   const erros: string[] = [];
   const emOperacao = emHorarioOperacao(agora);
 
+  // Contador de geocodes novos consumidos neste ciclo
+  const contadorGeocodesNovos = { valor: 0 };
+
   try {
     // 2. Carregar clientes ativos + veiculos ativos
     const { data: clientes, error: erroClientes } = await supabase
@@ -100,7 +186,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // Mapear cv -> { veiculo_id, cliente_id }
+    // Mapear cv -> { veiculo_id, cliente_id, placa }
     const mapaCv = new Map<string, { veiculo_id: string; cliente_id: string }>();
 
     for (const cliente of clientes) {
@@ -123,8 +209,11 @@ export async function POST(request: Request) {
     }
 
     // 3a. Carregar bases de cada cliente para filtro de garagem
-    // Estrutura: cliente_id -> lista de { lat, lng, raio_m }
-    const mapaBasesCliente = new Map<string, { lat: number; lng: number; raio_m: number }[]>();
+    // Estrutura: cliente_id -> lista de { lat, lng, raio_m, nome }
+    const mapaBasesCliente = new Map<
+      string,
+      { lat: number; lng: number; raio_m: number; nome: string }[]
+    >();
 
     {
       const pgBases = await pool.connect();
@@ -134,17 +223,19 @@ export async function POST(request: Request) {
           lat: number;
           lng: number;
           raio_m: number;
+          nome: string;
         }>(
           `SELECT
              cliente_id,
              ST_Y(geom::geometry) AS lat,
              ST_X(geom::geometry) AS lng,
-             raio_m
+             raio_m,
+             nome
            FROM bases`
         );
         for (const b of basesRows) {
           const lista = mapaBasesCliente.get(b.cliente_id) ?? [];
-          lista.push({ lat: b.lat, lng: b.lng, raio_m: b.raio_m });
+          lista.push({ lat: b.lat, lng: b.lng, raio_m: b.raio_m, nome: b.nome });
           mapaBasesCliente.set(b.cliente_id, lista);
         }
       } catch (errBases) {
@@ -189,6 +280,7 @@ export async function POST(request: Request) {
 
       if (cvsCliente.length === 0) continue;
 
+      // 4a. Buscar posicoes do cliente
       let posicoesRaw: unknown[];
       try {
         posicoesRaw = await buscarPosicoesComTimeout(cvsCliente);
@@ -200,6 +292,17 @@ export async function POST(request: Request) {
         console.error(msg);
         erros.push(msg);
         continue;
+      }
+
+      // 4b. Buscar alvos (entregas) deste cliente e agrupar por placa
+      let entregasPorPlaca = new Map<string, EntregasPlaca>();
+      try {
+        entregasPorPlaca = await buscarAlvosComTimeout(cvsCliente);
+      } catch (err) {
+        // Nao-critico: entregas ficam 0/0 se API falhar
+        const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${String(err)}`;
+        console.warn(msg);
+        erros.push(msg);
       }
 
       // Normalizar e processar cada posicao
@@ -240,6 +343,30 @@ export async function POST(request: Request) {
             paradoMin = Math.round((agora.getTime() - new Date(parado_desde).getTime()) / 60000);
           }
 
+          // Calcular se o veiculo esta dentro de alguma base do cliente
+          const basesCliente = mapaBasesCliente.get(cliente_id) ?? [];
+          const baseOcupada = basesCliente.find(
+            (b) => haversineM(pos.lat, pos.lng, b.lat, b.lng) <= b.raio_m
+          );
+          const foraDaBase = !baseOcupada;
+
+          // ─── Determinar localização do veículo ─────────────────────────
+          // Base > Em deslocamento > Parado (geocode reverso)
+          let localVeiculo: string | null = null;
+          if (baseOcupada) {
+            localVeiculo = baseOcupada.nome;
+          } else if (pos.velocidade > 0 && pos.fresco) {
+            localVeiculo = "Em deslocamento";
+          } else if (pos.velocidade === 0 && pos.fresco) {
+            // Parado fora de base: geocode reverso com cache
+            localVeiculo = await geocodeReverso(pos.lat, pos.lng, pool, contadorGeocodesNovos);
+          }
+
+          // ─── Entregas do veículo ────────────────────────────────────────
+          const entregas = entregasPorPlaca.get(pos.placa) ?? { feitos: 0, total: 0 };
+          const entregas_feitas = entregas.feitos;
+          const entregas_total = entregas.total;
+
           // Determinar nivel e alerta com ordem de prioridade correta:
           //
           // 1. JAMMER (prioridade maxima): ignicao ligada + atraso entre 15 e 720 min.
@@ -252,14 +379,6 @@ export async function POST(request: Request) {
           //
           // 3. FRESCO (atraso <= 60): rodar avaliar() normalmente (panico, bau,
           //    excesso, parada_longa) + detector de favela.
-
-          // Calcular se o veiculo esta dentro de alguma base do cliente
-          const basesCliente = mapaBasesCliente.get(cliente_id) ?? [];
-          const foraDaBase =
-            basesCliente.length === 0 ||
-            !basesCliente.some(
-              (b) => haversineM(pos.lat, pos.lng, b.lat, b.lng) <= b.raio_m
-            );
 
           const alertaJammer = detectarJammer(pos);
           const ehSemComunicacao =
@@ -288,6 +407,17 @@ export async function POST(request: Request) {
             nivel = "verde";
           }
 
+          // ─── Nível "concluido": recolhido na base com entregas feitas ──
+          // Sobrescreve verde/amarelo (informativo, nao e alerta).
+          if (
+            nivel === "verde" &&
+            !foraDaBase &&
+            !pos.ignicao &&
+            entregas_feitas > 0
+          ) {
+            nivel = "concluido";
+          }
+
           const motivo = alertaJammer
             ? alertaJammer.motivo
             : ehSemComunicacao
@@ -300,26 +430,31 @@ export async function POST(request: Request) {
             await pgClient.query(
               `INSERT INTO posicoes_atuais
                 (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
-                 panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at)
+                 panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
+                 entregas_feitas, entregas_total, local)
                VALUES
                 ($1, $2, $3,
                  ST_SetSRID(ST_MakePoint($4, $3), 4326)::geography,
                  $5, $6, $7, $8, $9, $10, $11,
-                 $12::timestamptz, $13::timestamptz, $14::timestamptz)
+                 $12::timestamptz, $13::timestamptz, $14::timestamptz,
+                 $15, $16, $17)
                ON CONFLICT (veiculo_id) DO UPDATE SET
-                 lat          = EXCLUDED.lat,
-                 lng          = EXCLUDED.lng,
-                 geom         = EXCLUDED.geom,
-                 velocidade   = EXCLUDED.velocidade,
-                 ignicao      = EXCLUDED.ignicao,
-                 atraso_min   = EXCLUDED.atraso_min,
-                 panico       = EXCLUDED.panico,
-                 bau_aberto   = EXCLUDED.bau_aberto,
-                 nivel        = EXCLUDED.nivel,
-                 motivo       = EXCLUDED.motivo,
-                 datagps      = EXCLUDED.datagps,
-                 parado_desde = EXCLUDED.parado_desde,
-                 updated_at   = EXCLUDED.updated_at`,
+                 lat              = EXCLUDED.lat,
+                 lng              = EXCLUDED.lng,
+                 geom             = EXCLUDED.geom,
+                 velocidade       = EXCLUDED.velocidade,
+                 ignicao          = EXCLUDED.ignicao,
+                 atraso_min       = EXCLUDED.atraso_min,
+                 panico           = EXCLUDED.panico,
+                 bau_aberto       = EXCLUDED.bau_aberto,
+                 nivel            = EXCLUDED.nivel,
+                 motivo           = EXCLUDED.motivo,
+                 datagps          = EXCLUDED.datagps,
+                 parado_desde     = EXCLUDED.parado_desde,
+                 updated_at       = EXCLUDED.updated_at,
+                 entregas_feitas  = EXCLUDED.entregas_feitas,
+                 entregas_total   = EXCLUDED.entregas_total,
+                 local            = COALESCE(EXCLUDED.local, posicoes_atuais.local)`,
               [
                 veiculo_id,
                 pos.lat,
@@ -335,6 +470,9 @@ export async function POST(request: Request) {
                 parseDatagps(pos.datagps) ?? agora.toISOString(),
                 parado_desde,
                 agora.toISOString(),
+                entregas_feitas,
+                entregas_total,
+                localVeiculo,
               ]
             );
           } finally {
@@ -506,6 +644,7 @@ export async function POST(request: Request) {
       processados: totalProcessados,
       frescos: totalFrescos,
       alertas_ativos: totalAlertasAtivos,
+      geocodes_novos: contadorGeocodesNovos.valor,
       erros,
     });
   } catch (errGeral) {
@@ -516,6 +655,7 @@ export async function POST(request: Request) {
         processados: 0,
         frescos: 0,
         alertas_ativos: 0,
+        geocodes_novos: 0,
         erros: [String(errGeral)],
       },
       { status: 500 }
