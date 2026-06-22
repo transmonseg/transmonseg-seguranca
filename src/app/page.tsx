@@ -39,6 +39,8 @@ interface Veiculo {
 
 interface PosicaoAtual {
   veiculo_id: string;
+  lat: number | null;
+  lng: number | null;
   velocidade: number;
   ignicao: boolean;
   atraso_min: number;
@@ -69,6 +71,9 @@ export interface VeiculoItem {
   id: string;
   placa: string;
   cv: string;
+  grupo?: string | null;
+  lat: number | null;
+  lng: number | null;
   nivel: NivelDB;
   motivo: string | null;
   velocidade: number;
@@ -348,8 +353,19 @@ function MetricaGrande({
 }
 
 /* ------------------------------------------------------------------ */
-/* Card de alerta critico — grande e destacado                         */
+/* Card de alerta critico — grande, rico e destacado                   */
 /* ------------------------------------------------------------------ */
+
+function IconExternal({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  );
+}
 
 function CardAlertaCritico({
   nivel,
@@ -358,6 +374,11 @@ function CardAlertaCritico({
   motivo,
   local,
   desde,
+  lat,
+  lng,
+  velocidade,
+  ignicao,
+  atraso_min,
 }: {
   nivel: "critico" | "atencao";
   tipo: string;
@@ -365,9 +386,16 @@ function CardAlertaCritico({
   motivo: string | null;
   local: string | null;
   desde: string;
+  lat?: number | null;
+  lng?: number | null;
+  velocidade?: number | null;
+  ignicao?: boolean | null;
+  atraso_min?: number | null;
 }) {
   const corNivel = nivel === "critico" ? "var(--vermelho)" : "var(--amarelo)";
   const bgNivel = nivel === "critico" ? "#160c0c" : "#16120a";
+  const temCoordenadas = lat != null && lng != null;
+  const urlMapa = temCoordenadas ? `https://www.google.com/maps?q=${lat},${lng}` : null;
 
   return (
     <div
@@ -379,66 +407,159 @@ function CardAlertaCritico({
     >
       {/* Faixa lateral de acento */}
       <div
-        className="absolute top-0 bottom-0 left-0 w-1 rounded-l-2xl"
-        style={{ backgroundColor: corNivel, opacity: 0.7 }}
+        className="absolute top-0 bottom-0 left-0"
+        style={{ width: "3px", backgroundColor: corNivel, opacity: 0.8 }}
       />
 
-      <div className="pl-6 pr-6 pt-6 pb-6">
-        {/* Cabecalho: tipo de alerta + tempo */}
-        <div className="flex items-start justify-between gap-4 mb-5">
-          <div className="flex items-center gap-2.5">
-            <span style={{ color: corNivel, opacity: 0.9 }}>
-              <IconTipoAlerta tipo={tipo} size={15} />
-            </span>
+      <div style={{ padding: "1.5rem 1.5rem 1.5rem 1.75rem" }}>
+
+        {/* CABECALHO: badge nivel + tipo + tempo */}
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2">
             <span
-              className="text-xs font-semibold uppercase tracking-widest"
-              style={{ color: corNivel, letterSpacing: "0.1em", opacity: 0.9 }}
+              className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest px-2 py-1 rounded-md"
+              style={{
+                backgroundColor: `color-mix(in srgb, ${corNivel} 12%, transparent)`,
+                border: `1px solid color-mix(in srgb, ${corNivel} 25%, transparent)`,
+                color: corNivel,
+                letterSpacing: "0.09em",
+                fontSize: "10px",
+              }}
             >
+              <span style={{ color: corNivel, opacity: 0.9 }}>
+                <IconTipoAlerta tipo={tipo} size={11} />
+              </span>
               {tipo}
             </span>
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0" style={{ color: "var(--text-dim)" }}>
             <IconClock size={12} />
-            <span
-              className="num-mono text-xs"
-              style={{ fontFamily: "var(--font-geist-mono, monospace)" }}
-            >
+            <span className="num-mono text-xs" style={{ fontFamily: "var(--font-geist-mono, monospace)" }}>
               {formatarTempoRelativo(desde)}
             </span>
           </div>
         </div>
 
-        {/* Placa em destaque */}
-        <p
-          className="num-mono font-bold tracking-widest leading-none mb-3"
-          style={{
-            color: "var(--text)",
-            fontFamily: "var(--font-geist-mono, monospace)",
-            fontSize: "1.5rem",
-            letterSpacing: "0.12em",
-          }}
-        >
-          {placa}
-        </p>
-
-        {/* Motivo */}
-        {motivo && (
-          <p className="text-sm mb-3" style={{ color: "var(--text-muted)", lineHeight: "1.5" }}>
-            {motivo}
+        {/* PLACA grande + badge nivel */}
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <p
+            className="num-mono font-bold leading-none"
+            style={{
+              color: "var(--text)",
+              fontFamily: "var(--font-geist-mono, monospace)",
+              fontSize: "1.5rem",
+              letterSpacing: "0.12em",
+            }}
+          >
+            {placa}
           </p>
-        )}
+          <span
+            className="text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${corNivel} 10%, transparent)`,
+              color: corNivel,
+              border: `1px solid color-mix(in srgb, ${corNivel} 20%, transparent)`,
+              fontSize: "10px",
+              letterSpacing: "0.06em",
+            }}
+          >
+            {nivel === "critico" ? "CRITICO" : "ATENCAO"}
+          </span>
+        </div>
 
-        {/* Localizacao */}
-        {local && (
-          <div className="flex items-start gap-2" style={{ color: "var(--text-dim)" }}>
-            <span className="flex-shrink-0 mt-0.5">
-              <IconMapPin size={13} />
-            </span>
-            <p className="text-xs leading-relaxed" style={{ color: "var(--text-dim)" }}>
-              {local}
+        {/* MOTIVO em destaque */}
+        {motivo && (
+          <div
+            className="rounded-xl px-3 py-2.5 mb-4"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${corNivel} 7%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${corNivel} 16%, transparent)`,
+            }}
+          >
+            <p className="text-sm leading-relaxed" style={{ color: corNivel, opacity: 0.9 }}>
+              {motivo}
             </p>
           </div>
         )}
+
+        {/* DIVISOR */}
+        <div style={{ height: "1px", backgroundColor: "var(--border-subtle)", marginBottom: "0.875rem" }} />
+
+        {/* BLOCO LOCALIZACAO + botao mapa */}
+        <div className="mb-4">
+          <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: "var(--text-dim)", letterSpacing: "0.1em", fontSize: "9px" }}>
+            Localizacao
+          </p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2 min-w-0">
+              <span className="flex-shrink-0 mt-0.5" style={{ color: "var(--text-dim)" }}>
+                <IconMapPin size={12} />
+              </span>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                {local ?? "Sem endereco disponivel"}
+              </p>
+            </div>
+            {urlMapa && (
+              <a
+                href={urlMapa}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-shrink-0 flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg transition-colors"
+                style={{
+                  backgroundColor: "var(--accent-dim)",
+                  border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
+                  color: "var(--accent)",
+                  textDecoration: "none",
+                  fontSize: "11px",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <IconMapPin size={11} />
+                Ver no mapa
+                <IconExternal size={10} />
+              </a>
+            )}
+          </div>
+        </div>
+
+        {/* BLOCO TELEMETRIA — grade 2 colunas */}
+        {(velocidade != null || ignicao != null || (atraso_min != null && atraso_min > 0)) && (
+          <>
+            <div style={{ height: "1px", backgroundColor: "var(--border-subtle)", marginBottom: "0.875rem" }} />
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: "var(--text-dim)", letterSpacing: "0.1em", fontSize: "9px" }}>
+                Telemetria
+              </p>
+              <div className="grid grid-cols-2" style={{ gap: "0.5rem" }}>
+                {velocidade != null && (
+                  <div>
+                    <span className="text-xs" style={{ color: "var(--text-dim)" }}>velocidade</span>
+                    <p className="num-mono text-sm font-semibold mt-0.5" style={{ fontFamily: "var(--font-geist-mono, monospace)", color: velocidade > 0 ? "var(--accent)" : "var(--text-muted)" }}>
+                      {velocidade} km/h
+                    </p>
+                  </div>
+                )}
+                {ignicao != null && (
+                  <div>
+                    <span className="text-xs" style={{ color: "var(--text-dim)" }}>ignicao</span>
+                    <p className="text-sm font-semibold mt-0.5" style={{ color: ignicao ? "var(--verde)" : "var(--text-dim)" }}>
+                      {ignicao ? "ligada" : "desligada"}
+                    </p>
+                  </div>
+                )}
+                {atraso_min != null && atraso_min > 0 && (
+                  <div>
+                    <span className="text-xs" style={{ color: "var(--text-dim)" }}>sem comunicacao</span>
+                    <p className="num-mono text-sm font-semibold mt-0.5" style={{ fontFamily: "var(--font-geist-mono, monospace)", color: "var(--text-muted)" }}>
+                      {atraso_min < 60 ? `${atraso_min}min` : `${Math.floor(atraso_min / 60)}h${atraso_min % 60 > 0 ? `${atraso_min % 60}min` : ""}`}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+
       </div>
     </div>
   );
@@ -503,7 +624,7 @@ export default async function DashboardPage({
     supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
     supabase.from("veiculos").select("id, cliente_id, placa, cv"),
     supabase.from("posicoes_atuais").select(
-      "veiculo_id, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, local, entregas_feitas, entregas_total, parado_desde, updated_at"
+      "veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, local, entregas_feitas, entregas_total, parado_desde, updated_at"
     ),
     supabase
       .from("alertas")
@@ -547,6 +668,9 @@ export default async function DashboardPage({
       id: v.id,
       placa: v.placa,
       cv: v.cv,
+      grupo: null,
+      lat: pos?.lat ?? null,
+      lng: pos?.lng ?? null,
       nivel: (pos?.nivel ?? "cinza") as NivelDB,
       motivo: pos?.motivo ?? null,
       velocidade: pos?.velocidade ?? 0,
@@ -596,7 +720,16 @@ export default async function DashboardPage({
     .map((a) => {
       const veiculo = veiculoById.get(a.veiculo_id);
       const pos = posicaoPorVeiculo.get(a.veiculo_id);
-      return { ...a, placa: veiculo?.placa ?? "?????", local: pos?.local ?? null };
+      return {
+        ...a,
+        placa: veiculo?.placa ?? "?????",
+        local: pos?.local ?? null,
+        lat: pos?.lat ?? null,
+        lng: pos?.lng ?? null,
+        velocidade: pos?.velocidade ?? null,
+        ignicao: pos?.ignicao ?? null,
+        atraso_min: pos?.atraso_min ?? null,
+      };
     });
 
   const alertasAtencao = alertas
@@ -604,7 +737,16 @@ export default async function DashboardPage({
     .map((a) => {
       const veiculo = veiculoById.get(a.veiculo_id);
       const pos = posicaoPorVeiculo.get(a.veiculo_id);
-      return { ...a, placa: veiculo?.placa ?? "?????", local: pos?.local ?? null };
+      return {
+        ...a,
+        placa: veiculo?.placa ?? "?????",
+        local: pos?.local ?? null,
+        lat: pos?.lat ?? null,
+        lng: pos?.lng ?? null,
+        velocidade: pos?.velocidade ?? null,
+        ignicao: pos?.ignicao ?? null,
+        atraso_min: pos?.atraso_min ?? null,
+      };
     });
 
   /* --------------------------------------------------------------- */
@@ -758,6 +900,11 @@ export default async function DashboardPage({
                   motivo={a.motivo}
                   local={a.local}
                   desde={a.desde}
+                  lat={a.lat}
+                  lng={a.lng}
+                  velocidade={a.velocidade}
+                  ignicao={a.ignicao}
+                  atraso_min={a.atraso_min}
                 />
               ))}
             </div>
@@ -801,6 +948,11 @@ export default async function DashboardPage({
                   motivo={a.motivo}
                   local={a.local}
                   desde={a.desde}
+                  lat={a.lat}
+                  lng={a.lng}
+                  velocidade={a.velocidade}
+                  ignicao={a.ignicao}
+                  atraso_min={a.atraso_min}
                 />
               ))}
             </div>
