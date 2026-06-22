@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import RelogioAoVivo from "./components/RelogioAoVivo";
+import AutoRefresh from "./components/AutoRefresh";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
@@ -112,6 +113,7 @@ export default function RootLayout({
 
         {/* Conteudo principal */}
         <main className="flex-1">
+          <AutoRefresh segundos={30} />
           {children}
         </main>
 
