@@ -46,3 +46,5 @@ next-env.d.ts
 .dev-log.txt
 *-log.txt
 shot-*.png
+
+.motor-loop.log
