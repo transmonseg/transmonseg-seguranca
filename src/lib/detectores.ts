@@ -74,12 +74,38 @@ export function detectarExcessoVelocidade(p: PosicaoNormalizada): Alerta | null 
   return null;
 }
 
-export function detectarParadaLonga(paradoMin: number): Alerta | null {
-  if (paradoMin >= 90) {
+// Retorna true se a data estiver em horario de operacao:
+// dia util (segunda a sexta) E entre 6h e 20h no fuso America/Sao_Paulo.
+export function emHorarioOperacao(d: Date): boolean {
+  const fmt = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+    hour: "numeric",
+    hour12: false,
+  });
+  const partes = fmt.formatToParts(d);
+  const weekday = partes.find((p) => p.type === "weekday")?.value ?? "";
+  const horaStr = partes.find((p) => p.type === "hour")?.value ?? "0";
+  const hora = parseInt(horaStr, 10);
+
+  // Dias uteis em pt-BR: seg, ter, qua, qui, sex
+  const diaUtil = ["seg", "ter", "qua", "qui", "sex"].some((dia) =>
+    weekday.toLowerCase().startsWith(dia)
+  );
+
+  return diaUtil && hora >= 6 && hora < 20;
+}
+
+export function detectarParadaLonga(ctx: {
+  paradoMin: number;
+  emOperacao: boolean;
+  foraDaBase: boolean;
+}): Alerta | null {
+  if (ctx.paradoMin >= 90 && ctx.emOperacao && ctx.foraDaBase) {
     return {
       nivel: "atencao",
       tipo: "parada_longa",
-      motivo: `Parado ha ${formataDuracao(paradoMin)}, contatar equipe`,
+      motivo: `Parado ha ${formataDuracao(ctx.paradoMin)}, contatar equipe`,
       score: 50,
     };
   }
@@ -90,14 +116,14 @@ export function detectarParadaLonga(paradoMin: number): Alerta | null {
 // Prioridade: critico > atencao; desempate por score (maior vence).
 export function avaliar(
   p: PosicaoNormalizada,
-  ctx: { paradoMin: number }
+  ctx: { paradoMin: number; emOperacao: boolean; foraDaBase: boolean }
 ): Alerta | null {
   const candidatos: Alerta[] = [
     detectarPanico(p),
     detectarBau(p),
     detectarJammer(p),
     detectarExcessoVelocidade(p),
-    detectarParadaLonga(ctx.paradoMin),
+    detectarParadaLonga(ctx),
   ].filter((a): a is Alerta => a !== null);
 
   if (candidatos.length === 0) return null;

@@ -4,7 +4,7 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { buscarPosicoes, normalizar } from "@/lib/unitrac";
-import { avaliar, detectarJammer } from "@/lib/detectores";
+import { avaliar, detectarJammer, emHorarioOperacao } from "@/lib/detectores";
 
 // Timeout para chamadas Unitrac (20 segundos)
 const TIMEOUT_UNITRAC_MS = 20_000;
@@ -59,6 +59,18 @@ async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
   }
 }
 
+// ─── Distancia Haversine em metros entre dois pontos WGS-84 ─────────────────
+function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6_371_000; // raio medio da Terra em metros
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // ─── Handler principal ───────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
@@ -72,6 +84,7 @@ export async function POST(request: Request) {
   const pool = criaPgPool();
   const agora = new Date();
   const erros: string[] = [];
+  const emOperacao = emHorarioOperacao(agora);
 
   try {
     // 2. Carregar clientes ativos + veiculos ativos
@@ -106,6 +119,41 @@ export async function POST(request: Request) {
 
       for (const v of veiculos ?? []) {
         mapaCv.set(v.cv, { veiculo_id: v.id, cliente_id: cliente.id });
+      }
+    }
+
+    // 3a. Carregar bases de cada cliente para filtro de garagem
+    // Estrutura: cliente_id -> lista de { lat, lng, raio_m }
+    const mapaBasesCliente = new Map<string, { lat: number; lng: number; raio_m: number }[]>();
+
+    {
+      const pgBases = await pool.connect();
+      try {
+        const { rows: basesRows } = await pgBases.query<{
+          cliente_id: string;
+          lat: number;
+          lng: number;
+          raio_m: number;
+        }>(
+          `SELECT
+             cliente_id,
+             ST_Y(geom::geometry) AS lat,
+             ST_X(geom::geometry) AS lng,
+             raio_m
+           FROM bases`
+        );
+        for (const b of basesRows) {
+          const lista = mapaBasesCliente.get(b.cliente_id) ?? [];
+          lista.push({ lat: b.lat, lng: b.lng, raio_m: b.raio_m });
+          mapaBasesCliente.set(b.cliente_id, lista);
+        }
+      } catch (errBases) {
+        // Nao impede o motor de rodar; sem bases = foraDaBase=true para todos
+        const msg = `Aviso: erro ao carregar bases (${String(errBases)})`;
+        console.warn(msg);
+        erros.push(msg);
+      } finally {
+        pgBases.release();
       }
     }
 
@@ -205,6 +253,14 @@ export async function POST(request: Request) {
           // 3. FRESCO (atraso <= 60): rodar avaliar() normalmente (panico, bau,
           //    excesso, parada_longa) + detector de favela.
 
+          // Calcular se o veiculo esta dentro de alguma base do cliente
+          const basesCliente = mapaBasesCliente.get(cliente_id) ?? [];
+          const foraDaBase =
+            basesCliente.length === 0 ||
+            !basesCliente.some(
+              (b) => haversineM(pos.lat, pos.lng, b.lat, b.lng) <= b.raio_m
+            );
+
           const alertaJammer = detectarJammer(pos);
           const ehSemComunicacao =
             !alertaJammer &&
@@ -213,7 +269,7 @@ export async function POST(request: Request) {
           let alerta = alertaJammer
             ? alertaJammer
             : pos.fresco
-              ? avaliar(pos, { paradoMin })
+              ? avaliar(pos, { paradoMin, emOperacao, foraDaBase })
               : null;
 
           // Determinar nivel da posicao atual

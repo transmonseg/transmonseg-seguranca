@@ -8,6 +8,7 @@ import {
   detectarParadaLonga,
   avaliar,
   formataDuracao,
+  emHorarioOperacao,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
 
@@ -110,25 +111,59 @@ describe("detectarExcessoVelocidade", () => {
   });
 });
 
+// Datas de referencia para emHorarioOperacao.
+// America/Sao_Paulo = UTC-3 (fora do horario de verao, ex: junho).
+// Sabado 10h SP = sabado 13h UTC → new Date("2026-06-20T13:00:00Z")
+// Quarta 14h SP = quarta 17h UTC  → new Date("2026-06-17T17:00:00Z")
+// Quarta 23h SP = quinta 02h UTC  → new Date("2026-06-18T02:00:00Z")
+describe("emHorarioOperacao", () => {
+  it("sabado retorna false", () => {
+    // 2026-06-20 e sabado; 10h SP = 13h UTC
+    expect(emHorarioOperacao(new Date("2026-06-20T13:00:00Z"))).toBe(false);
+  });
+  it("quarta 14h SP retorna true", () => {
+    // 2026-06-17 e quarta; 14h SP = 17h UTC
+    expect(emHorarioOperacao(new Date("2026-06-17T17:00:00Z"))).toBe(true);
+  });
+  it("quarta 23h SP retorna false (fora do horario)", () => {
+    // 23h SP = 02h UTC do dia seguinte (quinta 2026-06-18)
+    expect(emHorarioOperacao(new Date("2026-06-18T02:00:00Z"))).toBe(false);
+  });
+});
+
 describe("detectarParadaLonga", () => {
-  it("paradoMin=95 retorna parada_longa atencao", () => {
-    const alerta = detectarParadaLonga(95);
+  it("95min + emOperacao + foraDaBase retorna parada_longa atencao", () => {
+    const alerta = detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: true });
     expect(alerta).not.toBeNull();
     expect(alerta?.nivel).toBe("atencao");
     expect(alerta?.tipo).toBe("parada_longa");
     expect(alerta?.score).toBe(50);
     expect(alerta?.motivo).toContain("1h35min");
   });
-  it("paradoMin=90 aciona (limite e >=90)", () => {
-    expect(detectarParadaLonga(90)).not.toBeNull();
+  it("95min + emOperacao=false retorna null", () => {
+    expect(
+      detectarParadaLonga({ paradoMin: 95, emOperacao: false, foraDaBase: true })
+    ).toBeNull();
   });
-  it("paradoMin=40 retorna null", () => {
-    expect(detectarParadaLonga(40)).toBeNull();
+  it("95min + foraDaBase=false retorna null", () => {
+    expect(
+      detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: false })
+    ).toBeNull();
   });
-  it("paradoMin=89 retorna null", () => {
-    expect(detectarParadaLonga(89)).toBeNull();
+  it("paradoMin=90 + emOperacao + foraDaBase aciona (limite >=90)", () => {
+    expect(
+      detectarParadaLonga({ paradoMin: 90, emOperacao: true, foraDaBase: true })
+    ).not.toBeNull();
+  });
+  it("paradoMin=89 + emOperacao + foraDaBase retorna null", () => {
+    expect(
+      detectarParadaLonga({ paradoMin: 89, emOperacao: true, foraDaBase: true })
+    ).toBeNull();
   });
 });
+
+// ctx padrao para avaliar: em operacao, fora da base
+const ctxOp = { paradoMin: 0, emOperacao: true, foraDaBase: true };
 
 describe("avaliar", () => {
   // Regressao: atraso=101 + ignicao = jammer critico, NAO cinza.
@@ -136,7 +171,7 @@ describe("avaliar", () => {
   it("atraso=101 + ignicao ligada retorna jammer critico (nao cinza)", () => {
     const alerta = avaliar(
       posicaoBase({ ignicao: true, atraso: 101, fresco: false }),
-      { paradoMin: 0 }
+      { ...ctxOp, paradoMin: 0 }
     );
     expect(alerta).not.toBeNull();
     expect(alerta?.nivel).toBe("critico");
@@ -144,39 +179,44 @@ describe("avaliar", () => {
   });
 
   it("panico retorna critico", () => {
-    const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 0 });
+    const alerta = avaliar(posicaoBase({ panico: true }), ctxOp);
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("panico");
   });
   it("bau retorna critico", () => {
-    const alerta = avaliar(posicaoBase({ bau: true }), { paradoMin: 0 });
+    const alerta = avaliar(posicaoBase({ bau: true }), ctxOp);
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("bau");
   });
   it("jammer (ignicao+atraso=30) retorna critico", () => {
-    const alerta = avaliar(posicaoBase({ ignicao: true, atraso: 30 }), { paradoMin: 0 });
+    const alerta = avaliar(posicaoBase({ ignicao: true, atraso: 30 }), ctxOp);
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("jammer");
   });
   it("velocidade=120 retorna excesso atencao", () => {
-    const alerta = avaliar(posicaoBase({ velocidade: 120 }), { paradoMin: 0 });
+    const alerta = avaliar(posicaoBase({ velocidade: 120 }), ctxOp);
     expect(alerta?.nivel).toBe("atencao");
     expect(alerta?.tipo).toBe("excesso");
   });
-  it("paradoMin=95 retorna parada_longa atencao", () => {
-    const alerta = avaliar(posicaoBase(), { paradoMin: 95 });
+  it("paradoMin=95 + emOperacao + foraDaBase retorna parada_longa atencao", () => {
+    const alerta = avaliar(posicaoBase(), { paradoMin: 95, emOperacao: true, foraDaBase: true });
     expect(alerta?.nivel).toBe("atencao");
     expect(alerta?.tipo).toBe("parada_longa");
   });
+  it("paradoMin=95 + emOperacao=false NAO retorna parada_longa", () => {
+    expect(
+      avaliar(posicaoBase(), { paradoMin: 95, emOperacao: false, foraDaBase: true })
+    ).toBeNull();
+  });
   it("posicao limpa + paradoMin=0 retorna null", () => {
-    expect(avaliar(posicaoBase(), { paradoMin: 0 })).toBeNull();
+    expect(avaliar(posicaoBase(), ctxOp)).toBeNull();
   });
   it("panico tem prioridade sobre excesso de velocidade", () => {
-    const alerta = avaliar(posicaoBase({ panico: true, velocidade: 120 }), { paradoMin: 0 });
+    const alerta = avaliar(posicaoBase({ panico: true, velocidade: 120 }), ctxOp);
     expect(alerta?.tipo).toBe("panico");
   });
   it("panico tem prioridade sobre parada longa", () => {
-    const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 120 });
+    const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 120, emOperacao: true, foraDaBase: true });
     expect(alerta?.tipo).toBe("panico");
   });
 });
