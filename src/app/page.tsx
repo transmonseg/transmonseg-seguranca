@@ -10,6 +10,9 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import FrotaGrid from "./components/FrotaGrid";
 
+// Central ao vivo: renderiza a cada acesso, nunca prerender estático.
+export const dynamic = "force-dynamic";
+
 /* ------------------------------------------------------------------ */
 /* Tipos                                                                */
 /* ------------------------------------------------------------------ */
