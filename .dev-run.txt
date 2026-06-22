@@ -1,0 +1,20 @@
+﻿
+> transmonseg-central@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://26.73.129.112:3000
+- Environments: .env.local
+✓ Ready in 462ms
+
+ GET / 200 in 1891ms (next.js: 210ms, application-code: 1680ms)
+ POST /api/motor 200 in 42s (next.js: 117ms, application-code: 42s)
+ GET / 200 in 790ms (next.js: 4ms, application-code: 787ms)
+ GET / 200 in 785ms (next.js: 7ms, application-code: 779ms)
+ GET / 200 in 1304ms (next.js: 5ms, application-code: 1299ms)
+ GET / 200 in 335ms (next.js: 208ms, application-code: 127ms)
+ GET / 200 in 168ms (next.js: 97ms, application-code: 70ms)
+ POST /api/motor 200 in 41s (next.js: 84ms, application-code: 41s)
+ POST /api/motor 200 in 39.4s (next.js: 3ms, application-code: 39.4s)
+ GET / 200 in 1274ms (next.js: 8ms, application-code: 1266ms)

@@ -11,6 +11,25 @@ export type Alerta = {
   score: number;
 };
 
+// Informativo de veiculo sem comunicacao (atraso > 60 min).
+// Nao e um alerta critico nem de atencao — apenas contexto informativo.
+export type InfoSemComunicacao = {
+  tipo: "sem_comunicacao";
+  nivel: "informativo";
+  motivo: string;
+  atraso: number;
+};
+
+export function detectarSemComunicacao(p: PosicaoNormalizada): InfoSemComunicacao | null {
+  if (p.fresco) return null;
+  return {
+    tipo: "sem_comunicacao",
+    nivel: "informativo",
+    motivo: `Sem comunicacao ha ${formataDuracao(p.atraso)}`,
+    atraso: p.atraso,
+  };
+}
+
 // Formata minutos como '1h35min' ou '45min'.
 export function formataDuracao(minutos: number): string {
   if (minutos >= 60) {
