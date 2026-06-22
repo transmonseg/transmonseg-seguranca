@@ -17,10 +17,12 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
 - [x] Banco: PostGIS + schema 001 (clientes, operadores, veiculos, bases, geofences, posicoes_atuais, alertas, eventos), RLS habilitado
 - [x] Lib de conexão: admin (service_role, backend), browser e server (anon, RLS)
 - [x] **Fase 1 (seed):** 2 clientes (Nutry 4096, Benassi 4586), 95+346 veículos, 1072 favelas do SABREN (geofence point-in-polygon testado). Coluna geofences.geom relaxada para `geography(geometry)` (aceita MultiPolygon: Rocinha/Alemão).
+- [x] **Fase 2 (motor):** detectores puros (pânico, baú, jammer, excesso, parada_longa >=90min) com 29 testes Vitest; cliente Unitrac (filtro de frescor); migration 002 (parado_desde + fn_favela_em); API route POST `/api/motor` (x-motor-key). Testado ao vivo: 325 posições gravadas, 2 alertas jammer (Benassi), 401 sem chave, idempotente.
 
 ## Próximos passos
-- [ ] Motor: API route que busca a Unitrac, roda os detectores e grava em alertas/posicoes_atuais
-- [ ] Detector PARADA LONGA (>= 1h30 parado em qualquer lugar, sem exceção, pras 2 frotas) + coluna `parado_desde`
+- [ ] Fase 3 — Tela de Segurança: layout dark, painel (resumo + alertas + frota), mapa, Realtime
+- [ ] Fase 4 — Deploy (USUÁRIO faz na Vercel; Claude prepara env vars) + cron 1 min
+- [ ] Fase 5 — Auth + RLS · Fase 6 — detectores avançados (POI, off-route, favela no score, fusão)
 - [ ] Despertador (cron 1 min) chamando o motor
 - [ ] Tela de Segurança (Realtime): alertas ativos, mapa, histórico
 - [ ] Auth dos operadores + policies RLS por papel/cliente
