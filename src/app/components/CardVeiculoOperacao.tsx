@@ -20,32 +20,21 @@ function formataAtraso(min: number): string {
 /* Icones SVG inline                                                    */
 /* ------------------------------------------------------------------ */
 
-function IconMapPin({ size = 11 }: { size?: number }) {
+function IconMapPin({ size = 13 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
       <circle cx="12" cy="10" r="3" />
     </svg>
   );
 }
 
-function IconSpeed({ size = 11 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2a10 10 0 1 0 10 10" />
-      <path d="M12 12l4.35-4.35" />
-      <circle cx="12" cy="12" r="1" fill="currentColor" />
-    </svg>
-  );
-}
-
 function IconIgnicao({ on }: { on: boolean }) {
   return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
       stroke={on ? "var(--verde)" : "var(--text-dim)"}
-      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
       aria-label={on ? "Ignicao ligada" : "Ignicao desligada"}>
       <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
       <line x1="12" y1="2" x2="12" y2="12" />
@@ -55,8 +44,8 @@ function IconIgnicao({ on }: { on: boolean }) {
 
 function IconSemSinal() {
   return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
-      stroke="var(--text-dim)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+      stroke="var(--text-dim)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <line x1="1" y1="1" x2="23" y2="23" />
       <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
       <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
@@ -68,10 +57,10 @@ function IconSemSinal() {
   );
 }
 
-function IconCheck({ size = 11 }: { size?: number }) {
+function IconCheck({ size = 13 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
@@ -87,103 +76,115 @@ function nivelVisual(nivel: NivelDB) {
   switch (nivel) {
     case "vermelho":
       return {
-        bg: "#160c0c",
-        border: "color-mix(in srgb, var(--vermelho) 22%, var(--border))",
+        bg: "#130909",
+        border: "color-mix(in srgb, var(--vermelho) 30%, var(--border))",
         faixa: "var(--vermelho)",
         placa: "var(--text)",
+        opacidade: 1,
       };
     case "amarelo":
       return {
-        bg: "#15110a",
-        border: "color-mix(in srgb, var(--amarelo) 18%, var(--border))",
+        bg: "#13100a",
+        border: "color-mix(in srgb, var(--amarelo) 25%, var(--border))",
         faixa: "var(--amarelo)",
         placa: "var(--text)",
+        opacidade: 1,
       };
     case "concluido":
       return {
-        bg: "var(--card)",
-        border: "color-mix(in srgb, var(--verde) 15%, var(--border))",
+        bg: "#161b16",
+        border: "color-mix(in srgb, var(--verde) 22%, #2a2a2a)",
         faixa: "var(--verde)",
         placa: "var(--text-muted)",
+        opacidade: 0.85,
       };
     case "cinza":
       return {
-        bg: "var(--card)",
-        border: "var(--border)",
-        faixa: "var(--border)",
+        bg: "#141414",
+        border: "#242424",
+        faixa: "#2a2a2a",
         placa: "var(--text-dim)",
+        opacidade: 0.5,
       };
     default: // verde
       return {
-        bg: "var(--card)",
-        border: "var(--border)",
+        bg: "#181818",
+        border: "#2a2a2a",
         faixa: "transparent",
         placa: "var(--text)",
+        opacidade: 1,
       };
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Card de veiculo em operacao                                          */
+/* Card grande e arejado — 2 por linha no desktop                      */
 /* ------------------------------------------------------------------ */
 
 export default function CardVeiculoOperacao({ item }: { item: VeiculoItem }) {
   const visual = nivelVisual(item.nivel);
   const ehCinza = item.nivel === "cinza";
   const ehConcluido = item.nivel === "concluido";
+  const ehAlerta = item.nivel === "vermelho" || item.nivel === "amarelo";
   const mostraEntregas = item.entregas_total > 0;
   const pct = mostraEntregas
     ? Math.min(100, Math.round((item.entregas_feitas / item.entregas_total) * 100))
     : 0;
-  const pendentes = item.entregas_total - item.entregas_feitas;
-
-  const corMotivo =
-    item.nivel === "vermelho" ? "var(--vermelho)" : "var(--amarelo)";
+  const corAlerta = item.nivel === "vermelho" ? "var(--vermelho)" : "var(--amarelo)";
 
   return (
     <div
-      className="relative rounded-xl border overflow-hidden transition-colors duration-150 cursor-default"
+      className="relative rounded-2xl border overflow-hidden transition-opacity duration-150"
       style={{
         backgroundColor: visual.bg,
         borderColor: visual.border,
-        opacity: ehCinza ? 0.55 : 1,
+        opacity: visual.opacidade,
       }}
     >
       {/* Faixa lateral de nivel */}
       <div
-        className="absolute top-0 bottom-0 left-0 w-0.5"
-        style={{ backgroundColor: visual.faixa }}
+        className="absolute top-0 bottom-0 left-0"
+        style={{ width: "3px", backgroundColor: visual.faixa }}
       />
 
-      <div className="pl-3 pr-3 pt-3 pb-3 flex flex-col gap-2">
+      <div style={{ padding: "2rem 2rem 2rem 2.25rem" }}>
 
-        {/* Placa + icone de status */}
-        <div className="flex items-start justify-between gap-1.5">
+        {/* LINHA 1: Placa grande + status de ignicao */}
+        <div className="flex items-start justify-between gap-3 mb-5">
           <div className="min-w-0">
+            {/* Placa — principal, bem legivel */}
             <p
-              className="num-mono text-sm font-bold tracking-wider leading-none truncate"
-              style={{ color: visual.placa, fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.07em" }}
+              className="num-mono font-bold tracking-widest leading-none"
+              style={{
+                color: visual.placa,
+                fontFamily: "var(--font-geist-mono, monospace)",
+                fontSize: "1.25rem",
+                letterSpacing: "0.1em",
+              }}
             >
               {item.placa}
             </p>
             {item.cv && (
-              <p className="text-xs mt-0.5 truncate" style={{ color: "var(--text-dim)", fontSize: "10px" }}>
+              <p
+                className="text-xs mt-1 truncate"
+                style={{ color: "var(--text-dim)" }}
+              >
                 {item.cv}
               </p>
             )}
           </div>
 
-          <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
+          <div className="flex items-center gap-2 flex-shrink-0">
             {item.panico && !ehCinza && (
               <span
-                className="tag animate-pulse-alert"
+                className="animate-pulse-alert text-xs font-bold px-2 py-1 rounded-lg"
                 style={{
                   backgroundColor: "color-mix(in srgb, var(--vermelho) 15%, transparent)",
                   color: "var(--vermelho)",
                   border: "1px solid color-mix(in srgb, var(--vermelho) 30%, transparent)",
                   fontFamily: "var(--font-geist-mono, monospace)",
-                  fontSize: "9px",
-                  padding: "2px 5px",
+                  fontSize: "10px",
+                  letterSpacing: "0.06em",
                 }}
               >
                 PANICO
@@ -193,37 +194,39 @@ export default function CardVeiculoOperacao({ item }: { item: VeiculoItem }) {
           </div>
         </div>
 
-        {/* Localizacao real */}
+        {/* LINHA 2: Localizacao real */}
         {item.local && (
-          <div className="flex items-start gap-1">
-            <span className="flex-shrink-0 mt-0.5" style={{ color: "var(--accent)" }}>
-              <IconMapPin size={10} />
+          <div className="flex items-start gap-2 mb-5" style={{ color: "var(--text-dim)" }}>
+            <span className="flex-shrink-0 mt-0.5">
+              <IconMapPin size={12} />
             </span>
             <p
-              className="text-xs leading-tight line-clamp-2"
-              style={{ color: "var(--text-muted)", fontSize: "10px" }}
+              className="text-sm leading-snug line-clamp-2"
+              style={{ color: "var(--text-muted)" }}
             >
               {item.local}
             </p>
           </div>
         )}
 
-        {/* Motivo de alerta (amarelo/vermelho) */}
-        {(item.nivel === "vermelho" || item.nivel === "amarelo") && item.motivo && (
-          <p
-            className="text-xs rounded px-1.5 py-1 leading-snug"
-            style={{ backgroundColor: `color-mix(in srgb, ${corMotivo} 10%, transparent)`, color: corMotivo, fontSize: "10px" }}
+        {/* LINHA 3: Status / motivo do alerta */}
+        {ehAlerta && item.motivo ? (
+          <div
+            className="rounded-xl px-3 py-2.5 mb-5"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${corAlerta} 8%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${corAlerta} 18%, transparent)`,
+            }}
           >
-            {item.motivo}
-          </p>
-        )}
-
-        {/* Status simples (verde/concluido/cinza sem motivo de alerta) */}
-        {item.nivel !== "vermelho" && item.nivel !== "amarelo" && (
-          <div className="flex items-center gap-1.5">
+            <p className="text-sm leading-relaxed" style={{ color: corAlerta }}>
+              {item.motivo}
+            </p>
+          </div>
+        ) : !ehAlerta ? (
+          <div className="flex items-center gap-2 mb-5">
             {ehConcluido ? (
               <span style={{ color: "var(--verde)" }}>
-                <IconCheck size={10} />
+                <IconCheck size={12} />
               </span>
             ) : (
               <span
@@ -238,75 +241,79 @@ export default function CardVeiculoOperacao({ item }: { item: VeiculoItem }) {
               />
             )}
             <p
-              className="text-xs"
+              className="text-sm"
               style={{
                 color: ehCinza
                   ? "var(--text-dim)"
                   : ehConcluido
                   ? "var(--verde)"
+                  : item.velocidade > 0
+                  ? "var(--text)"
                   : item.ignicao
-                  ? "var(--verde)"
-                  : "var(--text-muted)",
-                fontSize: "10px",
+                  ? "var(--text-muted)"
+                  : "var(--text-dim)",
               }}
             >
               {ehCinza
                 ? `sem sinal ha ${formataAtraso(item.atraso_min)}`
                 : ehConcluido
                 ? "rota encerrada"
+                : item.velocidade > 0
+                ? `${item.velocidade} km/h`
                 : item.ignicao
-                ? "em circulacao"
+                ? "parado com ignicao"
                 : "parado"}
             </p>
           </div>
-        )}
+        ) : null}
 
-        {/* Barra de entregas */}
+        {/* LINHA 4: Barra de entregas elegante */}
         {mostraEntregas && (
-          <div className="pt-1.5 border-t" style={{ borderColor: "var(--border-subtle)" }}>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs" style={{ color: "var(--text-dim)", fontSize: "9px", letterSpacing: "0.04em" }}>
+          <div
+            className="pt-5 border-t"
+            style={{ borderColor: "var(--border-subtle)" }}
+          >
+            <div className="flex items-center justify-between mb-2.5">
+              <span className="text-xs" style={{ color: "var(--text-dim)" }}>
                 entregas
               </span>
               <span
-                className="num-mono text-xs font-semibold"
-                style={{ color: pct === 100 ? "var(--verde)" : "var(--text-muted)", fontFamily: "var(--font-geist-mono, monospace)", fontSize: "10px" }}
+                className="num-mono text-sm font-semibold"
+                style={{
+                  fontFamily: "var(--font-geist-mono, monospace)",
+                  color: pct === 100 ? "var(--verde)" : "var(--text-muted)",
+                }}
               >
-                {item.entregas_feitas}/{item.entregas_total}
+                {item.entregas_feitas} / {item.entregas_total}
               </span>
             </div>
-            <div className="w-full rounded-full overflow-hidden" style={{ height: "3px", backgroundColor: "var(--border)" }}>
+            {/* Barra fina e elegante */}
+            <div
+              style={{
+                height: "2px",
+                borderRadius: "2px",
+                backgroundColor: "var(--border-subtle)",
+                overflow: "hidden",
+              }}
+            >
               <div
-                className="h-full rounded-full"
                 style={{
+                  height: "100%",
                   width: `${pct}%`,
-                  backgroundColor: pct === 100 ? "var(--verde)" : pct > 60 ? "var(--accent)" : "var(--amarelo)",
+                  borderRadius: "2px",
+                  backgroundColor:
+                    pct === 100
+                      ? "var(--verde)"
+                      : pct > 60
+                      ? "var(--accent)"
+                      : "var(--amarelo)",
+                  transition: "width 0.4s ease",
                 }}
               />
             </div>
-            {pendentes > 0 && (
-              <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)", fontSize: "9px" }}>
-                faltam {pendentes}
-              </p>
-            )}
           </div>
         )}
 
-        {/* Velocidade (apenas verde e em movimento) */}
-        {item.nivel === "verde" && item.velocidade > 0 && (
-          <div
-            className="flex items-center gap-1 pt-1 border-t"
-            style={{ borderColor: "var(--border-subtle)" }}
-          >
-            <span style={{ color: "var(--text-dim)" }}><IconSpeed size={10} /></span>
-            <span
-              className="num-mono text-xs"
-              style={{ color: "var(--text-muted)", fontFamily: "var(--font-geist-mono, monospace)", fontSize: "10px" }}
-            >
-              {item.velocidade} km/h
-            </span>
-          </div>
-        )}
       </div>
     </div>
   );
