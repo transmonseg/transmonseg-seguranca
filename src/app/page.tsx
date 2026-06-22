@@ -577,7 +577,6 @@ export default async function DashboardPage({
   const emOperacaoVisiveis = emOperacaoRaw.slice(0, LIMITE_CARDS_OPERACAO);
   const emOperacaoOcultos = emOperacaoRaw.slice(LIMITE_CARDS_OPERACAO);
 
-  const emAtencao = todosItens.filter((i) => i.nivel === "amarelo");
   const concluidos = todosItens.filter((i) => i.nivel === "concluido");
   const semComunicacao = todosItens.filter((i) => i.nivel === "cinza");
 
@@ -586,7 +585,6 @@ export default async function DashboardPage({
   const totalCriticos = todosItens.filter((i) => i.nivel === "vermelho").length;
   const totalConcluidos = concluidos.length;
   const totalSemCom = semComunicacao.length;
-  const totalAtencao = emAtencao.length;
 
   // Entregas do dia
   const entregasFeitas = todosItens.reduce((s, i) => s + i.entregas_feitas, 0);
@@ -768,6 +766,49 @@ export default async function DashboardPage({
       </section>
 
       {/* ============================================================
+          3b. ATENCAO — cards em destaque, logo apos os criticos
+          ============================================================ */}
+      <section aria-label="Veiculos em atencao" style={{ marginBottom: "3.5rem" }}>
+        <SectionDivider
+          label="Atencao"
+          cor={alertasAtencao.length > 0 ? "var(--amarelo)" : undefined}
+          count={alertasAtencao.length}
+        />
+        <div style={{ marginTop: "1.5rem" }}>
+          {alertasAtencao.length === 0 ? (
+            <div
+              className="flex items-center gap-4 rounded-2xl"
+              style={{ padding: "1.75rem 2rem", backgroundColor: "#141414", border: "1px solid #242424" }}
+            >
+              <span
+                className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
+                style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
+              >
+                <IconCheck size={15} />
+              </span>
+              <p className="text-sm" style={{ color: "var(--text-dim)" }}>
+                Nada em atencao no momento.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.25rem" }}>
+              {alertasAtencao.map((a) => (
+                <CardAlertaCritico
+                  key={a.id}
+                  nivel={a.nivel}
+                  tipo={a.tipo}
+                  placa={a.placa}
+                  motivo={a.motivo}
+                  local={a.local}
+                  desde={a.desde}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ============================================================
           4. EM OPERACAO (verde) — 2 por linha, MUITO respiro
           ============================================================ */}
       <section aria-label="Veiculos em operacao" style={{ marginBottom: "3.5rem" }}>
@@ -811,44 +852,6 @@ export default async function DashboardPage({
           )}
         </div>
       </section>
-
-      {/* ============================================================
-          5. ATENCAO — faixa colapsavel discreta
-          ============================================================ */}
-      {(alertasAtencao.length > 0 || totalAtencao > 0) && (
-        <section aria-label="Veiculos em atencao" style={{ marginBottom: "2rem" }}>
-          <FaixaColapsavel
-            label="em atencao"
-            count={alertasAtencao.length + totalAtencao}
-            cor="var(--amarelo)"
-            icone={
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-            }
-          >
-            <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.5rem" }}>
-              {alertasAtencao.map((a) => (
-                <CardAlertaCritico
-                  key={a.id}
-                  nivel={a.nivel}
-                  tipo={a.tipo}
-                  placa={a.placa}
-                  motivo={a.motivo}
-                  local={a.local}
-                  desde={a.desde}
-                />
-              ))}
-              {emAtencao.map((item) => (
-                <CardVeiculoOperacao key={item.id} item={item} />
-              ))}
-            </div>
-          </FaixaColapsavel>
-        </section>
-      )}
 
       {/* ============================================================
           6. CONCLUIDOS + SEM COMUNICACAO — faixas colapsaveis
