@@ -3,21 +3,31 @@
  *
  * Server Component que le dados do Supabase via createAdminClient (service_role).
  * O cliente ativo e determinado pelo query param ?cliente=<cod_user_unitrac>.
- * Toda a tela (metricas, alertas, frota) reflete somente o cliente selecionado.
+ * Toda a tela reflete somente o cliente selecionado.
+ *
+ * ESTRUTURA (Nova — Central de Atencao):
+ * 1. Seletor de cliente
+ * 2. Resumo: metricas + entregas do dia
+ * 3. Alertas ativos (vermelho + amarelo)
+ * 4. Em operacao (verde) — limitado a 36 cards, resto colapsavel
+ * 5. Concluidos (concluido) — faixa colapsavel
+ * 6. Sem comunicacao (cinza) — faixa colapsavel
  */
 
 import Link from "next/link";
 import { createAdminClient } from "@/lib/supabase/admin";
-import FrotaGrid from "./components/FrotaGrid";
+import CardVeiculoOperacao from "./components/CardVeiculoOperacao";
+import FaixaColapsavel from "./components/FaixaColapsavel";
+import VerTodosBtn from "./components/VerTodosBtn";
 
-// Central ao vivo: renderiza a cada acesso, nunca prerender estatico.
+// Central ao vivo: nunca prerender estatico.
 export const dynamic = "force-dynamic";
 
 /* ------------------------------------------------------------------ */
 /* Tipos                                                                */
 /* ------------------------------------------------------------------ */
 
-type NivelRisco = "verde" | "amarelo" | "vermelho";
+type NivelDB = "verde" | "amarelo" | "vermelho" | "cinza" | "concluido";
 
 interface Cliente {
   id: string;
@@ -34,15 +44,16 @@ interface Veiculo {
 
 interface PosicaoAtual {
   veiculo_id: string;
-  lat: number;
-  lng: number;
   velocidade: number;
   ignicao: boolean;
   atraso_min: number;
   panico: boolean;
   bau_aberto: boolean;
-  nivel: NivelRisco;
+  nivel: NivelDB;
   motivo: string | null;
+  local: string | null;
+  entregas_feitas: number | null;
+  entregas_total: number | null;
   parado_desde: string | null;
   updated_at: string;
 }
@@ -51,11 +62,30 @@ interface Alerta {
   id: string;
   cliente_id: string;
   veiculo_id: string;
-  nivel: NivelRisco;
+  nivel: "critico" | "atencao";
   tipo: string;
   motivo: string | null;
   desde: string;
   status: string;
+}
+
+/* Item de veiculo enriquecido para render */
+export interface VeiculoItem {
+  id: string;
+  placa: string;
+  cv: string;
+  nivel: NivelDB;
+  motivo: string | null;
+  velocidade: number;
+  ignicao: boolean;
+  atraso_min: number;
+  panico: boolean;
+  bau_aberto: boolean;
+  local: string | null;
+  entregas_feitas: number;
+  entregas_total: number;
+  parado_desde: string | null;
+  updated_at: string | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -117,16 +147,6 @@ function IconTriangle({ size = 16 }: { size?: number }) {
   );
 }
 
-function IconPause({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="6" y="4" width="4" height="16" />
-      <rect x="14" y="4" width="4" height="16" />
-    </svg>
-  );
-}
-
 function IconTruck({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -164,6 +184,16 @@ function IconMapPin({ size = 16 }: { size?: number }) {
   );
 }
 
+function IconPause({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="4" width="4" height="16" />
+      <rect x="14" y="4" width="4" height="16" />
+    </svg>
+  );
+}
+
 function IconClock({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -178,17 +208,34 @@ function IconCheck({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
       stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
-      <polyline points="22 4 12 14.01 9 11.01" />
+      <polyline points="20 6 9 17 4 12" />
     </svg>
   );
 }
 
-function IconChevronRight({ size = 14 }: { size?: number }) {
+function IconNoSignal({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="9 18 15 12 9 6" />
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="1" y1="1" x2="23" y2="23" />
+      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
+      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
+      <path d="M10.71 5.05A16 16 0 0 1 22.56 9" />
+      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" />
+      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+      <circle cx="12" cy="20" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconPackage({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="16.5" y1="9.4" x2="7.5" y2="4.21" />
+      <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 002 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+      <line x1="12" y1="22.08" x2="12" y2="12" />
     </svg>
   );
 }
@@ -255,7 +302,6 @@ function SeletorCliente({
                   }
             }
           >
-            {/* Nome e icone */}
             <div className="flex items-center gap-2.5">
               <span style={{ color: ativo ? "var(--accent)" : "var(--text-dim)" }}>
                 <IconTruck size={15} />
@@ -267,8 +313,6 @@ function SeletorCliente({
                 {c.nome}
               </span>
             </div>
-
-            {/* Numero de veiculos */}
             <span
               className="num-mono text-xs font-bold flex-shrink-0 px-2 py-0.5 rounded-md"
               style={{
@@ -289,10 +333,10 @@ function SeletorCliente({
 }
 
 /* ------------------------------------------------------------------ */
-/* Componente: MetricaDestaque                                          */
+/* Componente: ChipMetrica                                              */
 /* ------------------------------------------------------------------ */
 
-function MetricaDestaque({
+function ChipMetrica({
   label,
   valor,
   cor,
@@ -300,7 +344,7 @@ function MetricaDestaque({
   sublabel,
 }: {
   label: string;
-  valor: number;
+  valor: string | number;
   cor?: string;
   icone: React.ReactNode;
   sublabel?: string;
@@ -308,32 +352,26 @@ function MetricaDestaque({
   const corEfetiva = cor ?? "var(--accent)";
   return (
     <div
-      className="relative flex flex-col gap-3 px-5 py-4 rounded-xl border overflow-hidden"
+      className="relative flex flex-col gap-2.5 px-4 py-3.5 rounded-xl border overflow-hidden"
       style={{
         backgroundColor: "var(--card)",
-        borderColor: cor ? `color-mix(in srgb, ${cor} 25%, var(--border))` : "var(--border)",
+        borderColor: cor ? `color-mix(in srgb, ${cor} 22%, var(--border))` : "var(--border)",
       }}
     >
-      {/* Faixa de acento no topo */}
-      <div
-        className="absolute top-0 left-0 right-0 h-px"
-        style={{ backgroundColor: corEfetiva, opacity: cor ? 0.6 : 0.3 }}
-      />
+      <div className="absolute top-0 left-0 right-0 h-px"
+        style={{ backgroundColor: corEfetiva, opacity: cor ? 0.55 : 0.25 }} />
 
-      {/* Icone + label */}
       <div className="flex items-center gap-2">
         <span style={{ color: corEfetiva }}>{icone}</span>
-        <span className="text-xs font-medium uppercase tracking-widest" style={{ color: "var(--text-muted)", letterSpacing: "0.1em" }}>
+        <span className="text-xs font-medium uppercase tracking-widest"
+          style={{ color: "var(--text-muted)", letterSpacing: "0.1em" }}>
           {label}
         </span>
       </div>
 
-      {/* Numero grande */}
       <div>
-        <p
-          className="num-mono text-3xl font-bold leading-none"
-          style={{ color: cor ? corEfetiva : "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
-        >
+        <p className="num-mono text-2xl font-bold leading-none"
+          style={{ color: cor ? corEfetiva : "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}>
           {valor}
         </p>
         {sublabel && (
@@ -355,20 +393,22 @@ function RowAlerta({
   tipo,
   placa,
   motivo,
+  local,
   desde,
 }: {
-  nivel: NivelRisco;
+  nivel: "critico" | "atencao";
   tipo: string;
   placa: string;
   motivo: string | null;
+  local: string | null;
   desde: string;
 }) {
-  const corNivel = nivel === "vermelho" ? "var(--vermelho)" : "var(--amarelo)";
-  const bgNivel = nivel === "vermelho" ? "#1c0e0e" : "#1c150a";
+  const corNivel = nivel === "critico" ? "var(--vermelho)" : "var(--amarelo)";
+  const bgNivel = nivel === "critico" ? "#1c0e0e" : "#1c150a";
 
   return (
     <div
-      className="flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors"
+      className="flex items-start gap-3 px-4 py-3 rounded-xl border transition-colors"
       style={{
         backgroundColor: bgNivel,
         borderColor: `color-mix(in srgb, ${corNivel} 20%, var(--border))`,
@@ -376,44 +416,47 @@ function RowAlerta({
         borderLeftColor: corNivel,
       }}
     >
-      {/* Icone do tipo */}
       <span
-        className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center"
+        className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center mt-0.5"
         style={{ backgroundColor: `color-mix(in srgb, ${corNivel} 12%, transparent)`, color: corNivel }}
       >
         <IconTipoAlerta tipo={tipo} />
       </span>
 
-      {/* Placa */}
-      <div className="flex-shrink-0 min-w-[90px]">
-        <p
-          className="num-mono text-sm font-bold tracking-wider leading-none"
-          style={{ color: "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
-        >
-          {placa}
-        </p>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="num-mono text-sm font-bold tracking-wider leading-none"
+            style={{ color: "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+            {placa}
+          </p>
+          <span
+            className="tag hidden sm:inline-flex"
+            style={{ backgroundColor: `color-mix(in srgb, ${corNivel} 10%, transparent)`, color: corNivel, border: `1px solid color-mix(in srgb, ${corNivel} 25%, transparent)` }}
+          >
+            {tipo}
+          </span>
+        </div>
+
+        {motivo && (
+          <p className="text-xs mt-1 truncate" style={{ color: "var(--text-muted)" }}>
+            {motivo}
+          </p>
+        )}
+
+        {local && (
+          <div className="flex items-center gap-1 mt-1">
+            <span style={{ color: "var(--text-dim)" }}>
+              <IconMapPin size={11} />
+            </span>
+            <p className="text-xs truncate" style={{ color: "var(--text-dim)" }}>
+              {local}
+            </p>
+          </div>
+        )}
       </div>
 
-      {/* Tag do tipo */}
-      <div className="hidden sm:flex flex-shrink-0">
-        <span
-          className="tag"
-          style={{ backgroundColor: `color-mix(in srgb, ${corNivel} 10%, transparent)`, color: corNivel, border: `1px solid color-mix(in srgb, ${corNivel} 25%, transparent)` }}
-        >
-          {tipo}
-        </span>
-      </div>
-
-      {/* Motivo */}
-      {motivo && (
-        <p className="flex-1 text-xs truncate" style={{ color: "var(--text-muted)" }}>
-          {motivo}
-        </p>
-      )}
-
-      {/* Tempo */}
-      <div className="flex-shrink-0 flex items-center gap-1.5 ml-auto" style={{ color: "var(--text-muted)" }}>
-        <IconClock size={12} />
+      <div className="flex-shrink-0 flex items-center gap-1.5 mt-0.5" style={{ color: "var(--text-muted)" }}>
+        <IconClock size={11} />
         <span className="num-mono text-xs" style={{ fontFamily: "var(--font-geist-mono, monospace)" }}>
           {formatarTempoRelativo(desde)}
         </span>
@@ -430,15 +473,11 @@ function SectionLabel({ children, dot }: { children: React.ReactNode; dot?: stri
   return (
     <div className="flex items-center gap-3 mb-4">
       {dot && (
-        <span
-          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-          style={{ backgroundColor: dot }}
-        />
+        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+          style={{ backgroundColor: dot }} />
       )}
-      <h2
-        className="text-xs font-semibold uppercase tracking-widest"
-        style={{ color: "var(--text-muted)", letterSpacing: "0.12em" }}
-      >
+      <h2 className="text-xs font-semibold uppercase tracking-widest"
+        style={{ color: "var(--text-muted)", letterSpacing: "0.12em" }}>
         {children}
       </h2>
       <div className="flex-1 h-px" style={{ backgroundColor: "var(--border)" }} />
@@ -450,6 +489,8 @@ function SectionLabel({ children, dot }: { children: React.ReactNode; dot?: stri
 /* Pagina principal                                                      */
 /* ------------------------------------------------------------------ */
 
+const LIMITE_CARDS_OPERACAO = 36;
+
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -458,7 +499,6 @@ export default async function DashboardPage({
   const { cliente: clienteParam } = await searchParams;
   const supabase = createAdminClient();
 
-  // Busca paralela de todas as entidades necessarias
   const [
     { data: clientesRaw },
     { data: veiculosRaw },
@@ -468,33 +508,31 @@ export default async function DashboardPage({
     supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
     supabase.from("veiculos").select("id, cliente_id, placa, cv"),
     supabase.from("posicoes_atuais").select(
-      "veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, parado_desde, updated_at"
+      "veiculo_id, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, local, entregas_feitas, entregas_total, parado_desde, updated_at"
     ),
-    supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status").eq("status", "ativo"),
+    supabase
+      .from("alertas")
+      .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status")
+      .eq("status", "ativo"),
   ]);
 
   const clientes: Cliente[] = clientesRaw ?? [];
   const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
-  const todasPosicoes: PosicaoAtual[] = posicoesRaw ?? [];
-  const todosAlertas: Alerta[] = alertasRaw ?? [];
+  const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
+  const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];
 
-  // ------------------------------------------------------------------
-  // Determinar cliente ativo
-  // ------------------------------------------------------------------
+  // ── Determinar cliente ativo ──────────────────────────────────────
   const codParam = typeof clienteParam === "string" ? clienteParam : undefined;
   const clienteAtivo: Cliente =
     (codParam && clientes.find((c) => c.cod_user_unitrac === codParam)) ||
     clientes[0];
 
-  // Mapa de quantidade de veiculos por cliente (para o seletor)
   const veiculosPorCliente: Record<string, number> = {};
   for (const c of clientes) {
     veiculosPorCliente[c.id] = todosVeiculos.filter((v) => v.cliente_id === c.id).length;
   }
 
-  // ------------------------------------------------------------------
-  // Filtrar dados para o cliente ativo
-  // ------------------------------------------------------------------
+  // ── Filtrar para cliente ativo ────────────────────────────────────
   const veiculos = todosVeiculos.filter((v) => v.cliente_id === clienteAtivo.id);
   const veiculoIds = new Set(veiculos.map((v) => v.id));
 
@@ -505,73 +543,90 @@ export default async function DashboardPage({
   );
 
   const alertas = todosAlertas.filter((a) => a.cliente_id === clienteAtivo.id);
-
   const veiculoById = new Map(veiculos.map((v) => [v.id, v]));
 
-  // ------------------------------------------------------------------
-  // Metricas do cliente ativo
-  // ------------------------------------------------------------------
-  const totalFrota = veiculos.length;
-  const posicoes = Array.from(posicaoPorVeiculo.values());
-  const veiculosComunicando = posicoes.length;
-  const emAlertaVermelho = posicoes.filter((p) => p.nivel === "vermelho").length;
-  const emAtencaoAmarelo  = posicoes.filter((p) => p.nivel === "amarelo").length;
-  const parados = posicoes.filter((p) => !p.ignicao).length;
-  const semComunicacao = totalFrota - veiculosComunicando;
+  // ── Construir itens enriquecidos ──────────────────────────────────
+  const todosItens: VeiculoItem[] = veiculos.map((v) => {
+    const pos = posicaoPorVeiculo.get(v.id);
+    return {
+      id: v.id,
+      placa: v.placa,
+      cv: v.cv,
+      nivel: (pos?.nivel ?? "cinza") as NivelDB,
+      motivo: pos?.motivo ?? null,
+      velocidade: pos?.velocidade ?? 0,
+      ignicao: pos?.ignicao ?? false,
+      atraso_min: pos?.atraso_min ?? 9999,
+      panico: pos?.panico ?? false,
+      bau_aberto: pos?.bau_aberto ?? false,
+      local: pos?.local ?? null,
+      entregas_feitas: pos?.entregas_feitas ?? 0,
+      entregas_total: pos?.entregas_total ?? 0,
+      parado_desde: pos?.parado_desde ?? null,
+      updated_at: pos?.updated_at ?? null,
+    };
+  });
 
-  // ------------------------------------------------------------------
-  // Dados de frota para o grid (enriquecidos)
-  // ------------------------------------------------------------------
-  const frotaItems = veiculos
-    .map((v) => {
-      const pos = posicaoPorVeiculo.get(v.id);
-      return {
-        id: v.id,
-        placa: v.placa,
-        cv: v.cv,
-        clienteNome: clienteAtivo.nome,
-        clienteId: v.cliente_id,
-        nivel: (pos?.nivel ?? "verde") as NivelRisco,
-        motivo: pos?.motivo ?? null,
-        velocidade: pos?.velocidade ?? 0,
-        atraso_min: pos?.atraso_min ?? 0,
-        ignicao: pos?.ignicao ?? false,
-        panico: pos?.panico ?? false,
-        bau_aberto: pos?.bau_aberto ?? false,
-        parado_desde: pos?.parado_desde ?? null,
-        updated_at: pos?.updated_at ?? null,
-        semComunicacao: !pos,
-      };
-    })
+  // ── Separar por nivel ─────────────────────────────────────────────
+  const emOperacaoRaw = todosItens
+    .filter((i) => i.nivel === "verde")
     .sort((a, b) => {
-      const ordem: Record<NivelRisco, number> = { vermelho: 0, amarelo: 1, verde: 2 };
-      return ordem[a.nivel] - ordem[b.nivel];
+      // Em movimento primeiro
+      const aMovendo = a.velocidade > 0 ? 0 : 1;
+      const bMovendo = b.velocidade > 0 ? 0 : 1;
+      if (aMovendo !== bMovendo) return aMovendo - bMovendo;
+      // Depois por entregas pendentes (mais pendentes = mais relevante)
+      const aPendentes = a.entregas_total - a.entregas_feitas;
+      const bPendentes = b.entregas_total - b.entregas_feitas;
+      return bPendentes - aPendentes;
     });
 
-  // Alertas enriquecidos (ja filtrados por cliente ativo)
+  const emOperacaoVisiveis = emOperacaoRaw.slice(0, LIMITE_CARDS_OPERACAO);
+  const emOperacaoOcultos = emOperacaoRaw.slice(LIMITE_CARDS_OPERACAO);
+
+  const concluidos = todosItens.filter((i) => i.nivel === "concluido");
+  const semComunicacao = todosItens.filter((i) => i.nivel === "cinza");
+  const emAlerta = todosItens.filter(
+    (i) => i.nivel === "vermelho" || i.nivel === "amarelo"
+  );
+
+  // ── Metricas ──────────────────────────────────────────────────────
+  const totalEmOperacao = emOperacaoRaw.length;
+  const totalAlertas = emAlerta.length;
+  const totalConcluidos = concluidos.length;
+  const totalSemCom = semComunicacao.length;
+
+  // Entregas do dia (soma do cliente)
+  const entregasFeitas = todosItens.reduce((s, i) => s + i.entregas_feitas, 0);
+  const entregasTotal = todosItens.reduce((s, i) => s + i.entregas_total, 0);
+  const entregasFaltam = entregasTotal - entregasFeitas;
+
+  // Alertas enriquecidos com placa + local
   const alertasEnriquecidos = alertas
     .map((a) => {
       const veiculo = veiculoById.get(a.veiculo_id);
+      const pos = posicaoPorVeiculo.get(a.veiculo_id);
       return {
         ...a,
         placa: veiculo?.placa ?? "?????",
+        local: pos?.local ?? null,
       };
     })
     .sort((a, b) => {
-      if (a.nivel === "vermelho" && b.nivel !== "vermelho") return -1;
-      if (a.nivel !== "vermelho" && b.nivel === "vermelho") return 1;
+      if (a.nivel === "critico" && b.nivel !== "critico") return -1;
+      if (a.nivel !== "critico" && b.nivel === "critico") return 1;
       return 0;
     });
 
-  /* ---------------------------------------------------------------- */
-  /* Render                                                            */
-  /* ---------------------------------------------------------------- */
+  /* --------------------------------------------------------------- */
+  /* Render                                                           */
+  /* --------------------------------------------------------------- */
 
   return (
-    <div className="px-4 sm:px-6 lg:px-8 py-8 max-w-screen-xl mx-auto space-y-10">
+    <div className="px-4 sm:px-6 lg:px-8 py-8 max-w-screen-xl mx-auto space-y-8">
 
       {/* ============================================================
-          SELETOR DE CLIENTE — comanda a tela inteira
+          1. SELETOR DE CLIENTE
           ============================================================ */}
       <section aria-label="Selecionar cliente">
         <div className="mb-2 flex items-center gap-2" style={{ color: "var(--text-dim)" }}>
@@ -588,63 +643,103 @@ export default async function DashboardPage({
       </section>
 
       {/* ============================================================
-          PAINEL DE STATUS — metricas do cliente ativo
+          2. RESUMO — metricas + entregas do dia
           ============================================================ */}
-      <section aria-label="Status operacional">
-        <SectionLabel>Status operacional</SectionLabel>
+      <section aria-label="Resumo operacional">
+        <SectionLabel>Resumo operacional</SectionLabel>
 
-        {/* Grid de metricas */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <MetricaDestaque
-            label="Monitorados"
-            valor={veiculosComunicando}
-            sublabel={`${totalFrota} total na frota`}
-            icone={<IconSignal size={15} />}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <ChipMetrica
+            label="Em operacao"
+            valor={totalEmOperacao}
+            icone={<IconSignal size={14} />}
+            sublabel="nivel verde"
           />
-          <MetricaDestaque
-            label="Criticos"
-            valor={emAlertaVermelho}
-            cor={emAlertaVermelho > 0 ? "var(--vermelho)" : undefined}
-            sublabel="alerta vermelho"
-            icone={<IconAlertCircle size={15} />}
+          <ChipMetrica
+            label="Alertas"
+            valor={totalAlertas}
+            cor={totalAlertas > 0 ? "var(--vermelho)" : undefined}
+            icone={<IconAlertCircle size={14} />}
+            sublabel="vermelho + amarelo"
           />
-          <MetricaDestaque
-            label="Atencao"
-            valor={emAtencaoAmarelo}
-            cor={emAtencaoAmarelo > 0 ? "var(--amarelo)" : undefined}
-            sublabel="nivel amarelo"
-            icone={<IconTriangle size={15} />}
+          <ChipMetrica
+            label="Concluidos"
+            valor={totalConcluidos}
+            cor="var(--verde)"
+            icone={<IconCheck size={14} />}
+            sublabel="rota encerrada"
           />
-          <MetricaDestaque
-            label="Parados"
-            valor={parados}
-            sublabel={semComunicacao > 0 ? `+ ${semComunicacao} sem sinal` : "ignicao desligada"}
-            icone={<IconPause size={15} />}
+          <ChipMetrica
+            label="Sem sinal"
+            valor={totalSemCom}
+            cor={totalSemCom > 0 ? "var(--text-dim)" : undefined}
+            icone={<IconNoSignal size={14} />}
+            sublabel="sem comunicacao"
           />
+          {/* Entregas do dia — ocupa 2 colunas em telas grandes */}
+          <div
+            className="relative flex flex-col gap-2.5 px-4 py-3.5 rounded-xl border overflow-hidden col-span-2 sm:col-span-1 lg:col-span-1"
+            style={{ backgroundColor: "var(--card)", borderColor: "color-mix(in srgb, var(--accent) 20%, var(--border))" }}
+          >
+            <div className="absolute top-0 left-0 right-0 h-px"
+              style={{ backgroundColor: "var(--accent)", opacity: 0.4 }} />
+
+            <div className="flex items-center gap-2">
+              <span style={{ color: "var(--accent)" }}><IconPackage size={14} /></span>
+              <span className="text-xs font-medium uppercase tracking-widest"
+                style={{ color: "var(--text-muted)", letterSpacing: "0.1em" }}>
+                Entregas do dia
+              </span>
+            </div>
+
+            {entregasTotal > 0 ? (
+              <>
+                <p className="num-mono text-2xl font-bold leading-none"
+                  style={{ color: "var(--accent)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+                  {entregasFeitas}
+                  <span className="text-base font-medium" style={{ color: "var(--text-muted)" }}>
+                    {" "}/{" "}{entregasTotal}
+                  </span>
+                </p>
+                {/* Barra de progresso */}
+                <div className="w-full rounded-full overflow-hidden" style={{ height: "4px", backgroundColor: "var(--border)" }}>
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(100, Math.round((entregasFeitas / entregasTotal) * 100))}%`,
+                      backgroundColor: "var(--verde)",
+                    }}
+                  />
+                </div>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  {entregasFaltam > 0 ? `faltam ${entregasFaltam}` : "todas concluidas"}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs" style={{ color: "var(--text-dim)" }}>
+                sem dados de entrega
+              </p>
+            )}
+          </div>
         </div>
       </section>
 
       {/* ============================================================
-          ALERTAS ATIVOS — somente do cliente ativo
+          3. ALERTAS ATIVOS (vermelho + amarelo)
           ============================================================ */}
       <section aria-label="Alertas ativos">
         <div className="flex items-center gap-3 mb-4">
-          {/* Ponto pulsante quando ha alertas criticos */}
           {alertasEnriquecidos.length > 0 ? (
             <span
               className="animate-pulse-alert w-1.5 h-1.5 rounded-full flex-shrink-0"
               style={{ backgroundColor: "var(--vermelho)" }}
             />
           ) : (
-            <span
-              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-              style={{ backgroundColor: "var(--verde)" }}
-            />
+            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: "var(--verde)" }} />
           )}
-          <h2
-            className="text-xs font-semibold uppercase tracking-widest"
-            style={{ color: "var(--text-muted)", letterSpacing: "0.12em" }}
-          >
+          <h2 className="text-xs font-semibold uppercase tracking-widest"
+            style={{ color: "var(--text-muted)", letterSpacing: "0.12em" }}>
             Alertas ativos
           </h2>
           {alertasEnriquecidos.length > 0 && (
@@ -664,16 +759,15 @@ export default async function DashboardPage({
         </div>
 
         {alertasEnriquecidos.length === 0 ? (
-          /* Estado vazio elegante */
           <div
-            className="flex flex-col items-center justify-center gap-4 rounded-xl border py-12 px-4 text-center"
+            className="flex flex-col items-center justify-center gap-3 rounded-xl border py-10 px-4 text-center"
             style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
           >
             <span
-              className="w-10 h-10 rounded-full flex items-center justify-center"
+              className="w-9 h-9 rounded-full flex items-center justify-center"
               style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
             >
-              <IconCheck size={20} />
+              <IconCheck size={18} />
             </span>
             <div>
               <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>
@@ -693,6 +787,7 @@ export default async function DashboardPage({
                 tipo={a.tipo}
                 placa={a.placa}
                 motivo={a.motivo}
+                local={a.local}
                 desde={a.desde}
               />
             ))}
@@ -701,13 +796,103 @@ export default async function DashboardPage({
       </section>
 
       {/* ============================================================
-          FROTA — grid filtrado pelo cliente ativo (Client Component)
+          4. EM OPERACAO (verde) — limitado a 36
           ============================================================ */}
-      <section aria-label="Frota monitorada">
-        <SectionLabel>
-          Frota monitorada
+      <section aria-label="Veiculos em operacao">
+        <SectionLabel dot="var(--verde)">
+          Em operacao
+          {totalEmOperacao > 0 && (
+            <span className="ml-2 num-mono" style={{ fontFamily: "var(--font-geist-mono, monospace)", color: "var(--verde)" }}>
+              {totalEmOperacao}
+            </span>
+          )}
         </SectionLabel>
-        <FrotaGrid itens={frotaItems} />
+
+        {totalEmOperacao === 0 ? (
+          <div
+            className="flex items-center justify-center py-12 rounded-xl border text-sm"
+            style={{ backgroundColor: "var(--card)", borderColor: "var(--border)", color: "var(--text-muted)" }}
+          >
+            Nenhum veiculo em operacao no momento.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+              {emOperacaoVisiveis.map((item) => (
+                <CardVeiculoOperacao key={item.id} item={item} />
+              ))}
+            </div>
+
+            {emOperacaoOcultos.length > 0 && (
+              <VerTodosBtn totalOcultos={emOperacaoOcultos.length}>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+                  {emOperacaoOcultos.map((item) => (
+                    <CardVeiculoOperacao key={item.id} item={item} />
+                  ))}
+                </div>
+              </VerTodosBtn>
+            )}
+          </>
+        )}
+      </section>
+
+      {/* ============================================================
+          5. CONCLUIDOS — faixa colapsavel
+          ============================================================ */}
+      <section aria-label="Veiculos concluidos">
+        <SectionLabel dot="var(--verde)">Concluidos</SectionLabel>
+        <FaixaColapsavel
+          label="concluidos (rota encerrada)"
+          count={totalConcluidos}
+          cor="var(--verde)"
+          icone={<IconCheck size={14} />}
+        >
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+            {concluidos.map((item) => (
+              <CardVeiculoOperacao key={item.id} item={item} />
+            ))}
+          </div>
+        </FaixaColapsavel>
+        {totalConcluidos === 0 && (
+          <div
+            className="flex items-center gap-3 rounded-xl border px-4 py-3"
+            style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
+          >
+            <span style={{ color: "var(--text-dim)" }}><IconCheck size={14} /></span>
+            <span className="text-xs" style={{ color: "var(--text-dim)" }}>
+              Nenhum veiculo com rota encerrada.
+            </span>
+          </div>
+        )}
+      </section>
+
+      {/* ============================================================
+          6. SEM COMUNICACAO — faixa colapsavel
+          ============================================================ */}
+      <section aria-label="Veiculos sem comunicacao">
+        <SectionLabel dot="var(--text-dim)">Sem comunicacao</SectionLabel>
+        <FaixaColapsavel
+          label="sem comunicacao"
+          count={totalSemCom}
+          icone={<IconNoSignal size={14} />}
+        >
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+            {semComunicacao.map((item) => (
+              <CardVeiculoOperacao key={item.id} item={item} />
+            ))}
+          </div>
+        </FaixaColapsavel>
+        {totalSemCom === 0 && (
+          <div
+            className="flex items-center gap-3 rounded-xl border px-4 py-3"
+            style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
+          >
+            <span style={{ color: "var(--text-dim)" }}><IconNoSignal size={14} /></span>
+            <span className="text-xs" style={{ color: "var(--text-dim)" }}>
+              Todos os veiculos com comunicacao ativa.
+            </span>
+          </div>
+        )}
       </section>
 
     </div>
