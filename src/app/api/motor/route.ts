@@ -7,11 +7,16 @@ import { buscarAlvos, agruparAlvosPorPlaca, normalizar } from "@/lib/unitrac";
 import type { EntregasPlaca } from "@/lib/unitrac";
 import { avaliar, detectarJammer, emHorarioOperacao } from "@/lib/detectores";
 
+// Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
+export const maxDuration = 60;
+
 // Timeout para chamadas Unitrac (20 segundos)
 const TIMEOUT_UNITRAC_MS = 20_000;
 
-// Limite de geocodes novos (Nominatim) por ciclo do motor
-const LIMITE_GEOCODES_NOVOS = 8;
+// Limite de geocodes novos (Nominatim) por ciclo do motor.
+// Baixo de proposito: o Nominatim e lento/restrito a partir de datacenter (Vercel),
+// entao geocodamos poucos por ciclo e vamos cobrindo aos poucos (cache no banco).
+const LIMITE_GEOCODES_NOVOS = 3;
 
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
@@ -113,7 +118,7 @@ async function geocodeReverso(
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=pt-BR`;
     const res = await fetch(url, {
       headers: { "User-Agent": "TransmonsegCentral/1.0" },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) return null;
 
