@@ -131,6 +131,18 @@ describe("detectarParadaLonga", () => {
 });
 
 describe("avaliar", () => {
+  // Regressao: atraso=101 + ignicao = jammer critico, NAO cinza.
+  // Garante que detectarJammer funciona mesmo com fresco=false (atraso > 60).
+  it("atraso=101 + ignicao ligada retorna jammer critico (nao cinza)", () => {
+    const alerta = avaliar(
+      posicaoBase({ ignicao: true, atraso: 101, fresco: false }),
+      { paradoMin: 0 }
+    );
+    expect(alerta).not.toBeNull();
+    expect(alerta?.nivel).toBe("critico");
+    expect(alerta?.tipo).toBe("jammer");
+  });
+
   it("panico retorna critico", () => {
     const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 0 });
     expect(alerta?.nivel).toBe("critico");

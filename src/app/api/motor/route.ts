@@ -4,7 +4,7 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { buscarPosicoes, normalizar } from "@/lib/unitrac";
-import { avaliar } from "@/lib/detectores";
+import { avaliar, detectarJammer } from "@/lib/detectores";
 
 // Timeout para chamadas Unitrac (20 segundos)
 const TIMEOUT_UNITRAC_MS = 20_000;
@@ -192,14 +192,37 @@ export async function POST(request: Request) {
             paradoMin = Math.round((agora.getTime() - new Date(parado_desde).getTime()) / 60000);
           }
 
-          // Avaliar alerta — somente para posicoes FRESCAS (atraso <= 60)
-          // Posicoes nao frescas entram como "sem_comunicacao" (informativo), nunca como alerta.
-          const alerta = pos.fresco ? avaliar(pos, { paradoMin }) : null;
+          // Determinar nivel e alerta com ordem de prioridade correta:
+          //
+          // 1. JAMMER (prioridade maxima): ignicao ligada + atraso entre 15 e 720 min.
+          //    Prevalece mesmo que o veiculo nao seja "fresco" (atraso > 60).
+          //    Sinal que some com veiculo ligado e o alerta mais critico do sistema.
+          //
+          // 2. SEM COMUNICACAO (cinza, informativo, sem alerta): nao e jammer
+          //    E (atraso > 720 OU (atraso > 60 E ignicao desligada)).
+          //    Morto/defeito ou desligado legitimamente.
+          //
+          // 3. FRESCO (atraso <= 60): rodar avaliar() normalmente (panico, bau,
+          //    excesso, parada_longa) + detector de favela.
+
+          const alertaJammer = detectarJammer(pos);
+          const ehSemComunicacao =
+            !alertaJammer &&
+            (pos.atraso > 720 || (pos.atraso > 60 && !pos.ignicao));
+
+          let alerta = alertaJammer
+            ? alertaJammer
+            : pos.fresco
+              ? avaliar(pos, { paradoMin })
+              : null;
 
           // Determinar nivel da posicao atual
           let nivel: string;
-          if (!pos.fresco) {
-            // Dado congelado — nivel cinza (sem_comunicacao, informativo)
+          if (alertaJammer) {
+            // Jammer: critico, vermelho, independente de fresco
+            nivel = "vermelho";
+          } else if (ehSemComunicacao) {
+            // Dado congelado sem ignicao ou morto — nivel cinza (informativo)
             nivel = "cinza";
           } else if (alerta?.nivel === "critico") {
             nivel = "vermelho";
@@ -209,7 +232,11 @@ export async function POST(request: Request) {
             nivel = "verde";
           }
 
-          const motivo = pos.fresco ? (alerta?.motivo ?? null) : `Sem comunicacao ha ${pos.atraso}min`;
+          const motivo = alertaJammer
+            ? alertaJammer.motivo
+            : ehSemComunicacao
+              ? `Sem comunicacao ha ${pos.atraso}min`
+              : (alerta?.motivo ?? null);
 
           // 5. Upsert em posicoes_atuais via pg (para ST_MakePoint)
           const pgClient = await pool.connect();
@@ -258,9 +285,11 @@ export async function POST(request: Request) {
             pgClient.release();
           }
 
-          // 6. Gerenciar alertas — somente para posicoes frescas
-          if (!pos.fresco) continue;
-          totalFrescos++;
+          // 6. Gerenciar alertas — para posicoes frescas E para jammers
+          // (jammer pode ocorrer com atraso > 60, portanto !fresco, mas e critico)
+          const deveGerenciarAlertas = pos.fresco || !!alertaJammer;
+          if (!deveGerenciarAlertas) continue;
+          if (pos.fresco) totalFrescos++;
 
           // Buscar alertas ativos existentes para este veiculo
           const { data: alertasAtivos } = await supabase
