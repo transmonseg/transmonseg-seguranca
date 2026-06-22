@@ -35,55 +35,57 @@ interface FrotaGridProps {
   clientes: ClienteOpcao[];
 }
 
-/**
- * Formata um atraso em minutos para texto legivel.
- * Ex.: 45 -> "45 min" | 90 -> "1h 30min" | 1440 -> "1 dia" | 2880 -> "2 dias"
- */
+/* ------------------------------------------------------------------ */
+/* Helpers                                                              */
+/* ------------------------------------------------------------------ */
+
 function formataAtraso(min: number): string {
   if (min < 2)    return "agora";
-  if (min < 60)   return `${min} min`;
+  if (min < 60)   return `${min}m`;
   const horas = Math.floor(min / 60);
   const resto = min % 60;
-  if (horas < 24) return resto > 0 ? `${horas}h ${resto}min` : `${horas}h`;
+  if (horas < 24) return resto > 0 ? `${horas}h${resto}m` : `${horas}h`;
   const dias = Math.floor(horas / 24);
-  return `${dias} dia${dias !== 1 ? "s" : ""}`;
+  return `${dias}d`;
 }
 
+/* ------------------------------------------------------------------ */
+/* Icones SVG inline                                                    */
+/* ------------------------------------------------------------------ */
+
 function IconIgnicao({ on }: { on: boolean }) {
+  /* Power button icon — diferente do alerta circular */
   return (
     <svg
-      width="14"
-      height="14"
+      width="12"
+      height="12"
       viewBox="0 0 24 24"
       fill="none"
-      stroke={on ? "var(--verde)" : "var(--text-muted)"}
+      stroke={on ? "var(--verde)" : "var(--text-dim)"}
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-label={on ? "Ignicao ligada" : "Ignicao desligada"}
     >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="8" x2="12" y2="12" />
-      <line x1="12" y1="16" x2="12.01" y2="16" />
+      <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+      <line x1="12" y1="2" x2="12" y2="12" />
     </svg>
   );
 }
 
-/** Icone de sinal cortado para veiculos sem comunicacao */
 function IconSemSinal() {
   return (
     <svg
-      width="14"
-      height="14"
+      width="12"
+      height="12"
       viewBox="0 0 24 24"
       fill="none"
-      stroke="var(--text-muted)"
+      stroke="var(--text-dim)"
       strokeWidth="1.8"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-label="Sem comunicacao"
     >
-      {/* Antena base */}
       <line x1="1" y1="1" x2="23" y2="23" />
       <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
       <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
@@ -95,139 +97,223 @@ function IconSemSinal() {
   );
 }
 
+function IconSpeed({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a10 10 0 1 0 10 10" />
+      <path d="M12 12l4.35-4.35" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconClock({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Card de veiculo                                                       */
+/* ------------------------------------------------------------------ */
+
 function CardVeiculo({ item }: { item: FrotaItem }) {
   const offline = item.atraso_min > LIMIAR_SEM_COM_MIN || item.semComunicacao;
 
-  /* ----------------------------------------------------------------
-     Borda: faixa lateral esquerda colorida APENAS para alertas.
-     Cards normais/verdes e offline: borda neutra em todo o contorno.
-     Cards criticos recebem fundo levemente tingido.
-     ---------------------------------------------------------------- */
-  const borderLeftColor =
-    !offline && item.nivel === "vermelho"
-      ? "var(--vermelho)"
-      : !offline && item.nivel === "amarelo"
-      ? "var(--amarelo)"
-      : "var(--border)";
+  /* Nivel visual efetivo: offline anula nivel de risco */
+  const nivelEfetivo: "vermelho" | "amarelo" | "verde" | "offline" =
+    offline ? "offline" : item.nivel;
 
-  const bgCard =
-    !offline && item.nivel === "vermelho"
-      ? "#1a1212"
-      : "var(--card)";
+  /* Cores por nivel */
+  const corFaixa: Record<typeof nivelEfetivo, string> = {
+    vermelho: "var(--vermelho)",
+    amarelo:  "var(--amarelo)",
+    verde:    "transparent",
+    offline:  "var(--border)",
+  };
 
-  /* Cor do motivo inline (somente alertas ativos e com comunicacao) */
+  const bgCard: Record<typeof nivelEfetivo, string> = {
+    vermelho: "#160c0c",
+    amarelo:  "#15110a",
+    verde:    "var(--card)",
+    offline:  "var(--card)",
+  };
+
+  const corPlaca: Record<typeof nivelEfetivo, string> = {
+    vermelho: "var(--text)",
+    amarelo:  "var(--text)",
+    verde:    "var(--text)",
+    offline:  "var(--text-dim)",
+  };
+
   const corMotivo =
     item.nivel === "vermelho" ? "var(--vermelho)" : "var(--amarelo)";
 
   return (
     <div
-      className="rounded-2xl border p-4 flex flex-col gap-3 transition-colors"
+      className="group relative rounded-xl border overflow-hidden transition-all duration-150 cursor-default"
       style={{
-        backgroundColor: bgCard,
-        borderColor: "var(--border)",
-        borderLeftWidth: "3px",
-        borderLeftColor,
-        /* Opacidade reduzida para veiculos offline, reforça estado inativo */
-        opacity: offline ? 0.72 : 1,
+        backgroundColor: bgCard[nivelEfetivo],
+        borderColor: nivelEfetivo === "vermelho"
+          ? "color-mix(in srgb, var(--vermelho) 22%, var(--border))"
+          : nivelEfetivo === "amarelo"
+          ? "color-mix(in srgb, var(--amarelo) 18%, var(--border))"
+          : "var(--border)",
+        opacity: offline ? 0.6 : 1,
+      }}
+      onMouseEnter={(e) => {
+        if (!offline) (e.currentTarget as HTMLElement).style.borderColor =
+          nivelEfetivo === "vermelho" ? "color-mix(in srgb, var(--vermelho) 40%, var(--border))"
+          : nivelEfetivo === "amarelo" ? "color-mix(in srgb, var(--amarelo) 35%, var(--border))"
+          : "var(--accent)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLElement).style.borderColor =
+          nivelEfetivo === "vermelho" ? "color-mix(in srgb, var(--vermelho) 22%, var(--border))"
+          : nivelEfetivo === "amarelo" ? "color-mix(in srgb, var(--amarelo) 18%, var(--border))"
+          : "var(--border)";
       }}
     >
-      {/* Cabecalho do card */}
-      <div className="flex items-start justify-between gap-2">
-        <div>
+      {/* Faixa lateral de nivel */}
+      <div
+        className="absolute top-0 bottom-0 left-0 w-0.5"
+        style={{ backgroundColor: corFaixa[nivelEfetivo] }}
+      />
+
+      {/* Conteudo */}
+      <div className="pl-3 pr-3.5 pt-3 pb-3 flex flex-col gap-2.5">
+
+        {/* Linha 1: placa + badges + status */}
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p
+              className="num-mono text-sm font-bold tracking-wider leading-none"
+              style={{ color: corPlaca[nivelEfetivo], fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.08em" }}
+            >
+              {item.placa}
+            </p>
+            <p className="text-xs mt-1 truncate max-w-[100px]" style={{ color: "var(--text-muted)", fontSize: "10px" }}>
+              {item.clienteNome}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* Badge panico */}
+            {!offline && item.panico && (
+              <span
+                className="tag animate-pulse-alert"
+                style={{ backgroundColor: "color-mix(in srgb, var(--vermelho) 15%, transparent)", color: "var(--vermelho)", border: "1px solid color-mix(in srgb, var(--vermelho) 30%, transparent)", fontFamily: "var(--font-geist-mono, monospace)" }}
+              >
+                PANICO
+              </span>
+            )}
+            {/* Badge bau aberto */}
+            {!offline && item.bau_aberto && (
+              <span
+                className="tag"
+                style={{ backgroundColor: "color-mix(in srgb, var(--amarelo) 12%, transparent)", color: "var(--amarelo)", border: "1px solid color-mix(in srgb, var(--amarelo) 25%, transparent)", fontFamily: "var(--font-geist-mono, monospace)" }}
+              >
+                BAU
+              </span>
+            )}
+            {/* Icone de status */}
+            {offline ? <IconSemSinal /> : <IconIgnicao on={item.ignicao} />}
+          </div>
+        </div>
+
+        {/* Linha 2: estado / motivo */}
+        {offline ? (
           <p
-            className="font-mono font-bold text-base tracking-wider"
-            style={{ color: offline ? "var(--text-muted)" : "var(--text)" }}
+            className="text-xs"
+            style={{ color: "var(--text-dim)", fontSize: "10px" }}
           >
-            {item.placa}
+            sem sinal ha {formataAtraso(item.atraso_min)}
           </p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-            {item.clienteNome}
+        ) : item.motivo ? (
+          <p
+            className="text-xs rounded px-2 py-1 leading-snug"
+            style={{ backgroundColor: `color-mix(in srgb, ${corMotivo} 10%, transparent)`, color: corMotivo, fontSize: "10px" }}
+          >
+            {item.motivo}
           </p>
-        </div>
-
-        {/* Indicadores de status */}
-        <div className="flex items-center gap-2">
-          {!offline && item.panico && (
+        ) : (
+          <div className="flex items-center gap-1.5">
             <span
-              className="px-1.5 py-0.5 rounded text-xs font-bold"
-              style={{ backgroundColor: "var(--vermelho)22", color: "var(--vermelho)" }}
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: item.ignicao ? "var(--verde)" : "var(--text-dim)" }}
+            />
+            <p
+              className="text-xs"
+              style={{ color: item.ignicao ? "var(--verde)" : "var(--text-muted)", fontSize: "10px" }}
             >
-              PANICO
-            </span>
-          )}
-          {!offline && item.bau_aberto && (
+              {item.ignicao ? "Em circulacao" : "Parado"}
+            </p>
+          </div>
+        )}
+
+        {/* Linha 3: metricas */}
+        <div
+          className="grid grid-cols-2 gap-1.5 pt-0.5 border-t"
+          style={{ borderColor: "var(--border-subtle)" }}
+        >
+          {/* Velocidade */}
+          <div className="flex flex-col gap-0.5">
             <span
-              className="px-1.5 py-0.5 rounded text-xs font-bold"
-              style={{ backgroundColor: "var(--amarelo)22", color: "var(--amarelo)" }}
+              className="flex items-center gap-1"
+              style={{ color: "var(--text-dim)", fontSize: "9px", letterSpacing: "0.05em" }}
             >
-              BAU
+              <span style={{ color: offline ? "var(--text-dim)" : "var(--text-dim)" }}>
+                <IconSpeed />
+              </span>
+              vel.
             </span>
-          )}
-          {offline ? <IconSemSinal /> : <IconIgnicao on={item.ignicao} />}
-        </div>
-      </div>
+            <span
+              className="num-mono text-xs font-semibold"
+              style={{ color: offline ? "var(--text-dim)" : "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
+            >
+              {item.velocidade} km/h
+            </span>
+          </div>
 
-      {/* Status principal */}
-      {offline ? (
-        /* Veiculo sem comunicacao: exibe aviso neutro/apagado */
-        <p className="text-xs flex items-center gap-1.5" style={{ color: "#57534e" }}>
-          Sem comunicacao ha {formataAtraso(item.atraso_min)}
-        </p>
-      ) : item.motivo ? (
-        <p
-          className="text-xs rounded px-2 py-1.5"
-          style={{ backgroundColor: `${corMotivo}11`, color: corMotivo }}
-        >
-          {item.motivo}
-        </p>
-      ) : (
-        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          {item.ignicao ? "Em circulacao" : "Parado"}
-        </p>
-      )}
-
-      {/* Metricas */}
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div
-          className="rounded-lg px-2.5 py-2 flex flex-col"
-          style={{ backgroundColor: "var(--card-hover)" }}
-        >
-          <span style={{ color: "var(--text-muted)" }}>
-            {offline ? "Ultima leitura" : "Velocidade"}
-          </span>
-          <span
-            className="font-semibold mt-0.5"
-            style={{ color: offline ? "#57534e" : "var(--text)" }}
-          >
-            {offline
-              ? `${item.velocidade} km/h`
-              : `${item.velocidade} km/h`}
-          </span>
-        </div>
-        <div
-          className="rounded-lg px-2.5 py-2 flex flex-col"
-          style={{ backgroundColor: "var(--card-hover)" }}
-        >
-          <span style={{ color: "var(--text-muted)" }}>
-            {offline ? "Sem sinal" : "Atraso"}
-          </span>
-          <span
-            className="font-semibold mt-0.5"
-            style={{
-              color: offline
-                ? "#57534e"
-                : item.atraso_min > 15
-                ? "var(--amarelo)"
-                : "var(--text)",
-            }}
-          >
-            {offline ? formataAtraso(item.atraso_min) : formataAtraso(item.atraso_min)}
-          </span>
+          {/* Atraso */}
+          <div className="flex flex-col gap-0.5">
+            <span
+              className="flex items-center gap-1"
+              style={{ color: "var(--text-dim)", fontSize: "9px", letterSpacing: "0.05em" }}
+            >
+              <span style={{ color: offline ? "var(--text-dim)" : "var(--text-dim)" }}>
+                <IconClock />
+              </span>
+              atraso
+            </span>
+            <span
+              className="num-mono text-xs font-semibold"
+              style={{
+                color: offline
+                  ? "var(--text-dim)"
+                  : item.atraso_min > 15
+                  ? "var(--amarelo)"
+                  : "var(--text)",
+                fontFamily: "var(--font-geist-mono, monospace)",
+              }}
+            >
+              {formataAtraso(item.atraso_min)}
+            </span>
+          </div>
         </div>
       </div>
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Grid principal com filtro                                            */
+/* ------------------------------------------------------------------ */
 
 export default function FrotaGrid({ itens, clientes }: FrotaGridProps) {
   const [filtroCliente, setFiltroCliente] = useState("todos");
@@ -237,10 +323,6 @@ export default function FrotaGrid({ itens, clientes }: FrotaGridProps) {
       ? itens
       : itens.filter((i) => i.clienteId === filtroCliente);
 
-  /*
-   * Ordenacao: vermelho -> amarelo -> verde ativos -> offline
-   * Veiculos offline vao ao final independente do nivel registrado.
-   */
   const itensOrdenados = [...itensFiltrados].sort((a, b) => {
     const aOffline = a.atraso_min > LIMIAR_SEM_COM_MIN || a.semComunicacao;
     const bOffline = b.atraso_min > LIMIAR_SEM_COM_MIN || b.semComunicacao;
@@ -256,51 +338,74 @@ export default function FrotaGrid({ itens, clientes }: FrotaGridProps) {
     (i) => i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao
   ).length;
 
-  return (
-    <div className="space-y-4">
-      {/* Filtro por cliente */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {clientes.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => setFiltroCliente(c.id)}
-            className="px-3 py-1.5 rounded-full text-xs font-medium transition-colors"
-            style={
-              filtroCliente === c.id
-                ? {
-                    backgroundColor: "var(--accent)",
-                    color: "#0a0a0a",
-                  }
-                : {
-                    backgroundColor: "var(--card)",
-                    color: "var(--text-muted)",
-                    border: "1px solid var(--border)",
-                  }
-            }
-          >
-            {c.nome}
-          </button>
-        ))}
-      </div>
+  const totalVermelho = itensFiltrados.filter(
+    (i) => !(i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao) && i.nivel === "vermelho"
+  ).length;
 
-      {/* Contagem filtrada */}
-      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-        {itensFiltrados.length} veiculo{itensFiltrados.length !== 1 ? "s" : ""}
-        {totalOffline > 0 && (
-          <span style={{ color: "#57534e" }}> &middot; {totalOffline} sem comunicacao</span>
-        )}
-      </p>
+  return (
+    <div className="space-y-5">
+      {/* Filtro: segmented control */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div
+          className="inline-flex rounded-lg p-0.5 gap-0.5"
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+        >
+          {clientes.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => setFiltroCliente(c.id)}
+              className="rounded-md text-xs font-medium transition-all duration-150 cursor-pointer"
+              style={
+                filtroCliente === c.id
+                  ? {
+                      padding: "5px 14px",
+                      backgroundColor: "var(--accent-dim)",
+                      color: "var(--accent)",
+                      border: "none",
+                      outline: "none",
+                    }
+                  : {
+                      padding: "5px 14px",
+                      backgroundColor: "transparent",
+                      color: "var(--text-muted)",
+                      border: "none",
+                      outline: "none",
+                    }
+              }
+            >
+              {c.nome}
+            </button>
+          ))}
+        </div>
+
+        {/* Contadores inline */}
+        <div className="flex items-center gap-3 text-xs" style={{ color: "var(--text-muted)" }}>
+          <span className="num-mono" style={{ fontFamily: "var(--font-geist-mono, monospace)" }}>
+            {itensFiltrados.length} veiculos
+          </span>
+          {totalVermelho > 0 && (
+            <span className="num-mono font-semibold" style={{ color: "var(--vermelho)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+              {totalVermelho} criticos
+            </span>
+          )}
+          {totalOffline > 0 && (
+            <span className="num-mono" style={{ color: "var(--text-dim)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+              {totalOffline} offline
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* Grid de cards */}
       {itensOrdenados.length === 0 ? (
         <div
-          className="flex items-center justify-center py-16 rounded-2xl border text-sm"
+          className="flex items-center justify-center py-16 rounded-xl border text-sm"
           style={{ backgroundColor: "var(--card)", borderColor: "var(--border)", color: "var(--text-muted)" }}
         >
           Nenhum veiculo neste cliente.
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
           {itensOrdenados.map((item) => (
             <CardVeiculo key={item.id} item={item} />
           ))}

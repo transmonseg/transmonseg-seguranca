@@ -10,7 +10,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import FrotaGrid from "./components/FrotaGrid";
 
-// Central ao vivo: renderiza a cada acesso, nunca prerender estático.
+// Central ao vivo: renderiza a cada acesso, nunca prerender estatico.
 export const dynamic = "force-dynamic";
 
 /* ------------------------------------------------------------------ */
@@ -62,7 +62,7 @@ interface Alerta {
 /* Helpers de formatacao                                                */
 /* ------------------------------------------------------------------ */
 
-function formatarTempo(iso: string): string {
+function formatarTempoRelativo(iso: string): string {
   const data = new Date(iso);
   const agora = new Date();
   const diffMin = Math.floor((agora.getTime() - data.getTime()) / 60000);
@@ -74,58 +74,379 @@ function formatarTempo(iso: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* Componentes de apresentacao                                          */
+/* Icones SVG reutilizaveis                                             */
 /* ------------------------------------------------------------------ */
 
-function BadgeNivel({ nivel }: { nivel: NivelRisco }) {
-  const cfg: Record<string, { cor: string; label: string }> = {
-    vermelho: { cor: "var(--vermelho)", label: "Vermelho" },
-    amarelo:  { cor: "var(--amarelo)",  label: "Atencao"  },
-    verde:    { cor: "var(--verde)",    label: "Normal"   },
-  };
-  const { cor, label } = cfg[nivel] ?? { cor: "var(--text-muted)", label: nivel ?? "?" };
+function IconShield({ size = 16 }: { size?: number }) {
   return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold"
-      style={{ backgroundColor: `${cor}22`, color: cor, border: `1px solid ${cor}44` }}
-    >
-      <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: cor }} />
-      {label}
-    </span>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
   );
 }
 
-function ChipResumo({
+function IconSignal({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </svg>
+  );
+}
+
+function IconAlertCircle({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+function IconTriangle({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+function IconPause({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="4" width="4" height="16" />
+      <rect x="14" y="4" width="4" height="16" />
+    </svg>
+  );
+}
+
+function IconTruck({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="1" y="3" width="15" height="13" />
+      <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+      <circle cx="5.5" cy="18.5" r="2.5" />
+      <circle cx="18.5" cy="18.5" r="2.5" />
+    </svg>
+  );
+}
+
+function IconJammer({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="1" y1="1" x2="23" y2="23" />
+      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
+      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
+      <path d="M10.71 5.05A16 16 0 0 1 22.56 9" />
+      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" />
+      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+      <circle cx="12" cy="20" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconMapPin({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
+
+function IconClock({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function IconCheck({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Icone de tipo de alerta                                              */
+/* ------------------------------------------------------------------ */
+
+function IconTipoAlerta({ tipo }: { tipo: string }) {
+  const t = tipo?.toLowerCase() ?? "";
+  if (t.includes("jammer") || t.includes("sinal") || t.includes("bloqueio")) {
+    return <IconJammer size={14} />;
+  }
+  if (t.includes("favela") || t.includes("area") || t.includes("risco") || t.includes("zona")) {
+    return <IconMapPin size={14} />;
+  }
+  if (t.includes("parada") || t.includes("parado") || t.includes("longa")) {
+    return <IconPause size={14} />;
+  }
+  return <IconAlertCircle size={14} />;
+}
+
+/* ------------------------------------------------------------------ */
+/* Componente: MetricaDestaque                                          */
+/* ------------------------------------------------------------------ */
+
+function MetricaDestaque({
   label,
   valor,
   cor,
   icone,
+  sublabel,
 }: {
   label: string;
   valor: number;
   cor?: string;
   icone: React.ReactNode;
+  sublabel?: string;
 }) {
+  const corEfetiva = cor ?? "var(--accent)";
   return (
     <div
-      className="flex items-center gap-3 px-4 py-3 rounded-xl border"
+      className="relative flex flex-col gap-3 px-5 py-4 rounded-xl border overflow-hidden"
       style={{
         backgroundColor: "var(--card)",
-        borderColor: cor ? `${cor}33` : "var(--border)",
+        borderColor: cor ? `color-mix(in srgb, ${cor} 25%, var(--border))` : "var(--border)",
       }}
     >
-      <span style={{ color: cor ?? "var(--accent)" }}>{icone}</span>
+      {/* Faixa de acento no topo */}
+      <div
+        className="absolute top-0 left-0 right-0 h-px"
+        style={{ backgroundColor: corEfetiva, opacity: cor ? 0.6 : 0.3 }}
+      />
+
+      {/* Icone + label */}
+      <div className="flex items-center gap-2">
+        <span style={{ color: corEfetiva }}>{icone}</span>
+        <span className="text-xs font-medium uppercase tracking-widest" style={{ color: "var(--text-muted)", letterSpacing: "0.1em" }}>
+          {label}
+        </span>
+      </div>
+
+      {/* Numero grande */}
       <div>
         <p
-          className="text-xl font-bold leading-none"
-          style={{ color: cor ?? "var(--text)" }}
+          className="num-mono text-3xl font-bold leading-none"
+          style={{ color: cor ? corEfetiva : "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
         >
           {valor}
         </p>
+        {sublabel && (
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+            {sublabel}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Componente: PainelCliente                                            */
+/* ------------------------------------------------------------------ */
+
+function PainelCliente({
+  nome,
+  total,
+  vermelho,
+  amarelo,
+  parados,
+}: {
+  nome: string;
+  total: number;
+  vermelho: number;
+  amarelo: number;
+  parados: number;
+}) {
+  const ativos = total - parados;
+  const pctVermelho = total > 0 ? (vermelho / total) * 100 : 0;
+  const pctAmarelo = total > 0 ? (amarelo / total) * 100 : 0;
+  const pctAtivos = total > 0 ? (ativos / total) * 100 : 0;
+
+  return (
+    <div
+      className="rounded-xl border px-5 py-4 flex flex-col gap-3"
+      style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
+    >
+      {/* Cabecalho do painel */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span style={{ color: "var(--accent)" }}>
+            <IconTruck size={14} />
+          </span>
+          <span className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+            {nome}
+          </span>
+        </div>
+        <span
+          className="num-mono text-xl font-bold"
+          style={{ color: "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
+        >
+          {total}
+        </span>
+      </div>
+
+      {/* Barra de composicao */}
+      <div className="h-1.5 rounded-full overflow-hidden flex" style={{ backgroundColor: "var(--border)" }}>
+        {pctVermelho > 0 && (
+          <div className="h-full rounded-full" style={{ width: `${pctVermelho}%`, backgroundColor: "var(--vermelho)" }} />
+        )}
+        {pctAmarelo > 0 && (
+          <div className="h-full" style={{ width: `${pctAmarelo}%`, backgroundColor: "var(--amarelo)" }} />
+        )}
+        {pctAtivos > 0 && (
+          <div className="h-full" style={{ width: `${Math.max(0, pctAtivos - pctVermelho - pctAmarelo)}%`, backgroundColor: "var(--verde)", opacity: 0.4 }} />
+        )}
+      </div>
+
+      {/* Indicadores */}
+      <div className="flex items-center gap-4 flex-wrap">
+        {vermelho > 0 && (
+          <div className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: "var(--vermelho)" }} />
+            <span className="num-mono text-xs font-semibold" style={{ color: "var(--vermelho)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+              {vermelho} critico{vermelho > 1 ? "s" : ""}
+            </span>
+          </div>
+        )}
+        {amarelo > 0 && (
+          <div className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: "var(--amarelo)" }} />
+            <span className="num-mono text-xs font-semibold" style={{ color: "var(--amarelo)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+              {amarelo} atencao
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-1.5 ml-auto">
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+            {parados} parado{parados !== 1 ? "s" : ""}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Componente: RowAlerta                                                */
+/* ------------------------------------------------------------------ */
+
+function RowAlerta({
+  nivel,
+  tipo,
+  placa,
+  clienteNome,
+  motivo,
+  desde,
+}: {
+  nivel: NivelRisco;
+  tipo: string;
+  placa: string;
+  clienteNome: string;
+  motivo: string | null;
+  desde: string;
+}) {
+  const corNivel = nivel === "vermelho" ? "var(--vermelho)" : "var(--amarelo)";
+  const bgNivel = nivel === "vermelho" ? "#1c0e0e" : "#1c150a";
+
+  return (
+    <div
+      className="flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors"
+      style={{
+        backgroundColor: bgNivel,
+        borderColor: `color-mix(in srgb, ${corNivel} 20%, var(--border))`,
+        borderLeftWidth: "3px",
+        borderLeftColor: corNivel,
+      }}
+    >
+      {/* Icone do tipo */}
+      <span
+        className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center"
+        style={{ backgroundColor: `color-mix(in srgb, ${corNivel} 12%, transparent)`, color: corNivel }}
+      >
+        <IconTipoAlerta tipo={tipo} />
+      </span>
+
+      {/* Placa + cliente */}
+      <div className="flex-shrink-0 min-w-[90px]">
+        <p
+          className="num-mono text-sm font-bold tracking-wider leading-none"
+          style={{ color: "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
+        >
+          {placa}
+        </p>
         <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-          {label}
+          {clienteNome}
         </p>
       </div>
+
+      {/* Tag do tipo */}
+      <div className="hidden sm:flex flex-shrink-0">
+        <span
+          className="tag"
+          style={{ backgroundColor: `color-mix(in srgb, ${corNivel} 10%, transparent)`, color: corNivel, border: `1px solid color-mix(in srgb, ${corNivel} 25%, transparent)` }}
+        >
+          {tipo}
+        </span>
+      </div>
+
+      {/* Motivo */}
+      {motivo && (
+        <p className="flex-1 text-xs truncate" style={{ color: "var(--text-muted)" }}>
+          {motivo}
+        </p>
+      )}
+
+      {/* Tempo */}
+      <div className="flex-shrink-0 flex items-center gap-1.5 ml-auto" style={{ color: "var(--text-muted)" }}>
+        <IconClock size={12} />
+        <span className="num-mono text-xs" style={{ fontFamily: "var(--font-geist-mono, monospace)" }}>
+          {formatarTempoRelativo(desde)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Componente: SectionLabel                                             */
+/* ------------------------------------------------------------------ */
+
+function SectionLabel({ children, dot }: { children: React.ReactNode; dot?: string }) {
+  return (
+    <div className="flex items-center gap-3 mb-4">
+      {dot && (
+        <span
+          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+          style={{ backgroundColor: dot }}
+        />
+      )}
+      <h2
+        className="text-xs font-semibold uppercase tracking-widest"
+        style={{ color: "var(--text-muted)", letterSpacing: "0.12em" }}
+      >
+        {children}
+      </h2>
+      <div className="flex-1 h-px" style={{ backgroundColor: "var(--border)" }} />
     </div>
   );
 }
@@ -163,12 +484,14 @@ export default async function DashboardPage() {
   const posicaoPorVeiculo = new Map(posicoes.map((p) => [p.veiculo_id, p]));
 
   // ------------------------------------------------------------------
-  // Resumo global
+  // Metricas globais
   // ------------------------------------------------------------------
+  const totalFrota = veiculos.length;
   const veiculosComunicando = posicoes.length;
   const emAlertaVermelho = posicoes.filter((p) => p.nivel === "vermelho").length;
   const emAtencaoAmarelo  = posicoes.filter((p) => p.nivel === "amarelo").length;
   const parados = posicoes.filter((p) => !p.ignicao).length;
+  const semComunicacao = totalFrota - veiculosComunicando;
 
   // Resumo por cliente
   const resumoPorCliente: Record<
@@ -228,6 +551,13 @@ export default async function DashboardPage() {
     };
   });
 
+  // Ordenar alertas: vermelho primeiro
+  alertasEnriquecidos.sort((a, b) => {
+    if (a.nivel === "vermelho" && b.nivel !== "vermelho") return -1;
+    if (a.nivel !== "vermelho" && b.nivel === "vermelho") return 1;
+    return 0;
+  });
+
   // IDs de clientes para o filtro
   const clientesParaFiltro = [
     { id: "todos", nome: "Todos" },
@@ -239,80 +569,58 @@ export default async function DashboardPage() {
   /* ---------------------------------------------------------------- */
 
   return (
-    <div className="px-4 sm:px-6 py-6 max-w-screen-xl mx-auto space-y-8">
+    <div className="px-4 sm:px-6 lg:px-8 py-8 max-w-screen-xl mx-auto space-y-10">
 
       {/* ============================================================
-          RESUMO — chips de contagem
+          PAINEL DE STATUS — metricas chave
           ============================================================ */}
-      <section aria-label="Resumo geral">
-        <h2 className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: "var(--text-muted)" }}>
-          Resumo geral
-        </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <ChipResumo
-            label="Comunicando"
+      <section aria-label="Status operacional">
+        <SectionLabel>Status operacional</SectionLabel>
+
+        {/* Grid de metricas */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <MetricaDestaque
+            label="Monitorados"
             valor={veiculosComunicando}
-            icone={
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-              </svg>
-            }
+            sublabel={`${totalFrota} total na frota`}
+            icone={<IconSignal size={15} />}
           />
-          <ChipResumo
-            label="Alerta vermelho"
+          <MetricaDestaque
+            label="Criticos"
             valor={emAlertaVermelho}
-            cor="var(--vermelho)"
-            icone={
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="8" x2="12" y2="12" />
-                <line x1="12" y1="16" x2="12.01" y2="16" />
-              </svg>
-            }
+            cor={emAlertaVermelho > 0 ? "var(--vermelho)" : undefined}
+            sublabel="alerta vermelho"
+            icone={<IconAlertCircle size={15} />}
           />
-          <ChipResumo
+          <MetricaDestaque
             label="Atencao"
             valor={emAtencaoAmarelo}
-            cor="var(--amarelo)"
-            icone={
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-            }
+            cor={emAtencaoAmarelo > 0 ? "var(--amarelo)" : undefined}
+            sublabel="nivel amarelo"
+            icone={<IconTriangle size={15} />}
           />
-          <ChipResumo
+          <MetricaDestaque
             label="Parados"
             valor={parados}
-            icone={
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-              </svg>
-            }
+            sublabel={semComunicacao > 0 ? `+ ${semComunicacao} sem sinal` : "ignicao desligada"}
+            icone={<IconPause size={15} />}
           />
         </div>
 
-        {/* Resumo por cliente */}
+        {/* Paineis por cliente */}
         {clientes.length > 0 && (
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {clientes.map((c) => {
               const r = resumoPorCliente[c.id];
               return (
-                <div
+                <PainelCliente
                   key={c.id}
-                  className="rounded-xl border px-4 py-3 flex items-center justify-between"
-                  style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
-                >
-                  <span className="text-sm font-medium" style={{ color: "var(--text)" }}>{r.nome}</span>
-                  <div className="flex items-center gap-3 text-xs" style={{ color: "var(--text-muted)" }}>
-                    <span>{r.total} veic.</span>
-                    {r.vermelho > 0 && (
-                      <span className="font-semibold" style={{ color: "var(--vermelho)" }}>{r.vermelho} alert.</span>
-                    )}
-                    {r.parados > 0 && <span>{r.parados} parados</span>}
-                  </div>
-                </div>
+                  nome={r.nome}
+                  total={r.total}
+                  vermelho={r.vermelho}
+                  amarelo={r.amarelo}
+                  parados={r.parados}
+                />
               );
             })}
           </div>
@@ -323,83 +631,74 @@ export default async function DashboardPage() {
           ALERTAS ATIVOS
           ============================================================ */}
       <section aria-label="Alertas ativos">
-        <div className="flex items-center gap-2 mb-3">
-          <span
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ backgroundColor: alertasEnriquecidos.length > 0 ? "var(--vermelho)" : "var(--verde)" }}
-          />
-          <h2 className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>
+        <div className="flex items-center gap-3 mb-4">
+          {/* Ponto pulsante quando ha alertas criticos */}
+          {alertasEnriquecidos.length > 0 ? (
+            <span
+              className="animate-pulse-alert w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: "var(--vermelho)" }}
+            />
+          ) : (
+            <span
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: "var(--verde)" }}
+            />
+          )}
+          <h2
+            className="text-xs font-semibold uppercase tracking-widest"
+            style={{ color: "var(--text-muted)", letterSpacing: "0.12em" }}
+          >
             Alertas ativos
           </h2>
           {alertasEnriquecidos.length > 0 && (
             <span
-              className="ml-1 px-2 py-0.5 rounded-full text-xs font-bold"
-              style={{ backgroundColor: "var(--vermelho)22", color: "var(--vermelho)" }}
+              className="num-mono px-2 py-0.5 rounded text-xs font-bold"
+              style={{
+                backgroundColor: "color-mix(in srgb, var(--vermelho) 15%, transparent)",
+                color: "var(--vermelho)",
+                border: "1px solid color-mix(in srgb, var(--vermelho) 25%, transparent)",
+                fontFamily: "var(--font-geist-mono, monospace)",
+              }}
             >
               {alertasEnriquecidos.length}
             </span>
           )}
+          <div className="flex-1 h-px" style={{ backgroundColor: "var(--border)" }} />
         </div>
 
         {alertasEnriquecidos.length === 0 ? (
           /* Estado vazio elegante */
           <div
-            className="flex flex-col items-center justify-center gap-3 rounded-2xl border py-10 px-4 text-center"
+            className="flex flex-col items-center justify-center gap-4 rounded-xl border py-12 px-4 text-center"
             style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
           >
-            <svg
-              width="36"
-              height="36"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="var(--verde)"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
+            <span
+              className="w-10 h-10 rounded-full flex items-center justify-center"
+              style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
             >
-              <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
-              <polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-            <p className="text-sm font-medium" style={{ color: "var(--text)" }}>
-              Nenhum alerta ativo no momento
-            </p>
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Toda a frota opera dentro dos parametros normais.
-            </p>
+              <IconCheck size={20} />
+            </span>
+            <div>
+              <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+                Nenhum alerta ativo
+              </p>
+              <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                Toda a frota opera dentro dos parametros normais.
+              </p>
+            </div>
           </div>
         ) : (
           <div className="space-y-2">
             {alertasEnriquecidos.map((a) => (
-              <div
+              <RowAlerta
                 key={a.id}
-                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border px-4 py-3"
-                style={{
-                  backgroundColor: "var(--card)",
-                  borderColor: a.nivel === "vermelho" ? "var(--vermelho)44" : "var(--amarelo)44",
-                  borderLeftWidth: "3px",
-                  borderLeftColor: a.nivel === "vermelho" ? "var(--vermelho)" : "var(--amarelo)",
-                }}
-              >
-                <div className="flex items-center gap-3 flex-wrap">
-                  <BadgeNivel nivel={a.nivel} />
-                  <span className="font-mono text-sm font-bold" style={{ color: "var(--text)" }}>
-                    {a.placa}
-                  </span>
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    {a.clienteNome}
-                  </span>
-                  <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: "var(--border)", color: "var(--text-muted)" }}>
-                    {a.tipo}
-                  </span>
-                </div>
-                <div className="flex items-center gap-4 text-xs" style={{ color: "var(--text-muted)" }}>
-                  {a.motivo && (
-                    <span style={{ color: "var(--text)" }}>{a.motivo}</span>
-                  )}
-                  <span>desde {formatarTempo(a.desde)}</span>
-                </div>
-              </div>
+                nivel={a.nivel}
+                tipo={a.tipo}
+                placa={a.placa}
+                clienteNome={a.clienteNome}
+                motivo={a.motivo}
+                desde={a.desde}
+              />
             ))}
           </div>
         )}
@@ -409,9 +708,9 @@ export default async function DashboardPage() {
           FROTA — grid com filtro por cliente (Client Component)
           ============================================================ */}
       <section aria-label="Frota monitorada">
-        <h2 className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: "var(--text-muted)" }}>
+        <SectionLabel>
           Frota monitorada
-        </h2>
+        </SectionLabel>
         <FrotaGrid
           itens={frotaItems}
           clientes={clientesParaFiltro}

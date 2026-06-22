@@ -45,3 +45,4 @@ next-env.d.ts
 .devlog.txt
 .dev-log.txt
 *-log.txt
+shot-*.png

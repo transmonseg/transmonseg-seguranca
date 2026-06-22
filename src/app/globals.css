@@ -6,16 +6,19 @@
 :root {
   /* Fundo e superficies */
   --bg:          #0a0a0a;
-  --card:        #141414;
-  --card-hover:  #1a1a1a;
+  --card:        #131313;
+  --card-hover:  #181818;
   --border:      #242424;
+  --border-subtle: #1c1c1c;
 
   /* Texto */
   --text:        #fafaf9;
   --text-muted:  #a8a29e;
+  --text-dim:    #57534e;
 
-  /* Acento unico neutro */
+  /* Acento unico neutro — navy */
   --accent:      #9fb3ce;
+  --accent-dim:  #1e2a38;
 
   /* Niveis de alerta (SOMENTE para indicadores de risco) */
   --vermelho:    #ef4444;
@@ -24,31 +27,85 @@
 }
 
 @theme inline {
-  --color-bg:         var(--bg);
-  --color-card:       var(--card);
-  --color-card-hover: var(--card-hover);
-  --color-border:     var(--border);
-  --color-text:       var(--text);
-  --color-muted:      var(--text-muted);
-  --color-accent:     var(--accent);
-  --color-vermelho:   var(--vermelho);
-  --color-amarelo:    var(--amarelo);
-  --color-verde:      var(--verde);
+  --color-bg:           var(--bg);
+  --color-card:         var(--card);
+  --color-card-hover:   var(--card-hover);
+  --color-border:       var(--border);
+  --color-text:         var(--text);
+  --color-muted:        var(--text-muted);
+  --color-dim:          var(--text-dim);
+  --color-accent:       var(--accent);
+  --color-accent-dim:   var(--accent-dim);
+  --color-vermelho:     var(--vermelho);
+  --color-amarelo:      var(--amarelo);
+  --color-verde:        var(--verde);
 }
 
-/* Animacao do indicador "ao vivo" */
+/* =========================================================
+   Animacoes
+   ========================================================= */
 @keyframes pulse-live {
   0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.4; transform: scale(0.85); }
+  50%       { opacity: 0.3; transform: scale(0.8); }
+}
+
+@keyframes pulse-alert {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .animate-pulse-live {
   animation: pulse-live 2s ease-in-out infinite;
 }
 
-html,
-body {
+.animate-pulse-alert {
+  animation: pulse-alert 1.5s ease-in-out infinite;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
+}
+
+/* =========================================================
+   Base
+   ========================================================= */
+html, body {
   background-color: var(--bg);
   color: var(--text);
   min-height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar discreta */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #2e2e2e; }
+
+/* =========================================================
+   Componentes reutilizaveis
+   ========================================================= */
+
+/* Numeros em mono com tabular nums */
+.num-mono {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* Tag / badge generico */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
 }

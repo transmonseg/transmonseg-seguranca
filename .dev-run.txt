@@ -18,3 +18,390 @@
  POST /api/motor 200 in 41s (next.js: 84ms, application-code: 41s)
  POST /api/motor 200 in 39.4s (next.js: 3ms, application-code: 39.4s)
  GET / 200 in 1274ms (next.js: 8ms, application-code: 1266ms)
+ POST /api/motor 200 in 40s (next.js: 38ms, application-code: 40s)
+ GET / 200 in 1136ms (next.js: 48ms, application-code: 1088ms)
+node.exe : ⨯ ./src/app/layout.tsx:4:1
+No linha:1 caractere:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (⨯ ./src/app/layout.tsx:4:1:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+✓ Compiled in 374ms
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+ GET / 500 in 1060ms (next.js: 907ms, application-code: 154ms)
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+ GET / 500 in 18ms (next.js: 10ms, application-code: 8ms)
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+ GET / 500 in 13ms (next.js: 6ms, application-code: 7ms)
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+ GET / 500 in 12ms (next.js: 5ms, application-code: 6ms)
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+ GET / 500 in 12ms (next.js: 6ms, application-code: 7ms)
+⨯ ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  [90m2 |[0m [36mimport[0m { [33mGeist[0m, [33mGeist_Mono[0m } [36mfrom[0m [32m"next/font/google"[0m;
+  [90m3 |[0m [36mimport[0m [32m"./globals.css"[0m;
+[31m[1m>[0m [90m4 |[0m [36mimport[0m [33mRelogioAoVivo[0m [36mfrom[0m [32m"./components/RelogioAoVivo"[0m;
+  [90m  |[0m [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m5 |[0m
+  [90m6 |[0m [36mconst[0m geist = [33mGeist[0m({ subsets: [[32m"latin"[0m], variable: [32m"--font-geist"[0m });
+  [90m7 |[0m [36mconst[0m geistMono = [33mGeist_Mono[0m({ subsets: [[32m"latin"[0m], variable: 
+[32m"--font-geist-mono"[0m });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+ GET / 500 in 12ms (next.js: 6ms, application-code: 7ms)
+[browser] Uncaught Error: ./src/app/layout.tsx:4:1
+Module not found: Can't resolve './components/RelogioAoVivo'
+  2 | import { Geist, Geist_Mono } from "next/font/google";
+  3 | import "./globals.css";
+> 4 | import RelogioAoVivo from "./components/RelogioAoVivo";
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  5 |
+  6 | const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
+  7 | const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
+
+
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+    at <unknown> (Error: ./src/app/layout.tsx:4:1)
+    at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+    at <unknown> (Error: (./src/app/layout.tsx:4:1)
+    at <unknown> (https://nextjs.org/docs/messages/module-not-found)
+✓ Compiled in 201ms
+ GET / 200 in 783ms (next.js: 2ms, application-code: 780ms)
+✓ Compiled in 81ms
+ GET / 200 in 272ms (next.js: 121ms, application-code: 151ms)
+ GET / 200 in 70ms (next.js: 4ms, application-code: 66ms)
+✓ Compiled in 185ms
+ GET / 200 in 220ms (next.js: 129ms, application-code: 91ms)
+ GET / 200 in 1097ms (next.js: 5ms, application-code: 1092ms)
+ GET / 200 in 755ms (next.js: 6ms, application-code: 749ms)
+✓ Compiled in 53ms
+ GET / 200 in 199ms (next.js: 124ms, application-code: 75ms)
+✓ Compiled in 78ms
+✓ Compiled in 52ms
+ GET / 200 in 1326ms (next.js: 4ms, application-code: 1322ms)
+ GET / 200 in 813ms (next.js: 5ms, application-code: 808ms)
+ GET / 200 in 901ms (next.js: 5ms, application-code: 897ms)
+ GET / 200 in 943ms (next.js: 4ms, application-code: 939ms)
+ GET / 200 in 716ms (next.js: 5ms, application-code: 710ms)
+ GET / 200 in 805ms (next.js: 4ms, application-code: 801ms)
+✓ Compiled in 144ms
+ GET / 200 in 190ms (next.js: 125ms, application-code: 65ms)
+✓ Compiled in 23ms
+ GET / 200 in 154ms (next.js: 83ms, application-code: 71ms)
+ GET / 200 in 1353ms (next.js: 4ms, application-code: 1349ms)
+ GET / 200 in 1025ms (next.js: 3ms, application-code: 1023ms)
+ GET / 200 in 858ms (next.js: 4ms, application-code: 854ms)
+ GET / 200 in 748ms (next.js: 4ms, application-code: 744ms)
+ GET / 200 in 932ms (next.js: 6ms, application-code: 926ms)
+ GET / 200 in 712ms (next.js: 6ms, application-code: 706ms)
+✓ Compiled in 43ms
+ GET / 200 in 182ms (next.js: 108ms, application-code: 74ms)
+✓ Compiled in 26ms
+ GET / 200 in 152ms (next.js: 84ms, application-code: 68ms)
