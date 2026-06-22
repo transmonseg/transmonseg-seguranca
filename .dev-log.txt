@@ -1,0 +1,38 @@
+
+> transmonseg-central@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://26.73.129.112:3000
+- Environments: .env.local
+✓ Ready in 689ms
+
+⨯ TypeError: Cannot destructure property 'cor' of 'cfg[nivel]' as it is undefined.
+    at BadgeNivel (src\app\page.tsx:83:11)
+  81 |     verde:    { cor: "var(--verde)",    label: "Normal"   },
+  82 |   };
+> 83 |   const { cor, label } = cfg[nivel];
+     |           ^
+  84 |   return (
+  85 |     <span
+  86 |       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semi... {
+  digest: '3225945215'
+}
+⨯ TypeError: Cannot destructure property 'cor' of 'cfg[nivel]' as it is undefined.
+    at BadgeNivel (src\app\page.tsx:83:11)
+  81 |     verde:    { cor: "var(--verde)",    label: "Normal"   },
+  82 |   };
+> 83 |   const { cor, label } = cfg[nivel];
+     |           ^
+  84 |   return (
+  85 |     <span
+  86 |       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semi... {
+  digest: '3225945215'
+}
+ GET / 500 in 1520ms (next.js: 209ms, application-code: 1311ms)
+✓ Compiled in 28ms
+ GET / 200 in 980ms (next.js: 73ms, application-code: 907ms)
+ GET / 200 in 716ms (next.js: 6ms, application-code: 711ms)
+ GET / 200 in 711ms (next.js: 5ms, application-code: 706ms)
+[?25h
