@@ -8,10 +8,12 @@ import {
   agruparAlvosPorPlaca,
   agruparPontosPorPlaca,
   distAlvoPendenteMaisProximoM,
+  alvoPendenteMaisProximo,
+  rumoGraus,
   normalizar,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
-import { avaliar, detectarJammer, emHorarioOperacao } from "@/lib/detectores";
+import { avaliar, detectarJammer, foraDeRota, emHorarioOperacao } from "@/lib/detectores";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -383,11 +385,24 @@ export async function POST(request: Request) {
           // com a do ciclo anterior (afastamento).
           const pontosVeiculo = pontosPorPlaca.get(pos.placa);
           const temPendentes = (pontosVeiculo ?? []).some((pt) => !pt.feito);
-          const distAlvoM = distAlvoPendenteMaisProximoM(pos.lat, pos.lng, pontosVeiculo);
+          const maisProximo = alvoPendenteMaisProximo(pos.lat, pos.lng, pontosVeiculo);
+          const distAlvoM = maisProximo?.distM ?? null;
           const distAlvoAnteriorM =
             anterior && anterior.lat != null && anterior.lng != null
               ? distAlvoPendenteMaisProximoM(anterior.lat, anterior.lng, pontosVeiculo)
               : null;
+          // Rumo do movimento (ciclo anterior → posição atual) e rumo até o
+          // ponto pendente mais próximo, para o detector corroborar o desvio.
+          const rumoMovimento =
+            anterior && anterior.lat != null && anterior.lng != null &&
+            (anterior.lat !== pos.lat || anterior.lng !== pos.lng)
+              ? rumoGraus(anterior.lat, anterior.lng, pos.lat, pos.lng)
+              : null;
+          const rumoAlvo = maisProximo
+            ? rumoGraus(pos.lat, pos.lng, maisProximo.ponto.lat, maisProximo.ponto.lng)
+            : null;
+          // Condição FROUXA de permanência: ainda fora de rota (anti-pisca).
+          const estaForaDeRota = pos.fresco && foraDeRota(pos, { distAlvoM, temPendentes, emOperacao, foraDaBase });
 
           // ─── Determinar localização do veículo ─────────────────────────
           // Base > Em deslocamento > Parado (geocode reverso)
@@ -434,6 +449,8 @@ export async function POST(request: Request) {
                   distAlvoM,
                   distAlvoAnteriorM,
                   temPendentes,
+                  rumoMovimento,
+                  rumoAlvo,
                 })
               : null;
 
@@ -538,10 +555,13 @@ export async function POST(request: Request) {
             .eq("veiculo_id", veiculo_id)
             .eq("status", "ativo");
 
-          // Alertas do detector (panico, bau, jammer, excesso, parada_longa)
-          // Excluir alertas do tipo 'favela' da resolucao automatica aqui
-          // (o bloco de favela cuida disso separadamente)
-          const alertasNaoFavela = (alertasAtivos ?? []).filter((a) => a.tipo !== "favela");
+          // Resolucao automatica generica: todos os tipos EXCETO favela e
+          // desvio, que tem ciclo de vida proprio (tratados em blocos separados).
+          // 'favela': bloco de favela. 'desvio': logica anti-pisca abaixo.
+          const alertasGerenciados = (alertasAtivos ?? []).filter(
+            (a) => a.tipo !== "favela" && a.tipo !== "desvio"
+          );
+          const desvioAtivo = (alertasAtivos ?? []).find((a) => a.tipo === "desvio");
 
           if (alerta) {
             // Verificar se ja existe alerta ativo do mesmo tipo
@@ -562,15 +582,25 @@ export async function POST(request: Request) {
                 desde: agora.toISOString(),
               });
             }
-          } else {
-            // Sem alerta detectado — resolver alertas ativos existentes (exceto favela)
-            if (alertasNaoFavela.length > 0) {
-              const ids = alertasNaoFavela.map((a) => a.id);
-              await supabase
-                .from("alertas")
-                .update({ status: "resolvido", resolvido_em: agora.toISOString() })
-                .in("id", ids);
-            }
+          } else if (alertasGerenciados.length > 0) {
+            // Sem alerta de maior prioridade — resolver os genericos ativos.
+            await supabase
+              .from("alertas")
+              .update({ status: "resolvido", resolvido_em: agora.toISOString() })
+              .in("id", alertasGerenciados.map((a) => a.id));
+          }
+
+          // ─── Ciclo de vida do DESVIO (anti-pisca) ──────────────────────
+          // Criado pelo gatilho estrito (via `alerta`, faixa local + afastando +
+          // rumo oposto). Mas só RESOLVIDO quando o veiculo VOLTA pra rota
+          // (estaForaDeRota=false: chegou perto de um ponto, entrou na base, ou
+          // acabaram os pendentes). Assim um mesmo desvio = um unico alerta, em
+          // vez de criar/resolver a cada ciclo conforme a distancia oscila.
+          if (desvioAtivo && !estaForaDeRota) {
+            await supabase
+              .from("alertas")
+              .update({ status: "resolvido", resolvido_em: agora.toISOString() })
+              .eq("id", desvioAtivo.id);
           }
         } catch (errVeiculo) {
           const msg = `Erro ao processar veiculo (raw): ${String(errVeiculo)}`;

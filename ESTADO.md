@@ -26,12 +26,13 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
 - [x] **Áreas de risco — estado inteiro do RJ (1.641):** 1.072 SABREN (capital) + 569 IBGE Aglomerados Subnormais 2010 (resto do estado, `/api/favelas` cacheado, precisão ~2m).
 - [x] **Bases = terreno real (polígono):** `06_bases_cluster.mjs` casa cluster de veículos parados com landuse do OSM (Benassi → CEASA-RJ; Nutry → convex hull fallback). Motor usa point-in-polygon. migration 004. Ver [[project_transmonseg_bases_cluster]].
 - [x] **Bug crítico corrigido:** upsert gravava `geom` como POINT(lng,lng) → favela nunca detectava. Corrigido; favela voltou a funcionar.
+- [x] **Fase 8 (parcial) — Desvio de rota FUNCIONANDO ao vivo:** sem rota traçada do Unitrac, a "rota" são os pontos de entrega (alvos). `detectarDesvio` só dispara em operação + fora da base + em movimento + com pendentes + **se afastando** (dist ao alvo pendente mais próximo cresceu >200m vs ciclo anterior — esse filtro mata os falsos positivos de viagem longa que se aproxima). >=5km afastando = crítico(72), >=2,5km = atenção(48). `unitrac.ts` (agruparPontosPorPlaca, distAlvoPendenteMaisProximoM, haversineM), `motor/route.ts` (dist atual vs anterior), `mapa` mostra a malha de pontos (azul). 49 testes. **Verificado em produção 23/06: TTL-2H39 12,4km e TUE-1C12 5,3km, ambos críticos se afastando.** OSRM/Google Routes fica pra refinamento futuro (rate limit a 441 veíc/min).
 
 ## Próximos passos (retomar aqui)
 - [ ] **Fase 5 — Auth + RLS (PRIORIDADE: a URL é pública hoje, sem login).** Login operadores, policies RLS por papel/cliente → destrava Realtime.
 - [ ] Fase 6 — Tiroteios (Fogo Cruzado) como camada/dashboard.
 - [ ] Fase 7 — Dashboards/relatórios (muita informação visual).
-- [ ] Fase 8 — Detecção off-route (Google Routes/OSRM a partir dos alvos) + POI + score/encadeamento.
+- [ ] Fase 8 — Refino do desvio: confirmar afastamento com OSRM/Google Routes real (hoje é haversine ao alvo) + POI + score/encadeamento.
 - [ ] Fase 9 — Landing page.
 - [ ] Melhorias pendentes: base da Nutry no terreno OSM real (hoje convex hull); `local` "Base" às vezes fica stale (COALESCE) — cosmético.
 

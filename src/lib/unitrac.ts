@@ -155,14 +155,41 @@ export function distAlvoPendenteMaisProximoM(
   lng: number,
   pontos: PontoEntrega[] | undefined
 ): number | null {
+  return alvoPendenteMaisProximo(lat, lng, pontos)?.distM ?? null;
+}
+
+// Ponto de entrega PENDENTE mais próximo (o ponto + a distância em metros).
+// Precisamos do ponto, não só da distância, para calcular o rumo até ele.
+export function alvoPendenteMaisProximo(
+  lat: number,
+  lng: number,
+  pontos: PontoEntrega[] | undefined
+): { ponto: PontoEntrega; distM: number } | null {
   if (!pontos || pontos.length === 0) return null;
-  let menor: number | null = null;
+  let melhor: { ponto: PontoEntrega; distM: number } | null = null;
   for (const p of pontos) {
     if (p.feito) continue;
     const d = haversineM(lat, lng, p.lat, p.lng);
-    if (menor === null || d < menor) menor = d;
+    if (melhor === null || d < melhor.distM) melhor = { ponto: p, distM: d };
   }
-  return menor;
+  return melhor;
+}
+
+// Rumo inicial (graus, 0=Norte, 90=Leste) de A para B.
+export function rumoGraus(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const toR = (d: number) => (d * Math.PI) / 180;
+  const toG = (r: number) => (r * 180) / Math.PI;
+  const y = Math.sin(toR(bLng - aLng)) * Math.cos(toR(bLat));
+  const x =
+    Math.cos(toR(aLat)) * Math.sin(toR(bLat)) -
+    Math.sin(toR(aLat)) * Math.cos(toR(bLat)) * Math.cos(toR(bLng - aLng));
+  return (toG(Math.atan2(y, x)) + 360) % 360;
+}
+
+// Diferença angular absoluta entre dois rumos (0..180 graus).
+export function difAngulo(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
 }
 
 // Normaliza uma posição bruta da Unitrac para o tipo interno.

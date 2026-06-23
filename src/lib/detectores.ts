@@ -112,59 +112,85 @@ export function detectarParadaLonga(ctx: {
   return null;
 }
 
-// Detector de DESVIO DE ROTA.
-// A Unitrac não fornece a rota planejada, mas fornece os ALVOS (pontos de
-// entrega) ordenados. A rota do veículo é o conjunto de pontos pendentes.
-// Desvio = em operação, fora da base e em movimento, o veículo está longe de
-// TODOS os seus pontos de entrega (não está chegando em nenhum). O sinal de
-// "se afastando" (distância ao ponto mais próximo aumentou desde o ciclo
-// anterior) separa o desvio real do mero deslocamento base→primeira entrega.
-export function detectarDesvio(
+// Faixa de distância (m) em que faz sentido falar de "desvio de rota local".
+// Abaixo do mínimo o veículo está chegando no ponto (normal). Acima do teto não
+// é desvio: é DESLOCAMENTO interurbano (a frota atende o estado todo; veículos
+// indo/voltando de regiões distantes ficam a 40-120km de qualquer pendente).
+const DESVIO_MIN_M = 2500;
+const DESVIO_GATILHO_TETO_M = 25000;
+
+export type CtxDesvio = {
+  distAlvoM: number | null;
+  distAlvoAnteriorM: number | null;
+  temPendentes: boolean;
+  emOperacao: boolean;
+  foraDaBase: boolean;
+  // Rumos (graus) para corroborar o desvio: o do movimento (ciclo anterior →
+  // atual) e o do veículo até o alvo pendente mais próximo. null = sem dados.
+  rumoMovimento: number | null;
+  rumoAlvo: number | null;
+};
+
+// O veículo está FORA DE ROTA agora? Condição FROUXA, usada para MANTER um
+// alerta de desvio ativo (anti-pisca): basta estar longe (>=2,5km), com
+// pendentes, fora da base e em operação. Não exige afastamento instantâneo nem
+// rumo — assim o alerta não some quando o veículo para no semáforo ou faz uma
+// curva. Sem teto superior: se o desvio escalou pra 60km, continua valendo.
+export function foraDeRota(
   p: PosicaoNormalizada,
-  ctx: {
-    distAlvoM: number | null;
-    distAlvoAnteriorM: number | null;
-    temPendentes: boolean;
-    emOperacao: boolean;
-    foraDaBase: boolean;
-  }
-): Alerta | null {
-  // Sem rota ativa (sem pendentes / fora de operação / na base): nada a desviar.
+  ctx: { distAlvoM: number | null; temPendentes: boolean; emOperacao: boolean; foraDaBase: boolean }
+): boolean {
+  if (!ctx.temPendentes || !ctx.emOperacao || !ctx.foraDaBase) return false;
+  if (ctx.distAlvoM === null) return false;
+  return ctx.distAlvoM >= 2000;
+}
+
+// Detector de DESVIO DE ROTA (GATILHO de criação — estrito).
+// A Unitrac não fornece a rota planejada, só os ALVOS (pontos de entrega). A
+// "rota" é o conjunto de pontos pendentes. Para criar um alerta exigimos TRÊS
+// sinais juntos, o que elimina os falsos positivos:
+//   1) faixa LOCAL de rota (2,5km a 25km) — acima disso é deslocamento, não desvio;
+//   2) SE AFASTANDO (distância ao pendente mais próximo cresceu desde o ciclo anterior);
+//   3) rumo do movimento OPOSTO ao alvo (indo no sentido contrário ao ponto).
+// Quem vai em direção às entregas (distância caindo OU rumo pro alvo) nunca dispara.
+export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
   if (!ctx.temPendentes || !ctx.emOperacao || !ctx.foraDaBase) return null;
   if (ctx.distAlvoM === null) return null;
   // Desvio é em movimento; veículo parado é coberto por parada_longa.
   if (p.velocidade <= 0) return null;
-
-  // CHAVE para não confundir desvio com deslocamento legítimo: a frota entrega
-  // no estado inteiro, então estar longe das entregas é normal (indo pra
-  // região). Só é desvio quando o veículo está SE AFASTANDO do ponto pendente
-  // mais próximo (distância aumentou desde o ciclo anterior). Quem vai em
-  // direção às entregas (distância caindo) nunca dispara, por mais longe que esteja.
+  // Faixa local: perto do ponto é normal; muito longe é deslocamento interurbano.
+  if (ctx.distAlvoM < DESVIO_MIN_M || ctx.distAlvoM > DESVIO_GATILHO_TETO_M) return null;
+  // Se afastando do ponto pendente mais próximo.
   const afastando =
     ctx.distAlvoAnteriorM !== null && ctx.distAlvoM > ctx.distAlvoAnteriorM + 200;
   if (!afastando) return null;
+  // Rumo do movimento aponta para LONGE do alvo (> 90° de diferença).
+  if (ctx.rumoMovimento === null || ctx.rumoAlvo === null) return null;
+  const opostoAoAlvo = difAnguloGraus(ctx.rumoMovimento, ctx.rumoAlvo) > 90;
+  if (!opostoAoAlvo) return null;
 
   const km = (ctx.distAlvoM / 1000).toFixed(1).replace(".", ",");
-
-  // Longe E se afastando: desvio crítico (não está chegando em nenhuma entrega).
   if (ctx.distAlvoM >= 5000) {
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Fora de rota: ${km}km do ponto de entrega mais próximo e se afastando`,
+      motivo: `Fora de rota: ${km}km do ponto de entrega e seguindo no sentido oposto`,
       score: 72,
     };
   }
-  // Começando a sair da rota: atenção.
-  if (ctx.distAlvoM >= 2500) {
-    return {
-      nivel: "atencao",
-      tipo: "desvio",
-      motivo: `Saindo da rota: ${km}km do ponto e se afastando`,
-      score: 48,
-    };
-  }
-  return null;
+  return {
+    nivel: "atencao",
+    tipo: "desvio",
+    motivo: `Saindo da rota: ${km}km do ponto, sentido oposto`,
+    score: 48,
+  };
+}
+
+// Diferença angular absoluta entre dois rumos (0..180). Duplicada de unitrac
+// para manter este módulo sem dependências de I/O.
+function difAnguloGraus(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
 }
 
 // Avalia todos os detectores e retorna o alerta de maior severidade.
@@ -180,6 +206,8 @@ export function avaliar(
     distAlvoM?: number | null;
     distAlvoAnteriorM?: number | null;
     temPendentes?: boolean;
+    rumoMovimento?: number | null;
+    rumoAlvo?: number | null;
   }
 ): Alerta | null {
   const candidatos: Alerta[] = [
@@ -195,6 +223,8 @@ export function avaliar(
           temPendentes: ctx.temPendentes ?? false,
           emOperacao: ctx.emOperacao,
           foraDaBase: ctx.foraDaBase,
+          rumoMovimento: ctx.rumoMovimento ?? null,
+          rumoAlvo: ctx.rumoAlvo ?? null,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
