@@ -14,6 +14,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import CardVeiculoOperacao from "./components/CardVeiculoOperacao";
 import FaixaColapsavel from "./components/FaixaColapsavel";
 import VerTodosBtn from "./components/VerTodosBtn";
+import MapaWrapper from "./components/MapaWrapper";
 
 // Central ao vivo: nunca prerender estatico.
 export const dynamic = "force-dynamic";
@@ -612,7 +613,8 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
-  const { cliente: clienteParam } = await searchParams;
+  const { cliente: clienteParam, vista } = await searchParams;
+  const vistaMapa = vista === "mapa";
   const supabase = createAdminClient();
 
   const [
@@ -860,6 +862,35 @@ export default async function DashboardPage({
       </section>
 
       {/* ============================================================
+          TOGGLE Lista | Mapa
+          ============================================================ */}
+      <section aria-label="Visao" style={{ marginBottom: "2.5rem" }}>
+        <div
+          className="inline-flex"
+          style={{ border: "1px solid var(--border)", padding: "4px", gap: "4px", borderRadius: "0.75rem", backgroundColor: "var(--card)" }}
+        >
+          <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}`} className="text-sm"
+            style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
+              color: !vistaMapa ? "var(--text)" : "var(--text-muted)",
+              backgroundColor: !vistaMapa ? "var(--accent-dim)" : "transparent" }}>
+            Lista
+          </Link>
+          <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}&vista=mapa`} className="text-sm"
+            style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
+              color: vistaMapa ? "var(--text)" : "var(--text-muted)",
+              backgroundColor: vistaMapa ? "var(--accent-dim)" : "transparent" }}>
+            Mapa
+          </Link>
+        </div>
+      </section>
+
+      {vistaMapa ? (
+        <section aria-label="Mapa da frota" style={{ marginBottom: "3.5rem" }}>
+          <MapaWrapper cliente={clienteAtivo.cod_user_unitrac} />
+        </section>
+      ) : (
+      <>
+      {/* ============================================================
           3. CRITICOS — cards grandes, dominam a tela
           ============================================================ */}
       <section aria-label="Alertas criticos" style={{ marginBottom: "3.5rem" }}>
@@ -1034,6 +1065,8 @@ export default async function DashboardPage({
           </div>
         </FaixaColapsavel>
       </div>
+      </>
+      )}
 
     </div>
   );
