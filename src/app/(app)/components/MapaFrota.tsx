@@ -15,6 +15,10 @@ type Dados = {
   bases: GeoJSON.FeatureCollection | null;
   pontos?: { lat: number; lng: number }[];
 };
+type Tiroteio = {
+  lat: number; lng: number; date: string; bairro: string; cidade: string;
+  motivo: string | null; vitimas: number; acaoPolicial: boolean; recente: boolean;
+};
 
 const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
@@ -40,6 +44,10 @@ function AjustarVista({
     if (foco === "base" && bases?.features?.length) {
       try { map.fitBounds(L.geoJSON(bases).getBounds(), { padding: [40, 40] }); ajustado.current = cliente; return; } catch { /* ignora */ }
     }
+    // ?foco=rio -> enquadra a região metropolitana (onde se concentram tiroteios)
+    if (foco === "rio") {
+      map.setView([-22.9, -43.4], 11); ajustado.current = cliente; return;
+    }
     // padrão: enquadra a frota E as áreas de risco (estado inteiro)
     if (pontos.length === 0 || !favelas) return;
     const limites = L.latLngBounds(pontos);
@@ -53,10 +61,24 @@ function AjustarVista({
 export default function MapaFrota({ cliente }: { cliente: string }) {
   const [dados, setDados] = useState<Dados | null>(null);
   const [favelas, setFavelas] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
 
   // Favelas: carregam uma vez (estáticas, cacheadas, perímetro preciso).
   useEffect(() => {
     fetch("/api/favelas").then((r) => r.json()).then(setFavelas).catch(() => {});
+  }, []);
+
+  // Tiroteios (Fogo Cruzado): risco dinâmico, recarrega a cada 5 min.
+  useEffect(() => {
+    let ativo = true;
+    const carregar = () =>
+      fetch("/api/tiroteios")
+        .then((r) => r.json())
+        .then((d) => { if (ativo && Array.isArray(d?.tiroteios)) setTiroteios(d.tiroteios); })
+        .catch(() => {});
+    carregar();
+    const id = setInterval(carregar, 300000);
+    return () => { ativo = false; clearInterval(id); };
   }, []);
 
   // Veículos + bases: por cliente, atualizam junto com a tela.
@@ -97,7 +119,7 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
         {favelas && (
           <GeoJSON
             data={favelas}
-            style={{ color: "#ff2d2d", weight: 1.5, fillColor: "#ff2d2d", fillOpacity: 0.4, opacity: 0.95 }}
+            style={{ color: "#ff2d2d", weight: 1, fillColor: "#ff2d2d", fillOpacity: 0.22, opacity: 0.7 }}
           />
         )}
         {/* Malha de pontos de entrega pendentes (a rota que a frota cobre).
@@ -113,6 +135,33 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
             style={{ color: "#7dd3fc", weight: 1.5, fillColor: "#7dd3fc", fillOpacity: 0.12, opacity: 0.85, dashArray: "5 4" }}
           />
         )}
+        {/* Tiroteios recentes (Fogo Cruzado, RJ, últimos 3 dias). Âmbar; os das
+            últimas 24h em laranja vivo e maiores. Evento pontual de risco. */}
+        {tiroteios.map((t, i) => (
+          <CircleMarker key={`tiro${i}`} center={[t.lat, t.lng]}
+            radius={t.recente ? 6 : 4}
+            pathOptions={{
+              color: t.recente ? "#ffffff" : "#fde68a",
+              weight: t.recente ? 2 : 1,
+              fillColor: t.recente ? "#ff6a00" : "#d97706",
+              fillOpacity: 1,
+            }}>
+            <Popup>
+              <div style={{ fontWeight: 700, fontSize: 13, color: "#c2410c" }}>
+                Tiroteio{t.acaoPolicial ? " · ação policial" : ""}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 2 }}>
+                {t.bairro ? `${t.bairro}, ` : ""}{t.cidade}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 2 }}>
+                {new Date(t.date).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                {t.recente ? " · recente" : ""}
+              </div>
+              {t.motivo && <div style={{ fontSize: 12, marginTop: 2 }}>motivo: {t.motivo}</div>}
+              {t.vitimas > 0 && <div style={{ fontSize: 12, marginTop: 2, color: "#dc2626" }}>{t.vitimas} vítima(s)</div>}
+            </Popup>
+          </CircleMarker>
+        ))}
         {comPos.map((v, i) => {
           const cor = COR[v.nivel] ?? "#5fb87a";
           return (
