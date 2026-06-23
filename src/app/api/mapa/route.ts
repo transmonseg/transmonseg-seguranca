@@ -33,15 +33,22 @@ export async function GET(request: Request) {
       )
     ).rows;
 
-    const bases = (
-      await client.query(
-        `select nome, ST_Y(geom::geometry) lat, ST_X(geom::geometry) lng, raio_m
-         from bases where cliente_id = $1`,
-        [clienteId]
-      )
-    ).rows;
+    // Bases como GeoJSON (polígono do perímetro real, não círculo).
+    const basesRes = await client.query<{ gj: unknown }>(
+      `select coalesce(
+         jsonb_build_object('type','FeatureCollection','features', jsonb_agg(
+           jsonb_build_object(
+             'type','Feature',
+             'properties', jsonb_build_object('nome', nome),
+             'geometry', ST_AsGeoJSON(geom::geometry)::jsonb
+           ))),
+         jsonb_build_object('type','FeatureCollection','features','[]'::jsonb)
+       ) gj
+       from bases where cliente_id = $1`,
+      [clienteId]
+    );
 
-    return Response.json({ veiculos, bases });
+    return Response.json({ veiculos, bases: basesRes.rows[0].gj });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });
   } finally {

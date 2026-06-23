@@ -147,16 +147,29 @@ async function geocodeReverso(
   }
 }
 
-// ─── Distancia Haversine em metros entre dois pontos WGS-84 ─────────────────
-function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6_371_000; // raio medio da Terra em metros
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+// ─── Point-in-polygon (ray casting) para checar se o veículo está na base ───
+// As bases são polígonos reais (perímetro de onde a frota estaciona), não
+// círculos. Lida com Polygon e MultiPolygon; ignora buracos (buffers não têm).
+type GeoJSONGeom =
+  | { type: "Polygon"; coordinates: number[][][] }
+  | { type: "MultiPolygon"; coordinates: number[][][][] };
+
+function pontoEmAnel(lng: number, lat: number, anel: number[][]): boolean {
+  let dentro = false;
+  for (let i = 0, j = anel.length - 1; i < anel.length; j = i++) {
+    const xi = anel[i][0], yi = anel[i][1];
+    const xj = anel[j][0], yj = anel[j][1];
+    const cruza = yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (cruza) dentro = !dentro;
+  }
+  return dentro;
+}
+
+function pontoEmGeo(lng: number, lat: number, geom: GeoJSONGeom | null): boolean {
+  if (!geom) return false;
+  if (geom.type === "Polygon") return pontoEmAnel(lng, lat, geom.coordinates[0]);
+  if (geom.type === "MultiPolygon") return geom.coordinates.some((poly) => pontoEmAnel(lng, lat, poly[0]));
+  return false;
 }
 
 // ─── Handler principal ───────────────────────────────────────────────────────
@@ -213,11 +226,11 @@ export async function POST(request: Request) {
       }
     }
 
-    // 3a. Carregar bases de cada cliente para filtro de garagem
-    // Estrutura: cliente_id -> lista de { lat, lng, raio_m, nome }
+    // 3a. Carregar bases de cada cliente (polígonos do perímetro real).
+    // Estrutura: cliente_id -> lista de { nome, geom (GeoJSON) }
     const mapaBasesCliente = new Map<
       string,
-      { lat: number; lng: number; raio_m: number; nome: string }[]
+      { nome: string; geom: GeoJSONGeom | null }[]
     >();
 
     {
@@ -225,22 +238,16 @@ export async function POST(request: Request) {
       try {
         const { rows: basesRows } = await pgBases.query<{
           cliente_id: string;
-          lat: number;
-          lng: number;
-          raio_m: number;
           nome: string;
+          geojson: string;
         }>(
-          `SELECT
-             cliente_id,
-             ST_Y(geom::geometry) AS lat,
-             ST_X(geom::geometry) AS lng,
-             raio_m,
-             nome
-           FROM bases`
+          `SELECT cliente_id, nome, ST_AsGeoJSON(geom::geometry) AS geojson FROM bases`
         );
         for (const b of basesRows) {
           const lista = mapaBasesCliente.get(b.cliente_id) ?? [];
-          lista.push({ lat: b.lat, lng: b.lng, raio_m: b.raio_m, nome: b.nome });
+          let geom: GeoJSONGeom | null = null;
+          try { geom = JSON.parse(b.geojson) as GeoJSONGeom; } catch { /* ignora */ }
+          lista.push({ nome: b.nome, geom });
           mapaBasesCliente.set(b.cliente_id, lista);
         }
       } catch (errBases) {
@@ -349,10 +356,9 @@ export async function POST(request: Request) {
           }
 
           // Calcular se o veiculo esta dentro de alguma base do cliente
+          // (point-in-polygon contra o perímetro real da base).
           const basesCliente = mapaBasesCliente.get(cliente_id) ?? [];
-          const baseOcupada = basesCliente.find(
-            (b) => haversineM(pos.lat, pos.lng, b.lat, b.lng) <= b.raio_m
-          );
+          const baseOcupada = basesCliente.find((b) => pontoEmGeo(pos.lng, pos.lat, b.geom));
           const foraDaBase = !baseOcupada;
 
           // ─── Determinar localização do veículo ─────────────────────────
@@ -439,7 +445,7 @@ export async function POST(request: Request) {
                  entregas_feitas, entregas_total, local)
                VALUES
                 ($1, $2, $3,
-                 ST_SetSRID(ST_MakePoint($4, $3), 4326)::geography,
+                 ST_SetSRID(ST_MakePoint($4, $2), 4326)::geography,
                  $5, $6, $7, $8, $9, $10, $11,
                  $12::timestamptz, $13::timestamptz, $14::timestamptz,
                  $15, $16, $17)

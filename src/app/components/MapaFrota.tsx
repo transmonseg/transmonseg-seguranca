@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, Circle, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -10,8 +10,7 @@ type Veiculo = {
   velocidade: number; ignicao: boolean; local: string | null;
   entregas_feitas: number | null; entregas_total: number | null; atraso_min: number;
 };
-type Base = { nome: string; lat: number; lng: number; raio_m: number };
-type Dados = { veiculos: Veiculo[]; bases: Base[] };
+type Dados = { veiculos: Veiculo[]; bases: GeoJSON.FeatureCollection | null };
 
 const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
@@ -86,10 +85,13 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
             style={{ color: "#ff2d2d", weight: 1.5, fillColor: "#ff2d2d", fillOpacity: 0.4, opacity: 0.95 }}
           />
         )}
-        {dados.bases.map((b, i) => (
-          <Circle key={`b${i}`} center={[b.lat, b.lng]} radius={b.raio_m}
-            pathOptions={{ color: "#9fb3ce", weight: 1.2, fillColor: "#9fb3ce", fillOpacity: 0.06 }} />
-        ))}
+        {dados.bases && (
+          <GeoJSON
+            key={`bases-${cliente}`}
+            data={dados.bases}
+            style={{ color: "#7dd3fc", weight: 1.5, fillColor: "#7dd3fc", fillOpacity: 0.12, opacity: 0.85, dashArray: "5 4" }}
+          />
+        )}
         {comPos.map((v, i) => {
           const cor = COR[v.nivel] ?? "#5fb87a";
           return (
