@@ -7,6 +7,7 @@ import {
   detectarExcessoVelocidade,
   detectarParadaLonga,
   detectarDesvio,
+  detectarTiroteioProximo,
   foraDeRota,
   avaliar,
   formataDuracao,
@@ -225,6 +226,31 @@ describe("detectarDesvio", () => {
   });
   it("longe e ESTAVEL (mesma distancia) nao aciona", () => {
     expect(detectarDesvio(emMov, { ...base, distAlvoM: 6000, distAlvoAnteriorM: 6050 })).toBeNull();
+  });
+});
+
+describe("detectarTiroteioProximo", () => {
+  const fresco = posicaoBase({ fresco: true });
+  it("tiroteio a 800m com posicao fresca retorna critico", () => {
+    const a = detectarTiroteioProximo(fresco, { distTiroteioM: 800, tiroteioIdadeMin: 25 });
+    expect(a?.nivel).toBe("critico");
+    expect(a?.tipo).toBe("tiroteio");
+    expect(a?.motivo).toContain("800m");
+    expect(a?.motivo).toContain("25min");
+  });
+  it("tiroteio a 2km retorna atencao", () => {
+    const a = detectarTiroteioProximo(fresco, { distTiroteioM: 2000, tiroteioIdadeMin: 10 });
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.motivo).toContain("2,0km");
+  });
+  it("tiroteio a 4km nao aciona (longe)", () => {
+    expect(detectarTiroteioProximo(fresco, { distTiroteioM: 4000, tiroteioIdadeMin: 5 })).toBeNull();
+  });
+  it("sem tiroteio ativo (distTiroteioM null) nao aciona", () => {
+    expect(detectarTiroteioProximo(fresco, { distTiroteioM: null, tiroteioIdadeMin: null })).toBeNull();
+  });
+  it("posicao nao fresca nao aciona (sem posicao confiavel)", () => {
+    expect(detectarTiroteioProximo(posicaoBase({ fresco: false }), { distTiroteioM: 500, tiroteioIdadeMin: 5 })).toBeNull();
   });
 });
 

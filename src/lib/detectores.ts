@@ -193,6 +193,46 @@ function difAnguloGraus(a: number, b: number): number {
   return d > 180 ? 360 - d : d;
 }
 
+function fmtDist(m: number): string {
+  if (m < 1000) return `${Math.round(m / 10) * 10}m`;
+  return `${(m / 1000).toFixed(1).replace(".", ",")}km`;
+}
+function fmtIdade(min: number | null): string {
+  if (min == null) return "agora";
+  if (min < 1) return "agora";
+  if (min < 60) return `há ${min}min`;
+  return `há ${Math.floor(min / 60)}h`;
+}
+
+// Detector de TIROTEIO PRÓXIMO (operação/violência acontecendo agora na região).
+// Cruza a posição do veículo com os tiroteios ATIVOS (últimas ~3h, Fogo Cruzado).
+// Perigo imediato à carga: se há tiro perto, a central tem que saber JÁ.
+export function detectarTiroteioProximo(
+  p: PosicaoNormalizada,
+  ctx: { distTiroteioM: number | null; tiroteioIdadeMin: number | null }
+): Alerta | null {
+  if (ctx.distTiroteioM === null) return null;
+  if (!p.fresco) return null; // sem posição confiável, não dá pra cruzar
+  const quando = fmtIdade(ctx.tiroteioIdadeMin);
+  if (ctx.distTiroteioM <= 1500) {
+    return {
+      nivel: "critico",
+      tipo: "tiroteio",
+      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) na regiao do veiculo`,
+      score: 88,
+    };
+  }
+  if (ctx.distTiroteioM <= 3000) {
+    return {
+      nivel: "atencao",
+      tipo: "tiroteio",
+      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) perto da rota`,
+      score: 55,
+    };
+  }
+  return null;
+}
+
 // Avalia todos os detectores e retorna o alerta de maior severidade.
 // Prioridade: critico > atencao; desempate por score (maior vence).
 export function avaliar(
@@ -208,6 +248,8 @@ export function avaliar(
     temPendentes?: boolean;
     rumoMovimento?: number | null;
     rumoAlvo?: number | null;
+    distTiroteioM?: number | null;
+    tiroteioIdadeMin?: number | null;
   }
 ): Alerta | null {
   const candidatos: Alerta[] = [
@@ -216,6 +258,10 @@ export function avaliar(
     detectarJammer(p),
     detectarExcessoVelocidade(p),
     detectarParadaLonga(ctx),
+    detectarTiroteioProximo(p, {
+      distTiroteioM: ctx.distTiroteioM ?? null,
+      tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
+    }),
     ctx.distAlvoM !== undefined
       ? detectarDesvio(p, {
           distAlvoM: ctx.distAlvoM ?? null,

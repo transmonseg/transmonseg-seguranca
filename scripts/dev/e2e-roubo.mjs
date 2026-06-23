@@ -31,6 +31,11 @@ try {
   await page.waitForFunction(() => window.location.pathname === "/", { timeout: 20000 }).catch(() => {});
   await espera(1500);
 
+  // print do topo da lista (toggle + botao de apito)
+  await espera(800);
+  await page.screenshot({ path: `${DIR}/lista-topo.png` });
+  console.log("print topo salvo");
+
   // print do painel de roubo de carga na vista lista
   await page.evaluate(() => {
     const el = [...document.querySelectorAll("h2")].find((h) => /roubo de carga/i.test(h.textContent));
@@ -68,6 +73,20 @@ try {
   await espera(3500);
   await page.screenshot({ path: `${DIR}/mapa-roubo-carga.png` });
   console.log("print salvo");
+
+  // desmarca favelas e tiroteios pra ver o coroplético de roubo ISOLADO
+  await page.evaluate(() => {
+    const labels = [...document.querySelectorAll(".leaflet-control-layers-overlays label")];
+    for (const l of labels) {
+      if (/favela|tiroteio/i.test(l.textContent)) {
+        const cb = l.querySelector('input[type="checkbox"]');
+        if (cb && cb.checked) cb.click();
+      }
+    }
+  });
+  await espera(2500);
+  await page.screenshot({ path: `${DIR}/mapa-roubo-isolado.png` });
+  console.log("print isolado salvo");
   console.log(`EMAIL_QA=${email}`);
 } catch (e) {
   console.error("ERRO:", e.message);

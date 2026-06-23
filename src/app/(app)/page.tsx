@@ -17,6 +17,7 @@ import VerTodosBtn from "./components/VerTodosBtn";
 import MapaWrapper from "./components/MapaWrapper";
 import AcoesAlerta from "./components/AcoesAlerta";
 import PainelRoubo from "./components/PainelRoubo";
+import AlertaSonoro from "./components/AlertaSonoro";
 
 // Central ao vivo: nunca prerender estatico.
 export const dynamic = "force-dynamic";
@@ -249,8 +250,26 @@ function IconDesvio({ size = 16 }: { size?: number }) {
 /* Icone de tipo de alerta                                              */
 /* ------------------------------------------------------------------ */
 
+// Tiroteio próximo: mira/alvo.
+function IconTiroteio({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="3" />
+      <line x1="12" y1="1" x2="12" y2="5" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="1" y1="12" x2="5" y2="12" />
+      <line x1="19" y1="12" x2="23" y2="12" />
+    </svg>
+  );
+}
+
 function IconTipoAlerta({ tipo, size = 16 }: { tipo: string; size?: number }) {
   const t = tipo?.toLowerCase() ?? "";
+  if (t.includes("tiroteio") || t.includes("operacao") || t.includes("operação")) {
+    return <IconTiroteio size={size} />;
+  }
   if (t.includes("jammer") || t.includes("sinal") || t.includes("bloqueio")) {
     return <IconJammer size={size} />;
   }
@@ -890,22 +909,25 @@ export default async function DashboardPage({
           TOGGLE Lista | Mapa
           ============================================================ */}
       <section aria-label="Visao" style={{ marginBottom: "2.5rem" }}>
-        <div
-          className="inline-flex"
-          style={{ border: "1px solid var(--border)", padding: "4px", gap: "4px", borderRadius: "0.75rem", backgroundColor: "var(--card)" }}
-        >
-          <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}`} className="text-sm"
-            style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
-              color: !vistaMapa ? "var(--text)" : "var(--text-muted)",
-              backgroundColor: !vistaMapa ? "var(--accent-dim)" : "transparent" }}>
-            Lista
-          </Link>
-          <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}&vista=mapa`} className="text-sm"
-            style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
-              color: vistaMapa ? "var(--text)" : "var(--text-muted)",
-              backgroundColor: vistaMapa ? "var(--accent-dim)" : "transparent" }}>
-            Mapa
-          </Link>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div
+            className="inline-flex"
+            style={{ border: "1px solid var(--border)", padding: "4px", gap: "4px", borderRadius: "0.75rem", backgroundColor: "var(--card)" }}
+          >
+            <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}`} className="text-sm"
+              style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
+                color: !vistaMapa ? "var(--text)" : "var(--text-muted)",
+                backgroundColor: !vistaMapa ? "var(--accent-dim)" : "transparent" }}>
+              Lista
+            </Link>
+            <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}&vista=mapa`} className="text-sm"
+              style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
+                color: vistaMapa ? "var(--text)" : "var(--text-muted)",
+                backgroundColor: vistaMapa ? "var(--accent-dim)" : "transparent" }}>
+              Mapa
+            </Link>
+          </div>
+          <AlertaSonoro criticosIds={alertasCriticos.map((a) => a.id)} />
         </div>
       </section>
 

@@ -18,8 +18,13 @@ type Dados = {
 };
 type Tiroteio = {
   lat: number; lng: number; date: string; bairro: string; cidade: string;
-  motivo: string | null; vitimas: number; acaoPolicial: boolean; recente: boolean;
+  motivo: string | null; vitimas: number; acaoPolicial: boolean; idadeMin: number; recente: boolean;
 };
+function idadeTexto(min: number): string {
+  if (min < 1) return "agora";
+  if (min < 60) return `há ${min}min`;
+  return `há ${Math.floor(min / 60)}h`;
+}
 
 const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
@@ -27,22 +32,24 @@ const COR: Record<string, string> = {
 };
 
 // Escala de cor do coroplético de roubo de carga (totais 12 meses por município).
+// Tons suaves: a camada é contexto, não pode saturar a tela.
 function corRoubo(n: number): string {
-  if (n >= 1000) return "#7f1d1d";
-  if (n >= 300) return "#b91c1c";
-  if (n >= 100) return "#dc2626";
-  if (n >= 30) return "#ea580c";
-  if (n >= 10) return "#f59e0b";
-  if (n >= 1) return "#fcd34d";
+  if (n >= 1000) return "#ef4444";
+  if (n >= 300) return "#f87171";
+  if (n >= 100) return "#fb923c";
+  if (n >= 30) return "#fbbf24";
+  if (n >= 10) return "#fde047";
+  if (n >= 1) return "#fef9c3";
   return "transparent";
 }
 function estiloRoubo(feature?: GeoJSON.Feature) {
   const n = Number((feature?.properties as { roubo_carga?: number })?.roubo_carga ?? 0);
   return {
     fillColor: corRoubo(n),
-    fillOpacity: n > 0 ? 0.55 : 0,
-    color: n > 0 ? "#1a0a0a" : "transparent",
-    weight: n > 0 ? 0.5 : 0,
+    fillOpacity: n > 0 ? 0.25 : 0,
+    color: n > 0 ? "#b91c1c" : "transparent",
+    weight: n > 0 ? 0.3 : 0,
+    opacity: 0.35,
   };
 }
 function popupRoubo(feature: GeoJSON.Feature, layer: Layer) {
@@ -108,7 +115,7 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
         .then((d) => { if (ativo && Array.isArray(d?.tiroteios)) setTiroteios(d.tiroteios); })
         .catch(() => {});
     carregar();
-    const id = setInterval(carregar, 300000);
+    const id = setInterval(carregar, 90000); // tempo real: a cada 90s
     return () => { ativo = false; clearInterval(id); };
   }, []);
 
@@ -167,7 +174,7 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
           )}
           {/* Tiroteios recentes (Fogo Cruzado, RJ, últimos 3 dias). Âmbar; os das
               últimas 24h em laranja vivo, maiores e com anel branco. */}
-          <LayersControl.Overlay checked name="Tiroteios (3 dias)">
+          <LayersControl.Overlay checked name="Tiroteios (24h)">
             <LayerGroup>
               {tiroteios.map((t, i) => (
                 <CircleMarker key={`tiro${i}`} center={[t.lat, t.lng]}
@@ -181,13 +188,13 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
                   <Popup>
                     <div style={{ fontWeight: 700, fontSize: 13, color: "#c2410c" }}>
                       Tiroteio{t.acaoPolicial ? " · ação policial" : ""}
+                      {t.recente ? <span style={{ marginLeft: 6, color: "#dc2626", fontSize: 11 }}>● AGORA</span> : null}
                     </div>
                     <div style={{ fontSize: 12, marginTop: 2 }}>
                       {t.bairro ? `${t.bairro}, ` : ""}{t.cidade}
                     </div>
                     <div style={{ fontSize: 12, marginTop: 2 }}>
-                      {new Date(t.date).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                      {t.recente ? " · recente" : ""}
+                      {idadeTexto(t.idadeMin)} · {new Date(t.date).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
                     </div>
                     {t.motivo && <div style={{ fontSize: 12, marginTop: 2 }}>motivo: {t.motivo}</div>}
                     {t.vitimas > 0 && <div style={{ fontSize: 12, marginTop: 2, color: "#dc2626" }}>{t.vitimas} vítima(s)</div>}

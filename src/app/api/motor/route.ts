@@ -10,10 +10,13 @@ import {
   distAlvoPendenteMaisProximoM,
   alvoPendenteMaisProximo,
   rumoGraus,
+  haversineM,
   normalizar,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import { avaliar, detectarJammer, foraDeRota, emHorarioOperacao } from "@/lib/detectores";
+import { buscarTiroteiosRJ } from "@/lib/fogocruzado";
+import type { Tiroteio } from "@/lib/fogocruzado";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -297,6 +300,16 @@ export async function POST(request: Request) {
     let totalFrescos = 0;
     let totalAlertasAtivos = 0;
 
+    // Tiroteios ATIVOS (últimas 3h) do RJ inteiro — risco em tempo real comum
+    // a todas as frotas. Cruzamos com cada veículo (detector tiroteio próximo).
+    // Falha graciosa: sem tiroteios, o detector simplesmente não dispara.
+    let tiroteiosAtivos: Tiroteio[] = [];
+    try {
+      tiroteiosAtivos = (await buscarTiroteiosRJ(1)).filter((t) => t.recente);
+    } catch {
+      tiroteiosAtivos = [];
+    }
+
     for (const cliente of clientes) {
       // Obter CVs deste cliente
       const cvsCliente = [...mapaCv.entries()]
@@ -404,6 +417,19 @@ export async function POST(request: Request) {
           // Condição FROUXA de permanência: ainda fora de rota (anti-pisca).
           const estaForaDeRota = pos.fresco && foraDeRota(pos, { distAlvoM, temPendentes, emOperacao, foraDaBase });
 
+          // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
+          let distTiroteioM: number | null = null;
+          let tiroteioIdadeMin: number | null = null;
+          if (pos.fresco && tiroteiosAtivos.length > 0) {
+            for (const t of tiroteiosAtivos) {
+              const d = haversineM(pos.lat, pos.lng, t.lat, t.lng);
+              if (distTiroteioM === null || d < distTiroteioM) {
+                distTiroteioM = d;
+                tiroteioIdadeMin = t.idadeMin;
+              }
+            }
+          }
+
           // ─── Determinar localização do veículo ─────────────────────────
           // Base > Em deslocamento > Parado (geocode reverso)
           let localVeiculo: string | null = null;
@@ -451,6 +477,8 @@ export async function POST(request: Request) {
                   temPendentes,
                   rumoMovimento,
                   rumoAlvo,
+                  distTiroteioM,
+                  tiroteioIdadeMin,
                 })
               : null;
 

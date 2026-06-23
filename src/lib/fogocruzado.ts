@@ -15,7 +15,8 @@ export type Tiroteio = {
   motivo: string | null;
   vitimas: number;
   acaoPolicial: boolean;
-  recente: boolean; // últimas 24h
+  idadeMin: number; // minutos desde o evento
+  recente: boolean; // "acontecendo agora": últimas 3h
 };
 
 // Cache do token em memória do processo (vale ~55min; o token expira em 1h).
@@ -50,15 +51,24 @@ function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Cache da lista por nº de dias (TTL curto): o motor (1 min) e o mapa
+// compartilham sem estourar o limite da API.
+const listaCache = new Map<number, { tiros: Tiroteio[]; exp: number }>();
+
 // Tiroteios do RJ nos últimos `dias`. Retorna [] em qualquer falha
-// (camada opcional: nunca derruba o mapa).
-export async function buscarTiroteiosRJ(dias = 3): Promise<Tiroteio[]> {
+// (camada opcional: nunca derruba o mapa). Cacheado por ~2 min.
+export async function buscarTiroteiosRJ(dias = 1): Promise<Tiroteio[]> {
+  const agoraMs = Date.now();
+  const cached = listaCache.get(dias);
+  if (cached && cached.exp > agoraMs) return cached.tiros;
+
   const token = await obterToken();
-  if (!token) return [];
+  if (!token) return cached?.tiros ?? [];
 
   const fim = new Date();
   const ini = new Date(fim.getTime() - dias * 24 * 60 * 60 * 1000);
-  const limite24h = fim.getTime() - 24 * 60 * 60 * 1000;
+  const fimMs = fim.getTime();
+  const limite3h = fimMs - 3 * 60 * 60 * 1000;
   const headers = { authorization: `Bearer ${token}`, accept: "application/json" };
 
   const tiros: Tiroteio[] = [];
@@ -72,6 +82,7 @@ export async function buscarTiroteiosRJ(dias = 3): Promise<Tiroteio[]> {
         const lat = parseFloat(String(o.latitude));
         const lng = parseFloat(String(o.longitude));
         if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) continue;
+        const t = new Date(o.date).getTime();
         tiros.push({
           lat,
           lng,
@@ -81,14 +92,16 @@ export async function buscarTiroteiosRJ(dias = 3): Promise<Tiroteio[]> {
           motivo: o?.contextInfo?.mainReason?.name ?? null,
           vitimas: Array.isArray(o.victims) ? o.victims.length : 0,
           acaoPolicial: Boolean(o.policeAction),
-          recente: new Date(o.date).getTime() >= limite24h,
+          idadeMin: Math.max(0, Math.round((fimMs - t) / 60000)),
+          recente: t >= limite3h,
         });
       }
       if (!j.pageMeta?.hasNextPage) break;
     }
   } catch {
-    return tiros; // devolve o que já tiver
+    return cached?.tiros ?? tiros;
   }
+  listaCache.set(dias, { tiros, exp: agoraMs + 2 * 60 * 1000 });
   return tiros;
 }
 
