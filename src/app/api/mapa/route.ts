@@ -19,9 +19,8 @@ export async function GET(request: Request) {
       [cod]
     );
     const clienteId = cli.rows[0]?.id;
-    const vazio = { type: "FeatureCollection", features: [] };
     if (!clienteId) {
-      return Response.json({ veiculos: [], bases: [], favelas: vazio });
+      return Response.json({ veiculos: [], bases: [] });
     }
 
     const veiculos = (
@@ -42,20 +41,7 @@ export async function GET(request: Request) {
       )
     ).rows;
 
-    const fav = await client.query<{ gj: unknown }>(
-      `select coalesce(
-         jsonb_build_object('type','FeatureCollection','features', jsonb_agg(
-           jsonb_build_object(
-             'type','Feature',
-             'properties', jsonb_build_object('nome', nome),
-             'geometry', ST_AsGeoJSON(ST_Simplify(geom::geometry, 0.0003))::jsonb
-           ))),
-         jsonb_build_object('type','FeatureCollection','features','[]'::jsonb)
-       ) gj
-       from geofences where tipo = 'favela'`
-    );
-
-    return Response.json({ veiculos, bases, favelas: fav.rows[0].gj });
+    return Response.json({ veiculos, bases });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });
   } finally {

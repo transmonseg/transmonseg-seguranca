@@ -10,7 +10,7 @@ type Veiculo = {
   entregas_feitas: number | null; entregas_total: number | null; atraso_min: number;
 };
 type Base = { nome: string; lat: number; lng: number; raio_m: number };
-type Dados = { veiculos: Veiculo[]; bases: Base[]; favelas: GeoJSON.FeatureCollection };
+type Dados = { veiculos: Veiculo[]; bases: Base[] };
 
 const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
@@ -19,7 +19,14 @@ const COR: Record<string, string> = {
 
 export default function MapaFrota({ cliente }: { cliente: string }) {
   const [dados, setDados] = useState<Dados | null>(null);
+  const [favelas, setFavelas] = useState<GeoJSON.FeatureCollection | null>(null);
 
+  // Favelas: carregam uma vez (estáticas, cacheadas, perímetro preciso).
+  useEffect(() => {
+    fetch("/api/favelas").then((r) => r.json()).then(setFavelas).catch(() => {});
+  }, []);
+
+  // Veículos + bases: por cliente, atualizam junto com a tela.
   useEffect(() => {
     let ativo = true;
     const carregar = () =>
@@ -53,19 +60,21 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; OpenStreetMap &copy; CARTO'
         />
-        <GeoJSON
-          data={dados.favelas}
-          style={{ color: "#ef4444", weight: 1, fillColor: "#ef4444", fillOpacity: 0.12, opacity: 0.35 }}
-        />
+        {favelas && (
+          <GeoJSON
+            data={favelas}
+            style={{ color: "#ef4444", weight: 1.2, fillColor: "#ef4444", fillOpacity: 0.1, opacity: 0.55 }}
+          />
+        )}
         {dados.bases.map((b, i) => (
           <Circle key={`b${i}`} center={[b.lat, b.lng]} radius={b.raio_m}
-            pathOptions={{ color: "#9fb3ce", weight: 1, fillColor: "#9fb3ce", fillOpacity: 0.06 }} />
+            pathOptions={{ color: "#9fb3ce", weight: 1.2, fillColor: "#9fb3ce", fillOpacity: 0.06 }} />
         ))}
         {comPos.map((v, i) => {
           const cor = COR[v.nivel] ?? "#5fb87a";
           return (
             <CircleMarker key={`v${i}`} center={[v.lat, v.lng]} radius={6}
-              pathOptions={{ color: cor, fillColor: cor, fillOpacity: 0.9, weight: 1.5 }}>
+              pathOptions={{ color: "#0a0a0a", fillColor: cor, fillOpacity: 1, weight: 1.5 }}>
               <Popup>
                 <div style={{ fontFamily: "var(--font-geist-mono), monospace", fontWeight: 700, fontSize: 14 }}>{v.placa}</div>
                 <div style={{ fontSize: 12, marginTop: 2 }}>
