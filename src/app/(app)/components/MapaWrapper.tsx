@@ -8,13 +8,30 @@ const MapaFrota = dynamic(() => import("./MapaFrota"), {
   loading: () => (
     <div
       className="flex items-center justify-center rounded-2xl"
-      style={{ height: "72vh", backgroundColor: "var(--card)", border: "1px solid var(--border)", color: "var(--text-dim)" }}
+      style={{ height: "100%", minHeight: "320px", backgroundColor: "var(--card)", border: "1px solid var(--border)", color: "var(--text-dim)" }}
     >
       carregando mapa...
     </div>
   ),
 });
 
-export default function MapaWrapper({ cliente }: { cliente: string }) {
-  return <MapaFrota cliente={cliente} />;
+export default function MapaWrapper({
+  cliente,
+  altura = "72vh",
+  tiposAtivos,
+  soProblema,
+}: {
+  cliente: string;
+  altura?: string;
+  tiposAtivos?: string[];
+  soProblema?: boolean;
+}) {
+  return (
+    <MapaFrota
+      cliente={cliente}
+      altura={altura}
+      tiposAtivos={tiposAtivos}
+      soProblema={soProblema}
+    />
+  );
 }

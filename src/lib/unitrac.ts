@@ -192,6 +192,115 @@ export function difAngulo(a: number, b: number): number {
   return d > 180 ? 360 - d : d;
 }
 
+// Ponto de entrega (feito OU pendente) mais proximo da posicao informada.
+// Diferente de alvoPendenteMaisProximo, considera TODOS os pontos da rota,
+// inclusive os ja concluidos. Serve para saber se o caminhao esta dentro
+// do raio de qualquer cliente (checagem "veiculo no cliente").
+export function alvoMaisProximoQualquer(
+  lat: number,
+  lng: number,
+  pontos: PontoEntrega[] | undefined
+): { ponto: PontoEntrega; distM: number } | null {
+  if (!pontos || pontos.length === 0) return null;
+  let melhor: { ponto: PontoEntrega; distM: number } | null = null;
+  for (const p of pontos) {
+    const d = haversineM(lat, lng, p.lat, p.lng);
+    if (melhor === null || d < melhor.distM) melhor = { ponto: p, distM: d };
+  }
+  return melhor;
+}
+
+// Busca o rastro (historico de posicoes) de um veiculo nas ultimas N horas.
+// GET /mapa_servicos/rastro/{cv}/{horas}
+// Resposta da API: { posicoes: [{ lat, long }] }
+// horas e limitado ao intervalo 1..96 por seguranca defensiva.
+// Em erro HTTP ou excecao, retorna [] (falha graciosamente, nunca lanca).
+export async function buscarRastro(
+  cv: string,
+  horas: number
+): Promise<{ lat: number; lng: number }[]> {
+  const horasSeguro = Math.min(96, Math.max(1, Math.round(horas)));
+  try {
+    const res = await fetch(
+      `${BASE_URL}/mapa_servicos/rastro/${cv}/${horasSeguro}`,
+      { headers: { accept: "application/json" } }
+    );
+    if (!res.ok) return [];
+    const data = (await res.json()) as { posicoes?: { lat: unknown; long: unknown }[] };
+    const posicoes = data.posicoes ?? [];
+    return posicoes
+      .map((p) => ({ lat: Number(p.lat), lng: Number(p.long) }))
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && !(p.lat === 0 && p.lng === 0));
+  } catch {
+    return [];
+  }
+}
+
+// Busca as paradas (stops) de um veiculo nas ultimas N horas.
+// GET /mapa_servicos/stops/{cv}/{horas}
+// Resposta da API: { paradas: [{ _data, localparada, tempoparada, latitude, longitude }] }
+// horas e limitado ao intervalo 1..96. Em erro retorna [].
+export async function buscarStops(
+  cv: string,
+  horas: number
+): Promise<{ data: string; local: string; tempoMin: number; lat: number; lng: number }[]> {
+  const horasSeguro = Math.min(96, Math.max(1, Math.round(horas)));
+  try {
+    const res = await fetch(
+      `${BASE_URL}/mapa_servicos/stops/${cv}/${horasSeguro}`,
+      { headers: { accept: "application/json" } }
+    );
+    if (!res.ok) return [];
+    const raw = (await res.json()) as {
+      paradas?: {
+        _data: unknown;
+        localparada: unknown;
+        tempoparada: unknown;
+        latitude: unknown;
+        longitude: unknown;
+      }[];
+    };
+    const paradas = raw.paradas ?? [];
+    return paradas
+      .map((p) => ({
+        data: String(p._data),
+        local: String(p.localparada || ""),
+        tempoMin: Number(p.tempoparada) || 0,
+        lat: Number(p.latitude),
+        lng: Number(p.longitude),
+      }))
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && !(p.lat === 0 && p.lng === 0));
+  } catch {
+    return [];
+  }
+}
+
+// Busca a posicao atual (snapshot unico) de um veiculo pelo CV.
+// POST /mapa_servicos/posicoes/N/N — body = [cv] (array com um elemento).
+// Resposta: { Posicoes: [...] } — retorna o primeiro objeto bruto ou null.
+// Campos esperados na posicao: posiclatitude, posiclongitude, posicvelocidade,
+// posicignicao, tipevnome, posicentrada1..10, posicsaida1..4, panico,
+// bauForaPonto, atraso, datagps. Em erro retorna null.
+export async function buscarPosicaoUnica(
+  cv: string
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(`${BASE_URL}/mapa_servicos/posicoes/N/N`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify([cv]),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { Posicoes?: Record<string, unknown>[] };
+    return data.Posicoes?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Normaliza uma posição bruta da Unitrac para o tipo interno.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizar(p: Record<string, any>): PosicaoNormalizada {

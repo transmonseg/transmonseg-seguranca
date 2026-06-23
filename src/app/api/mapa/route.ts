@@ -30,11 +30,24 @@ export async function GET(request: Request) {
       return Response.json({ veiculos: [], bases: [] });
     }
 
+    // LEFT JOIN LATERAL busca o tipo do alerta ativo de maior prioridade por veiculo.
+    // Prioridade: critico antes de atencao; dentro do mesmo nivel, ordem alfabetica (estavel).
+    // Veiculos sem alerta retornam tipo = null.
     const veiculos = (
       await client.query<{ cv: string }>(
         `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
-                p.local, p.entregas_feitas, p.entregas_total, p.atraso_min
-         from posicoes_atuais p join veiculos v on v.id = p.veiculo_id
+                p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
+                al.tipo
+         from posicoes_atuais p
+         join veiculos v on v.id = p.veiculo_id
+         left join lateral (
+           select a.tipo
+           from alertas a
+           where a.veiculo_id = v.id
+             and a.status in ('ativo', 'reconhecido')
+           order by (a.nivel = 'critico') desc, a.tipo
+           limit 1
+         ) al on true
          where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`,
         [clienteId]
       )

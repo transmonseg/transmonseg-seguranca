@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// Apito da central: toca quando surge um NOVO alerta crítico (ex: tiroteio na
-// rota de um caminhão). Precisa de um clique pra ativar (política de autoplay
-// dos navegadores). Detecta novos comparando os IDs entre atualizações.
-export default function AlertaSonoro({ criticosIds }: { criticosIds: string[] }) {
+// Apito da central: toca quando surge um NOVO alerta que deve apitar.
+// A lista idsParaApitar inclui todos os criticos MAIS alertas de atencao do
+// tipo parada_cliente. Precisa de um clique para ativar (politica de autoplay
+// dos navegadores). Detecta novos comparando os IDs entre atualizacoes.
+export default function AlertaSonoro({ idsParaApitar }: { idsParaApitar: string[] }) {
   const vistos = useRef<Set<string> | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const [ativo, setAtivo] = useState(false);
@@ -29,29 +30,29 @@ export default function AlertaSonoro({ criticosIds }: { criticosIds: string[] })
       };
       const n = ctx.currentTime;
       tocar(n, 880);
-      tocar(n + 0.4, 1040); // dois toques: chama atenção
+      tocar(n + 0.4, 1040); // dois toques: chama atencao
     } catch {
-      /* navegador sem áudio: silencioso */
+      /* navegador sem audio: silencioso */
     }
   }
 
   useEffect(() => {
-    // primeira passagem: registra os atuais sem apitar (só apita NOVOS)
+    // primeira passagem: registra os atuais sem apitar (so apita NOVOS)
     if (vistos.current === null) {
-      vistos.current = new Set(criticosIds);
+      vistos.current = new Set(idsParaApitar);
       return;
     }
-    const novos = criticosIds.filter((id) => !vistos.current!.has(id));
-    for (const id of criticosIds) vistos.current!.add(id);
+    const novos = idsParaApitar.filter((id) => !vistos.current!.has(id));
+    for (const id of idsParaApitar) vistos.current!.add(id);
     if (novos.length > 0 && ativo) beep();
-  }, [criticosIds, ativo]);
+  }, [idsParaApitar, ativo]);
 
   function alternar() {
     try {
       const ctx = ctxRef.current ?? new AudioContext();
       ctxRef.current = ctx;
       ctx.resume();
-      if (!ativo) beep(); // confirma audível ao ligar
+      if (!ativo) beep(); // confirma audivel ao ligar
     } catch {
       /* ignora */
     }
@@ -62,7 +63,7 @@ export default function AlertaSonoro({ criticosIds }: { criticosIds: string[] })
     <button
       type="button"
       onClick={alternar}
-      title={ativo ? "Apito ligado: toca quando entra alerta crítico" : "Ativar apito de alerta crítico"}
+      title={ativo ? "Apito ligado: toca quando entra alerta critico ou parada no cliente" : "Ativar apito de alerta"}
       className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors active:translate-y-px"
       style={{
         border: `1px solid ${ativo ? "color-mix(in srgb, var(--verde) 40%, transparent)" : "var(--border)"}`,

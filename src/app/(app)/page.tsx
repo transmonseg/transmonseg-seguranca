@@ -1,12 +1,11 @@
 /**
- * Pagina principal — Transmonseg Central
+ * Pagina principal -- Transmonseg Central
  *
  * Server Component que le dados do Supabase via createAdminClient (service_role).
  * O cliente ativo e determinado pelo query param ?cliente=<cod_user_unitrac>.
  * Toda a tela reflete somente o cliente selecionado.
  *
- * VISUAL: Galeria arejada — MENOS elementos, MAIS respiro.
- * Cards grandes, 2 por linha, hierarquia forte (critico domina).
+ * VISUAL: Painel de dois paineis em desktop (alertas | mapa), coluna unica em mobile.
  */
 
 import Link from "next/link";
@@ -18,6 +17,7 @@ import MapaWrapper from "./components/MapaWrapper";
 import AcoesAlerta from "./components/AcoesAlerta";
 import PainelRoubo from "./components/PainelRoubo";
 import AlertaSonoro from "./components/AlertaSonoro";
+import FiltrosBar from "./components/FiltrosBar";
 
 // Central ao vivo: nunca prerender estatico.
 export const dynamic = "force-dynamic";
@@ -90,6 +90,26 @@ export interface VeiculoItem {
   entregas_total: number;
   parado_desde: string | null;
   updated_at: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* TAREFA A: Ordem de severidade dos alertas                           */
+/* Menor numero = mais severo = aparece primeiro.                      */
+/* Sinais (jammer/sinal/bloqueio) ficam por ultimo na fila.           */
+/* ------------------------------------------------------------------ */
+
+function ordemSeveridade(tipo: string): number {
+  const t = tipo?.toLowerCase() ?? "";
+  if (t.includes("panico")) return 0;
+  if (t.includes("bau")) return 1;
+  if (t.includes("favela")) return 2;
+  if (t.includes("tiroteio")) return 3;
+  if (t.includes("parada_cliente") || t === "parada_cliente") return 4;
+  if (t.includes("parada_longa") || t === "parada_longa") return 5;
+  if (t.includes("desvio")) return 6;
+  if (t.includes("excesso")) return 7;
+  if (t.includes("jammer") || t.includes("sinal") || t.includes("bloqueio")) return 9;
+  return 8;
 }
 
 /* ------------------------------------------------------------------ */
@@ -233,7 +253,6 @@ function IconChevronRight({ size = 14 }: { size?: number }) {
   );
 }
 
-// Desvio de rota: caminho que se bifurca para fora.
 function IconDesvio({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -246,11 +265,21 @@ function IconDesvio({ size = 16 }: { size?: number }) {
   );
 }
 
+/* Icone de predio/loja para parada_cliente */
+function IconLoja({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </svg>
+  );
+}
+
 /* ------------------------------------------------------------------ */
-/* Icone de tipo de alerta                                              */
+/* Tiroteio                                                              */
 /* ------------------------------------------------------------------ */
 
-// Tiroteio próximo: mira/alvo.
 function IconTiroteio({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -265,9 +294,10 @@ function IconTiroteio({ size = 16 }: { size?: number }) {
   );
 }
 
+/* TAREFA B: icone para parada_cliente adicionado */
 function IconTipoAlerta({ tipo, size = 16 }: { tipo: string; size?: number }) {
   const t = tipo?.toLowerCase() ?? "";
-  if (t.includes("tiroteio") || t.includes("operacao") || t.includes("operação")) {
+  if (t.includes("tiroteio") || t.includes("operacao") || t.includes("operacao")) {
     return <IconTiroteio size={size} />;
   }
   if (t.includes("jammer") || t.includes("sinal") || t.includes("bloqueio")) {
@@ -275,6 +305,9 @@ function IconTipoAlerta({ tipo, size = 16 }: { tipo: string; size?: number }) {
   }
   if (t.includes("favela") || t.includes("area") || t.includes("risco") || t.includes("zona")) {
     return <IconMapPin size={size} />;
+  }
+  if (t.includes("cliente") || t.includes("loja")) {
+    return <IconLoja size={size} />;
   }
   if (t.includes("parada") || t.includes("parado") || t.includes("longa")) {
     return <IconPause size={size} />;
@@ -286,7 +319,7 @@ function IconTipoAlerta({ tipo, size = 16 }: { tipo: string; size?: number }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Seletor de cliente — elegante e discreto                            */
+/* Seletor de cliente                                                   */
 /* ------------------------------------------------------------------ */
 
 function SeletorCliente({
@@ -346,7 +379,7 @@ function SeletorCliente({
 }
 
 /* ------------------------------------------------------------------ */
-/* Metrica grande e arejada                                            */
+/* Metrica grande                                                       */
 /* ------------------------------------------------------------------ */
 
 function MetricaGrande({
@@ -391,7 +424,7 @@ function MetricaGrande({
 }
 
 /* ------------------------------------------------------------------ */
-/* Card de alerta critico — grande, rico e destacado                   */
+/* Card de alerta -- versao compacta para coluna de alertas            */
 /* ------------------------------------------------------------------ */
 
 function IconExternal({ size = 12 }: { size?: number }) {
@@ -441,7 +474,7 @@ function CardAlertaCritico({
 
   return (
     <div
-      className="relative rounded-2xl border overflow-hidden"
+      className="relative rounded-xl border overflow-hidden"
       style={{
         backgroundColor: bgNivel,
         borderColor: `color-mix(in srgb, ${corNivel} 30%, var(--border))`,
@@ -453,10 +486,10 @@ function CardAlertaCritico({
         style={{ width: "3px", backgroundColor: corNivel, opacity: 0.8 }}
       />
 
-      <div style={{ padding: "1.5rem 1.5rem 1.5rem 1.75rem" }}>
+      <div style={{ padding: "1rem 1rem 1rem 1.25rem" }}>
 
-        {/* CABECALHO: badge nivel + tipo + tempo */}
-        <div className="flex items-start justify-between gap-3 mb-4">
+        {/* CABECALHO: badge tipo + tempo */}
+        <div className="flex items-start justify-between gap-2 mb-2.5">
           <div className="flex items-center gap-2">
             <span
               className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest px-2 py-1 rounded-md"
@@ -469,27 +502,27 @@ function CardAlertaCritico({
               }}
             >
               <span style={{ color: corNivel, opacity: 0.9 }}>
-                <IconTipoAlerta tipo={tipo} size={11} />
+                <IconTipoAlerta tipo={tipo} size={10} />
               </span>
               {tipo}
             </span>
           </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0" style={{ color: "var(--text-dim)" }}>
-            <IconClock size={12} />
+          <div className="flex items-center gap-1 flex-shrink-0" style={{ color: "var(--text-dim)" }}>
+            <IconClock size={11} />
             <span className="num-mono text-xs" style={{ fontFamily: "var(--font-geist-mono, monospace)" }}>
               {formatarTempoRelativo(desde)}
             </span>
           </div>
         </div>
 
-        {/* PLACA grande + badge nivel */}
-        <div className="flex items-center justify-between gap-3 mb-3">
+        {/* PLACA + badge nivel */}
+        <div className="flex items-center justify-between gap-2 mb-2">
           <p
             className="num-mono font-bold leading-none"
             style={{
               color: "var(--text)",
               fontFamily: "var(--font-geist-mono, monospace)",
-              fontSize: "1.5rem",
+              fontSize: "1.2rem",
               letterSpacing: "0.12em",
             }}
           >
@@ -501,7 +534,7 @@ function CardAlertaCritico({
               backgroundColor: `color-mix(in srgb, ${corNivel} 10%, transparent)`,
               color: corNivel,
               border: `1px solid color-mix(in srgb, ${corNivel} 20%, transparent)`,
-              fontSize: "10px",
+              fontSize: "9px",
               letterSpacing: "0.06em",
             }}
           >
@@ -509,33 +542,30 @@ function CardAlertaCritico({
           </span>
         </div>
 
-        {/* MOTIVO em destaque */}
+        {/* MOTIVO */}
         {motivo && (
           <div
-            className="rounded-xl px-3 py-2.5 mb-4"
+            className="rounded-lg px-2.5 py-2 mb-2.5"
             style={{
               backgroundColor: `color-mix(in srgb, ${corNivel} 7%, transparent)`,
               border: `1px solid color-mix(in srgb, ${corNivel} 16%, transparent)`,
             }}
           >
-            <p className="text-sm leading-relaxed" style={{ color: corNivel, opacity: 0.9 }}>
+            <p className="text-xs leading-relaxed" style={{ color: corNivel, opacity: 0.9 }}>
               {motivo}
             </p>
           </div>
         )}
 
         {/* DIVISOR */}
-        <div style={{ height: "1px", backgroundColor: "var(--border-subtle)", marginBottom: "0.875rem" }} />
+        <div style={{ height: "1px", backgroundColor: "var(--border-subtle)", marginBottom: "0.625rem" }} />
 
-        {/* BLOCO LOCALIZACAO + botao mapa */}
-        <div className="mb-4">
-          <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: "var(--text-dim)", letterSpacing: "0.1em", fontSize: "9px" }}>
-            Localizacao
-          </p>
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-2 min-w-0">
+        {/* LOCALIZACAO */}
+        <div className="mb-2.5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-start gap-1.5 min-w-0">
               <span className="flex-shrink-0 mt-0.5" style={{ color: "var(--text-dim)" }}>
-                <IconMapPin size={12} />
+                <IconMapPin size={11} />
               </span>
               <p className="text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
                 {local ?? "Sem endereco disponivel"}
@@ -546,63 +576,58 @@ function CardAlertaCritico({
                 href={urlMapa}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex-shrink-0 flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg transition-colors"
+                className="flex-shrink-0 flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg transition-colors"
                 style={{
                   backgroundColor: "var(--accent-dim)",
                   border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
                   color: "var(--accent)",
                   textDecoration: "none",
-                  fontSize: "11px",
+                  fontSize: "10px",
                   whiteSpace: "nowrap",
                 }}
               >
-                <IconMapPin size={11} />
-                Ver no mapa
-                <IconExternal size={10} />
+                <IconMapPin size={10} />
+                Ver
+                <IconExternal size={9} />
               </a>
             )}
           </div>
         </div>
 
-        {/* BLOCO TELEMETRIA — grade 2 colunas */}
+        {/* TELEMETRIA */}
         {(velocidade != null || ignicao != null || (atraso_min != null && atraso_min > 0)) && (
           <>
-            <div style={{ height: "1px", backgroundColor: "var(--border-subtle)", marginBottom: "0.875rem" }} />
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: "var(--text-dim)", letterSpacing: "0.1em", fontSize: "9px" }}>
-                Telemetria
-              </p>
-              <div className="grid grid-cols-2" style={{ gap: "0.5rem" }}>
-                {velocidade != null && (
-                  <div>
-                    <span className="text-xs" style={{ color: "var(--text-dim)" }}>velocidade</span>
-                    <p className="num-mono text-sm font-semibold mt-0.5" style={{ fontFamily: "var(--font-geist-mono, monospace)", color: velocidade > 0 ? "var(--accent)" : "var(--text-muted)" }}>
-                      {velocidade} km/h
-                    </p>
-                  </div>
-                )}
-                {ignicao != null && (
-                  <div>
-                    <span className="text-xs" style={{ color: "var(--text-dim)" }}>ignicao</span>
-                    <p className="text-sm font-semibold mt-0.5" style={{ color: ignicao ? "var(--verde)" : "var(--text-dim)" }}>
-                      {ignicao ? "ligada" : "desligada"}
-                    </p>
-                  </div>
-                )}
-                {atraso_min != null && atraso_min > 0 && (
-                  <div>
-                    <span className="text-xs" style={{ color: "var(--text-dim)" }}>sem comunicacao</span>
-                    <p className="num-mono text-sm font-semibold mt-0.5" style={{ fontFamily: "var(--font-geist-mono, monospace)", color: "var(--text-muted)" }}>
-                      {atraso_min < 60 ? `${atraso_min}min` : `${Math.floor(atraso_min / 60)}h${atraso_min % 60 > 0 ? `${atraso_min % 60}min` : ""}`}
-                    </p>
-                  </div>
-                )}
-              </div>
+            <div style={{ height: "1px", backgroundColor: "var(--border-subtle)", marginBottom: "0.625rem" }} />
+            <div className="grid grid-cols-2" style={{ gap: "0.375rem" }}>
+              {velocidade != null && (
+                <div>
+                  <span className="text-xs" style={{ color: "var(--text-dim)", fontSize: "10px" }}>velocidade</span>
+                  <p className="num-mono text-xs font-semibold mt-0.5" style={{ fontFamily: "var(--font-geist-mono, monospace)", color: velocidade > 0 ? "var(--accent)" : "var(--text-muted)" }}>
+                    {velocidade} km/h
+                  </p>
+                </div>
+              )}
+              {ignicao != null && (
+                <div>
+                  <span className="text-xs" style={{ color: "var(--text-dim)", fontSize: "10px" }}>ignicao</span>
+                  <p className="text-xs font-semibold mt-0.5" style={{ color: ignicao ? "var(--verde)" : "var(--text-dim)" }}>
+                    {ignicao ? "ligada" : "desligada"}
+                  </p>
+                </div>
+              )}
+              {atraso_min != null && atraso_min > 0 && (
+                <div>
+                  <span className="text-xs" style={{ color: "var(--text-dim)", fontSize: "10px" }}>sem comunicacao</span>
+                  <p className="num-mono text-xs font-semibold mt-0.5" style={{ fontFamily: "var(--font-geist-mono, monospace)", color: "var(--text-muted)" }}>
+                    {atraso_min < 60 ? `${atraso_min}min` : `${Math.floor(atraso_min / 60)}h${atraso_min % 60 > 0 ? `${atraso_min % 60}min` : ""}`}
+                  </p>
+                </div>
+              )}
             </div>
           </>
         )}
 
-        {/* Ações do operador: reconhecer / resolver / falso positivo */}
+        {/* Acoes do operador */}
         <AcoesAlerta id={id} status={status} />
 
       </div>
@@ -611,7 +636,7 @@ function CardAlertaCritico({
 }
 
 /* ------------------------------------------------------------------ */
-/* Separador de secao leve                                             */
+/* Separador de secao                                                   */
 /* ------------------------------------------------------------------ */
 
 function SectionDivider({ label, cor, count }: { label: string; cor?: string; count?: number }) {
@@ -647,6 +672,93 @@ function SectionDivider({ label, cor, count }: { label: string; cor?: string; co
 }
 
 /* ------------------------------------------------------------------ */
+/* Bloco de metricas compacto para a coluna direita                    */
+/* ------------------------------------------------------------------ */
+
+function BlocoMetricas({
+  totalOperando,
+  totalCriticos,
+  entregasFeitas,
+  entregasTotal,
+}: {
+  totalOperando: number;
+  totalCriticos: number;
+  entregasFeitas: number;
+  entregasTotal: number;
+}) {
+  return (
+    <div
+      className="grid grid-cols-3"
+      style={{
+        gap: "0",
+        borderRadius: "0.875rem",
+        overflow: "hidden",
+        border: "1px solid var(--border)",
+      }}
+    >
+      {/* Operando */}
+      <div
+        style={{
+          padding: "1.125rem 1rem",
+          borderRight: "1px solid var(--border)",
+          backgroundColor: "var(--card)",
+        }}
+      >
+        <MetricaGrande label="operando" valor={totalOperando} compacto />
+      </div>
+
+      {/* Criticos */}
+      <div
+        style={{
+          padding: "1.125rem 1rem",
+          borderRight: "1px solid var(--border)",
+          backgroundColor: totalCriticos > 0 ? "#130909" : "var(--card)",
+        }}
+      >
+        <MetricaGrande
+          label="critico"
+          valor={totalCriticos}
+          cor={totalCriticos > 0 ? "var(--vermelho)" : "var(--text-dim)"}
+          compacto
+        />
+      </div>
+
+      {/* Entregas */}
+      <div
+        style={{
+          padding: "1.125rem 1rem",
+          backgroundColor: "var(--card)",
+        }}
+      >
+        {entregasTotal > 0 ? (
+          <div className="flex flex-col gap-2">
+            <MetricaGrande
+              label="entregas"
+              valor={`${entregasFeitas}/${entregasTotal}`}
+              cor="var(--accent)"
+              compacto
+            />
+            <div style={{ height: "2px", borderRadius: "2px", backgroundColor: "var(--border-subtle)", overflow: "hidden" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.min(100, Math.round((entregasFeitas / entregasTotal) * 100))}%`,
+                  backgroundColor: "var(--verde)",
+                  borderRadius: "2px",
+                  transition: "width 0.5s ease",
+                }}
+              />
+            </div>
+          </div>
+        ) : (
+          <MetricaGrande label="entregas" valor="--" sublabel="sem dados" cor="var(--text-dim)" compacto />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Pagina principal                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -657,9 +769,21 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
-  const { cliente: clienteParam, vista } = await searchParams;
-  const vistaMapa = vista === "mapa";
+  const { cliente: clienteParam, tipos: tiposParam, problema: problemaParam } = await searchParams;
   const supabase = createAdminClient();
+
+  // Expandir tipos selecionados: o chip "Jammer/Sinal" abrange jammer, sinal e bloqueio.
+  // tiposSelecionados e a lista tecnica expandida usada nos filtros de lista e mapa.
+  const tiposRaw = typeof tiposParam === "string" ? tiposParam : "";
+  const tiposChips = tiposRaw ? tiposRaw.split(",").filter(Boolean) : [];
+  const GRUPO_JAMMER = ["jammer", "sinal", "bloqueio"];
+  const tiposSelecionados = tiposChips.flatMap((t) =>
+    GRUPO_JAMMER.includes(t) ? GRUPO_JAMMER : [t]
+  );
+  // Deduplicar
+  const tiposSelecionadosSet = [...new Set(tiposSelecionados)];
+
+  const soProblema = problemaParam === "1";
 
   const [
     { data: clientesRaw },
@@ -760,7 +884,14 @@ export default async function DashboardPage({
   const entregasFeitas = todosItens.reduce((s, i) => s + i.entregas_feitas, 0);
   const entregasTotal = todosItens.reduce((s, i) => s + i.entregas_total, 0);
 
-  // Alertas criticos enriquecidos (nao atencao)
+  // Helper para checar se um tipo de alerta casa com os tipos selecionados pelo filtro.
+  // O grupo jammer/sinal/bloqueio ja foi expandido em tiposSelecionadosSet acima.
+  function tiposMatch(tipo: string): boolean {
+    if (tiposSelecionadosSet.length === 0) return true;
+    return tiposSelecionadosSet.includes(tipo?.toLowerCase() ?? "");
+  }
+
+  // TAREFA A: Alertas criticos ordenados por severidade + filtro de tipo (se ativo)
   const alertasCriticos = alertas
     .filter((a) => a.nivel === "critico")
     .map((a) => {
@@ -776,8 +907,11 @@ export default async function DashboardPage({
         ignicao: pos?.ignicao ?? null,
         atraso_min: pos?.atraso_min ?? null,
       };
-    });
+    })
+    .filter((a) => tiposMatch(a.tipo))
+    .sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo));
 
+  // TAREFA A: Alertas atencao ordenados por severidade + filtro de tipo (se ativo)
   const alertasAtencao = alertas
     .filter((a) => a.nivel === "atencao")
     .map((a) => {
@@ -793,337 +927,298 @@ export default async function DashboardPage({
         ignicao: pos?.ignicao ?? null,
         atraso_min: pos?.atraso_min ?? null,
       };
-    });
+    })
+    .filter((a) => tiposMatch(a.tipo))
+    .sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo));
+
+  // TAREFA B: ids que devem apitar = todos os criticos + atencao do tipo parada_cliente
+  const idsParaApitar = [
+    ...alertasCriticos.map((a) => a.id),
+    ...alertasAtencao
+      .filter((a) => a.tipo === "parada_cliente")
+      .map((a) => a.id),
+  ];
 
   /* --------------------------------------------------------------- */
-  /* Render                                                           */
+  /* Render: layout dois paineis em lg+, coluna unica em mobile       */
   /* --------------------------------------------------------------- */
 
   return (
     <div
-      className="mx-auto"
-      style={{ maxWidth: "960px", padding: "3rem 2rem 6rem" }}
+      style={{ maxWidth: "1600px", margin: "0 auto", padding: "1.5rem 1.5rem 4rem" }}
     >
 
       {/* ============================================================
-          1. SELETOR DE CLIENTE
+          1. SELETOR DE CLIENTE + APITO (topo, largura total)
           ============================================================ */}
-      <section aria-label="Selecionar cliente" style={{ marginBottom: "3.5rem" }}>
-        <div className="flex items-center gap-2 mb-4" style={{ color: "var(--text-dim)" }}>
-          <IconShield size={11} />
-          <span
-            className="text-xs uppercase tracking-widest"
-            style={{ letterSpacing: "0.14em", color: "var(--text-dim)" }}
-          >
-            Cliente
-          </span>
+      <section
+        aria-label="Selecionar cliente"
+        style={{ marginBottom: "1.5rem" }}
+      >
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2" style={{ color: "var(--text-dim)" }}>
+              <IconShield size={11} />
+              <span
+                className="text-xs uppercase tracking-widest"
+                style={{ letterSpacing: "0.14em", color: "var(--text-dim)" }}
+              >
+                Cliente
+              </span>
+            </div>
+            <SeletorCliente
+              clientes={clientes}
+              clienteAtualId={clienteAtivo.id}
+              veiculosPorCliente={veiculosPorCliente}
+            />
+          </div>
+          {/* TAREFA B: AlertaSonoro com idsParaApitar */}
+          <AlertaSonoro idsParaApitar={idsParaApitar} />
         </div>
-        <SeletorCliente
-          clientes={clientes}
-          clienteAtualId={clienteAtivo.id}
-          veiculosPorCliente={veiculosPorCliente}
-        />
+
+        {/* Barra de filtros por tipo de problema (sincroniza lista e mapa via URL) */}
+        <div style={{ marginTop: "1rem" }}>
+          <FiltrosBar />
+        </div>
       </section>
 
       {/* ============================================================
-          2. TRES METRICAS GRANDES
+          TAREFA C: LAYOUT DOIS PAINEIS
+          - lg+: [coluna alertas ~43%] [coluna mapa+metricas sticky ~57%]
+          - mobile: coluna unica empilhada
           ============================================================ */}
-      <section aria-label="Resumo operacional" style={{ marginBottom: "3.5rem" }}>
+      <div
+        className="flex flex-col lg:flex-row"
+        style={{ gap: "1.25rem", alignItems: "flex-start" }}
+      >
+
+        {/* ========================================================
+            COLUNA ESQUERDA: fila de alertas (rolavel)
+            ======================================================== */}
         <div
-          className="grid grid-cols-1 sm:grid-cols-3"
-          style={{ gap: "0", borderRadius: "1rem", overflow: "hidden", border: "1px solid var(--border)" }}
+          className="w-full min-w-0"
+          style={{ flex: "0 0 43%", maxWidth: "100%" }}
         >
-          {/* Operando */}
-          <div
-            className="flex flex-col justify-between"
-            style={{
-              padding: "2.25rem 2.25rem",
-              borderRight: "1px solid var(--border)",
-              backgroundColor: "var(--card)",
-            }}
-          >
-            <MetricaGrande
-              label="operando"
-              valor={totalOperando}
-            />
-          </div>
 
-          {/* Criticos */}
-          <div
-            className="flex flex-col justify-between"
-            style={{
-              padding: "2.25rem 2.25rem",
-              borderRight: "1px solid var(--border)",
-              backgroundColor: totalCriticos > 0 ? "#130909" : "var(--card)",
-            }}
-          >
-            <MetricaGrande
-              label="critico"
-              valor={totalCriticos}
-              cor={totalCriticos > 0 ? "var(--vermelho)" : "var(--text-dim)"}
+          {/* CRITICOS */}
+          <section aria-label="Alertas criticos" style={{ marginBottom: "1.5rem" }}>
+            <SectionDivider
+              label="Critico"
+              cor={alertasCriticos.length > 0 ? "var(--vermelho)" : undefined}
+              count={alertasCriticos.length}
             />
-          </div>
 
-          {/* Entregas do dia */}
-          <div
-            className="flex flex-col justify-between gap-4"
-            style={{
-              padding: "2rem 2rem",
-              backgroundColor: "var(--card)",
-            }}
-          >
-            {entregasTotal > 0 ? (
-              <>
-                <MetricaGrande
-                  label="entregas do dia"
-                  valor={`${entregasFeitas}/${entregasTotal}`}
-                  cor="var(--accent)"
-                  compacto={true}
-                />
-                {/* Barra de progresso elegante e fina */}
-                <div style={{ height: "2px", borderRadius: "2px", backgroundColor: "var(--border-subtle)", overflow: "hidden" }}>
-                  <div
-                    style={{
-                      height: "100%",
-                      width: `${Math.min(100, Math.round((entregasFeitas / entregasTotal) * 100))}%`,
-                      backgroundColor: "var(--verde)",
-                      borderRadius: "2px",
-                      transition: "width 0.5s ease",
-                    }}
-                  />
+            <div style={{ marginTop: "0.875rem" }}>
+              {alertasCriticos.length === 0 ? (
+                <div
+                  className="flex items-center gap-4 rounded-xl"
+                  style={{
+                    padding: "1.25rem 1.5rem",
+                    backgroundColor: "#141414",
+                    border: "1px solid #242424",
+                  }}
+                >
+                  <span
+                    className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center"
+                    style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
+                  >
+                    <IconCheck size={13} />
+                  </span>
+                  <p className="text-sm" style={{ color: "var(--text-dim)" }}>
+                    Nenhuma ocorrencia critica no momento.
+                  </p>
                 </div>
-              </>
-            ) : (
-              <MetricaGrande
-                label="entregas do dia"
-                valor="--"
-                sublabel="sem dados"
-                cor="var(--text-dim)"
-              />
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* ============================================================
-          TOGGLE Lista | Mapa
-          ============================================================ */}
-      <section aria-label="Visao" style={{ marginBottom: "2.5rem" }}>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div
-            className="inline-flex"
-            style={{ border: "1px solid var(--border)", padding: "4px", gap: "4px", borderRadius: "0.75rem", backgroundColor: "var(--card)" }}
-          >
-            <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}`} className="text-sm"
-              style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
-                color: !vistaMapa ? "var(--text)" : "var(--text-muted)",
-                backgroundColor: !vistaMapa ? "var(--accent-dim)" : "transparent" }}>
-              Lista
-            </Link>
-            <Link href={`?cliente=${clienteAtivo.cod_user_unitrac}&vista=mapa`} className="text-sm"
-              style={{ padding: "6px 18px", borderRadius: "0.5rem", fontWeight: 600,
-                color: vistaMapa ? "var(--text)" : "var(--text-muted)",
-                backgroundColor: vistaMapa ? "var(--accent-dim)" : "transparent" }}>
-              Mapa
-            </Link>
-          </div>
-          <AlertaSonoro criticosIds={alertasCriticos.map((a) => a.id)} />
-        </div>
-      </section>
-
-      {vistaMapa ? (
-        <section aria-label="Mapa da frota" style={{ marginBottom: "3.5rem" }}>
-          <MapaWrapper cliente={clienteAtivo.cod_user_unitrac} />
-        </section>
-      ) : (
-      <>
-      {/* ============================================================
-          3. CRITICOS — cards grandes, dominam a tela
-          ============================================================ */}
-      <section aria-label="Alertas criticos" style={{ marginBottom: "3.5rem" }}>
-        <SectionDivider
-          label="Critico"
-          cor={alertasCriticos.length > 0 ? "var(--vermelho)" : undefined}
-          count={alertasCriticos.length}
-        />
-
-        <div style={{ marginTop: "1.5rem" }}>
-          {alertasCriticos.length === 0 ? (
-            <div
-              className="flex items-center gap-4 rounded-2xl"
-              style={{
-                padding: "1.75rem 2rem",
-                backgroundColor: "#141414",
-                border: "1px solid #242424",
-              }}
-            >
-              <span
-                className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
-                style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
-              >
-                <IconCheck size={15} />
-              </span>
-              <p className="text-sm" style={{ color: "var(--text-dim)" }}>
-                Nenhuma ocorrencia critica no momento.
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.25rem" }}>
-              {alertasCriticos.map((a) => (
-                <CardAlertaCritico
-                  key={a.id}
-                  id={a.id}
-                  status={a.status}
-                  nivel={a.nivel}
-                  tipo={a.tipo}
-                  placa={a.placa}
-                  motivo={a.motivo}
-                  local={a.local}
-                  desde={a.desde}
-                  lat={a.lat}
-                  lng={a.lng}
-                  velocidade={a.velocidade}
-                  ignicao={a.ignicao}
-                  atraso_min={a.atraso_min}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* ============================================================
-          3b. ATENCAO — cards em destaque, logo apos os criticos
-          ============================================================ */}
-      <section aria-label="Veiculos em atencao" style={{ marginBottom: "3.5rem" }}>
-        <SectionDivider
-          label="Atencao"
-          cor={alertasAtencao.length > 0 ? "var(--amarelo)" : undefined}
-          count={alertasAtencao.length}
-        />
-        <div style={{ marginTop: "1.5rem" }}>
-          {alertasAtencao.length === 0 ? (
-            <div
-              className="flex items-center gap-4 rounded-2xl"
-              style={{ padding: "1.75rem 2rem", backgroundColor: "#141414", border: "1px solid #242424" }}
-            >
-              <span
-                className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
-                style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
-              >
-                <IconCheck size={15} />
-              </span>
-              <p className="text-sm" style={{ color: "var(--text-dim)" }}>
-                Nada em atencao no momento.
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.25rem" }}>
-              {alertasAtencao.map((a) => (
-                <CardAlertaCritico
-                  key={a.id}
-                  id={a.id}
-                  status={a.status}
-                  nivel={a.nivel}
-                  tipo={a.tipo}
-                  placa={a.placa}
-                  motivo={a.motivo}
-                  local={a.local}
-                  desde={a.desde}
-                  lat={a.lat}
-                  lng={a.lng}
-                  velocidade={a.velocidade}
-                  ignicao={a.ignicao}
-                  atraso_min={a.atraso_min}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* ============================================================
-          4. EM OPERACAO (verde) — 2 por linha, MUITO respiro
-          ============================================================ */}
-      <section aria-label="Veiculos em operacao" style={{ marginBottom: "3.5rem" }}>
-        <SectionDivider
-          label="Em operacao"
-          cor="var(--verde)"
-          count={totalOperando}
-        />
-
-        <div style={{ marginTop: "1.5rem" }}>
-          {totalOperando === 0 ? (
-            <div
-              className="flex items-center justify-center rounded-2xl"
-              style={{
-                padding: "3rem",
-                backgroundColor: "var(--card)",
-                border: "1px solid var(--border)",
-                color: "var(--text-dim)",
-              }}
-            >
-              <p className="text-sm">Nenhum veiculo em operacao no momento.</p>
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.5rem" }}>
-                {emOperacaoVisiveis.map((item) => (
-                  <CardVeiculoOperacao key={item.id} item={item} />
-                ))}
-              </div>
-
-              {emOperacaoOcultos.length > 0 && (
-                <VerTodosBtn totalOcultos={emOperacaoOcultos.length}>
-                  <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.5rem", marginTop: "1.5rem" }}>
-                    {emOperacaoOcultos.map((item) => (
-                      <CardVeiculoOperacao key={item.id} item={item} />
-                    ))}
-                  </div>
-                </VerTodosBtn>
+              ) : (
+                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
+                  {alertasCriticos.map((a) => (
+                    <CardAlertaCritico
+                      key={a.id}
+                      id={a.id}
+                      status={a.status}
+                      nivel={a.nivel}
+                      tipo={a.tipo}
+                      placa={a.placa}
+                      motivo={a.motivo}
+                      local={a.local}
+                      desde={a.desde}
+                      lat={a.lat}
+                      lng={a.lng}
+                      velocidade={a.velocidade}
+                      ignicao={a.ignicao}
+                      atraso_min={a.atraso_min}
+                    />
+                  ))}
+                </div>
               )}
-            </>
+            </div>
+          </section>
+
+          {/* ATENCAO */}
+          <section aria-label="Veiculos em atencao" style={{ marginBottom: "1.5rem" }}>
+            <SectionDivider
+              label="Atencao"
+              cor={alertasAtencao.length > 0 ? "var(--amarelo)" : undefined}
+              count={alertasAtencao.length}
+            />
+            <div style={{ marginTop: "0.875rem" }}>
+              {alertasAtencao.length === 0 ? (
+                <div
+                  className="flex items-center gap-4 rounded-xl"
+                  style={{ padding: "1.25rem 1.5rem", backgroundColor: "#141414", border: "1px solid #242424" }}
+                >
+                  <span
+                    className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center"
+                    style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
+                  >
+                    <IconCheck size={13} />
+                  </span>
+                  <p className="text-sm" style={{ color: "var(--text-dim)" }}>
+                    Nada em atencao no momento.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
+                  {alertasAtencao.map((a) => (
+                    <CardAlertaCritico
+                      key={a.id}
+                      id={a.id}
+                      status={a.status}
+                      nivel={a.nivel}
+                      tipo={a.tipo}
+                      placa={a.placa}
+                      motivo={a.motivo}
+                      local={a.local}
+                      desde={a.desde}
+                      lat={a.lat}
+                      lng={a.lng}
+                      velocidade={a.velocidade}
+                      ignicao={a.ignicao}
+                      atraso_min={a.atraso_min}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* EM OPERACAO — ocultado quando "So com problema" esta ativo (nao e problema) */}
+          {!soProblema && (
+            <section aria-label="Veiculos em operacao" style={{ marginBottom: "1.5rem" }}>
+              <SectionDivider
+                label="Em operacao"
+                cor="var(--verde)"
+                count={totalOperando}
+              />
+
+              <div style={{ marginTop: "0.875rem" }}>
+                {totalOperando === 0 ? (
+                  <div
+                    className="flex items-center justify-center rounded-xl"
+                    style={{
+                      padding: "2rem",
+                      backgroundColor: "var(--card)",
+                      border: "1px solid var(--border)",
+                      color: "var(--text-dim)",
+                    }}
+                  >
+                    <p className="text-sm">Nenhum veiculo em operacao no momento.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-col" style={{ gap: "0.75rem" }}>
+                      {emOperacaoVisiveis.map((item) => (
+                        <CardVeiculoOperacao key={item.id} item={item} />
+                      ))}
+                    </div>
+
+                    {emOperacaoOcultos.length > 0 && (
+                      <VerTodosBtn totalOcultos={emOperacaoOcultos.length}>
+                        <div className="flex flex-col" style={{ gap: "0.75rem", marginTop: "0.75rem" }}>
+                          {emOperacaoOcultos.map((item) => (
+                            <CardVeiculoOperacao key={item.id} item={item} />
+                          ))}
+                        </div>
+                      </VerTodosBtn>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
           )}
+
+          {/* CONCLUIDOS + SEM COMUNICACAO — ocultados quando "So com problema" esta ativo */}
+          {!soProblema && (
+            <div className="flex flex-col" style={{ gap: "0.5rem" }}>
+              <FaixaColapsavel
+                label="concluidos"
+                count={totalConcluidos}
+                cor="var(--verde)"
+                icone={<IconCheck size={13} />}
+              >
+                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
+                  {concluidos.map((item) => (
+                    <CardVeiculoOperacao key={item.id} item={item} />
+                  ))}
+                </div>
+              </FaixaColapsavel>
+
+              <FaixaColapsavel
+                label="sem comunicacao"
+                count={totalSemCom}
+                icone={<IconNoSignal size={13} />}
+              >
+                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
+                  {semComunicacao.map((item) => (
+                    <CardVeiculoOperacao key={item.id} item={item} />
+                  ))}
+                </div>
+              </FaixaColapsavel>
+            </div>
+          )}
+
+          {/* Roubo de carga: contexto de inteligencia, abaixo da fila de alertas */}
+          <div style={{ marginTop: "1.5rem" }}>
+            <PainelRoubo />
+          </div>
         </div>
-      </section>
 
-      {/* ============================================================
-          5b. ROUBO DE CARGA NO RJ (ISP-RJ) — inteligência de risco
-          ============================================================ */}
-      <PainelRoubo />
-
-      {/* ============================================================
-          6. CONCLUIDOS + SEM COMUNICACAO — faixas colapsaveis
-          ============================================================ */}
-      <div className="flex flex-col" style={{ gap: "0.75rem" }}>
-        <FaixaColapsavel
-          label="concluidos"
-          count={totalConcluidos}
-          cor="var(--verde)"
-          icone={<IconCheck size={13} />}
+        {/* ========================================================
+            COLUNA DIREITA: metricas + mapa (sticky em desktop)
+            ======================================================== */}
+        <div
+          className="w-full min-w-0 lg:sticky"
+          style={{
+            flex: "1 1 0%",
+            top: "calc(var(--header-h, 64px) + 1rem)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "1rem",
+          }}
         >
-          <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.5rem" }}>
-            {concluidos.map((item) => (
-              <CardVeiculoOperacao key={item.id} item={item} />
-            ))}
-          </div>
-        </FaixaColapsavel>
+          {/* Metricas compactas */}
+          <BlocoMetricas
+            totalOperando={totalOperando}
+            totalCriticos={totalCriticos}
+            entregasFeitas={entregasFeitas}
+            entregasTotal={entregasTotal}
+          />
 
-        <FaixaColapsavel
-          label="sem comunicacao"
-          count={totalSemCom}
-          icone={<IconNoSignal size={13} />}
-        >
-          <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: "1.5rem" }}>
-            {semComunicacao.map((item) => (
-              <CardVeiculoOperacao key={item.id} item={item} />
-            ))}
+          {/* Mapa ao vivo da frota: altura determinada (vh) pro Leaflet montar com tamanho correto,
+              calculada pra a coluna inteira caber na viewport sem estourar */}
+          <div
+            className="rounded-2xl overflow-hidden"
+            style={{ border: "1px solid var(--border)", flexShrink: 0 }}
+          >
+            <MapaWrapper
+              cliente={clienteAtivo.cod_user_unitrac}
+              altura="calc(100vh - var(--header-h, 64px) - 8.5rem)"
+              tiposAtivos={tiposSelecionadosSet.length > 0 ? tiposSelecionadosSet : undefined}
+              soProblema={soProblema || undefined}
+            />
           </div>
-        </FaixaColapsavel>
+        </div>
+
       </div>
-      </>
-      )}
-
     </div>
   );
 }

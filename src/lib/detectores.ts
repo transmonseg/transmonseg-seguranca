@@ -96,11 +96,32 @@ export function emHorarioOperacao(d: Date): boolean {
   return diaUtil && hora >= 6 && hora < 20;
 }
 
+export function detectarParadaCliente(ctx: {
+  paradoMin: number;
+  emOperacao: boolean;
+  noCliente?: boolean;
+  ehBenassi?: boolean;
+}): Alerta | null {
+  if (ctx.ehBenassi && ctx.noCliente && ctx.emOperacao && ctx.paradoMin >= 90) {
+    return {
+      nivel: "atencao",
+      tipo: "parada_cliente",
+      motivo: `Parado no cliente ha ${formataDuracao(ctx.paradoMin)}, confirmar o que esta acontecendo`,
+      score: 52,
+    };
+  }
+  return null;
+}
+
 export function detectarParadaLonga(ctx: {
   paradoMin: number;
   emOperacao: boolean;
   foraDaBase: boolean;
+  noCliente?: boolean;
+  ehBenassi?: boolean;
 }): Alerta | null {
+  // Benassi parado no cliente: coberto por detectarParadaCliente, evita duplicata.
+  if (ctx.ehBenassi && ctx.noCliente) return null;
   if (ctx.paradoMin >= 90 && ctx.emOperacao && ctx.foraDaBase) {
     return {
       nivel: "atencao",
@@ -241,8 +262,11 @@ export function avaliar(
     paradoMin: number;
     emOperacao: boolean;
     foraDaBase: boolean;
-    // Campos de desvio são opcionais: quando ausentes, o detector de desvio
-    // não roda (mantém compatibilidade com chamadas que não têm alvos).
+    // Campos opcionais exclusivos da Benassi.
+    noCliente?: boolean;
+    ehBenassi?: boolean;
+    // Campos de desvio sao opcionais: quando ausentes, o detector de desvio
+    // nao roda (mantem compatibilidade com chamadas que nao tem alvos).
     distAlvoM?: number | null;
     distAlvoAnteriorM?: number | null;
     temPendentes?: boolean;
@@ -257,7 +281,19 @@ export function avaliar(
     detectarBau(p),
     detectarJammer(p),
     detectarExcessoVelocidade(p),
-    detectarParadaLonga(ctx),
+    detectarParadaCliente({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      noCliente: ctx.noCliente,
+      ehBenassi: ctx.ehBenassi,
+    }),
+    detectarParadaLonga({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      foraDaBase: ctx.foraDaBase,
+      noCliente: ctx.noCliente,
+      ehBenassi: ctx.ehBenassi,
+    }),
     detectarTiroteioProximo(p, {
       distTiroteioM: ctx.distTiroteioM ?? null,
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,

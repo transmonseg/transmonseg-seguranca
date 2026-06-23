@@ -5,6 +5,7 @@ import {
   detectarBau,
   detectarJammer,
   detectarExcessoVelocidade,
+  detectarParadaCliente,
   detectarParadaLonga,
   detectarDesvio,
   detectarTiroteioProximo,
@@ -162,6 +163,154 @@ describe("detectarParadaLonga", () => {
     expect(
       detectarParadaLonga({ paradoMin: 89, emOperacao: true, foraDaBase: true })
     ).toBeNull();
+  });
+});
+
+describe("detectarParadaCliente", () => {
+  it("Benassi no cliente 95min em operacao retorna parada_cliente atencao score 52", () => {
+    const alerta = detectarParadaCliente({
+      paradoMin: 95,
+      emOperacao: true,
+      noCliente: true,
+      ehBenassi: true,
+    });
+    expect(alerta).not.toBeNull();
+    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.tipo).toBe("parada_cliente");
+    expect(alerta?.score).toBe(52);
+    expect(alerta?.motivo).toContain("1h35min");
+    expect(alerta?.motivo).toContain("confirmar o que esta acontecendo");
+  });
+  it("Benassi no cliente exatamente 90min aciona (limite >=90)", () => {
+    expect(
+      detectarParadaCliente({ paradoMin: 90, emOperacao: true, noCliente: true, ehBenassi: true })
+    ).not.toBeNull();
+  });
+  it("Benassi no cliente 89min retorna null (abaixo do limite)", () => {
+    expect(
+      detectarParadaCliente({ paradoMin: 89, emOperacao: true, noCliente: true, ehBenassi: true })
+    ).toBeNull();
+  });
+  it("Benassi FORA do cliente (noCliente false) retorna null", () => {
+    expect(
+      detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: false, ehBenassi: true })
+    ).toBeNull();
+  });
+  it("Nutry (ehBenassi false) no cliente retorna null", () => {
+    expect(
+      detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: true, ehBenassi: false })
+    ).toBeNull();
+  });
+  it("fora de operacao retorna null", () => {
+    expect(
+      detectarParadaCliente({ paradoMin: 95, emOperacao: false, noCliente: true, ehBenassi: true })
+    ).toBeNull();
+  });
+  it("sem campos opcionais (undefined) retorna null", () => {
+    expect(
+      detectarParadaCliente({ paradoMin: 95, emOperacao: true })
+    ).toBeNull();
+  });
+});
+
+describe("detectarParadaLonga — com campos Benassi", () => {
+  it("Benassi no cliente 95min: retorna null (coberto por parada_cliente)", () => {
+    expect(
+      detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: true, noCliente: true, ehBenassi: true })
+    ).toBeNull();
+  });
+  it("Benassi FORA do cliente 95min em operacao fora da base: retorna parada_longa", () => {
+    const alerta = detectarParadaLonga({
+      paradoMin: 95,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: false,
+      ehBenassi: true,
+    });
+    expect(alerta).not.toBeNull();
+    expect(alerta?.tipo).toBe("parada_longa");
+  });
+  it("Nutry (ehBenassi false) no cliente 95min em operacao fora da base: retorna parada_longa", () => {
+    const alerta = detectarParadaLonga({
+      paradoMin: 95,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: true,
+      ehBenassi: false,
+    });
+    expect(alerta).not.toBeNull();
+    expect(alerta?.tipo).toBe("parada_longa");
+  });
+});
+
+describe("avaliar — cenarios parada_cliente Benassi", () => {
+  it("Benassi no cliente 95min em operacao retorna parada_cliente", () => {
+    const alerta = avaliar(posicaoBase(), {
+      paradoMin: 95,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: true,
+      ehBenassi: true,
+    });
+    expect(alerta?.tipo).toBe("parada_cliente");
+    expect(alerta?.nivel).toBe("atencao");
+  });
+  it("Benassi fora do cliente 95min em operacao retorna parada_longa (nao parada_cliente)", () => {
+    const alerta = avaliar(posicaoBase(), {
+      paradoMin: 95,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: false,
+      ehBenassi: true,
+    });
+    expect(alerta?.tipo).toBe("parada_longa");
+  });
+  it("Nutry no cliente 95min em operacao retorna parada_longa (nao parada_cliente)", () => {
+    const alerta = avaliar(posicaoBase(), {
+      paradoMin: 95,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: true,
+      ehBenassi: false,
+    });
+    expect(alerta?.tipo).toBe("parada_longa");
+  });
+  it("Benassi no cliente 60min retorna null (abaixo do limite)", () => {
+    const alerta = avaliar(posicaoBase(), {
+      paradoMin: 60,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: true,
+      ehBenassi: true,
+    });
+    expect(alerta).toBeNull();
+  });
+  it("Benassi no cliente fora de operacao retorna null", () => {
+    const alerta = avaliar(posicaoBase(), {
+      paradoMin: 95,
+      emOperacao: false,
+      foraDaBase: true,
+      noCliente: true,
+      ehBenassi: true,
+    });
+    expect(alerta).toBeNull();
+  });
+  it("parada_cliente (atencao score 52) perde para panico (critico score 100)", () => {
+    const alerta = avaliar(posicaoBase({ panico: true }), {
+      paradoMin: 95,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: true,
+      ehBenassi: true,
+    });
+    expect(alerta?.tipo).toBe("panico");
+  });
+  it("parada_cliente (score 52) vence parada_longa (score 50) quando ambos seriam candidatos", () => {
+    // Cenario hipotetico: mesmo ctx mas sem flag ehBenassi para isolar os scores.
+    // Na pratica quando ehBenassi+noCliente, parada_longa retorna null.
+    // Testamos o score via detectarParadaCliente diretamente.
+    const pc = detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: true, ehBenassi: true });
+    expect(pc?.score).toBeGreaterThan(50);
   });
 });
 

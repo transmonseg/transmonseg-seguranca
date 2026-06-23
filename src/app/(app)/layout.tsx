@@ -1,3 +1,4 @@
+import Link from "next/link";
 import RelogioAoVivo from "./components/RelogioAoVivo";
 import AutoRefresh from "./components/AutoRefresh";
 import { createClient } from "@/lib/supabase/server";
@@ -46,6 +47,24 @@ export default async function AppLayout({
               </p>
             </div>
           </div>
+
+          {/* Navegacao discreta */}
+          <nav className="hidden sm:flex items-center gap-1" aria-label="Navegacao principal">
+            <Link
+              href="/"
+              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
+            >
+              Central
+            </Link>
+            <Link
+              href="/monitoramento"
+              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
+            >
+              Monitoramento
+            </Link>
+          </nav>
 
           {/* Lado direito: relógio + ao vivo + operador */}
           <div className="flex items-center gap-5">

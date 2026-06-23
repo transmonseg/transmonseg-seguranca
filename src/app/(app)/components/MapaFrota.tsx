@@ -10,6 +10,8 @@ type Veiculo = {
   placa: string; cv: string; lat: number; lng: number; nivel: string;
   velocidade: number; ignicao: boolean; local: string | null;
   entregas_feitas: number | null; entregas_total: number | null; atraso_min: number;
+  // tipo do alerta ativo de maior prioridade (null se sem alerta)
+  tipo: string | null;
 };
 type Dados = {
   veiculos: Veiculo[];
@@ -116,7 +118,19 @@ function AjustarVista({
   return null;
 }
 
-export default function MapaFrota({ cliente }: { cliente: string }) {
+export default function MapaFrota({
+  cliente,
+  altura = "72vh",
+  tiposAtivos,
+  soProblema,
+}: {
+  cliente: string;
+  altura?: string;
+  // tipos tecnicos expandidos (ex: ["desvio","jammer","sinal","bloqueio"])
+  tiposAtivos?: string[];
+  // quando true, exibe apenas veiculos com nivel critico ou atencao
+  soProblema?: boolean;
+}) {
   const [dados, setDados] = useState<Dados | null>(null);
   const [favelas, setFavelas] = useState<GeoJSON.FeatureCollection | null>(null);
   const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
@@ -164,19 +178,31 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
   if (!dados) {
     return (
       <div className="flex items-center justify-center rounded-2xl"
-        style={{ height: "72vh", backgroundColor: "var(--card)", border: "1px solid var(--border)", color: "var(--text-dim)" }}>
+        style={{ height: altura, backgroundColor: "var(--card)", border: "1px solid var(--border)", color: "var(--text-dim)" }}>
         carregando mapa...
       </div>
     );
   }
 
-  const comPos = dados.veiculos.filter((v) => v.lat && v.lng);
+  // Aplicar filtros de tipo e problema antes de montar os marcadores.
+  // Quando nenhum filtro esta ativo, exibe todos os veiculos com posicao.
+  const veiculosFiltrados = dados.veiculos.filter((v) => {
+    // Filtro "so com problema": nivel critico (vermelho) ou atencao (amarelo)
+    if (soProblema && v.nivel !== "vermelho" && v.nivel !== "amarelo") return false;
+    // Filtro de tipos: o tipo do alerta ativo deve estar na lista expandida
+    if (tiposAtivos && tiposAtivos.length > 0) {
+      if (!v.tipo || !tiposAtivos.includes(v.tipo)) return false;
+    }
+    return true;
+  });
+
+  const comPos = veiculosFiltrados.filter((v) => v.lat && v.lng);
   const centro: [number, number] = comPos.length
     ? [comPos[0].lat, comPos[0].lng]
     : [-22.9, -43.2];
 
   return (
-    <div style={{ height: "72vh", borderRadius: "1rem", overflow: "hidden", border: "1px solid var(--border)" }}>
+    <div style={{ height: altura, borderRadius: "1rem", overflow: "hidden", border: "1px solid var(--border)" }}>
       <MapContainer center={centro} zoom={10} preferCanvas style={{ height: "100%", width: "100%", background: "#0a0a0a" }}>
         <AjustarVista pontos={comPos.map((v) => [v.lat, v.lng])} favelas={favelas} bases={dados.bases} cliente={cliente} />
         <TileLayer

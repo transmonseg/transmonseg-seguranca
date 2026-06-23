@@ -9,6 +9,7 @@ import {
   agruparPontosPorPlaca,
   distAlvoPendenteMaisProximoM,
   alvoPendenteMaisProximo,
+  alvoMaisProximoQualquer,
   rumoGraus,
   haversineM,
   normalizar,
@@ -327,6 +328,9 @@ export async function POST(request: Request) {
     }
 
     for (const cliente of clientes) {
+      // Benassi: cliente cod_user_unitrac "4586" tem detector de parada no cliente.
+      const ehBenassi = cliente.cod_user_unitrac === "4586";
+
       // Obter CVs deste cliente
       const cvsCliente = [...mapaCv.entries()]
         .filter(([, v]) => v.cliente_id === cliente.id)
@@ -420,6 +424,15 @@ export async function POST(request: Request) {
             anterior && anterior.lat != null && anterior.lng != null
               ? distAlvoPendenteMaisProximoM(anterior.lat, anterior.lng, pontosVeiculo)
               : null;
+
+          // Parada no cliente (Benassi): verificar se o veiculo esta parado
+          // dentro do raio de qualquer ponto da rota (feito OU pendente).
+          const maisProximoQualquer = alvoMaisProximoQualquer(pos.lat, pos.lng, pontosVeiculo);
+          const noCliente =
+            pos.velocidade === 0 &&
+            maisProximoQualquer !== null &&
+            maisProximoQualquer.distM <= Math.max(maisProximoQualquer.ponto.raio, 150);
+
           // Rumo do movimento (ciclo anterior → posição atual) e rumo até o
           // ponto pendente mais próximo, para o detector corroborar o desvio.
           const rumoMovimento =
@@ -476,6 +489,8 @@ export async function POST(request: Request) {
                   paradoMin,
                   emOperacao,
                   foraDaBase,
+                  noCliente,
+                  ehBenassi,
                   distAlvoM,
                   distAlvoAnteriorM,
                   temPendentes,
