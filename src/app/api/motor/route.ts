@@ -27,7 +27,11 @@ const TIMEOUT_UNITRAC_MS = 20_000;
 // Limite de geocodes novos (Nominatim) por ciclo do motor.
 // Baixo de proposito: o Nominatim e lento/restrito a partir de datacenter (Vercel),
 // entao geocodamos poucos por ciclo e vamos cobrindo aos poucos (cache no banco).
-const LIMITE_GEOCODES_NOVOS = 3;
+// Com a chave do Google (cota alta), geocodamos bem mais por ciclo — inclusive
+// veículos em movimento que estão em alerta. Sem ela, caímos no Nominatim, que
+// é restrito a partir de datacenter, então poucos por ciclo.
+const TEM_GOOGLE_GEOCODE = !!process.env.GOOGLE_MAPS_API_KEY;
+const LIMITE_GEOCODES_NOVOS = TEM_GOOGLE_GEOCODE ? 30 : 3;
 
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
@@ -131,19 +135,31 @@ async function geocodeReverso(
   contadorNovos.valor += 1;
 
   try {
-    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=pt-BR`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": "TransmonsegCentral/1.0" },
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) return null;
+    let endereco: string | null = null;
+    const chaveGoogle = process.env.GOOGLE_MAPS_API_KEY;
 
-    const data = (await res.json()) as { display_name?: string };
-    if (!data.display_name) return null;
-
-    // Usar as 3 primeiras partes do display_name separadas por virgula
-    const partes = data.display_name.split(",").map((p) => p.trim());
-    const endereco = partes.slice(0, 3).join(", ");
+    if (chaveGoogle) {
+      // Google Geocoding (reverso): preciso e com cota alta. Pega rua + bairro.
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&language=pt-BR&key=${chaveGoogle}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      if (res.ok) {
+        const data = (await res.json()) as { results?: { formatted_address?: string }[] };
+        const fa = data.results?.[0]?.formatted_address;
+        if (fa) endereco = fa.split(",").map((p) => p.trim()).slice(0, 2).join(", ");
+      }
+    } else {
+      // Nominatim (OpenStreetMap): grátis, mas restrito de datacenter.
+      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=pt-BR`;
+      const res = await fetch(url, {
+        headers: { "User-Agent": "TransmonsegCentral/1.0" },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { display_name?: string };
+        if (data.display_name) endereco = data.display_name.split(",").map((p) => p.trim()).slice(0, 3).join(", ");
+      }
+    }
+    if (!endereco) return null;
 
     // Salvar no cache
     const pgSave = await pool.connect();
@@ -430,18 +446,6 @@ export async function POST(request: Request) {
             }
           }
 
-          // ─── Determinar localização do veículo ─────────────────────────
-          // Base > Em deslocamento > Parado (geocode reverso)
-          let localVeiculo: string | null = null;
-          if (baseOcupada) {
-            localVeiculo = baseOcupada.nome;
-          } else if (pos.velocidade > 0 && pos.fresco) {
-            localVeiculo = "Em deslocamento";
-          } else if (pos.velocidade === 0 && pos.fresco) {
-            // Parado fora de base: geocode reverso com cache
-            localVeiculo = await geocodeReverso(pos.lat, pos.lng, pool, contadorGeocodesNovos);
-          }
-
           // ─── Entregas do veículo ────────────────────────────────────────
           const entregas = entregasPorPlaca.get(pos.placa) ?? { feitos: 0, total: 0 };
           const entregas_feitas = entregas.feitos;
@@ -496,6 +500,21 @@ export async function POST(request: Request) {
             nivel = "amarelo";
           } else {
             nivel = "verde";
+          }
+
+          // ─── Localização do veículo (agora que sabemos o nível) ─────────
+          // Base > endereço (parado OU em alerta, inclusive em movimento) > Em deslocamento.
+          // Geocodar veículo em alerta mesmo andando: a central quer a rua em tempo real.
+          let localVeiculo: string | null = null;
+          if (baseOcupada) {
+            localVeiculo = baseOcupada.nome;
+          } else if (pos.fresco) {
+            const emAlerta = nivel === "vermelho" || nivel === "amarelo";
+            if (pos.velocidade === 0 || emAlerta) {
+              localVeiculo = await geocodeReverso(pos.lat, pos.lng, pool, contadorGeocodesNovos);
+            } else {
+              localVeiculo = "Em deslocamento";
+            }
           }
 
           // ─── Nível "concluido": recolhido na base com entregas feitas ──

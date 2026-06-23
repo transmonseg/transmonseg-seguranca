@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, LayersControl, LayerGroup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Marker, Popup, GeoJSON, LayersControl, LayerGroup, useMap } from "react-leaflet";
 import type { Layer } from "leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -30,6 +30,27 @@ const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
   concluido: "#9fb3ce", cinza: "#6b6b6b",
 };
+
+// Ícone de caminhão colorido pelo status, num disco escuro (legível no mapa dark).
+// Cacheado por cor: só 5 variações. Veículos críticos um pouco maiores.
+const _iconeCache: Record<string, L.DivIcon> = {};
+function iconeCaminhao(cor: string, destaque: boolean): L.DivIcon {
+  const chave = `${cor}-${destaque}`;
+  if (_iconeCache[chave]) return _iconeCache[chave];
+  const s = destaque ? 32 : 26;
+  const html =
+    `<div style="width:${s}px;height:${s}px;display:flex;align-items:center;justify-content:center;` +
+    `background:rgba(10,10,10,0.92);border:1.6px solid ${cor};border-radius:50%;` +
+    `box-shadow:0 0 0 1px rgba(0,0,0,0.5)${destaque ? `,0 0 8px ${cor}` : ""}">` +
+    `<svg width="${destaque ? 18 : 15}" height="${destaque ? 18 : 15}" viewBox="0 0 24 24" fill="none" ` +
+    `stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+    `<rect x="1" y="3" width="15" height="13"/>` +
+    `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
+    `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg></div>`;
+  const ic = L.divIcon({ html, className: "marcador-caminhao", iconSize: [s, s], iconAnchor: [s / 2, s / 2], popupAnchor: [0, -s / 2] });
+  _iconeCache[chave] = ic;
+  return ic;
+}
 
 // Escala de cor do coroplético de roubo de carga (totais 12 meses por município).
 // Tons suaves: a camada é contexto, não pode saturar a tela.
@@ -226,9 +247,9 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
         )}
         {comPos.map((v, i) => {
           const cor = COR[v.nivel] ?? "#5fb87a";
+          const destaque = v.nivel === "vermelho" || v.nivel === "amarelo";
           return (
-            <CircleMarker key={`v${i}`} center={[v.lat, v.lng]} radius={6}
-              pathOptions={{ color: "#0a0a0a", fillColor: cor, fillOpacity: 1, weight: 1.5 }}>
+            <Marker key={`v${i}`} position={[v.lat, v.lng]} icon={iconeCaminhao(cor, destaque)}>
               <Popup>
                 <div style={{ fontFamily: "var(--font-geist-mono), monospace", fontWeight: 700, fontSize: 14 }}>{v.placa}</div>
                 <div style={{ fontSize: 12, marginTop: 2 }}>
@@ -245,7 +266,7 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
                   abrir no Google Maps
                 </a>
               </Popup>
-            </CircleMarker>
+            </Marker>
           );
         })}
       </MapContainer>
