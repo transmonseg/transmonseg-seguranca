@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, Circle } from "react-leaflet";
+import { useEffect, useRef, useState } from "react";
+import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, Circle, useMap } from "react-leaflet";
+import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
 type Veiculo = {
@@ -16,6 +17,19 @@ const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
   concluido: "#9fb3ce", cinza: "#6b6b6b",
 };
+
+// Enquadra a vista na frota do cliente — uma vez por troca de cliente
+// (não a cada refresh de 30s, pra não reposicionar o mapa enquanto o operador olha).
+function AjustarVista({ pontos, cliente }: { pontos: [number, number][]; cliente: string }) {
+  const map = useMap();
+  const ajustado = useRef<string | null>(null);
+  useEffect(() => {
+    if (ajustado.current === cliente || pontos.length === 0) return;
+    map.fitBounds(L.latLngBounds(pontos), { padding: [50, 50], maxZoom: 13 });
+    ajustado.current = cliente;
+  }, [pontos, cliente, map]);
+  return null;
+}
 
 export default function MapaFrota({ cliente }: { cliente: string }) {
   const [dados, setDados] = useState<Dados | null>(null);
@@ -55,7 +69,8 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
 
   return (
     <div style={{ height: "72vh", borderRadius: "1rem", overflow: "hidden", border: "1px solid var(--border)" }}>
-      <MapContainer center={centro} zoom={11} preferCanvas style={{ height: "100%", width: "100%", background: "#0a0a0a" }}>
+      <MapContainer center={centro} zoom={10} preferCanvas style={{ height: "100%", width: "100%", background: "#0a0a0a" }}>
+        <AjustarVista pontos={comPos.map((v) => [v.lat, v.lng])} cliente={cliente} />
         <TileLayer
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; OpenStreetMap &copy; CARTO'
