@@ -16,6 +16,7 @@ import FaixaColapsavel from "./components/FaixaColapsavel";
 import VerTodosBtn from "./components/VerTodosBtn";
 import MapaWrapper from "./components/MapaWrapper";
 import AcoesAlerta from "./components/AcoesAlerta";
+import PainelRoubo from "./components/PainelRoubo";
 
 // Central ao vivo: nunca prerender estatico.
 export const dynamic = "force-dynamic";
@@ -1063,6 +1064,11 @@ export default async function DashboardPage({
           )}
         </div>
       </section>
+
+      {/* ============================================================
+          5b. ROUBO DE CARGA NO RJ (ISP-RJ) — inteligência de risco
+          ============================================================ */}
+      <PainelRoubo />
 
       {/* ============================================================
           6. CONCLUIDOS + SEM COMUNICACAO — faixas colapsaveis

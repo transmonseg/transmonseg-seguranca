@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON, LayersControl, LayerGroup, useMap } from "react-leaflet";
+import type { Layer } from "leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -24,6 +25,35 @@ const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
   concluido: "#9fb3ce", cinza: "#6b6b6b",
 };
+
+// Escala de cor do coroplético de roubo de carga (totais 12 meses por município).
+function corRoubo(n: number): string {
+  if (n >= 1000) return "#7f1d1d";
+  if (n >= 300) return "#b91c1c";
+  if (n >= 100) return "#dc2626";
+  if (n >= 30) return "#ea580c";
+  if (n >= 10) return "#f59e0b";
+  if (n >= 1) return "#fcd34d";
+  return "transparent";
+}
+function estiloRoubo(feature?: GeoJSON.Feature) {
+  const n = Number((feature?.properties as { roubo_carga?: number })?.roubo_carga ?? 0);
+  return {
+    fillColor: corRoubo(n),
+    fillOpacity: n > 0 ? 0.55 : 0,
+    color: n > 0 ? "#1a0a0a" : "transparent",
+    weight: n > 0 ? 0.5 : 0,
+  };
+}
+function popupRoubo(feature: GeoJSON.Feature, layer: Layer) {
+  const p = feature.properties as { nome?: string; roubo_carga?: number };
+  const n = Number(p?.roubo_carga ?? 0);
+  layer.bindPopup(
+    `<div style="font-weight:700;font-size:13px">${p?.nome ?? "Município"}</div>` +
+    `<div style="font-size:12px;margin-top:2px">${n} roubo(s) de carga</div>` +
+    `<div style="font-size:11px;color:#666;margin-top:1px">últimos 12 meses · ISP-RJ</div>`
+  );
+}
 
 // Enquadra a vista englobando a frota E as áreas de risco (estado todo),
 // uma vez por troca de cliente — pra não reposicionar o mapa a cada refresh.
@@ -62,6 +92,7 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
   const [dados, setDados] = useState<Dados | null>(null);
   const [favelas, setFavelas] = useState<GeoJSON.FeatureCollection | null>(null);
   const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
+  const [rouboCarga, setRouboCarga] = useState<GeoJSON.FeatureCollection | null>(null);
 
   // Favelas: carregam uma vez (estáticas, cacheadas, perímetro preciso).
   useEffect(() => {
@@ -79,6 +110,14 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
     carregar();
     const id = setInterval(carregar, 300000);
     return () => { ativo = false; clearInterval(id); };
+  }, []);
+
+  // Roubo de carga (ISP-RJ): índice por município, carrega uma vez (mensal).
+  useEffect(() => {
+    fetch("/api/roubo-carga")
+      .then((r) => r.json())
+      .then((d) => { if (d?.geojson) setRouboCarga(d.geojson); })
+      .catch(() => {});
   }, []);
 
   // Veículos + bases: por cliente, atualizam junto com a tela.
@@ -116,14 +155,57 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; OpenStreetMap &copy; CARTO'
         />
-        {favelas && (
-          <GeoJSON
-            data={favelas}
-            style={{ color: "#ff2d2d", weight: 1, fillColor: "#ff2d2d", fillOpacity: 0.22, opacity: 0.7 }}
-          />
-        )}
-        {/* Malha de pontos de entrega pendentes (a rota que a frota cobre).
-            Pontos pequenos e discretos: um veículo longe desta nuvem = desvio. */}
+        {/* Camadas de risco toggleáveis pelo operador (controle no canto). */}
+        <LayersControl position="topright">
+          {favelas && (
+            <LayersControl.Overlay checked name="Favelas">
+              <GeoJSON
+                data={favelas}
+                style={{ color: "#ff2d2d", weight: 1, fillColor: "#ff2d2d", fillOpacity: 0.22, opacity: 0.7 }}
+              />
+            </LayersControl.Overlay>
+          )}
+          {/* Tiroteios recentes (Fogo Cruzado, RJ, últimos 3 dias). Âmbar; os das
+              últimas 24h em laranja vivo, maiores e com anel branco. */}
+          <LayersControl.Overlay checked name="Tiroteios (3 dias)">
+            <LayerGroup>
+              {tiroteios.map((t, i) => (
+                <CircleMarker key={`tiro${i}`} center={[t.lat, t.lng]}
+                  radius={t.recente ? 6 : 4}
+                  pathOptions={{
+                    color: t.recente ? "#ffffff" : "#fde68a",
+                    weight: t.recente ? 2 : 1,
+                    fillColor: t.recente ? "#ff6a00" : "#d97706",
+                    fillOpacity: 1,
+                  }}>
+                  <Popup>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "#c2410c" }}>
+                      Tiroteio{t.acaoPolicial ? " · ação policial" : ""}
+                    </div>
+                    <div style={{ fontSize: 12, marginTop: 2 }}>
+                      {t.bairro ? `${t.bairro}, ` : ""}{t.cidade}
+                    </div>
+                    <div style={{ fontSize: 12, marginTop: 2 }}>
+                      {new Date(t.date).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      {t.recente ? " · recente" : ""}
+                    </div>
+                    {t.motivo && <div style={{ fontSize: 12, marginTop: 2 }}>motivo: {t.motivo}</div>}
+                    {t.vitimas > 0 && <div style={{ fontSize: 12, marginTop: 2, color: "#dc2626" }}>{t.vitimas} vítima(s)</div>}
+                  </Popup>
+                </CircleMarker>
+              ))}
+            </LayerGroup>
+          </LayersControl.Overlay>
+          {/* Roubo de carga por município (ISP-RJ, 12 meses). Coroplético, começa
+              desligado pra não competir com as outras camadas. */}
+          {rouboCarga && (
+            <LayersControl.Overlay name="Roubo de carga (município)">
+              <GeoJSON key="roubo" data={rouboCarga} style={estiloRoubo} onEachFeature={popupRoubo} />
+            </LayersControl.Overlay>
+          )}
+        </LayersControl>
+
+        {/* Malha de pontos de entrega pendentes (a rota que a frota cobre). */}
         {(dados.pontos ?? []).map((pt, i) => (
           <CircleMarker key={`pt${i}`} center={[pt.lat, pt.lng]} radius={1.5}
             pathOptions={{ stroke: false, fillColor: "#38bdf8", fillOpacity: 0.5 }} />
@@ -135,33 +217,6 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
             style={{ color: "#7dd3fc", weight: 1.5, fillColor: "#7dd3fc", fillOpacity: 0.12, opacity: 0.85, dashArray: "5 4" }}
           />
         )}
-        {/* Tiroteios recentes (Fogo Cruzado, RJ, últimos 3 dias). Âmbar; os das
-            últimas 24h em laranja vivo e maiores. Evento pontual de risco. */}
-        {tiroteios.map((t, i) => (
-          <CircleMarker key={`tiro${i}`} center={[t.lat, t.lng]}
-            radius={t.recente ? 6 : 4}
-            pathOptions={{
-              color: t.recente ? "#ffffff" : "#fde68a",
-              weight: t.recente ? 2 : 1,
-              fillColor: t.recente ? "#ff6a00" : "#d97706",
-              fillOpacity: 1,
-            }}>
-            <Popup>
-              <div style={{ fontWeight: 700, fontSize: 13, color: "#c2410c" }}>
-                Tiroteio{t.acaoPolicial ? " · ação policial" : ""}
-              </div>
-              <div style={{ fontSize: 12, marginTop: 2 }}>
-                {t.bairro ? `${t.bairro}, ` : ""}{t.cidade}
-              </div>
-              <div style={{ fontSize: 12, marginTop: 2 }}>
-                {new Date(t.date).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                {t.recente ? " · recente" : ""}
-              </div>
-              {t.motivo && <div style={{ fontSize: 12, marginTop: 2 }}>motivo: {t.motivo}</div>}
-              {t.vitimas > 0 && <div style={{ fontSize: 12, marginTop: 2, color: "#dc2626" }}>{t.vitimas} vítima(s)</div>}
-            </Popup>
-          </CircleMarker>
-        ))}
         {comPos.map((v, i) => {
           const cor = COR[v.nivel] ?? "#5fb87a";
           return (
