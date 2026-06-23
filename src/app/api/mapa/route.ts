@@ -1,10 +1,16 @@
 // Dados do mapa: veículos do cliente, bases e a malha de pontos de entrega.
 import pg from "pg";
 import { buscarAlvos, agruparPontosPorPlaca } from "@/lib/unitrac";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  // Posições de frota são dado sensível: exige operador logado.
+  const auth = await createClient();
+  const { data: { user } } = await auth.auth.getUser();
+  if (!user) return Response.json({ erro: "nao autorizado" }, { status: 401 });
+
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente") || "4096";
 
