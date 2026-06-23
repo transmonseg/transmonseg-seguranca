@@ -3,7 +3,7 @@
 import puppeteer from "puppeteer-core";
 
 const DIR = process.argv[2]; // pasta de saida dos prints
-const base = "http://localhost:3000";
+const base = process.argv[3] || "http://localhost:3000"; // alvo (local ou producao)
 const email = `qa-${Date.now()}@transmonseg.com`;
 const senha = "teste123";
 const nome = "Operador QA";
