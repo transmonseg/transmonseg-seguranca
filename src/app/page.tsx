@@ -230,6 +230,19 @@ function IconChevronRight({ size = 14 }: { size?: number }) {
   );
 }
 
+// Desvio de rota: caminho que se bifurca para fora.
+function IconDesvio({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22V12" />
+      <path d="M12 12C12 8 12 6 6 4" />
+      <path d="M12 12c0-3 1-5 6-7" />
+      <polyline points="16 3 18 5 16 7" />
+    </svg>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Icone de tipo de alerta                                              */
 /* ------------------------------------------------------------------ */
@@ -244,6 +257,9 @@ function IconTipoAlerta({ tipo, size = 16 }: { tipo: string; size?: number }) {
   }
   if (t.includes("parada") || t.includes("parado") || t.includes("longa")) {
     return <IconPause size={size} />;
+  }
+  if (t.includes("desvio") || t.includes("rota") || t.includes("fora")) {
+    return <IconDesvio size={size} />;
   }
   return <IconAlertCircle size={size} />;
 }

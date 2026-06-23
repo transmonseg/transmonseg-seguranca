@@ -50,9 +50,16 @@ export async function buscarPosicoes(cvs: string[]): Promise<unknown[]> {
 }
 
 // Tipo retornado pela API de alvos (/mapa_servicos/alvos).
+// Cada alvo é um PONTO de entrega da rota do veículo, com coordenadas,
+// ordem na rota e situação (feito/pendente).
 export type AlvoUnitrac = {
   placa: string;
   alvosituacaoservico: number; // 1 = feito, 0 = pendente
+  pontolatitude?: number;
+  pontolongitude?: number;
+  pontoraio?: number; // raio do ponto em metros (ex.: 50)
+  pontonome?: string;
+  alvoordem?: number;
   [key: string]: unknown;
 };
 
@@ -60,6 +67,16 @@ export type AlvoUnitrac = {
 export type EntregasPlaca = {
   feitos: number;
   total: number;
+};
+
+// Um ponto de entrega da rota planejada do veículo.
+export type PontoEntrega = {
+  lat: number;
+  lng: number;
+  raio: number; // metros
+  ordem: number;
+  nome: string;
+  feito: boolean;
 };
 
 // Busca alvos (paradas/entregas) de uma lista de CVs.
@@ -94,6 +111,58 @@ export function agruparAlvosPorPlaca(alvos: AlvoUnitrac[]): Map<string, Entregas
     mapa.set(placa, entrada);
   }
   return mapa;
+}
+
+// Agrupa os alvos em PONTOS DE ENTREGA por placa (a rota planejada do veículo).
+// Só inclui pontos com coordenadas válidas. Ordena por alvoordem.
+export function agruparPontosPorPlaca(alvos: AlvoUnitrac[]): Map<string, PontoEntrega[]> {
+  const mapa = new Map<string, PontoEntrega[]>();
+  for (const a of alvos) {
+    const lat = typeof a.pontolatitude === "number" ? a.pontolatitude : parseFloat(String(a.pontolatitude));
+    const lng = typeof a.pontolongitude === "number" ? a.pontolongitude : parseFloat(String(a.pontolongitude));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) continue;
+    const lista = mapa.get(a.placa) ?? [];
+    lista.push({
+      lat,
+      lng,
+      raio: Number(a.pontoraio) || 50,
+      ordem: Number(a.alvoordem) || 0,
+      nome: String(a.pontonome ?? ""),
+      feito: a.alvosituacaoservico === 1,
+    });
+    mapa.set(a.placa, lista);
+  }
+  for (const lista of mapa.values()) lista.sort((x, y) => x.ordem - y.ordem);
+  return mapa;
+}
+
+// Distância em metros entre dois pontos (Haversine).
+export function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371000;
+  const toR = (d: number) => (d * Math.PI) / 180;
+  const dLat = toR(bLat - aLat);
+  const dLng = toR(bLng - aLng);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Menor distância (m) de uma posição aos pontos de entrega PENDENTES.
+// Retorna null se não houver pendentes (nada pra onde ir).
+export function distAlvoPendenteMaisProximoM(
+  lat: number,
+  lng: number,
+  pontos: PontoEntrega[] | undefined
+): number | null {
+  if (!pontos || pontos.length === 0) return null;
+  let menor: number | null = null;
+  for (const p of pontos) {
+    if (p.feito) continue;
+    const d = haversineM(lat, lng, p.lat, p.lng);
+    if (menor === null || d < menor) menor = d;
+  }
+  return menor;
 }
 
 // Normaliza uma posição bruta da Unitrac para o tipo interno.

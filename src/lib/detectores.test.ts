@@ -6,6 +6,7 @@ import {
   detectarJammer,
   detectarExcessoVelocidade,
   detectarParadaLonga,
+  detectarDesvio,
   avaliar,
   formataDuracao,
   emHorarioOperacao,
@@ -162,6 +163,56 @@ describe("detectarParadaLonga", () => {
   });
 });
 
+describe("detectarDesvio", () => {
+  const base = {
+    distAlvoM: 6000,
+    distAlvoAnteriorM: 5000,
+    temPendentes: true,
+    emOperacao: true,
+    foraDaBase: true,
+  };
+  const emMov = posicaoBase({ velocidade: 40 });
+
+  it("longe (>=5km) e se afastando, em movimento, retorna desvio critico", () => {
+    const a = detectarDesvio(emMov, base);
+    expect(a?.nivel).toBe("critico");
+    expect(a?.tipo).toBe("desvio");
+    expect(a?.motivo).toContain("6,0km");
+  });
+  it("longe (>=5km) mas SE APROXIMANDO nao aciona (deslocamento legitimo)", () => {
+    // distância caindo (8km -> 6km): veículo indo em direção às entregas.
+    expect(detectarDesvio(emMov, { ...base, distAlvoM: 6000, distAlvoAnteriorM: 8000 })).toBeNull();
+  });
+  it("medio-longe (3km) e se afastando retorna atencao", () => {
+    const a = detectarDesvio(emMov, { ...base, distAlvoM: 3000, distAlvoAnteriorM: 2000 });
+    expect(a?.nivel).toBe("atencao");
+  });
+  it("perto do ponto (1km) nao aciona", () => {
+    expect(detectarDesvio(emMov, { ...base, distAlvoM: 1000, distAlvoAnteriorM: 1500 })).toBeNull();
+  });
+  it("parado nao aciona desvio (e parada_longa que cobre)", () => {
+    expect(detectarDesvio(posicaoBase({ velocidade: 0 }), base)).toBeNull();
+  });
+  it("sem pendentes nao aciona", () => {
+    expect(detectarDesvio(emMov, { ...base, temPendentes: false })).toBeNull();
+  });
+  it("na base nao aciona", () => {
+    expect(detectarDesvio(emMov, { ...base, foraDaBase: false })).toBeNull();
+  });
+  it("fora de operacao nao aciona", () => {
+    expect(detectarDesvio(emMov, { ...base, emOperacao: false })).toBeNull();
+  });
+  it("distAlvoM null (sem alvos com coordenada) nao aciona", () => {
+    expect(detectarDesvio(emMov, { ...base, distAlvoM: null })).toBeNull();
+  });
+  it("primeiro ciclo (distAlvoAnteriorM null) nao aciona (sem referencia de afastamento)", () => {
+    expect(detectarDesvio(emMov, { ...base, distAlvoM: 7000, distAlvoAnteriorM: null })).toBeNull();
+  });
+  it("longe e ESTAVEL (mesma distancia) nao aciona", () => {
+    expect(detectarDesvio(emMov, { ...base, distAlvoM: 6000, distAlvoAnteriorM: 6050 })).toBeNull();
+  });
+});
+
 // ctx padrao para avaliar: em operacao, fora da base
 const ctxOp = { paradoMin: 0, emOperacao: true, foraDaBase: true };
 
@@ -217,6 +268,29 @@ describe("avaliar", () => {
   });
   it("panico tem prioridade sobre parada longa", () => {
     const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 120, emOperacao: true, foraDaBase: true });
+    expect(alerta?.tipo).toBe("panico");
+  });
+  it("desvio entra na avaliacao quando ha alvos (distAlvoM definido)", () => {
+    const alerta = avaliar(posicaoBase({ velocidade: 40 }), {
+      ...ctxOp,
+      distAlvoM: 6000,
+      distAlvoAnteriorM: 5000,
+      temPendentes: true,
+    });
+    expect(alerta?.tipo).toBe("desvio");
+    expect(alerta?.nivel).toBe("critico");
+  });
+  it("sem alvos (distAlvoM ausente) NAO avalia desvio", () => {
+    // mesmo cenario geografico, mas sem passar distAlvoM → detector nao roda
+    expect(avaliar(posicaoBase({ velocidade: 40 }), ctxOp)).toBeNull();
+  });
+  it("panico tem prioridade sobre desvio", () => {
+    const alerta = avaliar(posicaoBase({ velocidade: 40, panico: true }), {
+      ...ctxOp,
+      distAlvoM: 6000,
+      distAlvoAnteriorM: 5000,
+      temPendentes: true,
+    });
     expect(alerta?.tipo).toBe("panico");
   });
 });

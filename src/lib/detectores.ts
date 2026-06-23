@@ -112,11 +112,75 @@ export function detectarParadaLonga(ctx: {
   return null;
 }
 
+// Detector de DESVIO DE ROTA.
+// A Unitrac não fornece a rota planejada, mas fornece os ALVOS (pontos de
+// entrega) ordenados. A rota do veículo é o conjunto de pontos pendentes.
+// Desvio = em operação, fora da base e em movimento, o veículo está longe de
+// TODOS os seus pontos de entrega (não está chegando em nenhum). O sinal de
+// "se afastando" (distância ao ponto mais próximo aumentou desde o ciclo
+// anterior) separa o desvio real do mero deslocamento base→primeira entrega.
+export function detectarDesvio(
+  p: PosicaoNormalizada,
+  ctx: {
+    distAlvoM: number | null;
+    distAlvoAnteriorM: number | null;
+    temPendentes: boolean;
+    emOperacao: boolean;
+    foraDaBase: boolean;
+  }
+): Alerta | null {
+  // Sem rota ativa (sem pendentes / fora de operação / na base): nada a desviar.
+  if (!ctx.temPendentes || !ctx.emOperacao || !ctx.foraDaBase) return null;
+  if (ctx.distAlvoM === null) return null;
+  // Desvio é em movimento; veículo parado é coberto por parada_longa.
+  if (p.velocidade <= 0) return null;
+
+  // CHAVE para não confundir desvio com deslocamento legítimo: a frota entrega
+  // no estado inteiro, então estar longe das entregas é normal (indo pra
+  // região). Só é desvio quando o veículo está SE AFASTANDO do ponto pendente
+  // mais próximo (distância aumentou desde o ciclo anterior). Quem vai em
+  // direção às entregas (distância caindo) nunca dispara, por mais longe que esteja.
+  const afastando =
+    ctx.distAlvoAnteriorM !== null && ctx.distAlvoM > ctx.distAlvoAnteriorM + 200;
+  if (!afastando) return null;
+
+  const km = (ctx.distAlvoM / 1000).toFixed(1).replace(".", ",");
+
+  // Longe E se afastando: desvio crítico (não está chegando em nenhuma entrega).
+  if (ctx.distAlvoM >= 5000) {
+    return {
+      nivel: "critico",
+      tipo: "desvio",
+      motivo: `Fora de rota: ${km}km do ponto de entrega mais próximo e se afastando`,
+      score: 72,
+    };
+  }
+  // Começando a sair da rota: atenção.
+  if (ctx.distAlvoM >= 2500) {
+    return {
+      nivel: "atencao",
+      tipo: "desvio",
+      motivo: `Saindo da rota: ${km}km do ponto e se afastando`,
+      score: 48,
+    };
+  }
+  return null;
+}
+
 // Avalia todos os detectores e retorna o alerta de maior severidade.
 // Prioridade: critico > atencao; desempate por score (maior vence).
 export function avaliar(
   p: PosicaoNormalizada,
-  ctx: { paradoMin: number; emOperacao: boolean; foraDaBase: boolean }
+  ctx: {
+    paradoMin: number;
+    emOperacao: boolean;
+    foraDaBase: boolean;
+    // Campos de desvio são opcionais: quando ausentes, o detector de desvio
+    // não roda (mantém compatibilidade com chamadas que não têm alvos).
+    distAlvoM?: number | null;
+    distAlvoAnteriorM?: number | null;
+    temPendentes?: boolean;
+  }
 ): Alerta | null {
   const candidatos: Alerta[] = [
     detectarPanico(p),
@@ -124,6 +188,15 @@ export function avaliar(
     detectarJammer(p),
     detectarExcessoVelocidade(p),
     detectarParadaLonga(ctx),
+    ctx.distAlvoM !== undefined
+      ? detectarDesvio(p, {
+          distAlvoM: ctx.distAlvoM ?? null,
+          distAlvoAnteriorM: ctx.distAlvoAnteriorM ?? null,
+          temPendentes: ctx.temPendentes ?? false,
+          emOperacao: ctx.emOperacao,
+          foraDaBase: ctx.foraDaBase,
+        })
+      : null,
   ].filter((a): a is Alerta => a !== null);
 
   if (candidatos.length === 0) return null;

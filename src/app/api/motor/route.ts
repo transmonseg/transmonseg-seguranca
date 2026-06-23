@@ -3,8 +3,14 @@
 
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { buscarAlvos, agruparAlvosPorPlaca, normalizar } from "@/lib/unitrac";
-import type { EntregasPlaca } from "@/lib/unitrac";
+import {
+  buscarAlvos,
+  agruparAlvosPorPlaca,
+  agruparPontosPorPlaca,
+  distAlvoPendenteMaisProximoM,
+  normalizar,
+} from "@/lib/unitrac";
+import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import { avaliar, detectarJammer, emHorarioOperacao } from "@/lib/detectores";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
@@ -69,13 +75,18 @@ async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
 }
 
 // ─── buscarAlvos com timeout ───────────────────────────────────────────────
-async function buscarAlvosComTimeout(cvs: string[]): Promise<Map<string, EntregasPlaca>> {
+// Retorna entregas (contagem feito/total) E os pontos de entrega por placa
+// (a rota planejada), usados pelo detector de desvio.
+async function buscarAlvosComTimeout(cvs: string[]): Promise<{
+  entregas: Map<string, EntregasPlaca>;
+  pontos: Map<string, PontoEntrega[]>;
+}> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_UNITRAC_MS);
   try {
     const alvos = await buscarAlvos(cvs);
     clearTimeout(timer);
-    return agruparAlvosPorPlaca(alvos);
+    return { entregas: agruparAlvosPorPlaca(alvos), pontos: agruparPontosPorPlaca(alvos) };
   } catch (err) {
     clearTimeout(timer);
     throw err;
@@ -306,10 +317,13 @@ export async function POST(request: Request) {
         continue;
       }
 
-      // 4b. Buscar alvos (entregas) deste cliente e agrupar por placa
+      // 4b. Buscar alvos (entregas + pontos da rota) deste cliente
       let entregasPorPlaca = new Map<string, EntregasPlaca>();
+      let pontosPorPlaca = new Map<string, PontoEntrega[]>();
       try {
-        entregasPorPlaca = await buscarAlvosComTimeout(cvsCliente);
+        const res = await buscarAlvosComTimeout(cvsCliente);
+        entregasPorPlaca = res.entregas;
+        pontosPorPlaca = res.pontos;
       } catch (err) {
         // Nao-critico: entregas ficam 0/0 se API falhar
         const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${String(err)}`;
@@ -328,12 +342,14 @@ export async function POST(request: Request) {
 
           const { veiculo_id, cliente_id } = entrada;
 
+          // Posição anterior (para parado_desde e para o afastamento do desvio)
+          const anterior = mapaPosAtual.get(veiculo_id);
+
           // Calcular parado_desde
           let parado_desde: string | null = null;
           let paradoMin = 0;
 
           if (pos.velocidade === 0) {
-            const anterior = mapaPosAtual.get(veiculo_id);
             const estavParado = anterior && anterior.velocidade === 0;
 
             // Verificar se ficou no mesmo lugar (lat/lng arredondados a 4 casas)
@@ -360,6 +376,18 @@ export async function POST(request: Request) {
           const basesCliente = mapaBasesCliente.get(cliente_id) ?? [];
           const baseOcupada = basesCliente.find((b) => pontoEmGeo(pos.lng, pos.lat, b.geom));
           const foraDaBase = !baseOcupada;
+
+          // ─── Desvio de rota: distância aos pontos de entrega pendentes ──
+          // A rota planejada são os alvos (pontos) do veículo. O detector de
+          // desvio compara a distância atual ao ponto pendente mais próximo
+          // com a do ciclo anterior (afastamento).
+          const pontosVeiculo = pontosPorPlaca.get(pos.placa);
+          const temPendentes = (pontosVeiculo ?? []).some((pt) => !pt.feito);
+          const distAlvoM = distAlvoPendenteMaisProximoM(pos.lat, pos.lng, pontosVeiculo);
+          const distAlvoAnteriorM =
+            anterior && anterior.lat != null && anterior.lng != null
+              ? distAlvoPendenteMaisProximoM(anterior.lat, anterior.lng, pontosVeiculo)
+              : null;
 
           // ─── Determinar localização do veículo ─────────────────────────
           // Base > Em deslocamento > Parado (geocode reverso)
@@ -396,10 +424,17 @@ export async function POST(request: Request) {
             !alertaJammer &&
             (pos.atraso > 720 || (pos.atraso > 60 && !pos.ignicao));
 
-          let alerta = alertaJammer
+          const alerta = alertaJammer
             ? alertaJammer
             : pos.fresco
-              ? avaliar(pos, { paradoMin, emOperacao, foraDaBase })
+              ? avaliar(pos, {
+                  paradoMin,
+                  emOperacao,
+                  foraDaBase,
+                  distAlvoM,
+                  distAlvoAnteriorM,
+                  temPendentes,
+                })
               : null;
 
           // Determinar nivel da posicao atual

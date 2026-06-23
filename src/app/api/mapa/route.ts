@@ -1,5 +1,6 @@
-// Dados do mapa: veículos do cliente, bases e favelas (GeoJSON simplificado).
+// Dados do mapa: veículos do cliente, bases e a malha de pontos de entrega.
 import pg from "pg";
+import { buscarAlvos, agruparPontosPorPlaca } from "@/lib/unitrac";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,7 @@ export async function GET(request: Request) {
     }
 
     const veiculos = (
-      await client.query(
+      await client.query<{ cv: string }>(
         `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
                 p.local, p.entregas_feitas, p.entregas_total, p.atraso_min
          from posicoes_atuais p join veiculos v on v.id = p.veiculo_id
@@ -32,6 +33,35 @@ export async function GET(request: Request) {
         [clienteId]
       )
     ).rows;
+
+    // Malha de pontos de entrega PENDENTES do cliente (a "rota" que a frota
+    // deveria cobrir). Um veículo longe de toda a malha = candidato a desvio.
+    // Dedupe por coordenada; limite defensivo para não pesar o mapa.
+    let pontosEntrega: { lat: number; lng: number }[] = [];
+    try {
+      const cvs = (
+        await client.query<{ cv: string }>(
+          `select cv from veiculos where cliente_id = $1 and ativo = true`,
+          [clienteId]
+        )
+      ).rows.map((r) => r.cv);
+      if (cvs.length) {
+        const alvos = await buscarAlvos(cvs);
+        const porPlaca = agruparPontosPorPlaca(alvos);
+        const vistos = new Set<string>();
+        for (const pts of porPlaca.values()) {
+          for (const pt of pts) {
+            if (pt.feito) continue;
+            const k = `${pt.lat.toFixed(4)},${pt.lng.toFixed(4)}`;
+            if (vistos.has(k)) continue;
+            vistos.add(k);
+            pontosEntrega.push({ lat: pt.lat, lng: pt.lng });
+          }
+        }
+      }
+    } catch {
+      pontosEntrega = []; // malha é opcional; nunca derruba o mapa
+    }
 
     // Bases como GeoJSON (polígono do perímetro real, não círculo).
     const basesRes = await client.query<{ gj: unknown }>(
@@ -48,7 +78,7 @@ export async function GET(request: Request) {
       [clienteId]
     );
 
-    return Response.json({ veiculos, bases: basesRes.rows[0].gj });
+    return Response.json({ veiculos, bases: basesRes.rows[0].gj, pontos: pontosEntrega });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });
   } finally {

@@ -10,7 +10,11 @@ type Veiculo = {
   velocidade: number; ignicao: boolean; local: string | null;
   entregas_feitas: number | null; entregas_total: number | null; atraso_min: number;
 };
-type Dados = { veiculos: Veiculo[]; bases: GeoJSON.FeatureCollection | null };
+type Dados = {
+  veiculos: Veiculo[];
+  bases: GeoJSON.FeatureCollection | null;
+  pontos?: { lat: number; lng: number }[];
+};
 
 const COR: Record<string, string> = {
   vermelho: "#ef4444", amarelo: "#f59e0b", verde: "#5fb87a",
@@ -96,6 +100,12 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
             style={{ color: "#ff2d2d", weight: 1.5, fillColor: "#ff2d2d", fillOpacity: 0.4, opacity: 0.95 }}
           />
         )}
+        {/* Malha de pontos de entrega pendentes (a rota que a frota cobre).
+            Pontos pequenos e discretos: um veículo longe desta nuvem = desvio. */}
+        {(dados.pontos ?? []).map((pt, i) => (
+          <CircleMarker key={`pt${i}`} center={[pt.lat, pt.lng]} radius={1.5}
+            pathOptions={{ stroke: false, fillColor: "#38bdf8", fillOpacity: 0.5 }} />
+        ))}
         {dados.bases && (
           <GeoJSON
             key={`bases-${cliente}`}
