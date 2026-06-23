@@ -20,18 +20,29 @@ const COR: Record<string, string> = {
 // Enquadra a vista englobando a frota E as áreas de risco (estado todo),
 // uma vez por troca de cliente — pra não reposicionar o mapa a cada refresh.
 function AjustarVista({
-  pontos, favelas, cliente,
-}: { pontos: [number, number][]; favelas: GeoJSON.FeatureCollection | null; cliente: string }) {
+  pontos, favelas, bases, cliente,
+}: {
+  pontos: [number, number][];
+  favelas: GeoJSON.FeatureCollection | null;
+  bases: GeoJSON.FeatureCollection | null;
+  cliente: string;
+}) {
   const map = useMap();
   const ajustado = useRef<string | null>(null);
   useEffect(() => {
-    // só ajusta quando já temos a frota E as áreas, pra enquadrar o estado inteiro
-    if (ajustado.current === cliente || pontos.length === 0 || !favelas) return;
+    if (ajustado.current === cliente) return;
+    // ?foco=base -> enquadra nas bases (ver o perímetro de perto)
+    const foco = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("foco");
+    if (foco === "base" && bases?.features?.length) {
+      try { map.fitBounds(L.geoJSON(bases).getBounds(), { padding: [40, 40] }); ajustado.current = cliente; return; } catch { /* ignora */ }
+    }
+    // padrão: enquadra a frota E as áreas de risco (estado inteiro)
+    if (pontos.length === 0 || !favelas) return;
     const limites = L.latLngBounds(pontos);
     try { limites.extend(L.geoJSON(favelas).getBounds()); } catch { /* ignora */ }
     map.fitBounds(limites, { padding: [30, 30] });
     ajustado.current = cliente;
-  }, [pontos, favelas, cliente, map]);
+  }, [pontos, favelas, bases, cliente, map]);
   return null;
 }
 
@@ -74,7 +85,7 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
   return (
     <div style={{ height: "72vh", borderRadius: "1rem", overflow: "hidden", border: "1px solid var(--border)" }}>
       <MapContainer center={centro} zoom={10} preferCanvas style={{ height: "100%", width: "100%", background: "#0a0a0a" }}>
-        <AjustarVista pontos={comPos.map((v) => [v.lat, v.lng])} favelas={favelas} cliente={cliente} />
+        <AjustarVista pontos={comPos.map((v) => [v.lat, v.lng])} favelas={favelas} bases={dados.bases} cliente={cliente} />
         <TileLayer
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; OpenStreetMap &copy; CARTO'

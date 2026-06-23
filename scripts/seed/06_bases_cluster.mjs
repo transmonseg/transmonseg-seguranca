@@ -1,12 +1,18 @@
-// Seed das bases REAIS: o perímetro da base é onde a frota efetivamente
-// estaciona (clusters de veículos parados), não um círculo num endereço
-// geocodificado. Resolve o falso positivo de "parado fora da base".
+// Seed das bases REAIS: o perímetro é o TERRENO do local (CEASA, galpão,
+// pátio logístico) desenhado no OpenStreetMap, não bolhas em volta de cada
+// caminhão. Casamos os clusters de veículos parados com o polígono OSM que
+// os contém. Fallback: convex hull dos veículos quando o OSM não tem o local.
 //
-// Rode de noite/madrugada (frota recolhida) pra capturar as bases certas.
+// Rode de noite/madrugada (frota recolhida).
 // Uso: node --env-file=.env.local scripts/seed/06_bases_cluster.mjs
 import pg from "pg";
 
 const BASE = "https://datalayer.portalunitrac.com";
+const MIRRORS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
 const conn = process.env.DATABASE_URL;
 if (!conn) { console.error("DATABASE_URL ausente"); process.exit(1); }
 
@@ -14,6 +20,21 @@ async function jget(u) { const r = await fetch(u, { headers: { accept: "applicat
 async function jpost(u, b) {
   const r = await fetch(u, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(b) });
   return r.ok ? r.json() : null;
+}
+async function overpass(q) {
+  let err;
+  for (const url of MIRRORS) {
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TransmonsegCentral/1.0 (mediatriforce@gmail.com)" },
+        body: "data=" + encodeURIComponent(q),
+      });
+      if (r.ok) return r.json();
+      err = "HTTP " + r.status;
+    } catch (e) { err = String(e); }
+  }
+  throw new Error(err);
 }
 function haversine(a, b) {
   const R = 6371000, toR = (d) => (d * Math.PI) / 180;
@@ -43,33 +64,47 @@ function dbscan(pts, eps, minPts) {
   }
   return labels;
 }
-// Nomeia a base pela região conhecida mais próxima; senão, por cliente+índice.
-function nomeBase(cliente, lat, lng, i) {
-  const conhecidas = [
-    { nome: "Base Benassi (Irajá / Av. Brasil)", lat: -22.828, lng: -43.338, r: 1500 },
-    { nome: "Base Nutry (Penha)", lat: -22.816, lng: -43.278, r: 1200 },
-    { nome: "Base Nutry (Campos dos Goytacazes)", lat: -21.689, lng: -41.311, r: 2000 },
-  ];
-  const m = conhecidas.find((k) => haversine({ lat, lng }, k) <= k.r);
-  return m ? m.nome : `Base ${cliente} ${i + 1}`;
+// point-in-polygon (anel = [{lat,lon}]); ponto = {lat,lng}
+function dentro(p, anel) {
+  let d = false;
+  for (let i = 0, j = anel.length - 1; i < anel.length; j = i++) {
+    const xi = anel[i].lon, yi = anel[i].lat, xj = anel[j].lon, yj = anel[j].lat;
+    const cruza = yi > p.lat !== yj > p.lat && p.lng < ((xj - xi) * (p.lat - yi)) / (yj - yi) + xi;
+    if (cruza) d = !d;
+  }
+  return d;
+}
+// Busca polígonos de terreno no OSM ao redor de um ponto.
+async function poligonosOSM(lat, lng) {
+  const q = `[out:json][timeout:30];
+    (
+      way(around:700,${lat},${lng})[landuse~"industrial|commercial|retail"];
+      way(around:700,${lat},${lng})[amenity=marketplace];
+      way(around:700,${lat},${lng})[name~"CEASA|Benassi|Nutry|Cargo",i];
+    );
+    out geom;`;
+  const j = await overpass(q);
+  return (j.elements ?? [])
+    .filter((e) => e.type === "way" && Array.isArray(e.geometry) && e.geometry.length >= 4)
+    .map((e) => ({ id: e.id, nome: e.tags?.name ?? null, anel: e.geometry }));
+}
+function wktPolygon(anel) {
+  const pts = anel.map((p) => `${p.lon} ${p.lat}`);
+  if (pts[0] !== pts[pts.length - 1]) pts.push(pts[0]); // fecha o anel
+  return `POLYGON((${pts.join(", ")}))`;
 }
 
 const c = new pg.Client({ connectionString: conn, ssl: { rejectUnauthorized: false } });
 await c.connect();
-
-// 1. Relaxa a coluna pra aceitar polígono (idempotente) e torna raio opcional.
 await c.query("ALTER TABLE bases ALTER COLUMN geom TYPE geography(geometry, 4326)");
 await c.query("ALTER TABLE bases ALTER COLUMN raio_m DROP NOT NULL");
-
 const cid = async (cod) => (await c.query("select id from clientes where cod_user_unitrac=$1", [cod])).rows[0]?.id;
-
-// 2. Limpa as bases atuais (vamos redefinir todas pelos clusters reais).
 await c.query("DELETE FROM bases");
 
-let totalBases = 0;
+let total = 0;
 for (const [nome, cod] of [["Nutry", "4096"], ["Benassi", "4586"]]) {
   const clienteId = await cid(cod);
-  if (!clienteId) { console.log(`cliente ${nome} nao cadastrado, pulando`); continue; }
+  if (!clienteId) { console.log(`${nome} nao cadastrado`); continue; }
 
   const vb = await jget(`${BASE}/veiculos/masn/${cod}`);
   const cvs = (vb?.veiculos ?? []).map((v) => String(v.cv ?? v.veicucodigo));
@@ -83,30 +118,46 @@ for (const [nome, cod] of [["Nutry", "4096"], ["Benassi", "4586"]]) {
   parados.forEach((p, i) => { if (labels[i] >= 0) (clusters[labels[i]] ??= []).push(p); });
   const ord = Object.values(clusters).sort((a, b) => b.length - a.length);
 
-  console.log(`\n${nome}: ${parados.length} parados -> ${ord.length} base(s)`);
-  const usados = new Map(); // dedup de nomes (pátios próximos ganham sufixo)
-  let i = 0;
+  console.log(`\n${nome}: ${parados.length} parados -> ${ord.length} cluster(s)`);
+  const osmUsados = new Set();
   for (const cl of ord) {
     const clat = cl.reduce((s, p) => s + p.lat, 0) / cl.length;
     const clng = cl.reduce((s, p) => s + p.lng, 0) / cl.length;
-    let nomeB = nomeBase(nome, clat, clng, i);
-    const n = (usados.get(nomeB) ?? 0) + 1;
-    usados.set(nomeB, n);
-    if (n > 1) nomeB = nomeB.replace(/\)$/, ` — pátio ${n})`);
-    // perímetro = união de buffers de 70m em volta de cada veículo parado
-    const wkt = `MULTIPOINT(${cl.map((p) => `${p.lng} ${p.lat}`).join(", ")})`;
+
+    // candidatos OSM ao redor do cluster, ranqueados por quantos veículos cobrem
+    let polis = [];
+    try { polis = await poligonosOSM(clat, clng); } catch (e) { console.log("  overpass falhou:", e.message); }
+    const ranque = polis
+      .map((pl) => ({ ...pl, cobre: cl.filter((v) => dentro(v, pl.anel)).length }))
+      .filter((pl) => pl.cobre >= Math.max(3, cl.length * 0.3))
+      .sort((a, b) => b.cobre - a.cobre);
+
+    const melhor = ranque[0];
+    if (melhor && osmUsados.has(melhor.id)) continue; // mesmo terreno (ex.: dentro do CEASA)
+
+    let geomSql, src, nomeB, wkt;
+    if (melhor) {
+      osmUsados.add(melhor.id);
+      geomSql = "ST_MakeValid(ST_GeomFromText($3, 4326))::geography";
+      src = `OSM "${melhor.nome ?? melhor.id}" (${melhor.cobre}/${cl.length} veíc)`;
+      nomeB = melhor.nome ? `Base ${nome} — ${melhor.nome}` : `Base ${nome}`;
+      wkt = wktPolygon(melhor.anel);
+    } else {
+      // fallback: convex hull dos veículos do cluster + buffer 40m
+      geomSql = "ST_Buffer(ST_ConvexHull(ST_GeomFromText($3, 4326))::geography, 40)::geography";
+      src = "convex hull (sem terreno no OSM)";
+      nomeB = `Base ${nome} (${cl.length} veíc)`;
+      wkt = `MULTIPOINT(${cl.map((p) => `${p.lng} ${p.lat}`).join(", ")})`;
+    }
     const ins = await c.query(
       `INSERT INTO bases (cliente_id, nome, geom, raio_m)
-       VALUES ($1, $2, ST_Buffer(ST_GeomFromText($3, 4326)::geography, 70)::geography, NULL)
-       RETURNING ST_Area(geom::geography) AS area_m2`,
+       VALUES ($1, $2, ${geomSql}, NULL)
+       RETURNING ST_Area(geom::geography)/1e6 km2`,
       [clienteId, nomeB, wkt]
     );
-    const km2 = (ins.rows[0].area_m2 / 1e6).toFixed(2);
-    console.log(`  "${nomeB}" — ${cl.length} veículos, área ${km2} km²`);
-    totalBases++;
-    i++;
+    console.log(`  "${nomeB}" — ${Number(ins.rows[0].km2).toFixed(2)} km² | ${src}`);
+    total++;
   }
 }
-
-console.log(`\nTotal de bases (polígono real): ${totalBases}`);
+console.log(`\nTotal de bases: ${total}`);
 await c.end();
