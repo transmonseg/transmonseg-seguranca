@@ -20,16 +20,20 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
 - [x] **Fase 2 (motor):** detectores puros (pânico, baú, jammer, excesso, parada_longa >=90min) com 29 testes Vitest; cliente Unitrac (filtro de frescor); migration 002 (parado_desde + fn_favela_em); API route POST `/api/motor` (x-motor-key). Testado ao vivo: 325 posições gravadas, 2 alertas jammer (Benassi), 401 sem chave, idempotente.
 
 - [x] **Fase 3 (painel):** Tela de Segurança dark, resumo + alertas + frota multi-cliente + filtro; sem-comunicação tratado; build dinâmico.
-- [x] **Polish do MVP:** (1) motor robusto (try/catch por cliente/veículo, timeout 20s, erros parciais) + detector de FAVELA (point-in-polygon, testado na Rocinha); (2) visual premium (centro de operações: métricas, barras por cliente, alertas com ícone, relógio ao vivo); (3) autonomia: `motor-loop.mjs` (60s) + `AutoRefresh` (tela revalida a cada 30s).
+- [x] **Polish do MVP:** (1) motor robusto (try/catch por cliente/veículo, timeout 20s, erros parciais) + detector de FAVELA (point-in-polygon); (2) visual premium (centro de operações: métricas, barras por cliente, alertas com ícone, relógio ao vivo); (3) autonomia.
+- [x] **Deploy AO VIVO:** https://transmonseg-seguranca.vercel.app — autônomo via **pg_cron + pg_net** (job `motor-1min`, motor roda a cada 1 min; região gru1/SP, maxDuration 60).
+- [x] **Mapa (Leaflet + CartoDB dark):** toggle Lista|Mapa, abre enquadrando o estado; veículos por cor + popup; `?foco=base` enquadra nas bases. `MapaWrapper` (ssr:false).
+- [x] **Áreas de risco — estado inteiro do RJ (1.641):** 1.072 SABREN (capital) + 569 IBGE Aglomerados Subnormais 2010 (resto do estado, `/api/favelas` cacheado, precisão ~2m).
+- [x] **Bases = terreno real (polígono):** `06_bases_cluster.mjs` casa cluster de veículos parados com landuse do OSM (Benassi → CEASA-RJ; Nutry → convex hull fallback). Motor usa point-in-polygon. migration 004. Ver [[project_transmonseg_bases_cluster]].
+- [x] **Bug crítico corrigido:** upsert gravava `geom` como POINT(lng,lng) → favela nunca detectava. Corrigido; favela voltou a funcionar.
 
-## Próximos passos
-- [ ] Fase 4 — Deploy (USUÁRIO faz na Vercel; ver DEPLOY.md: 5 env vars + cron-job.org 1 min)
-- [ ] Fase 5 — Auth + RLS (login operadores) → destrava Realtime
-- [ ] FUTURO (visão do fundador): mapa com áreas de perigo desenhadas · API Google · dashboards de tiroteio · landing page
-- [ ] Despertador (cron 1 min) chamando o motor
-- [ ] Tela de Segurança (Realtime): alertas ativos, mapa, histórico
-- [ ] Auth dos operadores + policies RLS por papel/cliente
-- [ ] Detectores avançados (off-route OSRM, POI, score, encadeamento)
+## Próximos passos (retomar aqui)
+- [ ] **Fase 5 — Auth + RLS (PRIORIDADE: a URL é pública hoje, sem login).** Login operadores, policies RLS por papel/cliente → destrava Realtime.
+- [ ] Fase 6 — Tiroteios (Fogo Cruzado) como camada/dashboard.
+- [ ] Fase 7 — Dashboards/relatórios (muita informação visual).
+- [ ] Fase 8 — Detecção off-route (Google Routes/OSRM a partir dos alvos) + POI + score/encadeamento.
+- [ ] Fase 9 — Landing page.
+- [ ] Melhorias pendentes: base da Nutry no terreno OSM real (hoje convex hull); `local` "Base" às vezes fica stale (COALESCE) — cosmético.
 
 ## Notas
 - `.env.local` tem as chaves (gitignored, repo é público — nunca commitar).
