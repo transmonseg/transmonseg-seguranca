@@ -78,7 +78,7 @@ export default function MapaFrota({ cliente }: { cliente: string }) {
         {favelas && (
           <GeoJSON
             data={favelas}
-            style={{ color: "#ef4444", weight: 1.2, fillColor: "#ef4444", fillOpacity: 0.1, opacity: 0.55 }}
+            style={{ color: "#ff2d2d", weight: 1.5, fillColor: "#ff2d2d", fillOpacity: 0.4, opacity: 0.95 }}
           />
         )}
         {dados.bases.map((b, i) => (
