@@ -34,7 +34,7 @@ export async function cadastrar(_prev: EstadoAuth, formData: FormData): Promise<
   if (senha.length < 6) return { erro: "A senha precisa de ao menos 6 caracteres." };
 
   const admin = createAdminClient();
-  const { error: erroCriar } = await admin.auth.admin.createUser({
+  const { data: criado, error: erroCriar } = await admin.auth.admin.createUser({
     email,
     password: senha,
     email_confirm: true,
@@ -46,6 +46,15 @@ export async function cadastrar(_prev: EstadoAuth, formData: FormData): Promise<
       return { erro: "Esse email ja tem conta. Faca login." };
     }
     return { erro: "Nao foi possivel criar a conta." };
+  }
+
+  // Registro espelho em operadores (operadores.id referencia auth.users.id).
+  // papel 'operador', cliente_id null = central que vê todas as frotas.
+  if (criado?.user?.id) {
+    await admin.from("operadores").upsert(
+      { id: criado.user.id, nome, papel: "operador" },
+      { onConflict: "id", ignoreDuplicates: true }
+    );
   }
 
   const supabase = await createClient();

@@ -548,26 +548,37 @@ export async function POST(request: Request) {
           if (!deveGerenciarAlertas) continue;
           if (pos.fresco) totalFrescos++;
 
-          // Buscar alertas ativos existentes para este veiculo
-          const { data: alertasAtivos } = await supabase
+          // Alertas EM ABERTO (ativo OU reconhecido pelo operador). Reconhecido
+          // conta como em aberto: o operador assumiu, NAO duplicar nem recriar.
+          const { data: alertasAbertos } = await supabase
             .from("alertas")
             .select("id, tipo")
             .eq("veiculo_id", veiculo_id)
-            .eq("status", "ativo");
+            .in("status", ["ativo", "reconhecido"]);
+
+          // Tipos SILENCIADOS: o operador marcou falso positivo ha pouco (2h).
+          // Respeitamos a decisao dele e nao recriamos o alerta nesse periodo.
+          const desde2h = new Date(agora.getTime() - 2 * 60 * 60 * 1000).toISOString();
+          const { data: falsosRecentes } = await supabase
+            .from("alertas")
+            .select("tipo")
+            .eq("veiculo_id", veiculo_id)
+            .eq("status", "falso_positivo")
+            .gte("resolvido_em", desde2h);
+          const tiposSilenciados = new Set((falsosRecentes ?? []).map((a) => a.tipo));
 
           // Resolucao automatica generica: todos os tipos EXCETO favela e
           // desvio, que tem ciclo de vida proprio (tratados em blocos separados).
-          // 'favela': bloco de favela. 'desvio': logica anti-pisca abaixo.
-          const alertasGerenciados = (alertasAtivos ?? []).filter(
+          const alertasGerenciados = (alertasAbertos ?? []).filter(
             (a) => a.tipo !== "favela" && a.tipo !== "desvio"
           );
-          const desvioAtivo = (alertasAtivos ?? []).find((a) => a.tipo === "desvio");
+          const desvioAtivo = (alertasAbertos ?? []).find((a) => a.tipo === "desvio");
 
           if (alerta) {
-            // Verificar se ja existe alerta ativo do mesmo tipo
-            const jaExiste = (alertasAtivos ?? []).some((a) => a.tipo === alerta.tipo);
+            const jaExiste = (alertasAbertos ?? []).some((a) => a.tipo === alerta.tipo);
+            const silenciado = tiposSilenciados.has(alerta.tipo);
 
-            if (!jaExiste) {
+            if (!jaExiste && !silenciado) {
               // Inserir novo alerta
               await supabase.from("alertas").insert({
                 cliente_id,
@@ -583,7 +594,7 @@ export async function POST(request: Request) {
               });
             }
           } else if (alertasGerenciados.length > 0) {
-            // Sem alerta de maior prioridade — resolver os genericos ativos.
+            // Sem alerta de maior prioridade — resolver os genericos em aberto.
             await supabase
               .from("alertas")
               .update({ status: "resolvido", resolvido_em: agora.toISOString() })

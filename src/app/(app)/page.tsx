@@ -15,6 +15,7 @@ import CardVeiculoOperacao from "./components/CardVeiculoOperacao";
 import FaixaColapsavel from "./components/FaixaColapsavel";
 import VerTodosBtn from "./components/VerTodosBtn";
 import MapaWrapper from "./components/MapaWrapper";
+import AcoesAlerta from "./components/AcoesAlerta";
 
 // Central ao vivo: nunca prerender estatico.
 export const dynamic = "force-dynamic";
@@ -385,6 +386,8 @@ function IconExternal({ size = 12 }: { size?: number }) {
 }
 
 function CardAlertaCritico({
+  id,
+  status,
   nivel,
   tipo,
   placa,
@@ -397,6 +400,8 @@ function CardAlertaCritico({
   ignicao,
   atraso_min,
 }: {
+  id: string;
+  status: string;
   nivel: "critico" | "atencao";
   tipo: string;
   placa: string;
@@ -577,6 +582,9 @@ function CardAlertaCritico({
           </>
         )}
 
+        {/* Ações do operador: reconhecer / resolver / falso positivo */}
+        <AcoesAlerta id={id} status={status} />
+
       </div>
     </div>
   );
@@ -647,7 +655,7 @@ export default async function DashboardPage({
     supabase
       .from("alertas")
       .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status")
-      .eq("status", "ativo"),
+      .in("status", ["ativo", "reconhecido"]),
   ]);
 
   const clientes: Cliente[] = clientesRaw ?? [];
@@ -941,6 +949,8 @@ export default async function DashboardPage({
               {alertasCriticos.map((a) => (
                 <CardAlertaCritico
                   key={a.id}
+                  id={a.id}
+                  status={a.status}
                   nivel={a.nivel}
                   tipo={a.tipo}
                   placa={a.placa}
@@ -989,6 +999,8 @@ export default async function DashboardPage({
               {alertasAtencao.map((a) => (
                 <CardAlertaCritico
                   key={a.id}
+                  id={a.id}
+                  status={a.status}
                   nivel={a.nivel}
                   tipo={a.tipo}
                   placa={a.placa}
