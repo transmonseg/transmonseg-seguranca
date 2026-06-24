@@ -611,7 +611,7 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
       .then((d) => {
         const lista: Grupo[] = Array.isArray(d?.grupos) ? d.grupos : [];
         setGrupos(lista);
-        setGruposExpandidos(new Set(lista.map((g) => g.gvc)));
+        setGruposExpandidos(new Set());
         const todosCvs = new Set<string>();
         for (const g of lista) {
           for (const v of g.veiculos) todosCvs.add(v.cv);
