@@ -156,19 +156,23 @@ const _iconeCache: Record<string, L.DivIcon> = {};
 
 function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
   const cor = corVeiculo(v);
-  const chave = `${cor}-${selecionado}-${v.ignicao}-${v.velocidade > 0}`;
+  const chave = `${cor}-${selecionado}-${v.ignicao}-${v.velocidade > 0}-${v.atraso_min > 60}`;
   if (_iconeCache[chave]) return _iconeCache[chave];
+
+  // Sombra pesada garante visibilidade no fundo satelite
+  const sombra = "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(0,0,0,0.8))";
 
   let html: string;
 
   if (selecionado) {
-    const s = 38;
+    // Caminhao selecionado: circulo grande com SVG e glow colorido
+    const s = 42;
     html =
       `<div style="width:${s}px;height:${s}px;display:flex;align-items:center;justify-content:center;` +
-      `background:rgba(8,8,12,0.95);border:2.5px solid ${cor};border-radius:50%;` +
-      `box-shadow:0 0 0 3px rgba(8,8,12,0.6),0 0 14px ${cor}66">` +
-      `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"` +
-      ` stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+      `background:rgba(6,6,10,0.97);border:3px solid ${cor};border-radius:50%;` +
+      `box-shadow:0 0 0 3px rgba(0,0,0,0.7),0 0 18px ${cor}88,0 4px 12px rgba(0,0,0,0.9)">` +
+      `<svg width="22" height="22" viewBox="0 0 24 24" fill="none"` +
+      ` stroke="${cor}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">` +
       `<rect x="1" y="3" width="15" height="13"/>` +
       `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
       `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
@@ -184,52 +188,60 @@ function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
   const semComm = v.atraso_min > 60;
 
   if (emAlerta) {
+    // Losango vermelho com borda branca grossa e sombra
     html =
-      `<div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center">` +
-      `<div style="width:14px;height:14px;transform:rotate(45deg);background:${cor};` +
-      `border:2px solid #fff;box-shadow:0 0 0 2px ${cor}55,0 0 8px ${cor}88"></div>` +
+      `<div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;${sombra}">` +
+      `<div style="width:18px;height:18px;transform:rotate(45deg);background:${cor};` +
+      `border:2.5px solid #fff;box-shadow:inset 0 0 0 1px ${cor}"></div>` +
       `</div>`;
-    const ic = L.divIcon({ html, className: "", iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -10] });
+    const ic = L.divIcon({ html, className: "", iconSize: [28, 28], iconAnchor: [14, 14], popupAnchor: [0, -14] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
   if (emMovimento) {
+    // Seta de navegacao com borda branca e sombra forte
     html =
-      `<div style="width:22px;height:22px;display:flex;align-items:center;justify-content:center">` +
-      `<svg width="22" height="22" viewBox="0 0 22 22">` +
-      `<polygon points="11,2 20,19 11,15 2,19" fill="${cor}" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>` +
+      `<div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;${sombra}">` +
+      `<svg width="26" height="26" viewBox="0 0 26 26">` +
+      `<polygon points="13,2 24,23 13,18 2,23" fill="${cor}" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>` +
       `</svg></div>`;
-    const ic = L.divIcon({ html, className: "", iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -11] });
+    const ic = L.divIcon({ html, className: "", iconSize: [28, 28], iconAnchor: [14, 14], popupAnchor: [0, -14] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
   if (paradoLigado) {
+    // Circulo solido com borda branca grossa e anel externo
     html =
-      `<div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center">` +
-      `<div style="width:12px;height:12px;border-radius:50%;background:${cor};` +
-      `border:2px solid #fff;box-shadow:0 0 0 3px ${cor}44"></div>` +
+      `<div style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;${sombra}">` +
+      `<div style="width:16px;height:16px;border-radius:50%;background:${cor};` +
+      `border:2.5px solid #fff;box-shadow:0 0 0 2px ${cor}"></div>` +
       `</div>`;
-    const ic = L.divIcon({ html, className: "", iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -10] });
+    const ic = L.divIcon({ html, className: "", iconSize: [24, 24], iconAnchor: [12, 12], popupAnchor: [0, -12] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
   if (semComm) {
+    // Circulo com X (sem comunicacao) — solido para nao sumir
     html =
-      `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center">` +
-      `<div style="width:10px;height:10px;border-radius:50%;background:transparent;` +
-      `border:2px dashed ${cor};opacity:0.6"></div>` +
-      `</div>`;
-    const ic = L.divIcon({ html, className: "", iconSize: [16, 16], iconAnchor: [8, 8], popupAnchor: [0, -8] });
+      `<div style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;${sombra}">` +
+      `<div style="width:14px;height:14px;border-radius:50%;background:rgba(30,30,30,0.9);` +
+      `border:2px solid ${cor};opacity:0.85;display:flex;align-items:center;justify-content:center">` +
+      `<svg width="8" height="8" viewBox="0 0 8 8"><line x1="1" y1="1" x2="7" y2="7" stroke="${cor}" stroke-width="1.5"/><line x1="7" y1="1" x2="1" y2="7" stroke="${cor}" stroke-width="1.5"/></svg>` +
+      `</div></div>`;
+    const ic = L.divIcon({ html, className: "", iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -11] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
-  // Fallback: quadrado pequeno
-  html = `<div style="width:14px;height:14px;background:${cor};border:1.5px solid #fff;border-radius:2px;opacity:0.7"></div>`;
-  const ic = L.divIcon({ html, className: "", iconSize: [14, 14], iconAnchor: [7, 7], popupAnchor: [0, -7] });
+  // Fallback: circulo cinza
+  html =
+    `<div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center;${sombra}">` +
+    `<div style="width:12px;height:12px;border-radius:50%;background:${cor};border:2px solid #fff"></div>` +
+    `</div>`;
+  const ic = L.divIcon({ html, className: "", iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -10] });
   _iconeCache[chave] = ic;
   return ic;
 }
