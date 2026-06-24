@@ -636,6 +636,9 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
   /* ---- Posicoes de todos os veiculos ---- */
   const [veiculosMapa, setVeiculosMapa] = useState<VeiculoMapa[]>([]);
 
+  /* ---- Bases (perimetros GeoJSON) ---- */
+  const [basesGeo, setBasesGeo] = useState<GeoJSON.FeatureCollection | null>(null);
+
   /* ---- Busca na sidebar ---- */
   const [busca, setBusca] = useState("");
 
@@ -707,6 +710,9 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
       .then((d) => {
         if (Array.isArray(d?.veiculos)) {
           setVeiculosMapa(d.veiculos as VeiculoMapa[]);
+        }
+        if (d?.bases?.type === "FeatureCollection") {
+          setBasesGeo(d.bases as GeoJSON.FeatureCollection);
         }
       })
       .catch(() => {});
@@ -1492,6 +1498,31 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
                 </LayersControl.Overlay>
               )}
             </LayersControl>
+
+            {/* Perimetro das bases (sempre visivel) */}
+            {basesGeo && (
+              <GeoJSON
+                key={`bases-${cliente}`}
+                data={basesGeo}
+                style={{
+                  color: "#38bdf8",
+                  weight: 2,
+                  fillColor: "#38bdf8",
+                  fillOpacity: 0.08,
+                  opacity: 0.85,
+                  dashArray: "6 4",
+                }}
+                onEachFeature={(feature, layer) => {
+                  const nome = (feature.properties as { nome?: string })?.nome ?? "Base";
+                  layer.bindTooltip(nome, {
+                    permanent: true,
+                    direction: "center",
+                    className: "leaflet-tooltip-base",
+                    opacity: 0.9,
+                  });
+                }}
+              />
+            )}
 
             {/* Todos os veiculos visiveis */}
             {veiculosVisiveis.map((vm) => {
