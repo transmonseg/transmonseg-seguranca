@@ -162,56 +162,12 @@ export default async function MonitoramentoPage({
     .map((v) => ({ placa: v.placa, cv: v.cv }));
 
   return (
-    <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "1.5rem 1.5rem 4rem" }}>
-
-      {/* Cabecalho da pagina */}
-      <section aria-label="Cabecalho de monitoramento" style={{ marginBottom: "1.5rem" }}>
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex items-center gap-2" style={{ color: "var(--text-dim)" }}>
-              <IconMonitor size={11} />
-              <span
-                className="text-xs uppercase tracking-widest"
-                style={{ letterSpacing: "0.14em", color: "var(--text-dim)" }}
-              >
-                Monitoramento
-              </span>
-            </div>
-            <SeletorCliente
-              clientes={clientes}
-              clienteAtualId={clienteAtivo.id}
-              veiculosPorCliente={veiculosPorCliente}
-            />
-          </div>
-          {/* Indicador de cliente ativo */}
-          <div
-            className="flex items-center gap-2 px-4 py-2 rounded-xl"
-            style={{
-              backgroundColor: "var(--card)",
-              border: "1px solid var(--border)",
-            }}
-          >
-            <span
-              className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
-              style={{ backgroundColor: "var(--verde)" }}
-            />
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              {clienteAtivo.nome}
-            </span>
-            <span
-              className="num-mono text-xs font-semibold"
-              style={{ fontFamily: "var(--font-geist-mono, monospace)", color: "var(--accent)" }}
-            >
-              {veiculosDoCliente.length} veiculos
-            </span>
-          </div>
-        </div>
-      </section>
-
-      {/* Corpo: mapa + painel lateral (MonitorWrapper carrega o MapaMonitor client-side) */}
+    <div style={{ height: "calc(100vh - var(--header-h, 64px))", overflow: "hidden" }}>
       <MonitorWrapper
         cliente={clienteAtivo.cod_user_unitrac}
         veiculos={veiculosDoCliente}
+        clientes={clientes.map((c) => ({ id: c.id, nome: c.nome, cod: c.cod_user_unitrac }))}
+        clienteAtivoId={clienteAtivo.id}
       />
     </div>
   );

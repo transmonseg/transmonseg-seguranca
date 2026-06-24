@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
 import {
   MapContainer,
   TileLayer,
@@ -109,6 +110,8 @@ interface Tiroteio {
 interface Props {
   cliente: string;
   veiculos: VeiculoOpcao[];
+  clientes: { id: string; nome: string; cod: string }[];
+  clienteAtivoId: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -131,7 +134,6 @@ const FILTROS_COMM = [
 ] as const;
 
 const SIDEBAR_W = 280;
-const HEADER_H_CSS = "var(--header-h, 64px)";
 
 /* ------------------------------------------------------------------ */
 /* Cores de marcador                                                    */
@@ -152,47 +154,101 @@ function corVeiculo(v: VeiculoMapa): string {
 
 const _iconeCache: Record<string, L.DivIcon> = {};
 
-function iconeVeiculo(cor: string, destaque: boolean): L.DivIcon {
-  const chave = `${cor}-${destaque}`;
+function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
+  const cor = corVeiculo(v);
+  const chave = `${cor}-${selecionado}-${v.ignicao}-${v.velocidade > 0}`;
   if (_iconeCache[chave]) return _iconeCache[chave];
-  const s = destaque ? 18 : 12;
-  const glow = destaque ? `,0 0 8px ${cor}` : "";
-  const html =
-    `<div style="width:${s}px;height:${s}px;border-radius:50%;` +
-    `background:${cor};border:2px solid #fff;` +
-    `box-shadow:0 0 0 1px rgba(0,0,0,0.4)${glow}">` +
-    `</div>`;
-  const ic = L.divIcon({
-    html,
-    className: "",
-    iconSize: [s, s],
-    iconAnchor: [s / 2, s / 2],
-    popupAnchor: [0, -s / 2],
-  });
+
+  let html: string;
+
+  if (selecionado) {
+    const s = 38;
+    html =
+      `<div style="width:${s}px;height:${s}px;display:flex;align-items:center;justify-content:center;` +
+      `background:rgba(8,8,12,0.95);border:2.5px solid ${cor};border-radius:50%;` +
+      `box-shadow:0 0 0 3px rgba(8,8,12,0.6),0 0 14px ${cor}66">` +
+      `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"` +
+      ` stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+      `<rect x="1" y="3" width="15" height="13"/>` +
+      `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
+      `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
+      `</svg></div>`;
+    const ic = L.divIcon({ html, className: "", iconSize: [s, s], iconAnchor: [s / 2, s / 2], popupAnchor: [0, -s / 2] });
+    _iconeCache[chave] = ic;
+    return ic;
+  }
+
+  const emAlerta = v.nivel === "vermelho" || v.tipo !== null;
+  const emMovimento = v.ignicao && v.velocidade > 0;
+  const paradoLigado = v.ignicao && v.velocidade === 0;
+  const semComm = v.atraso_min > 60;
+
+  if (emAlerta) {
+    html =
+      `<div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center">` +
+      `<div style="width:14px;height:14px;transform:rotate(45deg);background:${cor};` +
+      `border:2px solid #fff;box-shadow:0 0 0 2px ${cor}55,0 0 8px ${cor}88"></div>` +
+      `</div>`;
+    const ic = L.divIcon({ html, className: "", iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -10] });
+    _iconeCache[chave] = ic;
+    return ic;
+  }
+
+  if (emMovimento) {
+    html =
+      `<div style="width:22px;height:22px;display:flex;align-items:center;justify-content:center">` +
+      `<svg width="22" height="22" viewBox="0 0 22 22">` +
+      `<polygon points="11,2 20,19 11,15 2,19" fill="${cor}" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>` +
+      `</svg></div>`;
+    const ic = L.divIcon({ html, className: "", iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -11] });
+    _iconeCache[chave] = ic;
+    return ic;
+  }
+
+  if (paradoLigado) {
+    html =
+      `<div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center">` +
+      `<div style="width:12px;height:12px;border-radius:50%;background:${cor};` +
+      `border:2px solid #fff;box-shadow:0 0 0 3px ${cor}44"></div>` +
+      `</div>`;
+    const ic = L.divIcon({ html, className: "", iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -10] });
+    _iconeCache[chave] = ic;
+    return ic;
+  }
+
+  if (semComm) {
+    html =
+      `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center">` +
+      `<div style="width:10px;height:10px;border-radius:50%;background:transparent;` +
+      `border:2px dashed ${cor};opacity:0.6"></div>` +
+      `</div>`;
+    const ic = L.divIcon({ html, className: "", iconSize: [16, 16], iconAnchor: [8, 8], popupAnchor: [0, -8] });
+    _iconeCache[chave] = ic;
+    return ic;
+  }
+
+  // Fallback: quadrado pequeno
+  html = `<div style="width:14px;height:14px;background:${cor};border:1.5px solid #fff;border-radius:2px;opacity:0.7"></div>`;
+  const ic = L.divIcon({ html, className: "", iconSize: [14, 14], iconAnchor: [7, 7], popupAnchor: [0, -7] });
   _iconeCache[chave] = ic;
   return ic;
 }
 
-function iconeCaminhao(cor: string, destaque: boolean): L.DivIcon {
-  const chave = `cam-${cor}-${destaque}`;
+function iconeStatusSelecionado(cor: string): L.DivIcon {
+  const chave = `sel-${cor}`;
   if (_iconeCache[chave]) return _iconeCache[chave];
-  const s = destaque ? 36 : 28;
+  const s = 38;
   const html =
     `<div style="width:${s}px;height:${s}px;display:flex;align-items:center;justify-content:center;` +
-    `background:rgba(10,10,10,0.92);border:2px solid ${cor};border-radius:50%;` +
-    `box-shadow:0 0 0 1px rgba(0,0,0,0.5)${destaque ? `,0 0 10px ${cor}` : ""}">` +
-    `<svg width="${destaque ? 20 : 16}" height="${destaque ? 20 : 16}" viewBox="0 0 24 24" fill="none" ` +
-    `stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+    `background:rgba(8,8,12,0.95);border:2.5px solid ${cor};border-radius:50%;` +
+    `box-shadow:0 0 0 3px rgba(8,8,12,0.6),0 0 14px ${cor}66">` +
+    `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"` +
+    ` stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
     `<rect x="1" y="3" width="15" height="13"/>` +
     `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
-    `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg></div>`;
-  const ic = L.divIcon({
-    html,
-    className: "marcador-caminhao",
-    iconSize: [s, s],
-    iconAnchor: [s / 2, s / 2],
-    popupAnchor: [0, -s / 2],
-  });
+    `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
+    `</svg></div>`;
+  const ic = L.divIcon({ html, className: "", iconSize: [s, s], iconAnchor: [s / 2, s / 2], popupAnchor: [0, -s / 2] });
   _iconeCache[chave] = ic;
   return ic;
 }
@@ -554,7 +610,7 @@ function LegendaItem({ cor, label, qtd }: { cor: string; label: string; qtd: num
 /* Componente principal                                                 */
 /* ------------------------------------------------------------------ */
 
-export default function MapaMonitor({ veiculos, cliente }: Props) {
+export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoId }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
   /* ---- Grupos (arvore da sidebar) ---- */
@@ -629,7 +685,7 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
   }, [cliente]);
 
   /* ------------------------------------------------------------------ */
-  /* Posicoes de todos os veiculos (refresh a cada 30s)                  */
+  /* Posicoes de todos os veiculos (refresh a cada 10s)                  */
   /* ------------------------------------------------------------------ */
 
   const carregarMapa = useCallback(() => {
@@ -646,9 +702,39 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
 
   useEffect(() => {
     carregarMapa();
-    const id = setInterval(carregarMapa, 30000);
+    const id = setInterval(carregarMapa, 10000);
     return () => clearInterval(id);
   }, [carregarMapa]);
+
+  /* ------------------------------------------------------------------ */
+  /* Auto-refresh de telemetria quando veiculo selecionado (15s)         */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+    if (!cvSelecionado) return;
+    const id = setInterval(() => {
+      fetch(`/api/veiculo?cv=${encodeURIComponent(cvSelecionado)}`)
+        .then((r) => r.json())
+        .then((d) => { if (d?.posicao) setTelemetria(d.posicao as Telemetria); })
+        .catch(() => {});
+    }, 15000);
+    return () => clearInterval(id);
+  }, [cvSelecionado]);
+
+  /* ------------------------------------------------------------------ */
+  /* Auto-refresh de rastro quando veiculo selecionado (2min)            */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+    if (!cvSelecionado) return;
+    const id = setInterval(() => {
+      fetch(`/api/rastro?cv=${encodeURIComponent(cvSelecionado)}&horas=${horas}`)
+        .then((r) => r.json())
+        .then((d) => { if (Array.isArray(d?.pontos)) setRastro(d.pontos); })
+        .catch(() => {});
+    }, 120000);
+    return () => clearInterval(id);
+  }, [cvSelecionado, horas]);
 
   /* ------------------------------------------------------------------ */
   /* Camadas de risco                                                     */
@@ -834,11 +920,9 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
     <div
       style={{
         display: "flex",
-        height: `calc(100vh - ${HEADER_H_CSS} - 5rem)`,
+        height: "100%",
         minHeight: 480,
         overflow: "hidden",
-        border: "1px solid var(--border)",
-        borderRadius: "1rem",
       }}
     >
       {/* ============================================================
@@ -856,6 +940,28 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
           overflowX: "hidden",
         }}
       >
+        {/* Seletor de cliente */}
+        <div style={{ padding: "0.5rem 0.875rem", borderBottom: "1px solid var(--border)", display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {clientes.map((c) => (
+            <Link
+              key={c.id}
+              href={`/monitoramento?cliente=${c.cod}`}
+              style={{
+                padding: "0.25rem 0.625rem",
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 700,
+                backgroundColor: c.id === clienteAtivoId ? "var(--accent-dim)" : "transparent",
+                border: `1px solid ${c.id === clienteAtivoId ? "var(--accent)" : "var(--border)"}`,
+                color: c.id === clienteAtivoId ? "var(--accent)" : "var(--text-dim)",
+                textDecoration: "none",
+              }}
+            >
+              {c.nome}
+            </Link>
+          ))}
+        </div>
+
         {/* Cabecalho da sidebar */}
         <div
           style={{
@@ -1376,38 +1482,37 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
             </LayersControl>
 
             {/* Todos os veiculos visiveis */}
-            {veiculosVisiveis.map((v) => {
-              if (v.lat === null || v.lng === null) return null;
-              const selecionado = cvSelecionado === v.cv;
-              const cor = corVeiculo(v);
+            {veiculosVisiveis.map((vm) => {
+              if (vm.lat === null || vm.lng === null) return null;
+              const selecionado = cvSelecionado === vm.cv;
               return (
                 <Marker
-                  key={v.cv}
-                  position={[v.lat, v.lng]}
-                  icon={selecionado ? iconeCaminhao(cor, true) : iconeVeiculo(cor, false)}
+                  key={vm.cv}
+                  position={[vm.lat, vm.lng]}
+                  icon={iconeStatus(vm, selecionado)}
                   zIndexOffset={selecionado ? 1000 : 0}
                   eventHandlers={{
-                    click: () => selecionarVeiculo({ placa: v.placa, cv: v.cv }),
+                    click: () => selecionarVeiculo({ placa: vm.placa, cv: vm.cv }),
                   }}
                 >
                   <Popup>
                     <div style={{ fontFamily: "var(--font-geist-mono, monospace)", fontWeight: 700, fontSize: 13 }}>
-                      {v.placa}
+                      {vm.placa}
                     </div>
                     <div style={{ fontSize: 12, marginTop: 2 }}>
-                      {v.velocidade > 0 ? `${v.velocidade} km/h` : "parado"} ·{" "}
-                      ignicao {v.ignicao ? "ligada" : "desligada"}
+                      {vm.velocidade > 0 ? `${vm.velocidade} km/h` : "parado"} ·{" "}
+                      ignicao {vm.ignicao ? "ligada" : "desligada"}
                     </div>
-                    {v.atraso_min > 0 && (
+                    {vm.atraso_min > 0 && (
                       <div style={{ fontSize: 11, color: "#d97706", marginTop: 2 }}>
-                        sem comm ha {formatarDuracao(v.atraso_min)}
+                        sem comm ha {formatarDuracao(vm.atraso_min)}
                       </div>
                     )}
-                    {v.local && (
-                      <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>{v.local}</div>
+                    {vm.local && (
+                      <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>{vm.local}</div>
                     )}
                     <a
-                      href={`https://www.google.com/maps?q=${v.lat},${v.lng}`}
+                      href={`https://www.google.com/maps?q=${vm.lat},${vm.lng}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{ fontSize: 12, color: "#1d4ed8", display: "inline-block", marginTop: 4 }}
@@ -1419,12 +1524,29 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
               );
             })}
 
-            {/* Rastro */}
+            {/* Rastro com halo + bolinhas de direcao */}
             {mostrarRastro && pontosRastro.length > 1 && (
-              <Polyline
-                positions={pontosRastro}
-                pathOptions={{ color: "#9fb3ce", weight: 2.5, opacity: 0.85 }}
-              />
+              <>
+                {/* Halo de fundo */}
+                <Polyline
+                  positions={pontosRastro}
+                  pathOptions={{ color: "#9fb3ce", weight: 6, opacity: 0.18, lineCap: "round", lineJoin: "round" }}
+                />
+                {/* Linha principal */}
+                <Polyline
+                  positions={pontosRastro}
+                  pathOptions={{ color: "#9fb3ce", weight: 2.5, opacity: 0.9, lineCap: "round", lineJoin: "round" }}
+                />
+                {/* Bolinhas de direcao a cada 15 pontos */}
+                {pontosRastro.filter((_, i) => i % 15 === 0 && i > 0).map((p, i) => (
+                  <CircleMarker
+                    key={`dir${i}`}
+                    center={p}
+                    radius={3}
+                    pathOptions={{ color: "#fff", weight: 1, fillColor: "#9fb3ce", fillOpacity: 1 }}
+                  />
+                ))}
+              </>
             )}
 
             {/* Inicio do rastro */}
@@ -1477,7 +1599,7 @@ export default function MapaMonitor({ veiculos, cliente }: Props) {
             {posValida && posAtual && (
               <Marker
                 position={[posAtual.lat, posAtual.lng]}
-                icon={iconeCaminhao(corIgnicao, true)}
+                icon={iconeStatusSelecionado(corIgnicao)}
                 zIndexOffset={2000}
               >
                 <Popup>

@@ -18,8 +18,10 @@ const MapaMonitor = dynamic(() => import("./MapaMonitor"), {
 interface Props {
   cliente: string;
   veiculos: { placa: string; cv: string }[];
+  clientes: { id: string; nome: string; cod: string }[];
+  clienteAtivoId: string;
 }
 
-export default function MonitorWrapper({ cliente, veiculos }: Props) {
-  return <MapaMonitor cliente={cliente} veiculos={veiculos} />;
+export default function MonitorWrapper({ cliente, veiculos, clientes, clienteAtivoId }: Props) {
+  return <MapaMonitor cliente={cliente} veiculos={veiculos} clientes={clientes} clienteAtivoId={clienteAtivoId} />;
 }
