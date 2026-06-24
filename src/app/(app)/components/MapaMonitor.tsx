@@ -68,6 +68,15 @@ interface Parada {
   lng: number;
 }
 
+interface PontoEntregaUI {
+  lat: number;
+  lng: number;
+  raio: number;
+  ordem: number;
+  nome: string;
+  feito: boolean;
+}
+
 interface Telemetria {
   posiclatitude?: string;
   posiclongitude?: string;
@@ -161,9 +170,27 @@ function _pin(cor: string, w: number, h: number, svgInner: string): string {
     svgInner + `</svg></div>`;
 }
 
+// Icone de ponto de entrega (alvo) — circulo numerado, laranja=pendente, cinza=feito.
+function iconeAlvo(numero: number, feito: boolean, proximo: boolean): L.DivIcon {
+  const cor = feito ? "#6b7280" : proximo ? "#f97316" : "#fb923c";
+  const size = feito ? 18 : proximo ? 24 : 20;
+  const half = size / 2;
+  const fontSize = feito ? 9 : proximo ? 12 : 10;
+  const border = feito ? "1.5px solid rgba(255,255,255,0.4)" : "2px solid white";
+  const opacity = feito ? "0.55" : "1";
+  const html =
+    `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${cor};` +
+    `border:${border};opacity:${opacity};display:flex;align-items:center;justify-content:center;` +
+    `font-family:monospace;font-size:${fontSize}px;font-weight:800;color:white;` +
+    `box-shadow:0 2px 6px rgba(0,0,0,0.85);">` +
+    `${numero}</div>`;
+  return L.divIcon({ html, className: "", iconSize: [size, size], iconAnchor: [half, half], popupAnchor: [0, -half] });
+}
+
 function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
   const cor = corVeiculo(v);
-  const chave = `${cor}-${selecionado}-${v.ignicao}-${v.velocidade > 0}-${v.atraso_min > 60}`;
+  const semComm = v.atraso_min > 60;
+  const chave = `truck-${cor}-${selecionado ? 1 : 0}-${semComm ? 1 : 0}`;
   if (_iconeCache[chave]) return _iconeCache[chave];
 
   let html: string;
@@ -175,7 +202,7 @@ function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
       `<div style="width:${s}px;height:${s}px;display:flex;align-items:center;justify-content:center;` +
       `background:rgba(4,4,8,0.96);border:3px solid ${cor};border-radius:50%;` +
       `box-shadow:0 0 0 3px rgba(0,0,0,0.8),0 0 20px ${cor}99,0 4px 14px rgba(0,0,0,0.95)">` +
-      `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+      `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
       `<rect x="1" y="3" width="15" height="13"/>` +
       `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
       `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
@@ -185,66 +212,25 @@ function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
     return ic;
   }
 
-  const emAlerta = v.nivel === "vermelho" || v.tipo !== null;
-  const emMovimento = v.ignicao && v.velocidade > 0;
-  const paradoLigado = v.ignicao && v.velocidade === 0;
-  const semComm = v.atraso_min > 60;
+  // Todos os demais: pin GPS (teardrop) com caminhao dentro.
+  // Cor muda por status; opacidade reduzida para sem comunicacao.
+  const alpha = semComm ? "0.5" : "1";
+  html =
+    `<div style="width:30px;height:38px;opacity:${alpha};filter:drop-shadow(0 2px 8px rgba(0,0,0,1)) drop-shadow(0 0 3px rgba(0,0,0,0.9))">` +
+    `<svg width="30" height="38" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg">` +
+    // Sombra preta por baixo
+    `<path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="black" opacity="0.55"/>` +
+    // Pin colorido
+    `<path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>` +
+    // Caminhao (Lucide truck, escalonado para caber no circulo do pin)
+    `<g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">` +
+    `<rect x="1" y="3" width="15" height="13"/>` +
+    `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
+    `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
+    `</g>` +
+    `</svg></div>`;
 
-  if (emAlerta) {
-    // Losango pulsante — cor vermelha, 3 camadas (sombra preta, fill, stroke branco)
-    html = _pin(cor, 30, 30,
-      `<rect x="7" y="7" width="16" height="16" rx="2" transform="rotate(45 15 15)" fill="black" opacity="0.6"/>` +
-      `<rect x="7" y="7" width="16" height="16" rx="2" transform="rotate(45 15 15)" fill="${cor}" stroke="white" stroke-width="2"/>`
-    );
-    const ic = L.divIcon({ html, className: "", iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -15] });
-    _iconeCache[chave] = ic;
-    return ic;
-  }
-
-  if (emMovimento) {
-    // Pin GPS (teardrop) — indica veículo em rota, apontado para cima
-    html = _pin(cor, 24, 32,
-      `<path d="M12 2 C7 2 3 6 3 11 C3 17 12 30 12 30 C12 30 21 17 21 11 C21 6 17 2 12 2 Z"` +
-      ` fill="black" opacity="0.55"/>` +
-      `<path d="M12 2 C7 2 3 6 3 11 C3 17 12 30 12 30 C12 30 21 17 21 11 C21 6 17 2 12 2 Z"` +
-      ` fill="${cor}" stroke="white" stroke-width="2"/>` +
-      `<circle cx="12" cy="11" r="4" fill="white" opacity="0.9"/>`
-    );
-    const ic = L.divIcon({ html, className: "", iconSize: [24, 32], iconAnchor: [12, 30], popupAnchor: [0, -30] });
-    _iconeCache[chave] = ic;
-    return ic;
-  }
-
-  if (paradoLigado) {
-    // Quadrado arredondado — parado mas ativo (motor ligado)
-    html = _pin(cor, 24, 24,
-      `<rect x="2" y="2" width="20" height="20" rx="5" fill="black" opacity="0.55"/>` +
-      `<rect x="2" y="2" width="20" height="20" rx="5" fill="${cor}" stroke="white" stroke-width="2"/>` +
-      `<rect x="8" y="8" width="8" height="8" rx="2" fill="white" opacity="0.9"/>`
-    );
-    const ic = L.divIcon({ html, className: "", iconSize: [24, 24], iconAnchor: [12, 12], popupAnchor: [0, -12] });
-    _iconeCache[chave] = ic;
-    return ic;
-  }
-
-  if (semComm) {
-    // Circulo fantasma com linha diagonal — sem sinal
-    html = _pin(cor, 22, 22,
-      `<circle cx="11" cy="11" r="9" fill="black" opacity="0.55"/>` +
-      `<circle cx="11" cy="11" r="9" fill="#1c1917" stroke="${cor}" stroke-width="2" stroke-dasharray="3 2"/>` +
-      `<line x1="5" y1="5" x2="17" y2="17" stroke="${cor}" stroke-width="2" stroke-linecap="round"/>`
-    );
-    const ic = L.divIcon({ html, className: "", iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -11] });
-    _iconeCache[chave] = ic;
-    return ic;
-  }
-
-  // Parado desligado (fallback) — circulo simples menor
-  html = _pin(cor, 20, 20,
-    `<circle cx="10" cy="10" r="8" fill="black" opacity="0.55"/>` +
-    `<circle cx="10" cy="10" r="8" fill="${cor}" stroke="white" stroke-width="1.5"/>`
-  );
-  const ic = L.divIcon({ html, className: "", iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -10] });
+  const ic = L.divIcon({ html, className: "", iconSize: [30, 38], iconAnchor: [15, 36], popupAnchor: [0, -36] });
   _iconeCache[chave] = ic;
   return ic;
 }
@@ -659,6 +645,7 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
   const [rastro, setRastro] = useState<PontRastro[]>([]);
   const [paradas, setParadas] = useState<Parada[]>([]);
   const [telemetria, setTelemetria] = useState<Telemetria | null>(null);
+  const [alvos, setAlvos] = useState<PontoEntregaUI[]>([]);
   const [carregando, setCarregando] = useState(false);
 
   /* ---- Toggles de camada ---- */
@@ -793,20 +780,24 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
     setRastro([]);
     setParadas([]);
     setTelemetria(null);
+    setAlvos([]);
     try {
-      const [resRastro, resStops, resTel] = await Promise.all([
+      const [resRastro, resStops, resTel, resAlvos] = await Promise.all([
         fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`),
         fetch(`/api/stops?cv=${encodeURIComponent(cv)}&horas=${h}`),
         fetch(`/api/veiculo?cv=${encodeURIComponent(cv)}`),
+        fetch(`/api/alvos?cv=${encodeURIComponent(cv)}`),
       ]);
-      const [dRastro, dStops, dTel] = await Promise.all([
+      const [dRastro, dStops, dTel, dAlvos] = await Promise.all([
         resRastro.json(),
         resStops.json(),
         resTel.json(),
+        resAlvos.json(),
       ]);
       if (Array.isArray(dRastro?.pontos)) setRastro(dRastro.pontos);
       if (Array.isArray(dStops?.paradas)) setParadas(dStops.paradas);
       if (dTel?.posicao) setTelemetria(dTel.posicao as Telemetria);
+      if (Array.isArray(dAlvos?.pontos)) setAlvos(dAlvos.pontos as PontoEntregaUI[]);
     } catch {
       /* falha silenciosa */
     } finally {
@@ -836,6 +827,7 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
     setRastro([]);
     setParadas([]);
     setTelemetria(null);
+    setAlvos([]);
     setPainelAberto(false);
   }, []);
 
@@ -1411,16 +1403,25 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
             display: "flex", flexDirection: "column", gap: 5, pointerEvents: "none",
           }}>
             {[
-              { svg: `<svg width="14" height="14"><rect x="1" y="1" width="12" height="12" rx="3" transform="rotate(45 7 7)" fill="#ef4444" stroke="white" stroke-width="1.5"/></svg>`, label: "Alerta" },
-              { svg: `<svg width="14" height="20"><path d="M7 1C4 1 1 4 1 7c0 4 6 12 6 12s6-8 6-12c0-3-3-6-6-6z" fill="#22c55e" stroke="white" stroke-width="1.5"/><circle cx="7" cy="7" r="2.5" fill="white"/></svg>`, label: "Em movimento" },
-              { svg: `<svg width="14" height="14"><rect x="1" y="1" width="12" height="12" rx="3" fill="#9fb3ce" stroke="white" stroke-width="1.5"/><rect x="4" y="4" width="6" height="6" rx="1" fill="white"/></svg>`, label: "Parado / ligado" },
-              { svg: `<svg width="14" height="14"><circle cx="7" cy="7" r="6" fill="#1c1917" stroke="#57534e" stroke-width="1.5" stroke-dasharray="3 2"/><line x1="3" y1="3" x2="11" y2="11" stroke="#57534e" stroke-width="1.5" stroke-linecap="round"/></svg>`, label: "Sem comunicacao" },
-            ].map(({ svg, label }) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span dangerouslySetInnerHTML={{ __html: svg }} style={{ display: "flex", alignItems: "center", flexShrink: 0 }} />
-                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)", fontWeight: 600, letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{label}</span>
-              </div>
-            ))}
+              { cor: "#ef4444", label: "Alerta" },
+              { cor: "#22c55e", label: "Em movimento" },
+              { cor: "#9fb3ce", label: "Parado / ligado" },
+              { cor: "#57534e", label: "Sem comunicacao" },
+            ].map(({ cor, label }) => {
+              const svg =
+                `<svg width="16" height="20" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg">` +
+                `<path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>` +
+                `<g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">` +
+                `<rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
+                `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
+                `</g></svg>`;
+              return (
+                <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span dangerouslySetInnerHTML={{ __html: svg }} style={{ display: "flex", alignItems: "center", flexShrink: 0 }} />
+                  <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)", fontWeight: 600, letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{label}</span>
+                </div>
+              );
+            })}
           </div>
 
           {/* Painel de telemetria flutuante */}
@@ -1655,6 +1656,51 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
                   </Popup>
                 </CircleMarker>
               ))}
+
+            {/* Pontos de entrega (alvos) do veiculo selecionado */}
+            {(() => {
+              if (alvos.length === 0) return null;
+              const pendentes = alvos.filter((p) => !p.feito).sort((a, b) => a.ordem - b.ordem);
+              const proximoOrdem = pendentes[0]?.ordem ?? -1;
+              const waypoints: [number, number][] = [
+                ...(posValida && posAtual ? [[posAtual.lat, posAtual.lng] as [number, number]] : []),
+                ...pendentes.map((p) => [p.lat, p.lng] as [number, number]),
+              ];
+              return (
+                <>
+                  {/* Linha dashed: posicao atual -> proximos pontos em ordem */}
+                  {waypoints.length >= 2 && (
+                    <>
+                      <Polyline
+                        positions={waypoints}
+                        pathOptions={{ color: "#000", weight: 4, opacity: 0.6, dashArray: "10 8", lineCap: "round" }}
+                      />
+                      <Polyline
+                        positions={waypoints}
+                        pathOptions={{ color: "#f97316", weight: 2, opacity: 0.9, dashArray: "10 8", lineCap: "round" }}
+                      />
+                    </>
+                  )}
+                  {/* Marcadores numerados */}
+                  {alvos.sort((a, b) => a.ordem - b.ordem).map((p, i) => (
+                    <Marker
+                      key={`alvo-${p.ordem}-${i}`}
+                      position={[p.lat, p.lng]}
+                      icon={iconeAlvo(i + 1, p.feito, p.ordem === proximoOrdem)}
+                    >
+                      <Popup>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: p.feito ? "#6b7280" : "#f97316" }}>
+                          {p.feito ? "Entregue" : "Pendente"} — #{i + 1}
+                        </div>
+                        {p.nome && (
+                          <div style={{ fontSize: 12, marginTop: 2 }}>{p.nome}</div>
+                        )}
+                      </Popup>
+                    </Marker>
+                  ))}
+                </>
+              );
+            })()}
 
             {/* Marcador de posicao ao vivo do veiculo selecionado */}
             {posValida && posAtual && (
