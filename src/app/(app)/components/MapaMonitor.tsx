@@ -945,23 +945,47 @@ export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
             <AjustarBoundsRastro pontos={pontosRastro} gatilho={gatilhoBounds} />
           )}
 
-          {/* Basemap CartoDB dark (padrao) */}
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            attribution="&copy; OpenStreetMap &copy; CARTO"
-          />
+          {/* Basemap: Google Ruas (claro) quando ha chave, CartoDB escuro caso contrario */}
+          {googleApiKey ? (
+            <TileLayer
+              url="https://mt1.google.com/vt/lyrs=r&x={x}&y={y}&z={z}"
+              attribution="&copy; Google Maps"
+              maxNativeZoom={20}
+              maxZoom={21}
+            />
+          ) : (
+            <TileLayer
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+              attribution="&copy; OpenStreetMap &copy; CARTO"
+            />
+          )}
 
-          {/* Camadas de risco e basemap opcional Google */}
+          {/* Camadas de risco + trafego ao vivo */}
           <LayersControl position="topright">
 
-            {/* Camada Google opcional: so aparece se a chave estiver configurada */}
+            {/* Trafego ao vivo (Google) */}
             {googleApiKey && (
-              <LayersControl.BaseLayer name="Google Satelite">
+              <LayersControl.Overlay name="Trafego ao vivo">
                 <TileLayer
-                  url={`https://maps.googleapis.com/maps/api/staticmap?center={lat},{lng}&zoom={z}&size=256x256&maptype=satellite&key=${googleApiKey}`}
+                  url="https://mt1.google.com/vt/lyrs=traffic&x={x}&y={y}&z={z}"
                   attribution="&copy; Google Maps"
+                  opacity={0.85}
+                  maxNativeZoom={20}
+                  maxZoom={21}
                 />
-              </LayersControl.BaseLayer>
+              </LayersControl.Overlay>
+            )}
+
+            {/* Satelite Google */}
+            {googleApiKey && (
+              <LayersControl.Overlay name="Satelite Google">
+                <TileLayer
+                  url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+                  attribution="&copy; Google Maps"
+                  maxNativeZoom={20}
+                  maxZoom={21}
+                />
+              </LayersControl.Overlay>
             )}
 
             {/* Favelas */}
