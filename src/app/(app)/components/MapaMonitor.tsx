@@ -154,25 +154,28 @@ function corVeiculo(v: VeiculoMapa): string {
 
 const _iconeCache: Record<string, L.DivIcon> = {};
 
+// Stroke preto por baixo + fill colorido: leitura garantida em qualquer tile
+function _pin(cor: string, w: number, h: number, svgInner: string): string {
+  return `<div style="width:${w}px;height:${h}px;filter:drop-shadow(0 2px 6px rgba(0,0,0,1)) drop-shadow(0 0 3px rgba(0,0,0,0.9))">` +
+    `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">` +
+    svgInner + `</svg></div>`;
+}
+
 function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
   const cor = corVeiculo(v);
   const chave = `${cor}-${selecionado}-${v.ignicao}-${v.velocidade > 0}-${v.atraso_min > 60}`;
   if (_iconeCache[chave]) return _iconeCache[chave];
 
-  // Sombra pesada garante visibilidade no fundo satelite
-  const sombra = "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.95)) drop-shadow(0 0 2px rgba(0,0,0,0.8))";
-
   let html: string;
 
   if (selecionado) {
-    // Caminhao selecionado: circulo grande com SVG e glow colorido
-    const s = 42;
+    // Circulo de destaque com caminhao SVG e glow colorido
+    const s = 44;
     html =
       `<div style="width:${s}px;height:${s}px;display:flex;align-items:center;justify-content:center;` +
-      `background:rgba(6,6,10,0.97);border:3px solid ${cor};border-radius:50%;` +
-      `box-shadow:0 0 0 3px rgba(0,0,0,0.7),0 0 18px ${cor}88,0 4px 12px rgba(0,0,0,0.9)">` +
-      `<svg width="22" height="22" viewBox="0 0 24 24" fill="none"` +
-      ` stroke="${cor}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">` +
+      `background:rgba(4,4,8,0.96);border:3px solid ${cor};border-radius:50%;` +
+      `box-shadow:0 0 0 3px rgba(0,0,0,0.8),0 0 20px ${cor}99,0 4px 14px rgba(0,0,0,0.95)">` +
+      `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
       `<rect x="1" y="3" width="15" height="13"/>` +
       `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
       `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
@@ -188,59 +191,59 @@ function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
   const semComm = v.atraso_min > 60;
 
   if (emAlerta) {
-    // Losango vermelho com borda branca grossa e sombra
-    html =
-      `<div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;${sombra}">` +
-      `<div style="width:18px;height:18px;transform:rotate(45deg);background:${cor};` +
-      `border:2.5px solid #fff;box-shadow:inset 0 0 0 1px ${cor}"></div>` +
-      `</div>`;
-    const ic = L.divIcon({ html, className: "", iconSize: [28, 28], iconAnchor: [14, 14], popupAnchor: [0, -14] });
+    // Losango pulsante — cor vermelha, 3 camadas (sombra preta, fill, stroke branco)
+    html = _pin(cor, 30, 30,
+      `<rect x="7" y="7" width="16" height="16" rx="2" transform="rotate(45 15 15)" fill="black" opacity="0.6"/>` +
+      `<rect x="7" y="7" width="16" height="16" rx="2" transform="rotate(45 15 15)" fill="${cor}" stroke="white" stroke-width="2"/>`
+    );
+    const ic = L.divIcon({ html, className: "", iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -15] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
   if (emMovimento) {
-    // Seta de navegacao com borda branca e sombra forte
-    html =
-      `<div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;${sombra}">` +
-      `<svg width="26" height="26" viewBox="0 0 26 26">` +
-      `<polygon points="13,2 24,23 13,18 2,23" fill="${cor}" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>` +
-      `</svg></div>`;
-    const ic = L.divIcon({ html, className: "", iconSize: [28, 28], iconAnchor: [14, 14], popupAnchor: [0, -14] });
+    // Pin GPS (teardrop) — indica veículo em rota, apontado para cima
+    html = _pin(cor, 24, 32,
+      `<path d="M12 2 C7 2 3 6 3 11 C3 17 12 30 12 30 C12 30 21 17 21 11 C21 6 17 2 12 2 Z"` +
+      ` fill="black" opacity="0.55"/>` +
+      `<path d="M12 2 C7 2 3 6 3 11 C3 17 12 30 12 30 C12 30 21 17 21 11 C21 6 17 2 12 2 Z"` +
+      ` fill="${cor}" stroke="white" stroke-width="2"/>` +
+      `<circle cx="12" cy="11" r="4" fill="white" opacity="0.9"/>`
+    );
+    const ic = L.divIcon({ html, className: "", iconSize: [24, 32], iconAnchor: [12, 30], popupAnchor: [0, -30] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
   if (paradoLigado) {
-    // Circulo solido com borda branca grossa e anel externo
-    html =
-      `<div style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;${sombra}">` +
-      `<div style="width:16px;height:16px;border-radius:50%;background:${cor};` +
-      `border:2.5px solid #fff;box-shadow:0 0 0 2px ${cor}"></div>` +
-      `</div>`;
+    // Quadrado arredondado — parado mas ativo (motor ligado)
+    html = _pin(cor, 24, 24,
+      `<rect x="2" y="2" width="20" height="20" rx="5" fill="black" opacity="0.55"/>` +
+      `<rect x="2" y="2" width="20" height="20" rx="5" fill="${cor}" stroke="white" stroke-width="2"/>` +
+      `<rect x="8" y="8" width="8" height="8" rx="2" fill="white" opacity="0.9"/>`
+    );
     const ic = L.divIcon({ html, className: "", iconSize: [24, 24], iconAnchor: [12, 12], popupAnchor: [0, -12] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
   if (semComm) {
-    // Circulo com X (sem comunicacao) — solido para nao sumir
-    html =
-      `<div style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;${sombra}">` +
-      `<div style="width:14px;height:14px;border-radius:50%;background:rgba(30,30,30,0.9);` +
-      `border:2px solid ${cor};opacity:0.85;display:flex;align-items:center;justify-content:center">` +
-      `<svg width="8" height="8" viewBox="0 0 8 8"><line x1="1" y1="1" x2="7" y2="7" stroke="${cor}" stroke-width="1.5"/><line x1="7" y1="1" x2="1" y2="7" stroke="${cor}" stroke-width="1.5"/></svg>` +
-      `</div></div>`;
+    // Circulo fantasma com linha diagonal — sem sinal
+    html = _pin(cor, 22, 22,
+      `<circle cx="11" cy="11" r="9" fill="black" opacity="0.55"/>` +
+      `<circle cx="11" cy="11" r="9" fill="#1c1917" stroke="${cor}" stroke-width="2" stroke-dasharray="3 2"/>` +
+      `<line x1="5" y1="5" x2="17" y2="17" stroke="${cor}" stroke-width="2" stroke-linecap="round"/>`
+    );
     const ic = L.divIcon({ html, className: "", iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -11] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
-  // Fallback: circulo cinza
-  html =
-    `<div style="width:20px;height:20px;display:flex;align-items:center;justify-content:center;${sombra}">` +
-    `<div style="width:12px;height:12px;border-radius:50%;background:${cor};border:2px solid #fff"></div>` +
-    `</div>`;
+  // Parado desligado (fallback) — circulo simples menor
+  html = _pin(cor, 20, 20,
+    `<circle cx="10" cy="10" r="8" fill="black" opacity="0.55"/>` +
+    `<circle cx="10" cy="10" r="8" fill="${cor}" stroke="white" stroke-width="1.5"/>`
+  );
   const ic = L.divIcon({ html, className: "", iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -10] });
   _iconeCache[chave] = ic;
   return ic;
@@ -1400,6 +1403,26 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
         {/* Mapa */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          {/* Legenda de status */}
+          <div style={{
+            position: "absolute", bottom: 28, left: 10, zIndex: 1000,
+            background: "rgba(6,8,16,0.88)", border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 8, padding: "8px 12px", backdropFilter: "blur(6px)",
+            display: "flex", flexDirection: "column", gap: 5, pointerEvents: "none",
+          }}>
+            {[
+              { svg: `<svg width="14" height="14"><rect x="1" y="1" width="12" height="12" rx="3" transform="rotate(45 7 7)" fill="#ef4444" stroke="white" stroke-width="1.5"/></svg>`, label: "Alerta" },
+              { svg: `<svg width="14" height="20"><path d="M7 1C4 1 1 4 1 7c0 4 6 12 6 12s6-8 6-12c0-3-3-6-6-6z" fill="#22c55e" stroke="white" stroke-width="1.5"/><circle cx="7" cy="7" r="2.5" fill="white"/></svg>`, label: "Em movimento" },
+              { svg: `<svg width="14" height="14"><rect x="1" y="1" width="12" height="12" rx="3" fill="#9fb3ce" stroke="white" stroke-width="1.5"/><rect x="4" y="4" width="6" height="6" rx="1" fill="white"/></svg>`, label: "Parado / ligado" },
+              { svg: `<svg width="14" height="14"><circle cx="7" cy="7" r="6" fill="#1c1917" stroke="#57534e" stroke-width="1.5" stroke-dasharray="3 2"/><line x1="3" y1="3" x2="11" y2="11" stroke="#57534e" stroke-width="1.5" stroke-linecap="round"/></svg>`, label: "Sem comunicacao" },
+            ].map(({ svg, label }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span dangerouslySetInnerHTML={{ __html: svg }} style={{ display: "flex", alignItems: "center", flexShrink: 0 }} />
+                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)", fontWeight: 600, letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{label}</span>
+              </div>
+            ))}
+          </div>
+
           {/* Painel de telemetria flutuante */}
           {cvSelecionado && painelAberto && placaSelecionada && (
             <PainelTelemetria
@@ -1562,26 +1585,26 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
               );
             })}
 
-            {/* Rastro com halo + bolinhas de direcao */}
+            {/* Rastro: contorno preto + linha ciano viva */}
             {mostrarRastro && pontosRastro.length > 1 && (
               <>
-                {/* Halo de fundo */}
+                {/* Contorno preto para legibilidade em qualquer tile */}
                 <Polyline
                   positions={pontosRastro}
-                  pathOptions={{ color: "#9fb3ce", weight: 6, opacity: 0.18, lineCap: "round", lineJoin: "round" }}
+                  pathOptions={{ color: "#000", weight: 7, opacity: 0.7, lineCap: "round", lineJoin: "round" }}
                 />
-                {/* Linha principal */}
+                {/* Linha ciano principal */}
                 <Polyline
                   positions={pontosRastro}
-                  pathOptions={{ color: "#9fb3ce", weight: 2.5, opacity: 0.9, lineCap: "round", lineJoin: "round" }}
+                  pathOptions={{ color: "#00e5ff", weight: 3.5, opacity: 1, lineCap: "round", lineJoin: "round" }}
                 />
-                {/* Bolinhas de direcao a cada 15 pontos */}
-                {pontosRastro.filter((_, i) => i % 15 === 0 && i > 0).map((p, i) => (
+                {/* Pontos de passagem a cada 10 posicoes */}
+                {pontosRastro.filter((_, i) => i % 10 === 0 && i > 0).map((p, i) => (
                   <CircleMarker
                     key={`dir${i}`}
                     center={p}
-                    radius={3}
-                    pathOptions={{ color: "#fff", weight: 1, fillColor: "#9fb3ce", fillOpacity: 1 }}
+                    radius={5}
+                    pathOptions={{ color: "#000", weight: 2, fillColor: "#00e5ff", fillOpacity: 1 }}
                   />
                 ))}
               </>
