@@ -187,10 +187,11 @@ export type CtxDesvio = {
   temPendentes: boolean;
   emOperacao: boolean;
   foraDaBase: boolean;
-  // Rumos (graus) para corroborar o desvio: o do movimento (ciclo anterior →
-  // atual) e o do veículo até o alvo pendente mais próximo. null = sem dados.
   rumoMovimento: number | null;
   rumoAlvo: number | null;
+  // Corredor OSRM (quando disponível): distância mínima ao corredor de rota.
+  // Se presente, substitui a lógica de distAlvoM + rumo (mais preciso).
+  distCorredorM?: number | null;
 };
 
 // O veículo está FORA DE ROTA agora? Condição FROUXA, usada para MANTER um
@@ -217,16 +218,35 @@ export function foraDeRota(
 // Quem vai em direção às entregas (distância caindo OU rumo pro alvo) nunca dispara.
 export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
   if (!ctx.temPendentes || !ctx.emOperacao || !ctx.foraDaBase) return null;
-  if (ctx.distAlvoM === null) return null;
-  // Desvio é em movimento; veículo parado é coberto por parada_longa.
   if (p.velocidade <= 0) return null;
-  // Faixa local: perto do ponto é normal; muito longe é deslocamento interurbano.
+
+  // ── MODO CORREDOR (OSRM): mais preciso, sem falsos positivos por via tortuosa ──
+  if (ctx.distCorredorM != null) {
+    const CORREDOR_M = 400;
+    if (ctx.distCorredorM <= CORREDOR_M) return null; // dentro do corredor
+    const km = (ctx.distCorredorM / 1000).toFixed(1).replace(".", ",");
+    if (ctx.distCorredorM >= 1000) {
+      return {
+        nivel: "critico",
+        tipo: "desvio",
+        motivo: `Fora do corredor de rota: ${km}km da rota planejada`,
+        score: 72,
+      };
+    }
+    return {
+      nivel: "atencao",
+      tipo: "desvio",
+      motivo: `Saindo do corredor: ${km}km da rota planejada`,
+      score: 48,
+    };
+  }
+
+  // ── MODO CLASSICO (sem corredor): distância ao alvo + rumo ──────────────────
+  if (ctx.distAlvoM === null) return null;
   if (ctx.distAlvoM < DESVIO_MIN_M || ctx.distAlvoM > DESVIO_GATILHO_TETO_M) return null;
-  // Se afastando do ponto pendente mais próximo.
   const afastando =
     ctx.distAlvoAnteriorM !== null && ctx.distAlvoM > ctx.distAlvoAnteriorM + 200;
   if (!afastando) return null;
-  // Rumo do movimento aponta para LONGE do alvo (> 90° de diferença).
   if (ctx.rumoMovimento === null || ctx.rumoAlvo === null) return null;
   const opostoAoAlvo = difAnguloGraus(ctx.rumoMovimento, ctx.rumoAlvo) > 90;
   if (!opostoAoAlvo) return null;
@@ -310,6 +330,7 @@ export function avaliar(
     temPendentes?: boolean;
     rumoMovimento?: number | null;
     rumoAlvo?: number | null;
+    distCorredorM?: number | null;
     distTiroteioM?: number | null;
     tiroteioIdadeMin?: number | null;
     // Parada anomala (opcional — so roda se estavEmMovimento for fornecido)
@@ -355,7 +376,7 @@ export function avaliar(
       distTiroteioM: ctx.distTiroteioM ?? null,
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
     }),
-    ctx.distAlvoM !== undefined
+    ctx.distAlvoM !== undefined || ctx.distCorredorM !== undefined
       ? detectarDesvio(p, {
           distAlvoM: ctx.distAlvoM ?? null,
           distAlvoAnteriorM: ctx.distAlvoAnteriorM ?? null,
@@ -364,6 +385,7 @@ export function avaliar(
           foraDaBase: ctx.foraDaBase,
           rumoMovimento: ctx.rumoMovimento ?? null,
           rumoAlvo: ctx.rumoAlvo ?? null,
+          distCorredorM: ctx.distCorredorM ?? null,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);

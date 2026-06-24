@@ -17,6 +17,9 @@ import {
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import { avaliar, detectarJammer, foraDeRota, emHorarioOperacao } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
+import {
+  hashAlvos, buscarRotaOSRM, distanciaAoCorredorM, centroideGeo, RAIO_CORREDOR_M,
+} from "@/lib/osrm";
 import { buscarTiroteiosRJ } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 
@@ -332,6 +335,38 @@ export async function POST(request: Request) {
     // de alerta favela quando o proprio destino esta dentro da comunidade.
     const veiculoIdToAlvos = new Map<string, PontoEntrega[]>();
 
+    // Cache de rotas OSRM por veiculo (validade 4h). Carregado em lote antes
+    // do loop para evitar N queries individuais.
+    const mapaRotasCache = new Map<string, { alvos_hash: string; pontos_rota: [number, number][] }>();
+    {
+      const todosVeiculoIds = [...mapaCv.values()].map((v) => v.veiculo_id);
+      if (todosVeiculoIds.length > 0) {
+        const pgRotas = await pool.connect();
+        try {
+          const { rows: rotasRows } = await pgRotas.query<{
+            veiculo_id: string;
+            alvos_hash: string;
+            pontos_rota: [number, number][];
+          }>(
+            `SELECT veiculo_id, alvos_hash, pontos_rota
+             FROM rotas_cache
+             WHERE veiculo_id = ANY($1::uuid[])
+               AND criado_em > now() - interval '4 hours'`,
+            [todosVeiculoIds]
+          );
+          for (const r of rotasRows) {
+            mapaRotasCache.set(r.veiculo_id, { alvos_hash: r.alvos_hash, pontos_rota: r.pontos_rota });
+          }
+        } catch { /* graceful: sem cache = recalcula */ } finally {
+          pgRotas.release();
+        }
+      }
+    }
+    // Acumula rotas novas/atualizadas para upsert em batch ao final do ciclo.
+    const rotasParaUpsert: { veiculo_id: string; alvos_hash: string; pontos_rota: [number, number][] }[] = [];
+    let osrmChamadasNoCiclo = 0;
+    const OSRM_MAX_POR_CICLO = 5;
+
     for (const cliente of clientes) {
       // Benassi: cliente cod_user_unitrac "4586" tem detector de parada no cliente.
       const ehBenassi = cliente.cod_user_unitrac === "4586";
@@ -452,6 +487,44 @@ export async function POST(request: Request) {
           // Condição FROUXA de permanência: ainda fora de rota (anti-pisca).
           const estaForaDeRota = pos.fresco && foraDeRota(pos, { distAlvoM, temPendentes, emOperacao, foraDaBase });
 
+          // ─── Corredor OSRM: distância do veículo à rota planejada ───────
+          // Calculado apenas para veículos frescos, em operação, fora da base
+          // e com entregas pendentes. Usa cache de 4h; máx 5 chamadas/ciclo.
+          let distCorredorM: number | null = null;
+          if (temPendentes && emOperacao && foraDaBase && pos.fresco) {
+            const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
+            if (pendentes.length > 0) {
+              const novoHash = hashAlvos(pendentes);
+              const cachado = mapaRotasCache.get(veiculo_id);
+              let pontosRota: [number, number][] | null = cachado?.pontos_rota ?? null;
+
+              if (!cachado || cachado.alvos_hash !== novoHash) {
+                if (osrmChamadasNoCiclo < OSRM_MAX_POR_CICLO) {
+                  const basesCliente2 = mapaBasesCliente.get(cliente_id) ?? [];
+                  const centroBase = basesCliente2.length > 0
+                    ? centroideGeo(basesCliente2[0].geom)
+                    : null;
+                  const waypoints: { lat: number; lng: number }[] = [];
+                  if (centroBase) waypoints.push(centroBase);
+                  waypoints.push(...pendentes.map((p) => ({ lat: p.lat, lng: p.lng })));
+                  if (waypoints.length >= 2) {
+                    const rota = await buscarRotaOSRM(waypoints);
+                    if (rota) {
+                      pontosRota = rota;
+                      osrmChamadasNoCiclo++;
+                      rotasParaUpsert.push({ veiculo_id, alvos_hash: novoHash, pontos_rota: rota });
+                      mapaRotasCache.set(veiculo_id, { alvos_hash: novoHash, pontos_rota: rota });
+                    }
+                  }
+                }
+              }
+
+              if (pontosRota && pontosRota.length > 0) {
+                distCorredorM = distanciaAoCorredorM(pos.lat, pos.lng, pontosRota);
+              }
+            }
+          }
+
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
           let tiroteioIdadeMin: number | null = null;
@@ -539,6 +612,7 @@ export async function POST(request: Request) {
                   emZonaRisco: false,
                   temPOIProximo: temPOI,
                   jaParedoNoCicloAnterior,
+                  distCorredorM,
                 })
               : null;
 
@@ -722,6 +796,30 @@ export async function POST(request: Request) {
           erros.push(msg);
           // Continua para o proximo veiculo
         }
+      }
+    }
+
+    // Upsert das rotas OSRM calculadas neste ciclo
+    if (rotasParaUpsert.length > 0) {
+      const pgRotasUp = await pool.connect();
+      try {
+        for (const r of rotasParaUpsert) {
+          await pgRotasUp.query(
+            `INSERT INTO rotas_cache (veiculo_id, alvos_hash, pontos_rota, criado_em)
+             VALUES ($1, $2, $3::jsonb, now())
+             ON CONFLICT (veiculo_id) DO UPDATE SET
+               alvos_hash  = EXCLUDED.alvos_hash,
+               pontos_rota = EXCLUDED.pontos_rota,
+               criado_em   = EXCLUDED.criado_em`,
+            [r.veiculo_id, r.alvos_hash, JSON.stringify(r.pontos_rota)]
+          );
+        }
+      } catch (errRotas) {
+        const msg = `Aviso: erro ao salvar rotas_cache: ${String(errRotas)}`;
+        console.warn(msg);
+        erros.push(msg);
+      } finally {
+        pgRotasUp.release();
       }
     }
 
