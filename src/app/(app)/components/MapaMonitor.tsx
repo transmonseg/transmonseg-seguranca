@@ -2,9 +2,9 @@
 
 /**
  * MapaMonitor.tsx
- * Tela de rastreio historico por placa, ao estilo Unitrac.
- * Funcionalidades: selecao de placa, rastro em polyline, paradas com popup,
- * telemetria ao vivo, camadas de risco, toggle de periodo (1 dia / 4 dias).
+ * Monitor de frota ao estilo Unitrac: sidebar com grupos colapsaveis,
+ * filtros de periodo e comunicacao, mapa com todos os veiculos em tempo real,
+ * rastro/paradas ao selecionar, painel de telemetria flutuante.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -31,6 +31,27 @@ import "leaflet/dist/leaflet.css";
 interface VeiculoOpcao {
   placa: string;
   cv: string;
+}
+
+interface Grupo {
+  gvc: number;
+  gvn: string;
+  veiculos: VeiculoOpcao[];
+}
+
+interface VeiculoMapa {
+  placa: string;
+  cv: string;
+  nivel: string | null;
+  velocidade: number;
+  ignicao: boolean;
+  atraso_min: number;
+  tipo: string | null;
+  lat: number | null;
+  lng: number | null;
+  local: string | null;
+  entregas_feitas: number | null;
+  entregas_total: number | null;
 }
 
 interface PontRastro {
@@ -91,22 +112,69 @@ interface Props {
 }
 
 /* ------------------------------------------------------------------ */
-/* Constantes de periodo                                                */
+/* Constantes                                                           */
 /* ------------------------------------------------------------------ */
 
 const PERIODOS = [
-  { label: "1 dia", horas: 24 },
-  { label: "4 dias", horas: 96 },
+  { label: "1h", horas: 1 },
+  { label: "4h", horas: 4 },
+  { label: "24h", horas: 24 },
+  { label: "4d", horas: 96 },
 ] as const;
 
+type HorasPeriodo = (typeof PERIODOS)[number]["horas"];
+
+const FILTROS_COMM = [
+  { label: "10 min", min: 10 },
+  { label: "30 min", min: 30 },
+  { label: "60 min", min: 60 },
+] as const;
+
+const SIDEBAR_W = 280;
+const HEADER_H_CSS = "var(--header-h, 64px)";
+
 /* ------------------------------------------------------------------ */
-/* Icone de caminhao (igual ao MapaFrota, adaptado)                    */
+/* Cores de marcador                                                    */
+/* ------------------------------------------------------------------ */
+
+function corVeiculo(v: VeiculoMapa): string {
+  if (v.nivel === "vermelho" || v.tipo !== null) return "#ef4444";
+  if (v.nivel === "amarelo") return "#f59e0b";
+  if (v.ignicao && v.velocidade > 0) return "#22c55e";
+  if (v.ignicao && v.velocidade === 0) return "#9fb3ce";
+  if (v.atraso_min > 60) return "#57534e";
+  return "#57534e";
+}
+
+/* ------------------------------------------------------------------ */
+/* Cache de icones Leaflet                                             */
 /* ------------------------------------------------------------------ */
 
 const _iconeCache: Record<string, L.DivIcon> = {};
 
-function iconeCaminhao(cor: string, destaque: boolean): L.DivIcon {
+function iconeVeiculo(cor: string, destaque: boolean): L.DivIcon {
   const chave = `${cor}-${destaque}`;
+  if (_iconeCache[chave]) return _iconeCache[chave];
+  const s = destaque ? 18 : 12;
+  const glow = destaque ? `,0 0 8px ${cor}` : "";
+  const html =
+    `<div style="width:${s}px;height:${s}px;border-radius:50%;` +
+    `background:${cor};border:2px solid #fff;` +
+    `box-shadow:0 0 0 1px rgba(0,0,0,0.4)${glow}">` +
+    `</div>`;
+  const ic = L.divIcon({
+    html,
+    className: "",
+    iconSize: [s, s],
+    iconAnchor: [s / 2, s / 2],
+    popupAnchor: [0, -s / 2],
+  });
+  _iconeCache[chave] = ic;
+  return ic;
+}
+
+function iconeCaminhao(cor: string, destaque: boolean): L.DivIcon {
+  const chave = `cam-${cor}-${destaque}`;
   if (_iconeCache[chave]) return _iconeCache[chave];
   const s = destaque ? 36 : 28;
   const html =
@@ -129,10 +197,6 @@ function iconeCaminhao(cor: string, destaque: boolean): L.DivIcon {
   return ic;
 }
 
-/* ------------------------------------------------------------------ */
-/* Fix do icone padrao do Leaflet (necessario com bundlers)            */
-/* ------------------------------------------------------------------ */
-
 function fixIcones() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -144,7 +208,7 @@ function fixIcones() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Escalas de cor do roubo de carga (copiado do MapaFrota)            */
+/* Roubo de carga                                                      */
 /* ------------------------------------------------------------------ */
 
 function corRoubo(n: number): string {
@@ -210,7 +274,7 @@ function idadeTexto(min: number): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* Sub-componente: ajusta o bounds do mapa ao rastro                   */
+/* Sub-componente: ajusta bounds do mapa ao rastro                     */
 /* ------------------------------------------------------------------ */
 
 function AjustarBoundsRastro({
@@ -231,7 +295,7 @@ function AjustarBoundsRastro({
       const bounds = L.latLngBounds(pontos);
       map.fitBounds(bounds, { padding: [40, 40] });
     } catch {
-      /* ignora se bounds invalido */
+      /* ignora bounds invalido */
     }
   }, [pontos, gatilho, map]);
 
@@ -239,7 +303,7 @@ function AjustarBoundsRastro({
 }
 
 /* ------------------------------------------------------------------ */
-/* Painel de telemetria (lateral flutuante)                            */
+/* Painel de telemetria flutuante                                      */
 /* ------------------------------------------------------------------ */
 
 function PainelTelemetria({
@@ -256,7 +320,6 @@ function PainelTelemetria({
   const evento = dados?.tipevnome ?? null;
   const atraso = dados ? parseInt(dados.atraso ?? "0") || 0 : null;
 
-  // Entradas e saidas ligadas
   const entradas = dados
     ? Array.from({ length: 10 }, (_, i) => i + 1).filter(
         (i) => dados[`posicentrada${i}`] === "1"
@@ -284,7 +347,6 @@ function PainelTelemetria({
         backdropFilter: "blur(8px)",
       }}
     >
-      {/* Cabecalho */}
       <div
         style={{
           padding: "0.75rem 1rem",
@@ -297,16 +359,21 @@ function PainelTelemetria({
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span
-            className="inline-block w-2 h-2 rounded-full"
-            style={{ backgroundColor: ignicao ? "var(--verde)" : "var(--text-dim)" }}
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              backgroundColor: ignicao ? "var(--verde)" : "var(--text-dim)",
+            }}
           />
           <span
-            className="num-mono font-bold"
             style={{
               fontFamily: "var(--font-geist-mono, monospace)",
               color: "var(--text)",
               fontSize: "1rem",
               letterSpacing: "0.1em",
+              fontWeight: 700,
             }}
           >
             {placa}
@@ -329,7 +396,6 @@ function PainelTelemetria({
         </button>
       </div>
 
-      {/* Corpo */}
       <div style={{ padding: "0.875rem 1rem", display: "flex", flexDirection: "column", gap: 10 }}>
         {dados === null ? (
           <p style={{ color: "var(--text-dim)", fontSize: 12, textAlign: "center" }}>
@@ -337,19 +403,18 @@ function PainelTelemetria({
           </p>
         ) : (
           <>
-            {/* Velocidade e ignicao */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <div>
                 <p style={{ color: "var(--text-dim)", fontSize: 10, marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.1em" }}>
                   velocidade
                 </p>
                 <p
-                  className="num-mono font-bold"
                   style={{
                     fontFamily: "var(--font-geist-mono, monospace)",
                     fontSize: "1.25rem",
                     color: (velocidade ?? 0) > 0 ? "var(--accent)" : "var(--text-muted)",
                     lineHeight: 1,
+                    fontWeight: 700,
                   }}
                 >
                   {velocidade ?? "--"}
@@ -363,10 +428,10 @@ function PainelTelemetria({
                   ignicao
                 </p>
                 <p
-                  className="font-semibold"
                   style={{
                     fontSize: "0.875rem",
                     color: ignicao ? "var(--verde)" : "var(--text-dim)",
+                    fontWeight: 600,
                   }}
                 >
                   {ignicao ? "ligada" : "desligada"}
@@ -374,7 +439,6 @@ function PainelTelemetria({
               </div>
             </div>
 
-            {/* Ultimo evento */}
             {evento && (
               <div
                 style={{
@@ -391,12 +455,16 @@ function PainelTelemetria({
               </div>
             )}
 
-            {/* Atraso de comunicacao */}
             {atraso !== null && atraso > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span
-                  className="inline-block w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: "var(--amarelo)" }}
+                  style={{
+                    display: "inline-block",
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    backgroundColor: "var(--amarelo)",
+                  }}
                 />
                 <p style={{ color: "var(--text-muted)", fontSize: 11 }}>
                   sem comunicacao ha {formatarDuracao(atraso)}
@@ -404,7 +472,6 @@ function PainelTelemetria({
               </div>
             )}
 
-            {/* Sensores ativos */}
             {(entradas.length > 0 || saidas.length > 0) && (
               <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 8 }}>
                 <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>
@@ -454,62 +521,137 @@ function PainelTelemetria({
 }
 
 /* ------------------------------------------------------------------ */
-/* Componente principal: MapaMonitor                                    */
+/* Item de legenda                                                      */
 /* ------------------------------------------------------------------ */
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
-  // Fix dos icones padrao do Leaflet (feito uma vez)
+function LegendaItem({ cor, label, qtd }: { cor: string; label: string; qtd: number }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+      <span
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: "50%",
+          backgroundColor: cor,
+          display: "inline-block",
+          flexShrink: 0,
+          border: "1px solid rgba(255,255,255,0.2)",
+        }}
+      />
+      <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+        {label}
+        {qtd > 0 && (
+          <span style={{ marginLeft: 3, color: "var(--text-muted)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+            ({qtd})
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Componente principal                                                 */
+/* ------------------------------------------------------------------ */
+
+export default function MapaMonitor({ veiculos, cliente }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
-  // Estado de selecao de placa
+  /* ---- Grupos (arvore da sidebar) ---- */
+  const [grupos, setGrupos] = useState<Grupo[]>([]);
+  const [gruposExpandidos, setGruposExpandidos] = useState<Set<number>>(new Set());
+  const [cvsSelecionados, setCvsSelecionados] = useState<Set<string>>(
+    () => new Set(veiculos.map((v) => v.cv))
+  );
+  const cvsTodosRef = useRef<Set<string>>(new Set(veiculos.map((v) => v.cv)));
+
+  /* ---- Posicoes de todos os veiculos ---- */
+  const [veiculosMapa, setVeiculosMapa] = useState<VeiculoMapa[]>([]);
+
+  /* ---- Busca na sidebar ---- */
   const [busca, setBusca] = useState("");
+
+  /* ---- Veiculo selecionado ---- */
   const [cvSelecionado, setCvSelecionado] = useState<string | null>(null);
   const [placaSelecionada, setPlacaSelecionada] = useState<string | null>(null);
-  const [listAberta, setListAberta] = useState(false);
 
-  // Periodo: 24h ou 96h
-  const [horas, setHoras] = useState<24 | 96>(24);
+  /* ---- Periodo ---- */
+  const [horas, setHoras] = useState<HorasPeriodo>(24);
 
-  // Dados buscados
+  /* ---- Filtro de comunicacao (null = sem filtro) ---- */
+  const [filtroComm, setFiltroComm] = useState<number | null>(null);
+
+  /* ---- Dados do veiculo selecionado ---- */
   const [rastro, setRastro] = useState<PontRastro[]>([]);
   const [paradas, setParadas] = useState<Parada[]>([]);
   const [telemetria, setTelemetria] = useState<Telemetria | null>(null);
   const [carregando, setCarregando] = useState(false);
 
-  // Toggles de camada
+  /* ---- Toggles de camada ---- */
   const [mostrarRastro, setMostrarRastro] = useState(true);
   const [mostrarParadas, setMostrarParadas] = useState(true);
   const [painelAberto, setPainelAberto] = useState(false);
 
-  // Gatilho de fitBounds (muda quando queremos centralizar)
+  /* ---- Gatilho de fitBounds ---- */
   const [gatilhoBounds, setGatilhoBounds] = useState(0);
 
-  // Camadas de risco
+  /* ---- Camadas de risco ---- */
   const [favelas, setFavelas] = useState<GeoJSON.FeatureCollection | null>(null);
   const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
   const [rouboCarga, setRouboCarga] = useState<GeoJSON.FeatureCollection | null>(null);
 
-  // Posicao atual do veiculo selecionado (para o marcador no mapa)
-  const posAtual = telemetria
-    ? {
-        lat: parseFloat(telemetria.posiclatitude ?? ""),
-        lng: parseFloat(telemetria.posiclongitude ?? ""),
-      }
-    : null;
-  const posValida =
-    posAtual &&
-    Number.isFinite(posAtual.lat) &&
-    Number.isFinite(posAtual.lng) &&
-    !(posAtual.lat === 0 && posAtual.lng === 0);
+  /* ------------------------------------------------------------------ */
+  /* Carregar grupos ao montar                                            */
+  /* ------------------------------------------------------------------ */
 
-  // Veiculos filtrados pelo campo de busca
-  const veiculosFiltrados = veiculos.filter((v) =>
-    v.placa.toUpperCase().includes(busca.toUpperCase())
-  );
+  useEffect(() => {
+    if (!cliente) return;
+    fetch(`/api/grupos?cliente=${encodeURIComponent(cliente)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const lista: Grupo[] = Array.isArray(d?.grupos) ? d.grupos : [];
+        setGrupos(lista);
+        setGruposExpandidos(new Set(lista.map((g) => g.gvc)));
+        const todosCvs = new Set<string>();
+        for (const g of lista) {
+          for (const v of g.veiculos) todosCvs.add(v.cv);
+        }
+        if (todosCvs.size > 0) {
+          cvsTodosRef.current = todosCvs;
+          setCvsSelecionados(todosCvs);
+        } else {
+          setCvsSelecionados(new Set(cvsTodosRef.current));
+        }
+      })
+      .catch(() => {
+        setCvsSelecionados(new Set(cvsTodosRef.current));
+      });
+  }, [cliente]);
 
   /* ------------------------------------------------------------------ */
-  /* Camadas de risco: carregam uma vez                                  */
+  /* Posicoes de todos os veiculos (refresh a cada 30s)                  */
+  /* ------------------------------------------------------------------ */
+
+  const carregarMapa = useCallback(() => {
+    if (!cliente) return;
+    fetch(`/api/mapa?cliente=${encodeURIComponent(cliente)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d?.veiculos)) {
+          setVeiculosMapa(d.veiculos as VeiculoMapa[]);
+        }
+      })
+      .catch(() => {});
+  }, [cliente]);
+
+  useEffect(() => {
+    carregarMapa();
+    const id = setInterval(carregarMapa, 30000);
+    return () => clearInterval(id);
+  }, [carregarMapa]);
+
+  /* ------------------------------------------------------------------ */
+  /* Camadas de risco                                                     */
   /* ------------------------------------------------------------------ */
 
   useEffect(() => {
@@ -536,7 +678,7 @@ export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
   }, []);
 
   /* ------------------------------------------------------------------ */
-  /* Fetch de rastro, paradas e telemetria ao selecionar placa/periodo  */
+  /* Buscar rastro, paradas e telemetria ao selecionar veiculo/periodo   */
   /* ------------------------------------------------------------------ */
 
   const buscarDados = useCallback(async (cv: string, h: number) => {
@@ -544,25 +686,22 @@ export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
     setRastro([]);
     setParadas([]);
     setTelemetria(null);
-
     try {
-      const [resRastro, resStops, resTelemetria] = await Promise.all([
+      const [resRastro, resStops, resTel] = await Promise.all([
         fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`),
         fetch(`/api/stops?cv=${encodeURIComponent(cv)}&horas=${h}`),
         fetch(`/api/veiculo?cv=${encodeURIComponent(cv)}`),
       ]);
-
-      const [dRastro, dStops, dTelemetria] = await Promise.all([
+      const [dRastro, dStops, dTel] = await Promise.all([
         resRastro.json(),
         resStops.json(),
-        resTelemetria.json(),
+        resTel.json(),
       ]);
-
       if (Array.isArray(dRastro?.pontos)) setRastro(dRastro.pontos);
       if (Array.isArray(dStops?.paradas)) setParadas(dStops.paradas);
-      if (dTelemetria?.posicao) setTelemetria(dTelemetria.posicao as Telemetria);
+      if (dTel?.posicao) setTelemetria(dTel.posicao as Telemetria);
     } catch {
-      /* falha silenciosa: o mapa fica vazio */
+      /* falha silenciosa */
     } finally {
       setCarregando(false);
     }
@@ -574,37 +713,95 @@ export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
   }, [cvSelecionado, horas, buscarDados]);
 
   /* ------------------------------------------------------------------ */
-  /* Selecionar placa                                                     */
+  /* Selecionar / limpar veiculo                                          */
   /* ------------------------------------------------------------------ */
 
-  const selecionarVeiculo = (v: VeiculoOpcao) => {
+  const selecionarVeiculo = useCallback((v: VeiculoOpcao) => {
     setCvSelecionado(v.cv);
     setPlacaSelecionada(v.placa);
-    setBusca(v.placa);
-    setListAberta(false);
     setPainelAberto(true);
-    // Centraliza no rastro apos busca completar
     setGatilhoBounds((g) => g + 1);
-  };
+  }, []);
 
-  const limparSelecao = () => {
+  const limparSelecao = useCallback(() => {
     setCvSelecionado(null);
     setPlacaSelecionada(null);
-    setBusca("");
     setRastro([]);
     setParadas([]);
     setTelemetria(null);
     setPainelAberto(false);
-  };
+  }, []);
 
   /* ------------------------------------------------------------------ */
-  /* Pontos do rastro para o Polyline / fitBounds                        */
+  /* Checkboxes de grupos                                                 */
+  /* ------------------------------------------------------------------ */
+
+  const toggleGrupo = useCallback((gvc: number) => {
+    setGruposExpandidos((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(gvc)) novo.delete(gvc);
+      else novo.add(gvc);
+      return novo;
+    });
+  }, []);
+
+  const toggleCvGrupo = useCallback((cvs: string[], marcar: boolean) => {
+    setCvsSelecionados((prev) => {
+      const novo = new Set(prev);
+      for (const cv of cvs) {
+        if (marcar) novo.add(cv);
+        else novo.delete(cv);
+      }
+      return novo;
+    });
+  }, []);
+
+  const toggleCv = useCallback((cv: string) => {
+    setCvsSelecionados((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(cv)) novo.delete(cv);
+      else novo.add(cv);
+      return novo;
+    });
+  }, []);
+
+  /* ------------------------------------------------------------------ */
+  /* Veiculos visiveis no mapa                                            */
+  /* ------------------------------------------------------------------ */
+
+  const veiculosVisiveis = veiculosMapa.filter((v) => {
+    if (!cvsSelecionados.has(v.cv)) return false;
+    if (filtroComm !== null && v.atraso_min > filtroComm) return false;
+    return true;
+  });
+
+  const qtdEmMovimento = veiculosVisiveis.filter((v) => v.ignicao && v.velocidade > 0).length;
+  const qtdParadoLigado = veiculosVisiveis.filter((v) => v.ignicao && v.velocidade === 0).length;
+  const qtdSemComm = veiculosVisiveis.filter((v) => v.atraso_min > 60).length;
+  const qtdAlerta = veiculosVisiveis.filter((v) => v.nivel === "vermelho" || v.tipo !== null).length;
+
+  /* ------------------------------------------------------------------ */
+  /* Posicao atual do veiculo selecionado                                 */
   /* ------------------------------------------------------------------ */
 
   const pontosRastro: [number, number][] = rastro.map((p) => [p.lat, p.lng]);
 
+  const posAtual = telemetria
+    ? {
+        lat: parseFloat(telemetria.posiclatitude ?? ""),
+        lng: parseFloat(telemetria.posiclongitude ?? ""),
+      }
+    : null;
+  const posValida =
+    posAtual &&
+    Number.isFinite(posAtual.lat) &&
+    Number.isFinite(posAtual.lng) &&
+    !(posAtual.lat === 0 && posAtual.lng === 0);
+
+  const corIgnicao = telemetria?.posicignicao === "1" ? "#22c55e" : "#9fb3ce";
+
   /* ------------------------------------------------------------------ */
-  /* Basemap: Google opcional (so se a chave existir)                    */
+  /* Basemap                                                              */
   /* ------------------------------------------------------------------ */
 
   const googleApiKey =
@@ -613,579 +810,722 @@ export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
       : undefined;
 
   /* ------------------------------------------------------------------ */
-  /* Centralizar no rastro ou na posicao atual                           */
+  /* Grupos filtrados pela busca                                          */
   /* ------------------------------------------------------------------ */
 
-  const centralizarNoRastro = () => {
-    setGatilhoBounds((g) => g + 1);
-  };
+  const temGrupos = grupos.length > 0;
+
+  const gruposFiltrados = busca.trim()
+    ? grupos
+        .map((g) => ({
+          ...g,
+          veiculos: g.veiculos.filter((v) =>
+            v.placa.toUpperCase().includes(busca.toUpperCase())
+          ),
+        }))
+        .filter((g) => g.veiculos.length > 0)
+    : grupos;
 
   /* ------------------------------------------------------------------ */
   /* Render                                                               */
   /* ------------------------------------------------------------------ */
 
-  const corIgnicao = telemetria?.posicignicao === "1" ? "#22c55e" : "#9fb3ce";
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-
+    <div
+      style={{
+        display: "flex",
+        height: `calc(100vh - ${HEADER_H_CSS} - 5rem)`,
+        minHeight: 480,
+        overflow: "hidden",
+        border: "1px solid var(--border)",
+        borderRadius: "1rem",
+      }}
+    >
       {/* ============================================================
-          BARRA DE CONTROLES
+          SIDEBAR
           ============================================================ */}
       <div
         style={{
+          width: SIDEBAR_W,
+          flexShrink: 0,
           display: "flex",
-          alignItems: "center",
-          gap: "0.75rem",
-          flexWrap: "wrap",
-          padding: "0.875rem 1rem",
+          flexDirection: "column",
           backgroundColor: "var(--card)",
-          border: "1px solid var(--border)",
-          borderRadius: "0.875rem",
+          borderRight: "1px solid var(--border)",
+          overflowY: "auto",
+          overflowX: "hidden",
         }}
       >
-        {/* Campo de busca / selecao de placa */}
-        <div style={{ position: "relative", flex: "1 1 200px", minWidth: 180, maxWidth: 300 }}>
-          <div style={{ position: "relative" }}>
-            <input
-              type="text"
-              value={busca}
-              onChange={(e) => {
-                setBusca(e.target.value);
-                setListAberta(true);
-              }}
-              onFocus={() => setListAberta(true)}
-              onBlur={() => setTimeout(() => setListAberta(false), 200)}
-              placeholder="Buscar placa..."
+        {/* Cabecalho da sidebar */}
+        <div
+          style={{
+            padding: "0.75rem 0.875rem",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            flexShrink: 0,
+          }}
+        >
+          {/* Busca */}
+          <input
+            type="text"
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar placa..."
+            style={{
+              width: "100%",
+              padding: "0.5rem 0.75rem",
+              backgroundColor: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: "0.5rem",
+              color: "var(--text)",
+              fontSize: 12,
+              fontFamily: "var(--font-geist-mono, monospace)",
+              letterSpacing: "0.06em",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+
+          {/* Periodo */}
+          <div>
+            <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
+              Periodo:
+            </p>
+            <div style={{ display: "flex", gap: 3 }}>
+              {PERIODOS.map((p) => (
+                <button
+                  key={p.horas}
+                  onClick={() => setHoras(p.horas)}
+                  disabled={!cvSelecionado}
+                  style={{
+                    flex: 1,
+                    padding: "0.25rem 0",
+                    borderRadius: "0.375rem",
+                    border: "none",
+                    cursor: cvSelecionado ? "pointer" : "not-allowed",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    backgroundColor: horas === p.horas ? "var(--accent-dim)" : "var(--bg)",
+                    color: horas === p.horas ? "var(--accent)" : "var(--text-dim)",
+                    opacity: !cvSelecionado ? 0.4 : 1,
+                    transition: "all 0.12s",
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Filtro comunicacao */}
+          <div>
+            <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
+              Comunicacao:
+            </p>
+            <div style={{ display: "flex", gap: 3 }}>
+              {FILTROS_COMM.map((f) => (
+                <button
+                  key={f.min}
+                  onClick={() => setFiltroComm((prev) => (prev === f.min ? null : f.min))}
+                  style={{
+                    flex: 1,
+                    padding: "0.25rem 0",
+                    borderRadius: "0.375rem",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    backgroundColor: filtroComm === f.min ? "rgba(245,158,11,0.15)" : "var(--bg)",
+                    color: filtroComm === f.min ? "var(--amarelo)" : "var(--text-dim)",
+                    transition: "all 0.12s",
+                  }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Botoes de acao */}
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            <button
+              onClick={() => setMostrarRastro((v) => !v)}
+              disabled={!cvSelecionado}
               style={{
-                width: "100%",
-                padding: "0.5rem 2.5rem 0.5rem 0.75rem",
-                backgroundColor: "var(--bg)",
-                border: "1px solid var(--border)",
-                borderRadius: "0.625rem",
-                color: "var(--text)",
-                fontSize: 13,
-                fontFamily: "var(--font-geist-mono, monospace)",
-                letterSpacing: "0.06em",
-                outline: "none",
-                boxSizing: "border-box",
+                flex: 1,
+                padding: "0.3rem 0",
+                borderRadius: "0.375rem",
+                border: `1px solid ${mostrarRastro ? "var(--accent)" : "var(--border)"}`,
+                cursor: cvSelecionado ? "pointer" : "not-allowed",
+                fontSize: 10,
+                fontWeight: 600,
+                backgroundColor: mostrarRastro ? "var(--accent-dim)" : "transparent",
+                color: mostrarRastro ? "var(--accent)" : "var(--text-dim)",
+                opacity: !cvSelecionado ? 0.4 : 1,
               }}
-            />
-            {/* Botao limpar */}
-            {busca && (
+            >
+              Rastro
+            </button>
+            <button
+              onClick={() => setMostrarParadas((v) => !v)}
+              disabled={!cvSelecionado}
+              style={{
+                flex: 1,
+                padding: "0.3rem 0",
+                borderRadius: "0.375rem",
+                border: `1px solid ${mostrarParadas ? "#f59e0b" : "var(--border)"}`,
+                cursor: cvSelecionado ? "pointer" : "not-allowed",
+                fontSize: 10,
+                fontWeight: 600,
+                backgroundColor: mostrarParadas ? "rgba(245,158,11,0.1)" : "transparent",
+                color: mostrarParadas ? "#f59e0b" : "var(--text-dim)",
+                opacity: !cvSelecionado ? 0.4 : 1,
+              }}
+            >
+              Paradas
+            </button>
+            {cvSelecionado && (
               <button
-                onClick={limparSelecao}
+                onClick={() => setPainelAberto((v) => !v)}
                 style={{
-                  position: "absolute",
-                  right: 8,
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  background: "none",
-                  border: "none",
+                  flex: 1,
+                  padding: "0.3rem 0",
+                  borderRadius: "0.375rem",
+                  border: `1px solid ${painelAberto ? "var(--verde)" : "var(--border)"}`,
                   cursor: "pointer",
-                  color: "var(--text-dim)",
-                  fontSize: 16,
-                  lineHeight: 1,
-                  padding: 2,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  backgroundColor: painelAberto ? "rgba(34,197,94,0.1)" : "transparent",
+                  color: painelAberto ? "var(--verde)" : "var(--text-dim)",
                 }}
-                title="Limpar selecao"
               >
-                &times;
+                Telemetria
               </button>
             )}
           </div>
 
-          {/* Lista de autocomplete */}
-          {listAberta && veiculosFiltrados.length > 0 && (
-            <div
+          {/* Centralizar e Limpar */}
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              onClick={() => setGatilhoBounds((g) => g + 1)}
+              disabled={!cvSelecionado || pontosRastro.length === 0}
               style={{
-                position: "absolute",
-                top: "calc(100% + 4px)",
-                left: 0,
-                right: 0,
-                backgroundColor: "var(--card)",
+                flex: 1,
+                padding: "0.3rem 0",
+                borderRadius: "0.375rem",
                 border: "1px solid var(--border)",
-                borderRadius: "0.625rem",
-                overflow: "hidden",
-                zIndex: 2000,
-                maxHeight: 200,
-                overflowY: "auto",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+                cursor: cvSelecionado && pontosRastro.length > 0 ? "pointer" : "not-allowed",
+                fontSize: 10,
+                fontWeight: 600,
+                backgroundColor: "var(--bg)",
+                color: "var(--text-muted)",
+                opacity: !cvSelecionado || pontosRastro.length === 0 ? 0.35 : 1,
               }}
             >
-              {veiculosFiltrados.map((v) => (
-                <button
-                  key={v.cv}
-                  onMouseDown={() => selecionarVeiculo(v)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    padding: "0.5rem 0.75rem",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    color: "var(--text)",
-                    fontFamily: "var(--font-geist-mono, monospace)",
-                    fontSize: 13,
-                    letterSpacing: "0.06em",
-                    borderBottom: "1px solid var(--border-subtle)",
-                  }}
-                >
-                  {v.placa}
-                </button>
-              ))}
+              Centralizar
+            </button>
+            <button
+              onClick={limparSelecao}
+              disabled={!cvSelecionado}
+              style={{
+                flex: 1,
+                padding: "0.3rem 0",
+                borderRadius: "0.375rem",
+                border: "1px solid var(--border)",
+                cursor: cvSelecionado ? "pointer" : "not-allowed",
+                fontSize: 10,
+                fontWeight: 600,
+                backgroundColor: "var(--bg)",
+                color: "var(--text-muted)",
+                opacity: !cvSelecionado ? 0.35 : 1,
+              }}
+            >
+              Limpar
+            </button>
+          </div>
+
+          {/* Indicador de carregamento */}
+          {carregando && (
+            <div style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--text-dim)", fontSize: 10 }}>
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  backgroundColor: "var(--accent)",
+                }}
+              />
+              buscando...
             </div>
           )}
         </div>
 
-        {/* Divisor */}
-        <div style={{ width: 1, height: 28, backgroundColor: "var(--border)", flexShrink: 0 }} />
+        {/* Lista de grupos */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "0.5rem 0" }}>
+          {temGrupos
+            ? gruposFiltrados.map((grupo) => {
+                const expandido = gruposExpandidos.has(grupo.gvc);
+                const cvGrupo = grupo.veiculos.map((v) => v.cv);
+                const qtdChecked = cvGrupo.filter((cv) => cvsSelecionados.has(cv)).length;
+                const todosMarcados = qtdChecked === cvGrupo.length;
+                const nenhumMarcado = qtdChecked === 0;
+                const indeterminado = !todosMarcados && !nenhumMarcado;
+                const qtdNoMapa = veiculosMapa.filter((v) => cvGrupo.includes(v.cv)).length;
 
-        {/* Toggle de periodo */}
-        <div
-          style={{
-            display: "flex",
-            gap: 2,
-            backgroundColor: "var(--bg)",
-            border: "1px solid var(--border)",
-            borderRadius: "0.625rem",
-            padding: 2,
-          }}
-        >
-          {PERIODOS.map((p) => (
-            <button
-              key={p.horas}
-              onClick={() => setHoras(p.horas as 24 | 96)}
-              disabled={!cvSelecionado}
-              style={{
-                padding: "0.375rem 0.75rem",
-                borderRadius: "0.5rem",
-                border: "none",
-                cursor: cvSelecionado ? "pointer" : "not-allowed",
-                fontSize: 12,
-                fontWeight: 600,
-                transition: "all 0.15s",
-                backgroundColor: horas === p.horas ? "var(--accent-dim)" : "transparent",
-                color: horas === p.horas ? "var(--accent)" : "var(--text-dim)",
-                opacity: !cvSelecionado ? 0.4 : 1,
-              }}
-            >
-              {p.label}
-            </button>
-          ))}
+                return (
+                  <div key={grupo.gvc}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "0.4rem 0.75rem",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        borderBottom: "1px solid var(--border-subtle)",
+                      }}
+                      onClick={() => toggleGrupo(grupo.gvc)}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={todosMarcados}
+                        ref={(el) => {
+                          if (el) el.indeterminate = indeterminado;
+                        }}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          toggleCvGrupo(cvGrupo, e.target.checked);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ cursor: "pointer", flexShrink: 0 }}
+                      />
+                      <span
+                        style={{
+                          color: "var(--text-dim)",
+                          fontSize: 10,
+                          transition: "transform 0.15s",
+                          display: "inline-block",
+                          transform: expandido ? "rotate(90deg)" : "rotate(0deg)",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {"▶"}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "var(--text-muted)",
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={grupo.gvn}
+                      >
+                        {grupo.gvn}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: "var(--text-dim)",
+                          flexShrink: 0,
+                          fontFamily: "var(--font-geist-mono, monospace)",
+                        }}
+                      >
+                        ({qtdNoMapa})
+                      </span>
+                    </div>
+
+                    {expandido && (
+                      <div>
+                        {grupo.veiculos
+                          .filter((v) =>
+                            busca.trim()
+                              ? v.placa.toUpperCase().includes(busca.toUpperCase())
+                              : true
+                          )
+                          .map((v) => {
+                            const selecionado = cvSelecionado === v.cv;
+                            const posicao = veiculosMapa.find((vm) => vm.cv === v.cv);
+                            const cor = posicao ? corVeiculo(posicao) : "#57534e";
+                            const visivelMapa = cvsSelecionados.has(v.cv);
+
+                            return (
+                              <div
+                                key={v.cv}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 6,
+                                  padding: "0.3rem 0.75rem 0.3rem 1.75rem",
+                                  cursor: "pointer",
+                                  backgroundColor: selecionado ? "var(--accent-dim)" : "transparent",
+                                  borderLeft: selecionado ? "2px solid var(--accent)" : "2px solid transparent",
+                                  transition: "all 0.1s",
+                                }}
+                                onClick={() => selecionarVeiculo(v)}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={visivelMapa}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    toggleCv(v.cv);
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{ cursor: "pointer", flexShrink: 0 }}
+                                />
+                                <span
+                                  style={{
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: "50%",
+                                    backgroundColor: cor,
+                                    flexShrink: 0,
+                                    border: "1px solid rgba(255,255,255,0.2)",
+                                    display: "inline-block",
+                                  }}
+                                />
+                                <span
+                                  style={{
+                                    fontSize: 12,
+                                    fontFamily: "var(--font-geist-mono, monospace)",
+                                    color: selecionado ? "var(--accent)" : "var(--text-muted)",
+                                    letterSpacing: "0.06em",
+                                    fontWeight: selecionado ? 700 : 400,
+                                  }}
+                                >
+                                  {v.placa}
+                                </span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            : veiculos
+                .filter((v) =>
+                  busca.trim()
+                    ? v.placa.toUpperCase().includes(busca.toUpperCase())
+                    : true
+                )
+                .map((v) => {
+                  const selecionado = cvSelecionado === v.cv;
+                  const posicao = veiculosMapa.find((vm) => vm.cv === v.cv);
+                  const cor = posicao ? corVeiculo(posicao) : "#57534e";
+                  const visivelMapa = cvsSelecionados.has(v.cv);
+                  return (
+                    <div
+                      key={v.cv}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "0.3rem 0.75rem",
+                        cursor: "pointer",
+                        backgroundColor: selecionado ? "var(--accent-dim)" : "transparent",
+                        borderLeft: selecionado ? "2px solid var(--accent)" : "2px solid transparent",
+                      }}
+                      onClick={() => selecionarVeiculo(v)}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={visivelMapa}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          toggleCv(v.cv);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ cursor: "pointer", flexShrink: 0 }}
+                      />
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          backgroundColor: cor,
+                          flexShrink: 0,
+                          display: "inline-block",
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontFamily: "var(--font-geist-mono, monospace)",
+                          color: selecionado ? "var(--accent)" : "var(--text-muted)",
+                          letterSpacing: "0.06em",
+                        }}
+                      >
+                        {v.placa}
+                      </span>
+                    </div>
+                  );
+                })}
         </div>
-
-        {/* Divisor */}
-        <div style={{ width: 1, height: 28, backgroundColor: "var(--border)", flexShrink: 0 }} />
-
-        {/* Toggles: rastro e paradas */}
-        <div style={{ display: "flex", gap: 6 }}>
-          <button
-            onClick={() => setMostrarRastro((v) => !v)}
-            disabled={!cvSelecionado}
-            style={{
-              padding: "0.375rem 0.75rem",
-              borderRadius: "0.5rem",
-              border: `1px solid ${mostrarRastro ? "var(--accent)" : "var(--border)"}`,
-              cursor: cvSelecionado ? "pointer" : "not-allowed",
-              fontSize: 11,
-              fontWeight: 600,
-              backgroundColor: mostrarRastro ? "var(--accent-dim)" : "transparent",
-              color: mostrarRastro ? "var(--accent)" : "var(--text-dim)",
-              opacity: !cvSelecionado ? 0.4 : 1,
-              transition: "all 0.15s",
-            }}
-          >
-            Rastro
-          </button>
-          <button
-            onClick={() => setMostrarParadas((v) => !v)}
-            disabled={!cvSelecionado}
-            style={{
-              padding: "0.375rem 0.75rem",
-              borderRadius: "0.5rem",
-              border: `1px solid ${mostrarParadas ? "#f59e0b" : "var(--border)"}`,
-              cursor: cvSelecionado ? "pointer" : "not-allowed",
-              fontSize: 11,
-              fontWeight: 600,
-              backgroundColor: mostrarParadas ? "rgba(245,158,11,0.1)" : "transparent",
-              color: mostrarParadas ? "#f59e0b" : "var(--text-dim)",
-              opacity: !cvSelecionado ? 0.4 : 1,
-              transition: "all 0.15s",
-            }}
-          >
-            Paradas
-          </button>
-          {cvSelecionado && (
-            <button
-              onClick={() => setPainelAberto((v) => !v)}
-              style={{
-                padding: "0.375rem 0.75rem",
-                borderRadius: "0.5rem",
-                border: `1px solid ${painelAberto ? "var(--verde)" : "var(--border)"}`,
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: 600,
-                backgroundColor: painelAberto ? "rgba(34,197,94,0.1)" : "transparent",
-                color: painelAberto ? "var(--verde)" : "var(--text-dim)",
-                transition: "all 0.15s",
-              }}
-            >
-              Telemetria
-            </button>
-          )}
-        </div>
-
-        {/* Botao centralizar */}
-        <button
-          onClick={centralizarNoRastro}
-          disabled={!cvSelecionado || pontosRastro.length === 0}
-          style={{
-            marginLeft: "auto",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "0.5rem 1rem",
-            borderRadius: "0.625rem",
-            border: "1px solid var(--border)",
-            cursor: cvSelecionado && pontosRastro.length > 0 ? "pointer" : "not-allowed",
-            fontSize: 12,
-            fontWeight: 600,
-            backgroundColor: "var(--bg)",
-            color: "var(--text-muted)",
-            opacity: !cvSelecionado || pontosRastro.length === 0 ? 0.35 : 1,
-            transition: "all 0.15s",
-          }}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="2" x2="12" y2="6" />
-            <line x1="12" y1="18" x2="12" y2="22" />
-            <line x1="2" y1="12" x2="6" y2="12" />
-            <line x1="18" y1="12" x2="22" y2="12" />
-          </svg>
-          Centralizar
-        </button>
-
-        {/* Indicador de carregando */}
-        {carregando && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-dim)", fontSize: 11 }}>
-            <span
-              className="animate-pulse-live inline-block w-1.5 h-1.5 rounded-full"
-              style={{ backgroundColor: "var(--accent)" }}
-            />
-            buscando...
-          </div>
-        )}
       </div>
 
       {/* ============================================================
-          MAPA
+          COLUNA DIREITA: MAPA + LEGENDA
           ============================================================ */}
-      <div
-        style={{
-          position: "relative",
-          height: "76vh",
-          borderRadius: "1rem",
-          overflow: "hidden",
-          border: "1px solid var(--border)",
-        }}
-      >
-        {/* Estado vazio: nenhuma placa selecionada */}
-        {!cvSelecionado && (
-          <div
-            style={{
-              position: "absolute",
-              top: "50%",
-              left: "50%",
-              transform: "translate(-50%, -50%)",
-              zIndex: 900,
-              pointerEvents: "none",
-              textAlign: "center",
-            }}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
+        {/* Mapa */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          {/* Painel de telemetria flutuante */}
+          {cvSelecionado && painelAberto && placaSelecionada && (
+            <PainelTelemetria
+              placa={placaSelecionada}
+              dados={telemetria}
+              onFechar={() => setPainelAberto(false)}
+            />
+          )}
+
+          <MapContainer
+            center={[-22.9, -43.2]}
+            zoom={10}
+            preferCanvas
+            style={{ height: "100%", width: "100%", background: "#0a0a0a" }}
           >
-            <div
-              style={{
-                backgroundColor: "rgba(10,10,10,0.85)",
-                border: "1px solid var(--border)",
-                borderRadius: "1rem",
-                padding: "1.5rem 2rem",
-                backdropFilter: "blur(8px)",
-              }}
-            >
-              <p style={{ color: "var(--text-dim)", fontSize: 13, marginBottom: 6 }}>
-                Selecione uma placa para ver o rastro
-              </p>
-              <p style={{ color: "var(--text-dim)", fontSize: 11, opacity: 0.6 }}>
-                {veiculos.length} veiculos disponiveis
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Painel de telemetria flutuante */}
-        {cvSelecionado && painelAberto && placaSelecionada && (
-          <PainelTelemetria
-            placa={placaSelecionada}
-            dados={telemetria}
-            onFechar={() => setPainelAberto(false)}
-          />
-        )}
-
-        <MapContainer
-          center={[-22.9, -43.2]}
-          zoom={10}
-          preferCanvas
-          style={{ height: "100%", width: "100%", background: "#0a0a0a" }}
-        >
-          {/* Ajuste automatico de bounds ao rastro */}
-          {pontosRastro.length > 0 && (
-            <AjustarBoundsRastro pontos={pontosRastro} gatilho={gatilhoBounds} />
-          )}
-
-          {/* Basemap: satelite hibrido Google (padrao fixo, igual Unitrac) */}
-          {googleApiKey ? (
-            <TileLayer
-              url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
-              attribution="&copy; Google Maps"
-              maxNativeZoom={20}
-              maxZoom={21}
-            />
-          ) : (
-            <TileLayer
-              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-              attribution="&copy; OpenStreetMap &copy; CARTO"
-            />
-          )}
-
-          {/* Camadas de risco */}
-          <LayersControl position="topright">
-
-            {/* Favelas */}
-            {favelas && (
-              <LayersControl.Overlay checked name="Favelas">
-                <GeoJSON
-                  data={favelas}
-                  style={{
-                    color: "#ff2d2d",
-                    weight: 1,
-                    fillColor: "#ff2d2d",
-                    fillOpacity: 0.22,
-                    opacity: 0.7,
-                  }}
-                />
-              </LayersControl.Overlay>
+            {pontosRastro.length > 0 && (
+              <AjustarBoundsRastro pontos={pontosRastro} gatilho={gatilhoBounds} />
             )}
 
-            {/* Tiroteios recentes */}
-            <LayersControl.Overlay checked name="Tiroteios (24h)">
-              <LayerGroup>
-                {tiroteios.map((t, i) => (
-                  <CircleMarker
-                    key={`tiro${i}`}
-                    center={[t.lat, t.lng]}
-                    radius={t.recente ? 6 : 4}
-                    pathOptions={{
-                      color: t.recente ? "#ffffff" : "#fde68a",
-                      weight: t.recente ? 2 : 1,
-                      fillColor: t.recente ? "#ff6a00" : "#d97706",
-                      fillOpacity: 1,
+            {googleApiKey ? (
+              <TileLayer
+                url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+                attribution="&copy; Google Maps"
+                maxNativeZoom={20}
+                maxZoom={21}
+              />
+            ) : (
+              <TileLayer
+                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                attribution="&copy; OpenStreetMap &copy; CARTO"
+              />
+            )}
+
+            <LayersControl position="topright">
+              {favelas && (
+                <LayersControl.Overlay checked name="Favelas">
+                  <GeoJSON
+                    data={favelas}
+                    style={{
+                      color: "#ff2d2d",
+                      weight: 1,
+                      fillColor: "#ff2d2d",
+                      fillOpacity: 0.22,
+                      opacity: 0.7,
                     }}
-                  >
-                    <Popup>
-                      <div style={{ fontWeight: 700, fontSize: 13, color: "#c2410c" }}>
-                        Tiroteio{t.acaoPolicial ? " · acao policial" : ""}
-                        {t.recente && (
-                          <span style={{ marginLeft: 6, color: "#dc2626", fontSize: 11 }}>
-                            AGORA
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 12, marginTop: 2 }}>
-                        {t.bairro ? `${t.bairro}, ` : ""}{t.cidade}
-                      </div>
-                      <div style={{ fontSize: 12, marginTop: 2 }}>
-                        {idadeTexto(t.idadeMin)} ·{" "}
-                        {formatarDataHora(t.date)}
-                      </div>
-                      {t.motivo && (
-                        <div style={{ fontSize: 12, marginTop: 2 }}>motivo: {t.motivo}</div>
-                      )}
-                      {t.vitimas > 0 && (
-                        <div style={{ fontSize: 12, marginTop: 2, color: "#dc2626" }}>
-                          {t.vitimas} vitima(s)
+                  />
+                </LayersControl.Overlay>
+              )}
+
+              <LayersControl.Overlay checked name="Tiroteios (24h)">
+                <LayerGroup>
+                  {tiroteios.map((t, i) => (
+                    <CircleMarker
+                      key={`tiro${i}`}
+                      center={[t.lat, t.lng]}
+                      radius={t.recente ? 6 : 4}
+                      pathOptions={{
+                        color: t.recente ? "#ffffff" : "#fde68a",
+                        weight: t.recente ? 2 : 1,
+                        fillColor: t.recente ? "#ff6a00" : "#d97706",
+                        fillOpacity: 1,
+                      }}
+                    >
+                      <Popup>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: "#c2410c" }}>
+                          Tiroteio{t.acaoPolicial ? " · acao policial" : ""}
+                          {t.recente && (
+                            <span style={{ marginLeft: 6, color: "#dc2626", fontSize: 11 }}>
+                              AGORA
+                            </span>
+                          )}
                         </div>
-                      )}
-                    </Popup>
-                  </CircleMarker>
-                ))}
-              </LayerGroup>
-            </LayersControl.Overlay>
-
-            {/* Roubo de carga por municipio */}
-            {rouboCarga && (
-              <LayersControl.Overlay name="Roubo de carga (municipio)">
-                <GeoJSON key="roubo" data={rouboCarga} style={estiloRoubo} onEachFeature={popupRoubo} />
+                        <div style={{ fontSize: 12, marginTop: 2 }}>
+                          {t.bairro ? `${t.bairro}, ` : ""}{t.cidade}
+                        </div>
+                        <div style={{ fontSize: 12, marginTop: 2 }}>
+                          {idadeTexto(t.idadeMin)} · {formatarDataHora(t.date)}
+                        </div>
+                        {t.motivo && (
+                          <div style={{ fontSize: 12, marginTop: 2 }}>motivo: {t.motivo}</div>
+                        )}
+                        {t.vitimas > 0 && (
+                          <div style={{ fontSize: 12, marginTop: 2, color: "#dc2626" }}>
+                            {t.vitimas} vitima(s)
+                          </div>
+                        )}
+                      </Popup>
+                    </CircleMarker>
+                  ))}
+                </LayerGroup>
               </LayersControl.Overlay>
+
+              {rouboCarga && (
+                <LayersControl.Overlay name="Roubo de carga (municipio)">
+                  <GeoJSON key="roubo" data={rouboCarga} style={estiloRoubo} onEachFeature={popupRoubo} />
+                </LayersControl.Overlay>
+              )}
+            </LayersControl>
+
+            {/* Todos os veiculos visiveis */}
+            {veiculosVisiveis.map((v) => {
+              if (v.lat === null || v.lng === null) return null;
+              const selecionado = cvSelecionado === v.cv;
+              const cor = corVeiculo(v);
+              return (
+                <Marker
+                  key={v.cv}
+                  position={[v.lat, v.lng]}
+                  icon={selecionado ? iconeCaminhao(cor, true) : iconeVeiculo(cor, false)}
+                  zIndexOffset={selecionado ? 1000 : 0}
+                  eventHandlers={{
+                    click: () => selecionarVeiculo({ placa: v.placa, cv: v.cv }),
+                  }}
+                >
+                  <Popup>
+                    <div style={{ fontFamily: "var(--font-geist-mono, monospace)", fontWeight: 700, fontSize: 13 }}>
+                      {v.placa}
+                    </div>
+                    <div style={{ fontSize: 12, marginTop: 2 }}>
+                      {v.velocidade > 0 ? `${v.velocidade} km/h` : "parado"} ·{" "}
+                      ignicao {v.ignicao ? "ligada" : "desligada"}
+                    </div>
+                    {v.atraso_min > 0 && (
+                      <div style={{ fontSize: 11, color: "#d97706", marginTop: 2 }}>
+                        sem comm ha {formatarDuracao(v.atraso_min)}
+                      </div>
+                    )}
+                    {v.local && (
+                      <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>{v.local}</div>
+                    )}
+                    <a
+                      href={`https://www.google.com/maps?q=${v.lat},${v.lng}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: 12, color: "#1d4ed8", display: "inline-block", marginTop: 4 }}
+                    >
+                      abrir no Google Maps
+                    </a>
+                  </Popup>
+                </Marker>
+              );
+            })}
+
+            {/* Rastro */}
+            {mostrarRastro && pontosRastro.length > 1 && (
+              <Polyline
+                positions={pontosRastro}
+                pathOptions={{ color: "#9fb3ce", weight: 2.5, opacity: 0.85 }}
+              />
             )}
 
-          </LayersControl>
-
-          {/* Rastro do veiculo selecionado */}
-          {mostrarRastro && pontosRastro.length > 1 && (
-            <Polyline
-              positions={pontosRastro}
-              pathOptions={{
-                color: "#9fb3ce",
-                weight: 2.5,
-                opacity: 0.85,
-                dashArray: undefined,
-              }}
-            />
-          )}
-
-          {/* Inicio do rastro (primeiro ponto) */}
-          {mostrarRastro && pontosRastro.length > 0 && (
-            <CircleMarker
-              center={pontosRastro[0]}
-              radius={5}
-              pathOptions={{
-                color: "#22c55e",
-                weight: 2,
-                fillColor: "#22c55e",
-                fillOpacity: 0.9,
-              }}
-            >
-              <Popup>
-                <div style={{ fontWeight: 700, fontSize: 12, color: "#22c55e" }}>
-                  Inicio do rastro
-                </div>
-                <div style={{ fontSize: 11, marginTop: 2, color: "#666" }}>
-                  {horas === 24 ? "ultimo dia" : "ultimos 4 dias"}
-                </div>
-              </Popup>
-            </CircleMarker>
-          )}
-
-          {/* Marcadores de parada */}
-          {mostrarParadas && paradas.map((p, i) => (
-            <CircleMarker
-              key={`stop${i}`}
-              center={[p.lat, p.lng]}
-              radius={p.tempoMin >= 30 ? 9 : 6}
-              pathOptions={{
-                color: p.tempoMin >= 30 ? "#f59e0b" : "#fbbf24",
-                weight: 2,
-                fillColor: p.tempoMin >= 30 ? "#f59e0b" : "#fde68a",
-                fillOpacity: 0.85,
-              }}
-            >
-              <Popup>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#d97706" }}>
-                  Parada: {formatarDuracao(p.tempoMin)}
-                </div>
-                {p.data && (
-                  <div style={{ fontSize: 12, marginTop: 2 }}>
-                    {formatarDataHora(p.data)}
+            {/* Inicio do rastro */}
+            {mostrarRastro && pontosRastro.length > 0 && (
+              <CircleMarker
+                center={pontosRastro[0]}
+                radius={5}
+                pathOptions={{ color: "#22c55e", weight: 2, fillColor: "#22c55e", fillOpacity: 0.9 }}
+              >
+                <Popup>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: "#22c55e" }}>
+                    Inicio do rastro
                   </div>
-                )}
-                {p.local && (
-                  <div style={{ fontSize: 12, marginTop: 2, color: "#666" }}>{p.local}</div>
-                )}
-              </Popup>
-            </CircleMarker>
-          ))}
+                  <div style={{ fontSize: 11, marginTop: 2, color: "#666" }}>
+                    {horas < 24 ? `${horas}h` : horas === 24 ? "ultimo dia" : "ultimos 4 dias"}
+                  </div>
+                </Popup>
+              </CircleMarker>
+            )}
 
-          {/* Marcador do veiculo na posicao atual */}
-          {posValida && posAtual && (
-            <Marker
-              position={[posAtual.lat, posAtual.lng]}
-              icon={iconeCaminhao(corIgnicao, true)}
-            >
-              <Popup>
-                <div
-                  style={{
-                    fontFamily: "var(--font-geist-mono, monospace)",
-                    fontWeight: 700,
-                    fontSize: 14,
+            {/* Paradas */}
+            {mostrarParadas &&
+              paradas.map((p, i) => (
+                <CircleMarker
+                  key={`stop${i}`}
+                  center={[p.lat, p.lng]}
+                  radius={p.tempoMin >= 30 ? 9 : 6}
+                  pathOptions={{
+                    color: p.tempoMin >= 30 ? "#f59e0b" : "#fbbf24",
+                    weight: 2,
+                    fillColor: p.tempoMin >= 30 ? "#f59e0b" : "#fde68a",
+                    fillOpacity: 0.85,
                   }}
                 >
-                  {placaSelecionada}
-                </div>
-                <div style={{ fontSize: 12, marginTop: 2 }}>
-                  {parseInt(telemetria?.posicvelocidade ?? "0") > 0
-                    ? `${parseInt(telemetria?.posicvelocidade ?? "0")} km/h`
-                    : "parado"}{" "}
-                  · ignicao{" "}
-                  {telemetria?.posicignicao === "1" ? "ligada" : "desligada"}
-                </div>
-                <a
-                  href={`https://www.google.com/maps?q=${posAtual.lat},${posAtual.lng}`}
-                  target="_blank"
-                  rel="noopener"
-                  style={{ fontSize: 12, color: "#1d4ed8", display: "inline-block", marginTop: 4 }}
-                >
-                  abrir no Google Maps
-                </a>
-              </Popup>
-            </Marker>
-          )}
-        </MapContainer>
+                  <Popup>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "#d97706" }}>
+                      Parada: {formatarDuracao(p.tempoMin)}
+                    </div>
+                    {p.data && (
+                      <div style={{ fontSize: 12, marginTop: 2 }}>{formatarDataHora(p.data)}</div>
+                    )}
+                    {p.local && (
+                      <div style={{ fontSize: 12, marginTop: 2, color: "#666" }}>{p.local}</div>
+                    )}
+                  </Popup>
+                </CircleMarker>
+              ))}
 
-        {/* Legenda de paradas (overlay no canto inferior esquerdo) */}
-        {cvSelecionado && (rastro.length > 0 || paradas.length > 0) && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: 24,
-              left: 12,
-              zIndex: 800,
-              backgroundColor: "rgba(10,10,10,0.88)",
-              border: "1px solid var(--border)",
-              borderRadius: "0.625rem",
-              padding: "0.625rem 0.875rem",
-              display: "flex",
-              flexDirection: "column",
-              gap: 5,
-              backdropFilter: "blur(6px)",
-            }}
-          >
-            {rastro.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                <div
-                  style={{
-                    width: 20,
-                    height: 2.5,
-                    backgroundColor: "#9fb3ce",
-                    borderRadius: 2,
-                    flexShrink: 0,
-                  }}
-                />
-                <span style={{ color: "var(--text-dim)", fontSize: 10 }}>
-                  rastro ({rastro.length} pts, {horas}h)
-                </span>
-              </div>
+            {/* Marcador de posicao ao vivo do veiculo selecionado */}
+            {posValida && posAtual && (
+              <Marker
+                position={[posAtual.lat, posAtual.lng]}
+                icon={iconeCaminhao(corIgnicao, true)}
+                zIndexOffset={2000}
+              >
+                <Popup>
+                  <div style={{ fontFamily: "var(--font-geist-mono, monospace)", fontWeight: 700, fontSize: 14 }}>
+                    {placaSelecionada}
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>
+                    {parseInt(telemetria?.posicvelocidade ?? "0") > 0
+                      ? `${parseInt(telemetria?.posicvelocidade ?? "0")} km/h`
+                      : "parado"}{" "}
+                    · ignicao{" "}
+                    {telemetria?.posicignicao === "1" ? "ligada" : "desligada"}
+                  </div>
+                  <a
+                    href={`https://www.google.com/maps?q=${posAtual.lat},${posAtual.lng}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: 12, color: "#1d4ed8", display: "inline-block", marginTop: 4 }}
+                  >
+                    abrir no Google Maps
+                  </a>
+                </Popup>
+              </Marker>
             )}
-            {paradas.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                <div
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    backgroundColor: "#f59e0b",
-                    flexShrink: 0,
-                  }}
-                />
-                <span style={{ color: "var(--text-dim)", fontSize: 10 }}>
-                  {paradas.length} parada(s)
-                </span>
-              </div>
-            )}
-          </div>
-        )}
+          </MapContainer>
+        </div>
+
+        {/* Legenda */}
+        <div
+          style={{
+            flexShrink: 0,
+            padding: "0.5rem 1rem",
+            backgroundColor: "var(--card)",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            gap: "1.5rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <LegendaItem cor="#22c55e" label="Em movimento" qtd={qtdEmMovimento} />
+          <LegendaItem cor="#9fb3ce" label="Parado ligado" qtd={qtdParadoLigado} />
+          <LegendaItem cor="#57534e" label="Sem comm" qtd={qtdSemComm} />
+          <LegendaItem cor="#ef4444" label="Alerta" qtd={qtdAlerta} />
+          <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-dim)" }}>
+            {veiculosVisiveis.length} visivel(s) de {veiculosMapa.length}
+          </span>
+        </div>
       </div>
     </div>
   );
