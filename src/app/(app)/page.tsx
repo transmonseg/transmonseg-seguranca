@@ -1213,7 +1213,7 @@ export default async function DashboardPage({
               cliente={clienteAtivo.cod_user_unitrac}
               altura="calc(100vh - var(--header-h, 64px) - 8.5rem)"
               tiposAtivos={tiposSelecionadosSet.length > 0 ? tiposSelecionadosSet : undefined}
-              soProblema={soProblema || undefined}
+              soProblema={true}
             />
           </div>
         </div>
