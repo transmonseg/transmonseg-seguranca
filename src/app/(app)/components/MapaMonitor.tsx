@@ -945,10 +945,10 @@ export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
             <AjustarBoundsRastro pontos={pontosRastro} gatilho={gatilhoBounds} />
           )}
 
-          {/* Basemap: Google Ruas (claro) quando ha chave, CartoDB escuro caso contrario */}
+          {/* Basemap: satelite hibrido Google (padrao fixo, igual Unitrac) */}
           {googleApiKey ? (
             <TileLayer
-              url="https://mt1.google.com/vt/lyrs=r&x={x}&y={y}&z={z}"
+              url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
               attribution="&copy; Google Maps"
               maxNativeZoom={20}
               maxZoom={21}
@@ -960,33 +960,8 @@ export default function MapaMonitor({ veiculos, cliente: _cliente }: Props) {
             />
           )}
 
-          {/* Camadas de risco + trafego ao vivo */}
+          {/* Camadas de risco */}
           <LayersControl position="topright">
-
-            {/* Trafego ao vivo (Google) */}
-            {googleApiKey && (
-              <LayersControl.Overlay name="Trafego ao vivo">
-                <TileLayer
-                  url="https://mt1.google.com/vt/lyrs=traffic&x={x}&y={y}&z={z}"
-                  attribution="&copy; Google Maps"
-                  opacity={0.85}
-                  maxNativeZoom={20}
-                  maxZoom={21}
-                />
-              </LayersControl.Overlay>
-            )}
-
-            {/* Satelite Google */}
-            {googleApiKey && (
-              <LayersControl.Overlay name="Satelite Google">
-                <TileLayer
-                  url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
-                  attribution="&copy; Google Maps"
-                  maxNativeZoom={20}
-                  maxZoom={21}
-                />
-              </LayersControl.Overlay>
-            )}
 
             {/* Favelas */}
             {favelas && (
