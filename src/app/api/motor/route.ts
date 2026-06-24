@@ -16,6 +16,7 @@ import {
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import { avaliar, detectarJammer, foraDeRota, emHorarioOperacao } from "@/lib/detectores";
+import { temPOIProximo } from "@/lib/overpass";
 import { buscarTiroteiosRJ } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 
@@ -487,6 +488,36 @@ export async function POST(request: Request) {
             !alertaJammer &&
             (pos.atraso > 720 || (pos.atraso > 60 && !pos.ignicao));
 
+          // ─── Parada anomala: calcular contexto (so para candidatos reais) ──
+          // Candidato: parado entre 12 e 89 min, fresco, fora de base, fora de cliente.
+          const candidatoParadaAnomala =
+            pos.fresco &&
+            pos.velocidade === 0 &&
+            paradoMin >= 12 && paradoMin < 90 &&
+            foraDaBase && !noCliente && emOperacao;
+
+          let estavEmMovimento = false;
+          let esMadrugada = false;
+          let temPOI = false;
+          const jaParedoNoCicloAnterior =
+            anterior != null &&
+            anterior.velocidade === 0 &&
+            anterior.lat != null && anterior.lng != null &&
+            Math.round(anterior.lat * 10000) === Math.round(pos.lat * 10000) &&
+            Math.round(anterior.lng * 10000) === Math.round(pos.lng * 10000);
+
+          if (candidatoParadaAnomala) {
+            estavEmMovimento = anterior != null && (anterior.velocidade ?? 0) >= 30;
+            const horaSP = parseInt(
+              new Intl.DateTimeFormat("pt-BR", {
+                timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false,
+              }).format(agora),
+              10
+            );
+            esMadrugada = horaSP >= 0 && horaSP < 5;
+            temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
+          }
+
           const alerta = alertaJammer
             ? alertaJammer
             : pos.fresco
@@ -503,6 +534,11 @@ export async function POST(request: Request) {
                   rumoAlvo,
                   distTiroteioM,
                   tiroteioIdadeMin,
+                  estavEmMovimento: candidatoParadaAnomala ? estavEmMovimento : undefined,
+                  esMadrugada,
+                  emZonaRisco: false,
+                  temPOIProximo: temPOI,
+                  jaParedoNoCicloAnterior,
                 })
               : null;
 
@@ -634,10 +670,10 @@ export async function POST(request: Request) {
             .gte("resolvido_em", desde2h);
           const tiposSilenciados = new Set((falsosRecentes ?? []).map((a) => a.tipo));
 
-          // Resolucao automatica generica: todos os tipos EXCETO favela e
-          // desvio, que tem ciclo de vida proprio (tratados em blocos separados).
+          // Resolucao automatica generica: todos os tipos EXCETO favela, desvio
+          // e parada_anomala, que tem ciclo de vida proprio (tratados separado).
           const alertasGerenciados = (alertasAbertos ?? []).filter(
-            (a) => a.tipo !== "favela" && a.tipo !== "desvio"
+            (a) => a.tipo !== "favela" && a.tipo !== "desvio" && a.tipo !== "parada_anomala"
           );
           const desvioAtivo = (alertasAbertos ?? []).find((a) => a.tipo === "desvio");
 

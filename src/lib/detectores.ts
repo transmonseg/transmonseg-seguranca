@@ -133,6 +133,47 @@ export function detectarParadaLonga(ctx: {
   return null;
 }
 
+// Parada anômala curta — detecta parada suspeita ANTES dos 90min da parada_longa.
+// Um roubo típico acontece em 10-20min; 90min já é tarde demais para reagir.
+//
+// Thresholds:
+//   cidade (estavEmMovimento=true, velocidade anterior >= 30 km/h): >= 12min
+//   estrada (velocidade anterior < 30 km/h ou não disponível): >= 25min
+//
+// Anti-pisca: só dispara se o veículo já estava parado no ciclo anterior
+// (jaParedoNoCicloAnterior=true), evitando alerta em paradas de semáforo.
+export function detectarParadaAnomala(ctx: {
+  paradoMin: number;
+  emOperacao: boolean;
+  foraDaBase: boolean;
+  noCliente: boolean;
+  estavEmMovimento: boolean;  // velocidade anterior >= 30 km/h
+  esMadrugada: boolean;       // 00h-05h fuso Sao Paulo
+  emZonaRisco: boolean;       // dentro de geofence tipo "risco"
+  temPOIProximo: boolean;     // posto/restaurante/farmacia a <80m
+  jaParedoNoCicloAnterior: boolean; // anti-pisca
+}): Alerta | null {
+  if (!ctx.emOperacao || !ctx.foraDaBase || ctx.noCliente) return null;
+  if (!ctx.jaParedoNoCicloAnterior) return null; // aguarda um ciclo antes de disparar
+  if (ctx.temPOIProximo) return null; // parada em local legitimo
+
+  const limiteMin = ctx.estavEmMovimento ? 12 : 25;
+  if (ctx.paradoMin < limiteMin || ctx.paradoMin >= 90) return null; // >= 90 ja e parada_longa
+
+  let score = 55;
+  if (ctx.esMadrugada) score += 15;
+  if (ctx.emZonaRisco) score += 10;
+
+  const duracao = formataDuracao(ctx.paradoMin);
+  const sufixo = ctx.esMadrugada ? " (madrugada)" : ctx.emZonaRisco ? " (area de risco)" : "";
+  return {
+    nivel: "atencao",
+    tipo: "parada_anomala",
+    motivo: `Parada suspeita de ${duracao} fora de rota sem ponto de entrega${sufixo}`,
+    score,
+  };
+}
+
 // Faixa de distância (m) em que faz sentido falar de "desvio de rota local".
 // Abaixo do mínimo o veículo está chegando no ponto (normal). Acima do teto não
 // é desvio: é DESLOCAMENTO interurbano (a frota atende o estado todo; veículos
@@ -262,11 +303,8 @@ export function avaliar(
     paradoMin: number;
     emOperacao: boolean;
     foraDaBase: boolean;
-    // Campos opcionais exclusivos da Benassi.
     noCliente?: boolean;
     ehBenassi?: boolean;
-    // Campos de desvio sao opcionais: quando ausentes, o detector de desvio
-    // nao roda (mantem compatibilidade com chamadas que nao tem alvos).
     distAlvoM?: number | null;
     distAlvoAnteriorM?: number | null;
     temPendentes?: boolean;
@@ -274,6 +312,12 @@ export function avaliar(
     rumoAlvo?: number | null;
     distTiroteioM?: number | null;
     tiroteioIdadeMin?: number | null;
+    // Parada anomala (opcional — so roda se estavEmMovimento for fornecido)
+    estavEmMovimento?: boolean;
+    esMadrugada?: boolean;
+    emZonaRisco?: boolean;
+    temPOIProximo?: boolean;
+    jaParedoNoCicloAnterior?: boolean;
   }
 ): Alerta | null {
   const candidatos: Alerta[] = [
@@ -294,6 +338,19 @@ export function avaliar(
       noCliente: ctx.noCliente,
       ehBenassi: ctx.ehBenassi,
     }),
+    ctx.estavEmMovimento !== undefined
+      ? detectarParadaAnomala({
+          paradoMin: ctx.paradoMin,
+          emOperacao: ctx.emOperacao,
+          foraDaBase: ctx.foraDaBase,
+          noCliente: ctx.noCliente ?? false,
+          estavEmMovimento: ctx.estavEmMovimento,
+          esMadrugada: ctx.esMadrugada ?? false,
+          emZonaRisco: ctx.emZonaRisco ?? false,
+          temPOIProximo: ctx.temPOIProximo ?? false,
+          jaParedoNoCicloAnterior: ctx.jaParedoNoCicloAnterior ?? false,
+        })
+      : null,
     detectarTiroteioProximo(p, {
       distTiroteioM: ctx.distTiroteioM ?? null,
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,

@@ -105,8 +105,9 @@ function ordemSeveridade(tipo: string): number {
   if (t.includes("favela")) return 2;
   if (t.includes("tiroteio")) return 3;
   if (t.includes("parada_cliente") || t === "parada_cliente") return 4;
-  if (t.includes("parada_longa") || t === "parada_longa") return 5;
-  if (t.includes("desvio")) return 6;
+  if (t.includes("parada_anomala") || t === "parada_anomala") return 5;
+  if (t.includes("parada_longa") || t === "parada_longa") return 6;
+  if (t.includes("desvio")) return 7;
   if (t.includes("excesso")) return 7;
   if (t.includes("jammer") || t.includes("sinal") || t.includes("bloqueio")) return 9;
   return 8;
