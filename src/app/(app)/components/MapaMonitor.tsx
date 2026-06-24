@@ -1514,12 +1514,7 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
                 }}
                 onEachFeature={(feature, layer) => {
                   const nome = (feature.properties as { nome?: string })?.nome ?? "Base";
-                  layer.bindTooltip(nome, {
-                    permanent: true,
-                    direction: "center",
-                    className: "leaflet-tooltip-base",
-                    opacity: 0.9,
-                  });
+                  layer.bindPopup(nome);
                 }}
               />
             )}
