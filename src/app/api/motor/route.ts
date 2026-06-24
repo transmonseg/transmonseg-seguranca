@@ -327,6 +327,10 @@ export async function POST(request: Request) {
       tiroteiosAtivos = [];
     }
 
+    // Acumulador de pontos de entrega por veiculo_id — usado na supressao
+    // de alerta favela quando o proprio destino esta dentro da comunidade.
+    const veiculoIdToAlvos = new Map<string, PontoEntrega[]>();
+
     for (const cliente of clientes) {
       // Benassi: cliente cod_user_unitrac "4586" tem detector de parada no cliente.
       const ehBenassi = cliente.cod_user_unitrac === "4586";
@@ -417,6 +421,7 @@ export async function POST(request: Request) {
           // desvio compara a distância atual ao ponto pendente mais próximo
           // com a do ciclo anterior (afastamento).
           const pontosVeiculo = pontosPorPlaca.get(pos.placa);
+          veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           const temPendentes = (pontosVeiculo ?? []).some((pt) => !pt.feito);
           const maisProximo = alvoPendenteMaisProximo(pos.lat, pos.lng, pontosVeiculo);
           const distAlvoM = maisProximo?.distM ?? null;
@@ -695,13 +700,15 @@ export async function POST(request: Request) {
           lat: number;
           lng: number;
           nome_favela: string;
+          geofence_geojson: GeoJSONGeom;
         }>(
           `SELECT
              p.veiculo_id,
              v.cliente_id,
              p.lat,
              p.lng,
-             g.nome AS nome_favela
+             g.nome AS nome_favela,
+             ST_AsGeoJSON(g.geom::geometry)::json AS geofence_geojson
            FROM posicoes_atuais p
            JOIN veiculos v ON v.id = p.veiculo_id
            JOIN geofences g
@@ -712,6 +719,14 @@ export async function POST(request: Request) {
 
         for (const vf of veiculosEmFavela) {
           try {
+            // Suprimir alerta se o proprio ponto de entrega pendente esta dentro
+            // da mesma comunidade — o caminhao esta la para entregar, nao e suspeito.
+            const alvosVeiculo = veiculoIdToAlvos.get(vf.veiculo_id) ?? [];
+            const temEntregaNaFavela = alvosVeiculo
+              .filter((a) => !a.feito)
+              .some((a) => pontoEmGeo(a.lng, a.lat, vf.geofence_geojson));
+            if (temEntregaNaFavela) continue;
+
             // Atualizar nivel para vermelho
             await pgClient.query(
               `UPDATE posicoes_atuais SET nivel = 'vermelho' WHERE veiculo_id = $1`,
