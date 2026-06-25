@@ -2,6 +2,7 @@
 
 import { useTransition, useState } from "react";
 import { reconhecerAlerta, resolverAlerta, marcarFalsoPositivo } from "../acoes-alertas";
+import CronometroSLA from "./CronometroSLA";
 
 type Acao = (id: string) => Promise<{ ok?: boolean; erro?: string }>;
 
@@ -24,7 +25,7 @@ function Btn({
   );
 }
 
-export default function AcoesAlerta({ id, status }: { id: string; status: string }) {
+export default function AcoesAlerta({ id, status, desde }: { id: string; status: string; desde: string }) {
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
   const reconhecido = status === "reconhecido";
@@ -38,6 +39,9 @@ export default function AcoesAlerta({ id, status }: { id: string; status: string
 
   return (
     <div className="mt-4 pt-3.5" style={{ borderTop: "1px solid var(--border-subtle)" }}>
+      <div className="mb-2.5">
+        <CronometroSLA desde={desde} />
+      </div>
       {reconhecido && (
         <div className="flex items-center gap-1.5 mb-2.5 text-xs" style={{ color: "var(--accent)" }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -629,7 +629,7 @@ function CardAlertaCritico({
         )}
 
         {/* Acoes do operador */}
-        <AcoesAlerta id={id} status={status} />
+        <AcoesAlerta id={id} status={status} desde={desde} />
 
       </div>
     </div>
