@@ -538,10 +538,10 @@ describe("detectarIgnicaoForaJanela", () => {
 });
 
 describe("detectarSaidaNaoAutorizada", () => {
-  it("fora da base, sem pendentes, ignicao ligada, em operacao retorna critico", () => {
+  it("fora da base, sem pendentes, sem entregas programadas, ignicao ligada, em operacao retorna critico", () => {
     const a = detectarSaidaNaoAutorizada(
       posicaoBase({ ignicao: true, fresco: true }),
-      { foraDaBase: true, temPendentes: false, emOperacao: true }
+      { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 0 }
     );
     expect(a).not.toBeNull();
     expect(a?.nivel).toBe("critico");
@@ -552,7 +552,15 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: true }),
-        { foraDaBase: true, temPendentes: true, emOperacao: true }
+        { foraDaBase: true, temPendentes: true, emOperacao: true, entregasTotal: 0 }
+      )
+    ).toBeNull();
+  });
+  it("entregasTotal > 0 (terminou rota, voltando pra base) retorna null", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: true, fresco: true }),
+        { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 5 }
       )
     ).toBeNull();
   });
@@ -560,7 +568,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: true }),
-        { foraDaBase: false, temPendentes: false, emOperacao: true }
+        { foraDaBase: false, temPendentes: false, emOperacao: true, entregasTotal: 0 }
       )
     ).toBeNull();
   });
@@ -568,7 +576,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: false, fresco: true }),
-        { foraDaBase: true, temPendentes: false, emOperacao: true }
+        { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 0 }
       )
     ).toBeNull();
   });
@@ -576,7 +584,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: true }),
-        { foraDaBase: true, temPendentes: false, emOperacao: false }
+        { foraDaBase: true, temPendentes: false, emOperacao: false, entregasTotal: 0 }
       )
     ).toBeNull();
   });
@@ -584,7 +592,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: false }),
-        { foraDaBase: true, temPendentes: false, emOperacao: true }
+        { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 0 }
       )
     ).toBeNull();
   });

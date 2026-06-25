@@ -603,6 +603,7 @@ export async function POST(request: Request) {
                   distAlvoM,
                   distAlvoAnteriorM,
                   temPendentes,
+                  entregasTotal: entregas_total,
                   rumoMovimento,
                   rumoAlvo,
                   distTiroteioM,
@@ -754,6 +755,16 @@ export async function POST(request: Request) {
           if (alerta) {
             const jaExiste = (alertasAbertos ?? []).some((a) => a.tipo === alerta.tipo);
             const silenciado = tiposSilenciados.has(alerta.tipo);
+
+            // Resolver alertas genericos de OUTROS tipos — evita acumulacao quando
+            // o alerta muda de tipo (ex: parada_longa vira saida_nao_autorizada).
+            const alertasObsoletos = alertasGerenciados.filter((a) => a.tipo !== alerta.tipo);
+            if (alertasObsoletos.length > 0) {
+              await supabase
+                .from("alertas")
+                .update({ status: "resolvido", resolvido_em: agora.toISOString() })
+                .in("id", alertasObsoletos.map((a) => a.id));
+            }
 
             if (!jaExiste && !silenciado) {
               // Inserir novo alerta

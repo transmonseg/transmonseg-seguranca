@@ -77,10 +77,13 @@ export function detectarIgnicaoForaJanela(
 
 export function detectarSaidaNaoAutorizada(
   p: PosicaoNormalizada,
-  ctx: { foraDaBase: boolean; temPendentes: boolean; emOperacao: boolean }
+  ctx: { foraDaBase: boolean; temPendentes: boolean; emOperacao: boolean; entregasTotal?: number }
 ): Alerta | null {
   if (!p.fresco || !p.ignicao) return null;
   if (!ctx.foraDaBase || ctx.temPendentes || !ctx.emOperacao) return null;
+  // Veículo que terminou entregas (entregasTotal > 0) está legitimamente retornando.
+  // Só dispara quando não havia nenhuma entrega programada (saiu "vazio").
+  if ((ctx.entregasTotal ?? 0) > 0) return null;
   return {
     nivel: "critico",
     tipo: "saida_nao_autorizada",
@@ -355,6 +358,7 @@ export function avaliar(
     distAlvoM?: number | null;
     distAlvoAnteriorM?: number | null;
     temPendentes?: boolean;
+    entregasTotal?: number;
     rumoMovimento?: number | null;
     rumoAlvo?: number | null;
     distCorredorM?: number | null;
@@ -377,6 +381,7 @@ export function avaliar(
       foraDaBase: ctx.foraDaBase,
       temPendentes: ctx.temPendentes ?? false,
       emOperacao: ctx.emOperacao,
+      entregasTotal: ctx.entregasTotal,
     }),
     detectarExcessoVelocidade(p),
     detectarParadaCliente({
