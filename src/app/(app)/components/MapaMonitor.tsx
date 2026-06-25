@@ -698,9 +698,6 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
         if (d?.bases?.type === "FeatureCollection") {
           setBasesGeo(d.bases as GeoJSON.FeatureCollection);
         }
-        if (Array.isArray(d?.alertas_geo)) {
-          setAlertasGeo(d.alertas_geo as { lat: number; lng: number }[]);
-        }
       })
       .catch(() => {});
   }, [cliente]);
@@ -710,6 +707,20 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
     const id = setInterval(carregarMapa, 10000);
     return () => clearInterval(id);
   }, [carregarMapa]);
+
+  // Heatmap carregado uma vez ao montar (dado de 30 dias muda lentamente).
+  // Separado do poll de 10s para nao executar query pesada em cada ciclo.
+  useEffect(() => {
+    if (!cliente) return;
+    fetch(`/api/mapa?cliente=${encodeURIComponent(cliente)}&heat=1`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d?.alertas_geo)) {
+          setAlertasGeo(d.alertas_geo as { lat: number; lng: number }[]);
+        }
+      })
+      .catch(() => {});
+  }, [cliente]);
 
   /* ------------------------------------------------------------------ */
   /* Auto-refresh de telemetria quando veiculo selecionado (15s)         */

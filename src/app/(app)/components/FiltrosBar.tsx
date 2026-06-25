@@ -36,8 +36,8 @@ const CHIPS_TIPO: ChipTipo[] = [
   { label: "Parada longa",   tipos: ["parada_longa"],                   cor: "#64748b" },
   { label: "Jammer/Sinal",   tipos: ["jammer", "sinal", "bloqueio"],   cor: "#a855f7" },
   { label: "Excesso",        tipos: ["excesso"],                        cor: "#ea580c" },
-  { label: "Ignicao fora",   tipos: ["ignicao_noturna"],                cor: "#7c3aed" },
-  { label: "Saida base",     tipos: ["saida_nao_autorizada"],           cor: "#0891b2" },
+  { label: "Ignição fora",   tipos: ["ignicao_noturna"],                cor: "#7c3aed" },
+  { label: "Saída base",     tipos: ["saida_nao_autorizada"],           cor: "#0891b2" },
 ];
 
 /* ------------------------------------------------------------------ */

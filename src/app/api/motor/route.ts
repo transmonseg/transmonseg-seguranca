@@ -395,12 +395,15 @@ export async function POST(request: Request) {
       // 4b. Buscar alvos (entregas + pontos da rota) deste cliente
       let entregasPorPlaca = new Map<string, EntregasPlaca>();
       let pontosPorPlaca = new Map<string, PontoEntrega[]>();
+      let alvosApiOk = false;
       try {
         const res = await buscarAlvosComTimeout(cvsCliente);
         entregasPorPlaca = res.entregas;
         pontosPorPlaca = res.pontos;
+        alvosApiOk = true;
       } catch (err) {
-        // Nao-critico: entregas ficam 0/0 se API falhar
+        // Nao-critico: mantemos os mapas vazios; alvosApiOk=false impede o
+        // detector saida_nao_autorizada de disparar (evita falsos criticos em massa).
         const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${String(err)}`;
         console.warn(msg);
         erros.push(msg);
@@ -603,7 +606,7 @@ export async function POST(request: Request) {
                   distAlvoM,
                   distAlvoAnteriorM,
                   temPendentes,
-                  entregasTotal: entregas_total,
+                  entregasTotal: alvosApiOk ? entregas_total : undefined,
                   rumoMovimento,
                   rumoAlvo,
                   distTiroteioM,
@@ -745,10 +748,10 @@ export async function POST(request: Request) {
             .gte("resolvido_em", desde2h);
           const tiposSilenciados = new Set((falsosRecentes ?? []).map((a) => a.tipo));
 
-          // Resolucao automatica generica: todos os tipos EXCETO favela, desvio
-          // e parada_anomala, que tem ciclo de vida proprio (tratados separado).
+          // Resolucao automatica generica: todos os tipos EXCETO favela e desvio,
+          // que tem ciclo de vida proprio (tratados separado).
           const alertasGerenciados = (alertasAbertos ?? []).filter(
-            (a) => a.tipo !== "favela" && a.tipo !== "desvio" && a.tipo !== "parada_anomala"
+            (a) => a.tipo !== "favela" && a.tipo !== "desvio"
           );
           const desvioAtivo = (alertasAbertos ?? []).find((a) => a.tipo === "desvio");
 
@@ -756,30 +759,32 @@ export async function POST(request: Request) {
             const jaExiste = (alertasAbertos ?? []).some((a) => a.tipo === alerta.tipo);
             const silenciado = tiposSilenciados.has(alerta.tipo);
 
-            // Resolver alertas genericos de OUTROS tipos — evita acumulacao quando
-            // o alerta muda de tipo (ex: parada_longa vira saida_nao_autorizada).
-            const alertasObsoletos = alertasGerenciados.filter((a) => a.tipo !== alerta.tipo);
-            if (alertasObsoletos.length > 0) {
-              await supabase
-                .from("alertas")
-                .update({ status: "resolvido", resolvido_em: agora.toISOString() })
-                .in("id", alertasObsoletos.map((a) => a.id));
-            }
+            if (!silenciado) {
+              // Resolver alertas genericos de OUTROS tipos quando o alerta muda de tipo
+              // (ex: parada_longa vira saida_nao_autorizada). Nao resolve quando silenciado
+              // para preservar o contexto enquanto o operador investiga.
+              const alertasObsoletos = alertasGerenciados.filter((a) => a.tipo !== alerta.tipo);
+              if (alertasObsoletos.length > 0) {
+                await supabase
+                  .from("alertas")
+                  .update({ status: "resolvido", resolvido_em: agora.toISOString() })
+                  .in("id", alertasObsoletos.map((a) => a.id));
+              }
 
-            if (!jaExiste && !silenciado) {
-              // Inserir novo alerta
-              await supabase.from("alertas").insert({
-                cliente_id,
-                veiculo_id,
-                nivel: alerta.nivel,
-                tipo: alerta.tipo,
-                motivo: alerta.motivo,
-                score: alerta.score,
-                status: "ativo",
-                lat: pos.lat,
-                lng: pos.lng,
-                desde: agora.toISOString(),
-              });
+              if (!jaExiste) {
+                await supabase.from("alertas").insert({
+                  cliente_id,
+                  veiculo_id,
+                  nivel: alerta.nivel,
+                  tipo: alerta.tipo,
+                  motivo: alerta.motivo,
+                  score: alerta.score,
+                  status: "ativo",
+                  lat: pos.lat,
+                  lng: pos.lng,
+                  desde: agora.toISOString(),
+                });
+              }
             }
           } else if (alertasGerenciados.length > 0) {
             // Sem alerta de maior prioridade — resolver os genericos em aberto.

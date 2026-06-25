@@ -389,9 +389,10 @@ describe("detectarTiroteioProximo", () => {
     expect(a?.motivo).toContain("800m");
     expect(a?.motivo).toContain("25min");
   });
-  it("tiroteio a 2km retorna atencao", () => {
+  it("tiroteio a 2km retorna critico (toda a faixa ate 3km e critico)", () => {
     const a = detectarTiroteioProximo(fresco, { distTiroteioM: 2000, tiroteioIdadeMin: 10 });
-    expect(a?.nivel).toBe("atencao");
+    expect(a?.nivel).toBe("critico");
+    expect(a?.score).toBe(82);
     expect(a?.motivo).toContain("2,0km");
   });
   it("tiroteio a 4km nao aciona (longe)", () => {
@@ -519,21 +520,24 @@ describe("avaliar", () => {
 });
 
 describe("detectarIgnicaoForaJanela", () => {
-  it("ignicao ligada fora do horario de operacao retorna critico ignicao_noturna", () => {
-    const a = detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), false);
+  it("ignicao ligada fora do horario de operacao, fora da base retorna critico ignicao_noturna", () => {
+    const a = detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), false, true);
     expect(a).not.toBeNull();
     expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("ignicao_noturna");
     expect(a?.score).toBe(85);
   });
   it("ignicao desligada fora do horario retorna null", () => {
-    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: false, fresco: true }), false)).toBeNull();
+    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: false, fresco: true }), false, true)).toBeNull();
   });
   it("ignicao ligada DENTRO do horario retorna null", () => {
-    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), true)).toBeNull();
+    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), true, true)).toBeNull();
   });
   it("posicao nao fresca retorna null (dado congelado nao e sinal de movimento)", () => {
-    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: false }), false)).toBeNull();
+    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: false }), false, true)).toBeNull();
+  });
+  it("dentro da base retorna null (mecanico ligando motor no deposito nao e alerta)", () => {
+    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), false, false)).toBeNull();
   });
 });
 

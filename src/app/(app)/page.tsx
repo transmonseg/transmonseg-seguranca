@@ -101,17 +101,18 @@ export interface VeiculoItem {
 
 function ordemSeveridade(tipo: string): number {
   const t = tipo?.toLowerCase() ?? "";
-  if (t.includes("panico")) return 0;
-  if (t.includes("bau")) return 1;
-  if (t.includes("favela")) return 2;
-  if (t.includes("tiroteio")) return 3;
-  if (t.includes("parada_cliente") || t === "parada_cliente") return 4;
-  if (t.includes("parada_anomala") || t === "parada_anomala") return 5;
-  if (t.includes("parada_longa") || t === "parada_longa") return 6;
-  if (t.includes("desvio")) return 7;
-  if (t.includes("excesso")) return 7;
-  if (t.includes("jammer") || t.includes("sinal") || t.includes("bloqueio")) return 9;
-  return 8;
+  if (t === "panico") return 0;
+  if (t === "bau") return 1;
+  if (t === "favela") return 2;
+  if (t === "tiroteio") return 3;
+  if (t === "ignicao_noturna") return 4;
+  if (t === "saida_nao_autorizada") return 5;
+  if (t === "parada_cliente") return 6;
+  if (t === "parada_anomala") return 7;
+  if (t === "parada_longa") return 8;
+  if (t === "desvio" || t === "excesso") return 9;
+  if (t === "jammer" || t.includes("sinal") || t.includes("bloqueio")) return 11;
+  return 10;
 }
 
 /* ------------------------------------------------------------------ */
@@ -822,14 +823,10 @@ export default async function DashboardPage({
     supabase.from("posicoes_atuais").select(
       "veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, local, entregas_feitas, entregas_total, parado_desde, updated_at"
     ),
-    (() => {
-      let q = supabase
-        .from("alertas")
-        .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score")
-        .in("status", ["ativo", "reconhecido"]);
-      if (soTurno) q = q.gte("desde", cutoffTurno);
-      return q;
-    })(),
+    supabase
+      .from("alertas")
+      .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score")
+      .in("status", ["ativo", "reconhecido"]),
   ]);
 
   const clientes: Cliente[] = clientesRaw ?? [];
@@ -858,7 +855,15 @@ export default async function DashboardPage({
       .map((p) => [p.veiculo_id, p])
   );
 
-  const alertas = todosAlertas.filter((a) => a.cliente_id === clienteAtivo.id);
+  const alertas = todosAlertas
+    .filter((a) => a.cliente_id === clienteAtivo.id)
+    .filter((a) => {
+      if (!soTurno) return true;
+      // Alertas "ativo" podem ficar presos (veiculo offline, motor nao consegue resolver).
+      // Nunca ocultar pelo filtro de turno para nao criar ponto cego de seguranca.
+      if (a.status === "ativo") return true;
+      return a.desde >= cutoffTurno;
+    });
   const veiculoById = new Map(veiculos.map((v) => [v.id, v]));
 
   // Construir itens enriquecidos

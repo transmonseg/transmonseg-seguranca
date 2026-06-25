@@ -64,13 +64,14 @@ export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
 
 export function detectarIgnicaoForaJanela(
   p: PosicaoNormalizada,
-  emOperacao: boolean
+  emOperacao: boolean,
+  foraDaBase: boolean
 ): Alerta | null {
-  if (!p.fresco || !p.ignicao || emOperacao) return null;
+  if (!p.fresco || !p.ignicao || emOperacao || !foraDaBase) return null;
   return {
     nivel: "critico",
     tipo: "ignicao_noturna",
-    motivo: "Motor ligado fora do horario de operacao (possivel movimentacao nao autorizada)",
+    motivo: "Motor ligado fora do horário de operação (possível movimentação não autorizada)",
     score: 85,
   };
 }
@@ -81,13 +82,15 @@ export function detectarSaidaNaoAutorizada(
 ): Alerta | null {
   if (!p.fresco || !p.ignicao) return null;
   if (!ctx.foraDaBase || ctx.temPendentes || !ctx.emOperacao) return null;
+  // undefined = API Unitrac indisponível; não sabemos se havia entregas.
+  // Nao disparar para evitar falsos positivos em falha de API.
+  if (ctx.entregasTotal === undefined) return null;
   // Veículo que terminou entregas (entregasTotal > 0) está legitimamente retornando.
-  // Só dispara quando não havia nenhuma entrega programada (saiu "vazio").
-  if ((ctx.entregasTotal ?? 0) > 0) return null;
+  if (ctx.entregasTotal > 0) return null;
   return {
     nivel: "critico",
     tipo: "saida_nao_autorizada",
-    motivo: "Veiculo saiu da base sem entregas programadas",
+    motivo: "Veículo saiu da base sem entregas programadas",
     score: 78,
   };
 }
@@ -336,10 +339,10 @@ export function detectarTiroteioProximo(
   }
   if (ctx.distTiroteioM <= 3000) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "tiroteio",
-      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) perto da rota`,
-      score: 55,
+      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) próximo à rota`,
+      score: 82,
     };
   }
   return null;
@@ -376,7 +379,7 @@ export function avaliar(
     detectarPanico(p),
     detectarBau(p),
     detectarJammer(p),
-    detectarIgnicaoForaJanela(p, ctx.emOperacao),
+    detectarIgnicaoForaJanela(p, ctx.emOperacao, ctx.foraDaBase),
     detectarSaidaNaoAutorizada(p, {
       foraDaBase: ctx.foraDaBase,
       temPendentes: ctx.temPendentes ?? false,

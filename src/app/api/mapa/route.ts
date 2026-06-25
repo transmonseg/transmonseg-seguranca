@@ -97,22 +97,27 @@ export async function GET(request: Request) {
       [clienteId]
     );
 
-    // Posicoes de alertas dos ultimos 30 dias — usado para o layer de calor.
+    // Dados de calor de incidentes (30 dias). Carregado apenas quando solicitado
+    // explicitamente (?heat=1) para nao pesar o poll de 10 segundos de posicoes.
     let alertasGeo: { lat: number; lng: number }[] = [];
-    try {
-      const alertasRes = await client.query<{ lat: number; lng: number }>(
-        `SELECT lat, lng
-         FROM alertas
-         WHERE cliente_id = $1
-           AND lat IS NOT NULL
-           AND lng IS NOT NULL
-           AND desde >= now() - interval '30 days'
-         LIMIT 2000`,
-        [clienteId]
-      );
-      alertasGeo = alertasRes.rows;
-    } catch {
-      alertasGeo = [];
+    const wantHeat = new URL(request.url).searchParams.get("heat") === "1";
+    if (wantHeat) {
+      try {
+        const alertasRes = await client.query<{ lat: number; lng: number }>(
+          `SELECT lat, lng
+           FROM alertas
+           WHERE cliente_id = $1
+             AND lat IS NOT NULL
+             AND lng IS NOT NULL
+             AND desde >= now() - interval '30 days'
+           ORDER BY desde DESC
+           LIMIT 2000`,
+          [clienteId]
+        );
+        alertasGeo = alertasRes.rows;
+      } catch {
+        alertasGeo = [];
+      }
     }
 
     return Response.json({ veiculos, bases: basesRes.rows[0].gj, pontos: pontosEntrega, alertas_geo: alertasGeo });
