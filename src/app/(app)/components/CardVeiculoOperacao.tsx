@@ -1,6 +1,25 @@
 "use client";
 
-import type { VeiculoItem } from "../page";
+interface VeiculoItem {
+  id: string;
+  placa: string;
+  cv: string;
+  grupo?: string | null;
+  lat: number | null;
+  lng: number | null;
+  nivel: "verde" | "amarelo" | "vermelho" | "cinza" | "concluido";
+  motivo: string | null;
+  velocidade: number;
+  ignicao: boolean;
+  atraso_min: number;
+  panico: boolean;
+  bau_aberto: boolean;
+  local: string | null;
+  entregas_feitas: number;
+  entregas_total: number;
+  parado_desde: string | null;
+  updated_at: string | null;
+}
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                              */

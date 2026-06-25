@@ -1,33 +1,7 @@
-/**
- * Pagina principal -- Transmonseg Central
- *
- * Server Component que le dados do Supabase via createAdminClient (service_role).
- * O cliente ativo e determinado pelo query param ?cliente=<cod_user_unitrac>.
- * Toda a tela reflete somente o cliente selecionado.
- *
- * VISUAL: Painel de dois paineis em desktop (alertas | mapa), coluna unica em mobile.
- */
-
-import Link from "next/link";
 import { createAdminClient } from "@/lib/supabase/admin";
-import CardVeiculoOperacao from "./components/CardVeiculoOperacao";
-import FaixaColapsavel from "./components/FaixaColapsavel";
-import VerTodosBtn from "./components/VerTodosBtn";
-import MapaWrapper from "./components/MapaWrapper";
-import AcoesAlerta from "./components/AcoesAlerta";
-import PainelRoubo from "./components/PainelRoubo";
-import AlertaSonoro from "./components/AlertaSonoro";
-import FiltrosBar from "./components/FiltrosBar";
-import CardAlertaCritico from "./components/CardAlertaCritico";
+import PainelCentral from "./components/PainelCentral";
 
-// Central ao vivo: nunca prerender estatico.
 export const dynamic = "force-dynamic";
-
-/* ------------------------------------------------------------------ */
-/* Tipos                                                                */
-/* ------------------------------------------------------------------ */
-
-type NivelDB = "verde" | "amarelo" | "vermelho" | "cinza" | "concluido";
 
 interface Cliente {
   id: string;
@@ -49,15 +23,7 @@ interface PosicaoAtual {
   velocidade: number;
   ignicao: boolean;
   atraso_min: number;
-  panico: boolean;
-  bau_aberto: boolean;
-  nivel: NivelDB;
-  motivo: string | null;
   local: string | null;
-  entregas_feitas: number | null;
-  entregas_total: number | null;
-  parado_desde: string | null;
-  updated_at: string;
 }
 
 interface Alerta {
@@ -71,34 +37,6 @@ interface Alerta {
   status: string;
   score: number | null;
 }
-
-/* Item de veiculo enriquecido para render */
-export interface VeiculoItem {
-  id: string;
-  placa: string;
-  cv: string;
-  grupo?: string | null;
-  lat: number | null;
-  lng: number | null;
-  nivel: NivelDB;
-  motivo: string | null;
-  velocidade: number;
-  ignicao: boolean;
-  atraso_min: number;
-  panico: boolean;
-  bau_aberto: boolean;
-  local: string | null;
-  entregas_feitas: number;
-  entregas_total: number;
-  parado_desde: string | null;
-  updated_at: string | null;
-}
-
-/* ------------------------------------------------------------------ */
-/* TAREFA A: Ordem de severidade dos alertas                           */
-/* Menor numero = mais severo = aparece primeiro.                      */
-/* Sinais (jammer/sinal/bloqueio) ficam por ultimo na fila.           */
-/* ------------------------------------------------------------------ */
 
 function ordemSeveridade(tipo: string): number {
   const t = tipo?.toLowerCase() ?? "";
@@ -116,314 +54,13 @@ function ordemSeveridade(tipo: string): number {
   return 10;
 }
 
-/* ------------------------------------------------------------------ */
-/* Icones SVG                                                            */
-/* ------------------------------------------------------------------ */
-
-function IconShield({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    </svg>
-  );
-}
-
-function IconTruck({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="1" y="3" width="15" height="13" />
-      <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
-      <circle cx="5.5" cy="18.5" r="2.5" />
-      <circle cx="18.5" cy="18.5" r="2.5" />
-    </svg>
-  );
-}
-
-function IconCheck({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
-
-function IconNoSignal({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="1" y1="1" x2="23" y2="23" />
-      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
-      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
-      <path d="M10.71 5.05A16 16 0 0 1 22.56 9" />
-      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" />
-      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
-      <circle cx="12" cy="20" r="1" fill="currentColor" />
-    </svg>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Seletor de cliente                                                   */
-/* ------------------------------------------------------------------ */
-
-function SeletorCliente({
-  clientes,
-  clienteAtualId,
-  veiculosPorCliente,
-}: {
-  clientes: Cliente[];
-  clienteAtualId: string;
-  veiculosPorCliente: Record<string, number>;
-}) {
-  return (
-    <div className="flex items-center gap-1 flex-wrap">
-      {clientes.map((c) => {
-        const ativo = c.id === clienteAtualId;
-        const nVeics = veiculosPorCliente[c.id] ?? 0;
-        return (
-          <Link
-            key={c.id}
-            href={`?cliente=${c.cod_user_unitrac}`}
-            className="flex items-center gap-2.5 px-5 py-2.5 rounded-2xl transition-all duration-150 no-underline"
-            style={
-              ativo
-                ? {
-                    backgroundColor: "var(--accent-dim)",
-                    border: "1px solid var(--accent)",
-                    color: "var(--accent)",
-                  }
-                : {
-                    backgroundColor: "transparent",
-                    border: "1px solid var(--border)",
-                    color: "var(--text-muted)",
-                  }
-            }
-          >
-            <span style={{ color: ativo ? "var(--accent)" : "var(--text-dim)" }}>
-              <IconTruck size={14} />
-            </span>
-            <span className="text-sm font-semibold tracking-tight leading-none">
-              {c.nome}
-            </span>
-            <span
-              className="num-mono text-xs font-bold"
-              style={{
-                fontFamily: "var(--font-geist-mono, monospace)",
-                color: ativo ? "var(--accent)" : "var(--text-dim)",
-                opacity: 0.8,
-              }}
-            >
-              {nVeics}
-            </span>
-          </Link>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Metrica grande                                                       */
-/* ------------------------------------------------------------------ */
-
-function MetricaGrande({
-  label,
-  valor,
-  sublabel,
-  cor,
-  compacto,
-}: {
-  label: string;
-  valor: string | number;
-  sublabel?: string;
-  cor?: string;
-  compacto?: boolean;
-}) {
-  const corEfetiva = cor ?? "var(--text)";
-  return (
-    <div className="flex flex-col gap-3">
-      <p
-        className="num-mono font-bold leading-none"
-        style={{
-          color: corEfetiva,
-          fontFamily: "var(--font-geist-mono, monospace)",
-          fontSize: compacto ? "clamp(1.75rem, 3.5vw, 2.5rem)" : "clamp(2.5rem, 5vw, 3.75rem)",
-          wordBreak: "break-all",
-        }}
-      >
-        {valor}
-      </p>
-      <div>
-        <p className="text-sm font-medium" style={{ color: "var(--text-muted)" }}>
-          {label}
-        </p>
-        {sublabel && (
-          <p className="text-xs mt-0.5" style={{ color: "var(--text-dim)" }}>
-            {sublabel}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-
-/* ------------------------------------------------------------------ */
-/* Separador de secao                                                   */
-/* ------------------------------------------------------------------ */
-
-function SectionDivider({ label, cor, count }: { label: string; cor?: string; count?: number }) {
-  return (
-    <div className="flex items-center gap-4">
-      {cor && (
-        <span
-          className="w-2 h-2 rounded-full flex-shrink-0"
-          style={{ backgroundColor: cor }}
-        />
-      )}
-      <h2
-        className="text-xs font-semibold uppercase tracking-widest whitespace-nowrap"
-        style={{ color: "var(--text-muted)", letterSpacing: "0.14em" }}
-      >
-        {label}
-        {count !== undefined && (
-          <span
-            className="num-mono ml-3 font-bold"
-            style={{
-              fontFamily: "var(--font-geist-mono, monospace)",
-              color: cor ?? "var(--text-muted)",
-              fontSize: "0.85rem",
-            }}
-          >
-            {count}
-          </span>
-        )}
-      </h2>
-      <div className="flex-1 h-px" style={{ backgroundColor: "var(--border)" }} />
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Bloco de metricas compacto para a coluna direita                    */
-/* ------------------------------------------------------------------ */
-
-function BlocoMetricas({
-  totalOperando,
-  totalCriticos,
-  entregasFeitas,
-  entregasTotal,
-}: {
-  totalOperando: number;
-  totalCriticos: number;
-  entregasFeitas: number;
-  entregasTotal: number;
-}) {
-  return (
-    <div
-      className="grid grid-cols-3"
-      style={{
-        gap: "0",
-        borderRadius: "0.875rem",
-        overflow: "hidden",
-        border: "1px solid var(--border)",
-      }}
-    >
-      {/* Operando */}
-      <div
-        style={{
-          padding: "1.125rem 1rem",
-          borderRight: "1px solid var(--border)",
-          backgroundColor: "var(--card)",
-        }}
-      >
-        <MetricaGrande label="operando" valor={totalOperando} compacto />
-      </div>
-
-      {/* Criticos */}
-      <div
-        style={{
-          padding: "1.125rem 1rem",
-          borderRight: "1px solid var(--border)",
-          backgroundColor: totalCriticos > 0 ? "#130909" : "var(--card)",
-        }}
-      >
-        <MetricaGrande
-          label="critico"
-          valor={totalCriticos}
-          cor={totalCriticos > 0 ? "var(--vermelho)" : "var(--text-dim)"}
-          compacto
-        />
-      </div>
-
-      {/* Entregas */}
-      <div
-        style={{
-          padding: "1.125rem 1rem",
-          backgroundColor: "var(--card)",
-        }}
-      >
-        {entregasTotal > 0 ? (
-          <div className="flex flex-col gap-2">
-            <MetricaGrande
-              label="entregas"
-              valor={`${entregasFeitas}/${entregasTotal}`}
-              cor="var(--accent)"
-              compacto
-            />
-            <div style={{ height: "2px", borderRadius: "2px", backgroundColor: "var(--border-subtle)", overflow: "hidden" }}>
-              <div
-                style={{
-                  height: "100%",
-                  width: `${Math.min(100, Math.round((entregasFeitas / entregasTotal) * 100))}%`,
-                  backgroundColor: "var(--verde)",
-                  borderRadius: "2px",
-                  transition: "width 0.5s ease",
-                }}
-              />
-            </div>
-          </div>
-        ) : (
-          <MetricaGrande label="entregas" valor="--" sublabel="sem dados" cor="var(--text-dim)" compacto />
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Pagina principal                                                      */
-/* ------------------------------------------------------------------ */
-
-const LIMITE_CARDS_OPERACAO = 12;
-
 export default async function DashboardPage({
   searchParams,
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
-  const { cliente: clienteParam, tipos: tiposParam, problema: problemaParam, nivel: nivelParam, turno: turnoParam } = await searchParams;
+  const { cliente: clienteParam } = await searchParams;
   const supabase = createAdminClient();
-
-  // Expandir tipos selecionados: o chip "Jammer/Sinal" abrange jammer, sinal e bloqueio.
-  const tiposRaw = typeof tiposParam === "string" ? tiposParam : "";
-  const tiposChips = tiposRaw ? tiposRaw.split(",").filter(Boolean) : [];
-  const GRUPO_JAMMER = ["jammer", "sinal", "bloqueio"];
-  const tiposSelecionados = tiposChips.flatMap((t) =>
-    GRUPO_JAMMER.includes(t) ? GRUPO_JAMMER : [t]
-  );
-  const tiposSelecionadosSet = [...new Set(tiposSelecionados)];
-
-  const soProblema = problemaParam === "1";
-  const soTurno = turnoParam === "1";
-  const cutoffTurno = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
-
-  // Nivel selecionado pelo filtro ("critico" / "atencao" / ambos / nenhum)
-  const nivelRaw = typeof nivelParam === "string" ? nivelParam : "";
-  const niveisAtivos = nivelRaw ? nivelRaw.split(",").filter(Boolean) : [];
 
   const [
     { data: clientesRaw },
@@ -434,7 +71,7 @@ export default async function DashboardPage({
     supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
     supabase.from("veiculos").select("id, cliente_id, placa, cv"),
     supabase.from("posicoes_atuais").select(
-      "veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, local, entregas_feitas, entregas_total, parado_desde, updated_at"
+      "veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"
     ),
     supabase
       .from("alertas")
@@ -447,18 +84,13 @@ export default async function DashboardPage({
   const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
   const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];
 
-  // Determinar cliente ativo
   const codParam = typeof clienteParam === "string" ? clienteParam : undefined;
   const clienteAtivo: Cliente =
     (codParam && clientes.find((c) => c.cod_user_unitrac === codParam)) ||
     clientes[0];
 
-  const veiculosPorCliente: Record<string, number> = {};
-  for (const c of clientes) {
-    veiculosPorCliente[c.id] = todosVeiculos.filter((v) => v.cliente_id === c.id).length;
-  }
+  if (!clienteAtivo) return null;
 
-  // Filtrar para cliente ativo
   const veiculos = todosVeiculos.filter((v) => v.cliente_id === clienteAtivo.id);
   const veiculoIds = new Set(veiculos.map((v) => v.id));
 
@@ -467,79 +99,10 @@ export default async function DashboardPage({
       .filter((p) => veiculoIds.has(p.veiculo_id))
       .map((p) => [p.veiculo_id, p])
   );
-
-  const alertas = todosAlertas
-    .filter((a) => a.cliente_id === clienteAtivo.id)
-    .filter((a) => {
-      if (!soTurno) return true;
-      // Alertas "ativo" podem ficar presos (veiculo offline, motor nao consegue resolver).
-      // Nunca ocultar pelo filtro de turno para nao criar ponto cego de seguranca.
-      if (a.status === "ativo") return true;
-      return a.desde >= cutoffTurno;
-    });
   const veiculoById = new Map(veiculos.map((v) => [v.id, v]));
 
-  // Construir itens enriquecidos
-  const todosItens: VeiculoItem[] = veiculos.map((v) => {
-    const pos = posicaoPorVeiculo.get(v.id);
-    return {
-      id: v.id,
-      placa: v.placa,
-      cv: v.cv,
-      grupo: null,
-      lat: pos?.lat ?? null,
-      lng: pos?.lng ?? null,
-      nivel: (pos?.nivel ?? "cinza") as NivelDB,
-      motivo: pos?.motivo ?? null,
-      velocidade: pos?.velocidade ?? 0,
-      ignicao: pos?.ignicao ?? false,
-      atraso_min: pos?.atraso_min ?? 9999,
-      panico: pos?.panico ?? false,
-      bau_aberto: pos?.bau_aberto ?? false,
-      local: pos?.local ?? null,
-      entregas_feitas: pos?.entregas_feitas ?? 0,
-      entregas_total: pos?.entregas_total ?? 0,
-      parado_desde: pos?.parado_desde ?? null,
-      updated_at: pos?.updated_at ?? null,
-    };
-  });
+  const alertas = todosAlertas.filter((a) => a.cliente_id === clienteAtivo.id);
 
-  // Separar por nivel
-  const emOperacaoRaw = todosItens
-    .filter((i) => i.nivel === "verde")
-    .sort((a, b) => {
-      const aMovendo = a.velocidade > 0 ? 0 : 1;
-      const bMovendo = b.velocidade > 0 ? 0 : 1;
-      if (aMovendo !== bMovendo) return aMovendo - bMovendo;
-      const aPendentes = a.entregas_total - a.entregas_feitas;
-      const bPendentes = b.entregas_total - b.entregas_feitas;
-      return bPendentes - aPendentes;
-    });
-
-  const emOperacaoVisiveis = emOperacaoRaw.slice(0, LIMITE_CARDS_OPERACAO);
-  const emOperacaoOcultos = emOperacaoRaw.slice(LIMITE_CARDS_OPERACAO);
-
-  const concluidos = todosItens.filter((i) => i.nivel === "concluido");
-  const semComunicacao = todosItens.filter((i) => i.nivel === "cinza");
-
-  // Metricas
-  const totalOperando = emOperacaoRaw.length;
-  const totalCriticos = todosItens.filter((i) => i.nivel === "vermelho").length;
-  const totalConcluidos = concluidos.length;
-  const totalSemCom = semComunicacao.length;
-
-  // Entregas do dia
-  const entregasFeitas = todosItens.reduce((s, i) => s + i.entregas_feitas, 0);
-  const entregasTotal = todosItens.reduce((s, i) => s + i.entregas_total, 0);
-
-  // Helper para checar se um tipo de alerta casa com os tipos selecionados pelo filtro.
-  // O grupo jammer/sinal/bloqueio ja foi expandido em tiposSelecionadosSet acima.
-  function tiposMatch(tipo: string): boolean {
-    if (tiposSelecionadosSet.length === 0) return true;
-    return tiposSelecionadosSet.includes(tipo?.toLowerCase() ?? "");
-  }
-
-  // TAREFA A: Alertas criticos ordenados por severidade + filtro de tipo (se ativo)
   const alertasCriticos = alertas
     .filter((a) => a.nivel === "critico")
     .map((a) => {
@@ -556,10 +119,8 @@ export default async function DashboardPage({
         atraso_min: pos?.atraso_min ?? null,
       };
     })
-    .filter((a) => tiposMatch(a.tipo))
     .sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo));
 
-  // TAREFA A: Alertas atencao ordenados por severidade + filtro de tipo (se ativo)
   const alertasAtencao = alertas
     .filter((a) => a.nivel === "atencao")
     .map((a) => {
@@ -576,322 +137,58 @@ export default async function DashboardPage({
         atraso_min: pos?.atraso_min ?? null,
       };
     })
-    .filter((a) => tiposMatch(a.tipo))
     .sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo));
 
-  // TAREFA B: ids que devem apitar = todos os criticos + atencao do tipo parada_cliente
-  const idsParaApitar = [
-    ...alertasCriticos.map((a) => a.id),
-    ...alertasAtencao
-      .filter((a) => a.tipo === "parada_cliente")
-      .map((a) => a.id),
+  const alertasIniciais = [
+    ...alertasCriticos.map((a) => ({
+      id: a.id,
+      veiculo_id: a.veiculo_id,
+      cv: veiculoById.get(a.veiculo_id)?.cv ?? "",
+      placa: a.placa,
+      nivel: a.nivel as "critico" | "atencao",
+      tipo: a.tipo,
+      motivo: a.motivo,
+      desde: a.desde,
+      status: a.status,
+      score: a.score ?? null,
+      lat: a.lat ?? null,
+      lng: a.lng ?? null,
+      velocidade: a.velocidade ?? null,
+      ignicao: a.ignicao ?? null,
+      atraso_min: a.atraso_min ?? null,
+      local: a.local ?? null,
+    })),
+    ...alertasAtencao.map((a) => ({
+      id: a.id,
+      veiculo_id: a.veiculo_id,
+      cv: veiculoById.get(a.veiculo_id)?.cv ?? "",
+      placa: a.placa,
+      nivel: a.nivel as "critico" | "atencao",
+      tipo: a.tipo,
+      motivo: a.motivo,
+      desde: a.desde,
+      status: a.status,
+      score: a.score ?? null,
+      lat: a.lat ?? null,
+      lng: a.lng ?? null,
+      velocidade: a.velocidade ?? null,
+      ignicao: a.ignicao ?? null,
+      atraso_min: a.atraso_min ?? null,
+      local: a.local ?? null,
+    })),
   ];
 
-  // Contagens para os badges dos chips da FiltrosBar (usa todos os alertas do cliente, sem filtros)
-  const contagensTipos: Record<string, number> = {};
-  for (const a of alertas) {
-    const t = a.tipo ?? "outro";
-    contagensTipos[t] = (contagensTipos[t] ?? 0) + 1;
-  }
-  // jammer agrupa sinal/bloqueio
-  const jammerTotal = (contagensTipos["jammer"] ?? 0) + (contagensTipos["sinal"] ?? 0) + (contagensTipos["bloqueio"] ?? 0);
-  if (jammerTotal > 0) contagensTipos["jammer"] = jammerTotal;
-
-  const contagensNivel = {
-    critico: alertas.filter((a) => a.nivel === "critico").length,
-    atencao: alertas.filter((a) => a.nivel === "atencao").length,
-  };
-
-  // Visibilidade das secoes por filtro de nivel
-  const mostrarCriticos = niveisAtivos.length === 0 || niveisAtivos.includes("critico");
-  const mostrarAtencao  = niveisAtivos.length === 0 || niveisAtivos.includes("atencao");
-
-  /* --------------------------------------------------------------- */
-  /* Render: layout dois paineis em lg+, coluna unica em mobile       */
-  /* --------------------------------------------------------------- */
-
   return (
-    <div
-      style={{ maxWidth: "1600px", margin: "0 auto", padding: "1.5rem 1.5rem 4rem" }}
-    >
-
-      {/* ============================================================
-          1. SELETOR DE CLIENTE + APITO (topo, largura total)
-          ============================================================ */}
-      <section
-        aria-label="Selecionar cliente"
-        style={{ marginBottom: "1.5rem" }}
-      >
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex items-center gap-2" style={{ color: "var(--text-dim)" }}>
-              <IconShield size={11} />
-              <span
-                className="text-xs uppercase tracking-widest"
-                style={{ letterSpacing: "0.14em", color: "var(--text-dim)" }}
-              >
-                Cliente
-              </span>
-            </div>
-            <SeletorCliente
-              clientes={clientes}
-              clienteAtualId={clienteAtivo.id}
-              veiculosPorCliente={veiculosPorCliente}
-            />
-          </div>
-          {/* TAREFA B: AlertaSonoro com idsParaApitar */}
-          <AlertaSonoro idsParaApitar={idsParaApitar} />
-        </div>
-
-        {/* Barra de filtros */}
-        <div style={{ marginTop: "1rem" }}>
-          <FiltrosBar contagens={{ tipos: contagensTipos, nivel: contagensNivel }} />
-        </div>
-      </section>
-
-      {/* ============================================================
-          TAREFA C: LAYOUT DOIS PAINEIS
-          - lg+: [coluna alertas ~43%] [coluna mapa+metricas sticky ~57%]
-          - mobile: coluna unica empilhada
-          ============================================================ */}
-      <div
-        className="flex flex-col lg:flex-row"
-        style={{ gap: "1.25rem", alignItems: "flex-start" }}
-      >
-
-        {/* ========================================================
-            COLUNA ESQUERDA: fila de alertas (rolavel)
-            ======================================================== */}
-        <div
-          className="w-full min-w-0"
-          style={{ flex: "0 0 43%", maxWidth: "100%" }}
-        >
-
-          {/* CRITICOS */}
-          {mostrarCriticos && (
-          <section aria-label="Alertas críticos" style={{ marginBottom: "1.5rem" }}>
-            <SectionDivider
-              label="Crítico"
-              cor={alertasCriticos.length > 0 ? "var(--vermelho)" : undefined}
-              count={alertasCriticos.length}
-            />
-
-            <div style={{ marginTop: "0.875rem" }}>
-              {alertasCriticos.length === 0 ? (
-                <div
-                  className="flex items-center gap-4 rounded-xl"
-                  style={{
-                    padding: "1.25rem 1.5rem",
-                    backgroundColor: "#141414",
-                    border: "1px solid #242424",
-                  }}
-                >
-                  <span
-                    className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center"
-                    style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
-                  >
-                    <IconCheck size={13} />
-                  </span>
-                  <p className="text-sm" style={{ color: "var(--text-dim)" }}>
-                    Nenhuma ocorrência crítica no momento.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
-                  {alertasCriticos.map((a) => (
-                    <CardAlertaCritico
-                      key={a.id}
-                      id={a.id}
-                      status={a.status}
-                      nivel={a.nivel}
-                      tipo={a.tipo}
-                      placa={a.placa}
-                      motivo={a.motivo}
-                      local={a.local}
-                      desde={a.desde}
-                      lat={a.lat}
-                      lng={a.lng}
-                      velocidade={a.velocidade}
-                      ignicao={a.ignicao}
-                      atraso_min={a.atraso_min}
-                      score={a.score}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
-          )}
-
-          {/* ATENCAO */}
-          {mostrarAtencao && (
-          <section aria-label="Veículos em atenção" style={{ marginBottom: "1.5rem" }}>
-            <SectionDivider
-              label="Atenção"
-              cor={alertasAtencao.length > 0 ? "var(--amarelo)" : undefined}
-              count={alertasAtencao.length}
-            />
-            <div style={{ marginTop: "0.875rem" }}>
-              {alertasAtencao.length === 0 ? (
-                <div
-                  className="flex items-center gap-4 rounded-xl"
-                  style={{ padding: "1.25rem 1.5rem", backgroundColor: "#141414", border: "1px solid #242424" }}
-                >
-                  <span
-                    className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center"
-                    style={{ backgroundColor: "color-mix(in srgb, var(--verde) 10%, transparent)", color: "var(--verde)" }}
-                  >
-                    <IconCheck size={13} />
-                  </span>
-                  <p className="text-sm" style={{ color: "var(--text-dim)" }}>
-                    Nada em atenção no momento.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
-                  {alertasAtencao.map((a) => (
-                    <CardAlertaCritico
-                      key={a.id}
-                      id={a.id}
-                      status={a.status}
-                      nivel={a.nivel}
-                      tipo={a.tipo}
-                      placa={a.placa}
-                      motivo={a.motivo}
-                      local={a.local}
-                      desde={a.desde}
-                      lat={a.lat}
-                      lng={a.lng}
-                      velocidade={a.velocidade}
-                      ignicao={a.ignicao}
-                      atraso_min={a.atraso_min}
-                      score={a.score}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
-          )}
-
-          {/* EM OPERACAO — ocultado quando "So com problema" esta ativo (nao e problema) */}
-          {!soProblema && (
-            <section aria-label="Veículos em operação" style={{ marginBottom: "1.5rem" }}>
-              <SectionDivider
-                label="Em operação"
-                cor="var(--verde)"
-                count={totalOperando}
-              />
-
-              <div style={{ marginTop: "0.875rem" }}>
-                {totalOperando === 0 ? (
-                  <div
-                    className="flex items-center justify-center rounded-xl"
-                    style={{
-                      padding: "2rem",
-                      backgroundColor: "var(--card)",
-                      border: "1px solid var(--border)",
-                      color: "var(--text-dim)",
-                    }}
-                  >
-                    <p className="text-sm">Nenhum veículo em operação no momento.</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex flex-col" style={{ gap: "0.75rem" }}>
-                      {emOperacaoVisiveis.map((item) => (
-                        <CardVeiculoOperacao key={item.id} item={item} />
-                      ))}
-                    </div>
-
-                    {emOperacaoOcultos.length > 0 && (
-                      <VerTodosBtn totalOcultos={emOperacaoOcultos.length}>
-                        <div className="flex flex-col" style={{ gap: "0.75rem", marginTop: "0.75rem" }}>
-                          {emOperacaoOcultos.map((item) => (
-                            <CardVeiculoOperacao key={item.id} item={item} />
-                          ))}
-                        </div>
-                      </VerTodosBtn>
-                    )}
-                  </>
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* CONCLUIDOS + SEM COMUNICACAO — ocultados quando "So com problema" esta ativo */}
-          {!soProblema && (
-            <div className="flex flex-col" style={{ gap: "0.5rem" }}>
-              <FaixaColapsavel
-                label="concluídos"
-                count={totalConcluidos}
-                cor="var(--verde)"
-                icone={<IconCheck size={13} />}
-              >
-                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
-                  {concluidos.map((item) => (
-                    <CardVeiculoOperacao key={item.id} item={item} />
-                  ))}
-                </div>
-              </FaixaColapsavel>
-
-              <FaixaColapsavel
-                label="sem comunicação"
-                count={totalSemCom}
-                icone={<IconNoSignal size={13} />}
-              >
-                <div className="flex flex-col" style={{ gap: "0.75rem" }}>
-                  {semComunicacao.map((item) => (
-                    <CardVeiculoOperacao key={item.id} item={item} />
-                  ))}
-                </div>
-              </FaixaColapsavel>
-            </div>
-          )}
-
-          {/* Roubo de carga: contexto de inteligencia, abaixo da fila de alertas */}
-          <div style={{ marginTop: "1.5rem" }}>
-            <PainelRoubo />
-          </div>
-        </div>
-
-        {/* ========================================================
-            COLUNA DIREITA: metricas + mapa (sticky em desktop)
-            ======================================================== */}
-        <div
-          className="w-full min-w-0 lg:sticky"
-          style={{
-            flex: "1 1 0%",
-            top: "calc(var(--header-h, 64px) + 1rem)",
-            display: "flex",
-            flexDirection: "column",
-            gap: "1rem",
-          }}
-        >
-          {/* Metricas compactas */}
-          <BlocoMetricas
-            totalOperando={totalOperando}
-            totalCriticos={totalCriticos}
-            entregasFeitas={entregasFeitas}
-            entregasTotal={entregasTotal}
-          />
-
-          {/* Mapa ao vivo da frota: altura determinada (vh) pro Leaflet montar com tamanho correto,
-              calculada pra a coluna inteira caber na viewport sem estourar */}
-          <div
-            className="rounded-2xl overflow-hidden"
-            style={{ border: "1px solid var(--border)", flexShrink: 0 }}
-          >
-            <MapaWrapper
-              cliente={clienteAtivo.cod_user_unitrac}
-              altura="calc(100vh - var(--header-h, 64px) - 8.5rem)"
-              tiposAtivos={tiposSelecionadosSet.length > 0 ? tiposSelecionadosSet : undefined}
-              soProblema={true}
-            />
-          </div>
-        </div>
-
-      </div>
-    </div>
+    <PainelCentral
+      cliente={clienteAtivo.cod_user_unitrac}
+      clientes={clientes.map((c) => ({
+        id: c.id,
+        nome: c.nome,
+        cod: c.cod_user_unitrac,
+      }))}
+      clienteAtivoId={clienteAtivo.id}
+      veiculos={veiculos.map((v) => ({ placa: v.placa, cv: v.cv }))}
+      alertasIniciais={alertasIniciais}
+    />
   );
 }
