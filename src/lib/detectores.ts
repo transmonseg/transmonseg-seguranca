@@ -62,6 +62,33 @@ export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
   return null;
 }
 
+export function detectarIgnicaoForaJanela(
+  p: PosicaoNormalizada,
+  emOperacao: boolean
+): Alerta | null {
+  if (!p.fresco || !p.ignicao || emOperacao) return null;
+  return {
+    nivel: "critico",
+    tipo: "ignicao_noturna",
+    motivo: "Motor ligado fora do horario de operacao (possivel movimentacao nao autorizada)",
+    score: 85,
+  };
+}
+
+export function detectarSaidaNaoAutorizada(
+  p: PosicaoNormalizada,
+  ctx: { foraDaBase: boolean; temPendentes: boolean; emOperacao: boolean }
+): Alerta | null {
+  if (!p.fresco || !p.ignicao) return null;
+  if (!ctx.foraDaBase || ctx.temPendentes || !ctx.emOperacao) return null;
+  return {
+    nivel: "critico",
+    tipo: "saida_nao_autorizada",
+    motivo: "Veiculo saiu da base sem entregas programadas",
+    score: 78,
+  };
+}
+
 export function detectarExcessoVelocidade(p: PosicaoNormalizada): Alerta | null {
   if (p.velocidade > 100) {
     return {
@@ -345,6 +372,12 @@ export function avaliar(
     detectarPanico(p),
     detectarBau(p),
     detectarJammer(p),
+    detectarIgnicaoForaJanela(p, ctx.emOperacao),
+    detectarSaidaNaoAutorizada(p, {
+      foraDaBase: ctx.foraDaBase,
+      temPendentes: ctx.temPendentes ?? false,
+      emOperacao: ctx.emOperacao,
+    }),
     detectarExcessoVelocidade(p),
     detectarParadaCliente({
       paradoMin: ctx.paradoMin,

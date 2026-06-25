@@ -9,6 +9,8 @@ import {
   detectarParadaLonga,
   detectarDesvio,
   detectarTiroteioProximo,
+  detectarIgnicaoForaJanela,
+  detectarSaidaNaoAutorizada,
   foraDeRota,
   avaliar,
   formataDuracao,
@@ -513,5 +515,77 @@ describe("avaliar", () => {
       rumoAlvo: 180,
     });
     expect(alerta?.tipo).toBe("panico");
+  });
+});
+
+describe("detectarIgnicaoForaJanela", () => {
+  it("ignicao ligada fora do horario de operacao retorna critico ignicao_noturna", () => {
+    const a = detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), false);
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("critico");
+    expect(a?.tipo).toBe("ignicao_noturna");
+    expect(a?.score).toBe(85);
+  });
+  it("ignicao desligada fora do horario retorna null", () => {
+    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: false, fresco: true }), false)).toBeNull();
+  });
+  it("ignicao ligada DENTRO do horario retorna null", () => {
+    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), true)).toBeNull();
+  });
+  it("posicao nao fresca retorna null (dado congelado nao e sinal de movimento)", () => {
+    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: false }), false)).toBeNull();
+  });
+});
+
+describe("detectarSaidaNaoAutorizada", () => {
+  it("fora da base, sem pendentes, ignicao ligada, em operacao retorna critico", () => {
+    const a = detectarSaidaNaoAutorizada(
+      posicaoBase({ ignicao: true, fresco: true }),
+      { foraDaBase: true, temPendentes: false, emOperacao: true }
+    );
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("critico");
+    expect(a?.tipo).toBe("saida_nao_autorizada");
+    expect(a?.score).toBe(78);
+  });
+  it("com pendentes (tem rota) retorna null", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: true, fresco: true }),
+        { foraDaBase: true, temPendentes: true, emOperacao: true }
+      )
+    ).toBeNull();
+  });
+  it("dentro da base retorna null", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: true, fresco: true }),
+        { foraDaBase: false, temPendentes: false, emOperacao: true }
+      )
+    ).toBeNull();
+  });
+  it("ignicao desligada retorna null", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: false, fresco: true }),
+        { foraDaBase: true, temPendentes: false, emOperacao: true }
+      )
+    ).toBeNull();
+  });
+  it("fora de operacao retorna null", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: true, fresco: true }),
+        { foraDaBase: true, temPendentes: false, emOperacao: false }
+      )
+    ).toBeNull();
+  });
+  it("posicao nao fresca retorna null", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: true, fresco: false }),
+        { foraDaBase: true, temPendentes: false, emOperacao: true }
+      )
+    ).toBeNull();
   });
 });
