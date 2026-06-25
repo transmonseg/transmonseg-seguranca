@@ -128,10 +128,12 @@ interface Props {
 /* ------------------------------------------------------------------ */
 
 const PERIODOS = [
-  { label: "1h", horas: 1 },
-  { label: "4h", horas: 4 },
+  { label: "1h",  horas: 1 },
+  { label: "2h",  horas: 2 },
+  { label: "6h",  horas: 6 },
+  { label: "12h", horas: 12 },
   { label: "24h", horas: 24 },
-  { label: "4d", horas: 96 },
+  { label: "48h", horas: 48 },
 ] as const;
 
 type HorasPeriodo = (typeof PERIODOS)[number]["horas"];
@@ -631,6 +633,7 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
 
   /* ---- Periodo ---- */
   const [horas, setHoras] = useState<HorasPeriodo>(24);
+  const [dropdownPeriodoAberto, setDropdownPeriodoAberto] = useState(false);
 
   /* ---- Filtro de comunicacao (null = sem filtro) ---- */
   const [filtroComm, setFiltroComm] = useState<number | null>(null);
@@ -1016,34 +1019,78 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
           />
 
           {/* Periodo */}
-          <div>
+          <div style={{ position: "relative" }}>
             <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
-              Periodo:
+              Período:
             </p>
-            <div style={{ display: "flex", gap: 3 }}>
-              {PERIODOS.map((p) => (
-                <button
-                  key={p.horas}
-                  onClick={() => setHoras(p.horas)}
-                  disabled={!cvSelecionado}
-                  style={{
-                    flex: 1,
-                    padding: "0.25rem 0",
-                    borderRadius: "0.375rem",
-                    border: "none",
-                    cursor: cvSelecionado ? "pointer" : "not-allowed",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    backgroundColor: horas === p.horas ? "var(--accent-dim)" : "var(--bg)",
-                    color: horas === p.horas ? "var(--accent)" : "var(--text-dim)",
-                    opacity: !cvSelecionado ? 0.4 : 1,
-                    transition: "all 0.12s",
-                  }}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
+            <button
+              disabled={!cvSelecionado}
+              onClick={() => setDropdownPeriodoAberto((v) => !v)}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "0.3rem 0.6rem",
+                borderRadius: "0.375rem",
+                border: "1px solid var(--border)",
+                cursor: cvSelecionado ? "pointer" : "not-allowed",
+                fontSize: 12,
+                fontWeight: 600,
+                backgroundColor: "var(--bg)",
+                color: "var(--accent)",
+                opacity: !cvSelecionado ? 0.4 : 1,
+              }}
+            >
+              <span>{PERIODOS.find((p) => p.horas === horas)?.label ?? `${horas}h`}</span>
+              <svg width={10} height={10} viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, transform: dropdownPeriodoAberto ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+                <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+
+            {dropdownPeriodoAberto && (
+              <>
+                {/* Backdrop para fechar ao clicar fora */}
+                <div
+                  style={{ position: "fixed", inset: 0, zIndex: 49 }}
+                  onClick={() => setDropdownPeriodoAberto(false)}
+                />
+                <div style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  left: 0,
+                  right: 0,
+                  zIndex: 50,
+                  backgroundColor: "var(--bg-card)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "0.5rem",
+                  overflow: "hidden",
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+                }}>
+                  {PERIODOS.map((p) => (
+                    <button
+                      key={p.horas}
+                      onClick={() => { setHoras(p.horas); setDropdownPeriodoAberto(false); }}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "0.4rem 0.75rem",
+                        border: "none",
+                        borderBottom: "1px solid var(--border)",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        fontWeight: horas === p.horas ? 700 : 500,
+                        backgroundColor: horas === p.horas ? "var(--accent-dim)" : "transparent",
+                        color: horas === p.horas ? "var(--accent)" : "var(--text)",
+                        transition: "background 0.1s",
+                      }}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Filtro comunicacao */}
@@ -1648,7 +1695,7 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
                     Inicio do rastro
                   </div>
                   <div style={{ fontSize: 11, marginTop: 2, color: "#666" }}>
-                    {horas < 24 ? `${horas}h` : horas === 24 ? "ultimo dia" : "ultimos 4 dias"}
+                    {horas < 24 ? `últimas ${horas}h` : horas === 24 ? "último dia" : `últimas ${horas}h`}
                   </div>
                 </Popup>
               </CircleMarker>
