@@ -68,6 +68,7 @@ interface Alerta {
   motivo: string | null;
   desde: string;
   status: string;
+  score: number | null;
 }
 
 /* Item de veiculo enriquecido para render */
@@ -453,6 +454,7 @@ function CardAlertaCritico({
   velocidade,
   ignicao,
   atraso_min,
+  score,
 }: {
   id: string;
   status: string;
@@ -467,6 +469,7 @@ function CardAlertaCritico({
   velocidade?: number | null;
   ignicao?: boolean | null;
   atraso_min?: number | null;
+  score?: number | null;
 }) {
   const corNivel = nivel === "critico" ? "var(--vermelho)" : "var(--amarelo)";
   const bgNivel = nivel === "critico" ? "#160c0c" : "#16120a";
@@ -507,6 +510,24 @@ function CardAlertaCritico({
               </span>
               {tipo}
             </span>
+            {score != null && (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  padding: "2px 6px",
+                  borderRadius: 5,
+                  backgroundColor:
+                    score >= 80 ? "#ef444418" : score >= 50 ? "#f9731618" : "#f59e0b18",
+                  border: `1px solid ${score >= 80 ? "#ef444444" : score >= 50 ? "#f9731644" : "#f59e0b44"}`,
+                  color:
+                    score >= 80 ? "#ef4444" : score >= 50 ? "#f97316" : "#f59e0b",
+                  fontFamily: "var(--font-geist-mono, monospace)",
+                }}
+              >
+                {score}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0" style={{ color: "var(--text-dim)" }}>
             <IconClock size={11} />
@@ -801,7 +822,7 @@ export default async function DashboardPage({
     ),
     supabase
       .from("alertas")
-      .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status")
+      .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score")
       .in("status", ["ativo", "reconhecido"]),
   ]);
 
@@ -1069,6 +1090,7 @@ export default async function DashboardPage({
                       velocidade={a.velocidade}
                       ignicao={a.ignicao}
                       atraso_min={a.atraso_min}
+                      score={a.score}
                     />
                   ))}
                 </div>
@@ -1119,6 +1141,7 @@ export default async function DashboardPage({
                       velocidade={a.velocidade}
                       ignicao={a.ignicao}
                       atraso_min={a.atraso_min}
+                      score={a.score}
                     />
                   ))}
                 </div>
