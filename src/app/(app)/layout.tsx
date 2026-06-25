@@ -58,13 +58,6 @@ export default async function AppLayout({
               Central
             </Link>
             <Link
-              href="/monitoramento"
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
-            >
-              Monitoramento
-            </Link>
-            <Link
               href="/analise"
               className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
               style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
