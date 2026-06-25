@@ -121,6 +121,9 @@ interface Props {
   veiculos: VeiculoOpcao[];
   clientes: { id: string; nome: string; cod: string }[];
   clienteAtivoId: string;
+  mostrarSidebar?: boolean;
+  flyParaAlerta?: { lat: number; lng: number; gatilho: number } | null;
+  onVeiculoComAlertaClicado?: (cv: string, placa: string) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -600,11 +603,36 @@ function LegendaItem({ cor, label, qtd }: { cor: string; label: string; qtd: num
   );
 }
 
+function AutoFlyAlerta({
+  flyPara,
+}: {
+  flyPara: { lat: number; lng: number; gatilho: number } | null;
+}) {
+  const map = useMap();
+  const ultimoGatilho = useRef(-1);
+
+  useEffect(() => {
+    if (!flyPara || flyPara.gatilho === ultimoGatilho.current) return;
+    ultimoGatilho.current = flyPara.gatilho;
+    map.flyTo([flyPara.lat, flyPara.lng], 16, { animate: true, duration: 1.2 });
+  }, [flyPara, map]);
+
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Componente principal                                                 */
 /* ------------------------------------------------------------------ */
 
-export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoId }: Props) {
+export default function MapaMonitor({
+  veiculos,
+  cliente,
+  clientes,
+  clienteAtivoId,
+  mostrarSidebar = true,
+  flyParaAlerta = null,
+  onVeiculoComAlertaClicado,
+}: Props) {
   useEffect(() => { fixIcones(); }, []);
 
   /* ---- Grupos (arvore da sidebar) ---- */
@@ -950,9 +978,9 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
       }}
     >
       {/* ============================================================
-          SIDEBAR
+          SIDEBAR (oculta quando mostrarSidebar=false)
           ============================================================ */}
-      <div
+      {mostrarSidebar && <div
         style={{
           width: SIDEBAR_W,
           flexShrink: 0,
@@ -1442,7 +1470,7 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
                   );
                 })}
         </div>
-      </div>
+      </div>}
 
       {/* ============================================================
           COLUNA DIREITA: MAPA + LEGENDA
@@ -1497,6 +1525,7 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
             {pontosRastro.length > 0 && (
               <AjustarBoundsRastro pontos={pontosRastro} gatilho={gatilhoBounds} />
             )}
+            {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
 
             {googleApiKey ? (
               <TileLayer
@@ -1626,7 +1655,12 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
                   icon={iconeStatus(vm, selecionado)}
                   zIndexOffset={selecionado ? 1000 : 0}
                   eventHandlers={{
-                    click: () => selecionarVeiculo({ placa: vm.placa, cv: vm.cv }),
+                    click: () => {
+                      selecionarVeiculo({ placa: vm.placa, cv: vm.cv });
+                      if (vm.tipo !== null && onVeiculoComAlertaClicado) {
+                        onVeiculoComAlertaClicado(vm.cv, vm.placa);
+                      }
+                    },
                   }}
                 >
                   <Popup>
