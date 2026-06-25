@@ -28,7 +28,7 @@ async function atualizar(id: string, patch: Record<string, unknown>): Promise<Re
     .from("alertas")
     .update({ ...patch, operador_id: opId })
     .eq("id", id);
-  if (error) return { erro: "Nao foi possivel atualizar o alerta." };
+  if (error) return { erro: "Não foi possível atualizar o alerta." };
   revalidatePath("/");
   return { ok: true };
 }

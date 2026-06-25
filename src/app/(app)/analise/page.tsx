@@ -6,14 +6,14 @@ export const dynamic = "force-dynamic";
 const LABEL_TIPO: Record<string, string> = {
   panico: "Panico",
   desvio: "Desvio de rota",
-  parada_anomala: "Parada anomala",
+  parada_anomala: "Parada anômala",
   parada_longa: "Parada longa",
   parada_cliente: "Parada em cliente",
-  favela: "Area de risco",
+  favela: "Área de risco",
   jammer: "Jammer",
-  tiroteio: "Area de tiroteio",
+  tiroteio: "Área de tiroteio",
   excesso_velocidade: "Excesso de velocidade",
-  sem_comunicacao: "Sem comunicacao",
+  sem_comunicacao: "Sem comunicação",
 };
 
 const COR_TIPO: Record<string, string> = {
@@ -168,9 +168,9 @@ export default async function AnalisePage({
         {/* Linha 1: titulo + periodo */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight">Analise historica</h2>
+            <h2 className="text-lg font-semibold tracking-tight">Análise histórica</h2>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              {total} alerta{total !== 1 ? "s" : ""} nos ultimos {dias} dias
+              {total} alerta{total !== 1 ? "s" : ""} nos últimos {dias} dias
               {temFiltroAtivo && (
                 <span style={{ color: "var(--accent)" }}> &bull; filtros ativos</span>
               )}
@@ -203,7 +203,7 @@ export default async function AnalisePage({
         >
           {/* Grupo: Nivel */}
           <span className="text-xs uppercase tracking-widest leading-none mr-1" style={{ color: "var(--text-dim)", fontSize: "9px" }}>
-            Nivel
+            Nível
           </span>
           {(["critico", "atencao"] as const).map((n) => {
             const ativo = nivelFiltro === n;
@@ -219,7 +219,7 @@ export default async function AnalisePage({
                   : { backgroundColor: "transparent", border: "1px solid var(--border)", color: "var(--text-muted)" }
                 }
               >
-                {n === "critico" ? "Critico" : "Atencao"}
+                {n === "critico" ? "Crítico" : "Atenção"}
                 {cnt > 0 && (
                   <span style={{ fontSize: "9px", fontWeight: 700, backgroundColor: cor + "33", color: cor, borderRadius: "999px", padding: "0 3px", minWidth: "15px", height: "15px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
                     {cnt}
@@ -284,7 +284,7 @@ export default async function AnalisePage({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
           { label: "Total de alertas", valor: total, cor: "var(--text)" },
-          { label: "Criticos", valor: criticos, cor: "#ef4444" },
+          { label: "Críticos", valor: criticos, cor: "#ef4444" },
           { label: "Resolvidos", valor: resolvidos, cor: "#22c55e" },
           { label: "Falsos positivos", valor: falsos, cor: "#6b7280" },
         ].map(({ label, valor, cor }) => (
@@ -318,7 +318,7 @@ export default async function AnalisePage({
           <h3 className="text-sm font-semibold mb-4">Alertas por tipo</h3>
           {tiposOrdenados.length === 0 ? (
             <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Nenhum alerta no periodo.
+              Nenhum alerta no período.
             </p>
           ) : (
             <div className="space-y-3">
@@ -369,10 +369,10 @@ export default async function AnalisePage({
           className="rounded-xl p-6"
           style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <h3 className="text-sm font-semibold mb-4">Top veiculos por alertas</h3>
+          <h3 className="text-sm font-semibold mb-4">Top veículos por alertas</h3>
           {topVeiculos.length === 0 ? (
             <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Nenhum dado no periodo.
+              Nenhum dado no período.
             </p>
           ) : (
             <div className="space-y-3">
@@ -438,7 +438,7 @@ export default async function AnalisePage({
           className="px-6 py-4 flex items-center justify-between"
           style={{ backgroundColor: "var(--card)", borderBottom: "1px solid var(--border)" }}
         >
-          <h3 className="text-sm font-semibold">Historico de alertas</h3>
+          <h3 className="text-sm font-semibold">Histórico de alertas</h3>
           <span className="text-xs" style={{ color: "var(--text-muted)" }}>
             {filtrados.length > 100
               ? `mostrando 100 de ${filtrados.length}`
@@ -452,7 +452,7 @@ export default async function AnalisePage({
             style={{ backgroundColor: "var(--bg)" }}
           >
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              Nenhum alerta no periodo selecionado.
+              Nenhum alerta no período selecionado.
             </p>
           </div>
         ) : (
@@ -460,7 +460,7 @@ export default async function AnalisePage({
             <table className="w-full text-xs">
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  {["Tipo", "Placa", "Quando", "Status", "Tempo ate resolver"].map((h) => (
+                  {["Tipo", "Placa", "Quando", "Status", "Tempo até resolver"].map((h) => (
                     <th
                       key={h}
                       className="text-left px-4 py-3 font-medium"

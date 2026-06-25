@@ -43,13 +43,13 @@ export default async function AppLayout({
                 </span>
               </div>
               <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-                Inteligencia de risco em tempo real
+                Inteligência de risco em tempo real
               </p>
             </div>
           </div>
 
           {/* Navegacao discreta */}
-          <nav className="hidden sm:flex items-center gap-1" aria-label="Navegacao principal">
+          <nav className="hidden sm:flex items-center gap-1" aria-label="Navegação principal">
             <Link
               href="/"
               className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
@@ -69,7 +69,7 @@ export default async function AppLayout({
               className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
               style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
             >
-              Analise
+              Análise
             </Link>
           </nav>
 
@@ -109,7 +109,7 @@ export default async function AppLayout({
                   type="submit"
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors hover:bg-[color:var(--card-hover)] active:translate-y-px"
                   style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
-                  title="Encerrar sessao"
+                  title="Encerrar sessão"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -139,7 +139,7 @@ export default async function AppLayout({
       {/* Rodapé */}
       <footer className="px-6 py-3 flex items-center justify-between border-t" style={{ borderColor: "var(--border)", color: "var(--text-dim)" }}>
         <span className="text-xs">Transmonseg Central &copy; {new Date().getFullYear()}</span>
-        <span className="text-xs">Monitoramento autonomo de frotas</span>
+        <span className="text-xs">Monitoramento autônomo de frotas</span>
       </footer>
     </div>
   );

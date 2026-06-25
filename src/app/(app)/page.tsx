@@ -539,7 +539,7 @@ function CardAlertaCritico({
               letterSpacing: "0.06em",
             }}
           >
-            {nivel === "critico" ? "CRITICO" : "ATENCAO"}
+            {nivel === "critico" ? "CRÍTICO" : "ATENÇÃO"}
           </span>
         </div>
 
@@ -1024,9 +1024,9 @@ export default async function DashboardPage({
 
           {/* CRITICOS */}
           {mostrarCriticos && (
-          <section aria-label="Alertas criticos" style={{ marginBottom: "1.5rem" }}>
+          <section aria-label="Alertas críticos" style={{ marginBottom: "1.5rem" }}>
             <SectionDivider
-              label="Critico"
+              label="Crítico"
               cor={alertasCriticos.length > 0 ? "var(--vermelho)" : undefined}
               count={alertasCriticos.length}
             />
@@ -1048,7 +1048,7 @@ export default async function DashboardPage({
                     <IconCheck size={13} />
                   </span>
                   <p className="text-sm" style={{ color: "var(--text-dim)" }}>
-                    Nenhuma ocorrencia critica no momento.
+                    Nenhuma ocorrência crítica no momento.
                   </p>
                 </div>
               ) : (
@@ -1079,9 +1079,9 @@ export default async function DashboardPage({
 
           {/* ATENCAO */}
           {mostrarAtencao && (
-          <section aria-label="Veiculos em atencao" style={{ marginBottom: "1.5rem" }}>
+          <section aria-label="Veículos em atenção" style={{ marginBottom: "1.5rem" }}>
             <SectionDivider
-              label="Atencao"
+              label="Atenção"
               cor={alertasAtencao.length > 0 ? "var(--amarelo)" : undefined}
               count={alertasAtencao.length}
             />
@@ -1098,7 +1098,7 @@ export default async function DashboardPage({
                     <IconCheck size={13} />
                   </span>
                   <p className="text-sm" style={{ color: "var(--text-dim)" }}>
-                    Nada em atencao no momento.
+                    Nada em atenção no momento.
                   </p>
                 </div>
               ) : (
@@ -1129,9 +1129,9 @@ export default async function DashboardPage({
 
           {/* EM OPERACAO — ocultado quando "So com problema" esta ativo (nao e problema) */}
           {!soProblema && (
-            <section aria-label="Veiculos em operacao" style={{ marginBottom: "1.5rem" }}>
+            <section aria-label="Veículos em operação" style={{ marginBottom: "1.5rem" }}>
               <SectionDivider
-                label="Em operacao"
+                label="Em operação"
                 cor="var(--verde)"
                 count={totalOperando}
               />
@@ -1147,7 +1147,7 @@ export default async function DashboardPage({
                       color: "var(--text-dim)",
                     }}
                   >
-                    <p className="text-sm">Nenhum veiculo em operacao no momento.</p>
+                    <p className="text-sm">Nenhum veículo em operação no momento.</p>
                   </div>
                 ) : (
                   <>
@@ -1176,7 +1176,7 @@ export default async function DashboardPage({
           {!soProblema && (
             <div className="flex flex-col" style={{ gap: "0.5rem" }}>
               <FaixaColapsavel
-                label="concluidos"
+                label="concluídos"
                 count={totalConcluidos}
                 cor="var(--verde)"
                 icone={<IconCheck size={13} />}
@@ -1189,7 +1189,7 @@ export default async function DashboardPage({
               </FaixaColapsavel>
 
               <FaixaColapsavel
-                label="sem comunicacao"
+                label="sem comunicação"
                 count={totalSemCom}
                 icone={<IconNoSignal size={13} />}
               >

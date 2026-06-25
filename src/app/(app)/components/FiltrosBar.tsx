@@ -32,7 +32,7 @@ const CHIPS_TIPO: ChipTipo[] = [
   { label: "Tiroteio",       tipos: ["tiroteio"],                      cor: "#b91c1c" },
   { label: "Desvio",         tipos: ["desvio"],                        cor: "#f59e0b" },
   { label: "Parada cliente", tipos: ["parada_cliente"],                 cor: "#3b82f6" },
-  { label: "Parada anomala", tipos: ["parada_anomala"],                 cor: "#f97316" },
+  { label: "Parada anômala", tipos: ["parada_anomala"],                 cor: "#f97316" },
   { label: "Parada longa",   tipos: ["parada_longa"],                   cor: "#64748b" },
   { label: "Jammer/Sinal",   tipos: ["jammer", "sinal", "bloqueio"],   cor: "#a855f7" },
   { label: "Excesso",        tipos: ["excesso"],                        cor: "#ea580c" },
@@ -138,7 +138,7 @@ export default function FiltrosBar({ contagens }: Props) {
           GRUPO 1: Nivel (critico / atencao)
           ============================================================ */}
 
-      <GroupLabel>Nivel</GroupLabel>
+      <GroupLabel>Nível</GroupLabel>
 
       <Chip
         base={base}
@@ -146,7 +146,7 @@ export default function FiltrosBar({ contagens }: Props) {
         pressed={niveisAtivos.includes("critico")}
         onClick={() => alternarNivel("critico")}
       >
-        Critico
+        Crítico
         <Badge n={contagens.nivel.critico} cor="#ef4444" />
       </Chip>
 
@@ -156,7 +156,7 @@ export default function FiltrosBar({ contagens }: Props) {
         pressed={niveisAtivos.includes("atencao")}
         onClick={() => alternarNivel("atencao")}
       >
-        Atencao
+        Atenção
         <Badge n={contagens.nivel.atencao} cor="#f59e0b" />
       </Chip>
 
@@ -205,7 +205,7 @@ export default function FiltrosBar({ contagens }: Props) {
         pressed={soProblema}
         onClick={alternarProblema}
       >
-        So alertas
+        Só alertas
       </Chip>
 
       {/* Limpar */}
