@@ -163,13 +163,6 @@ function corVeiculo(v: VeiculoMapa): string {
 
 const _iconeCache: Record<string, L.DivIcon> = {};
 
-// Stroke preto por baixo + fill colorido: leitura garantida em qualquer tile
-function _pin(cor: string, w: number, h: number, svgInner: string): string {
-  return `<div style="width:${w}px;height:${h}px;filter:drop-shadow(0 2px 6px rgba(0,0,0,1)) drop-shadow(0 0 3px rgba(0,0,0,0.9))">` +
-    `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">` +
-    svgInner + `</svg></div>`;
-}
-
 // Icone de ponto de entrega (alvo) — circulo numerado, laranja=pendente, cinza=feito.
 function iconeAlvo(numero: number, feito: boolean, proximo: boolean): L.DivIcon {
   const cor = feito ? "#6b7280" : proximo ? "#f97316" : "#fb923c";
@@ -216,11 +209,9 @@ function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
   // Cor muda por status; opacidade reduzida para sem comunicacao.
   const alpha = semComm ? "0.5" : "1";
   html =
-    `<div style="width:30px;height:38px;opacity:${alpha};filter:drop-shadow(0 2px 8px rgba(0,0,0,1)) drop-shadow(0 0 3px rgba(0,0,0,0.9))">` +
+    `<div style="width:30px;height:38px;opacity:${alpha}">` +
     `<svg width="30" height="38" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg">` +
-    // Sombra preta por baixo
-    `<path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="black" opacity="0.55"/>` +
-    // Pin colorido
+    // Pin colorido com borda branca fina
     `<path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>` +
     // Caminhao (Lucide truck, escalonado para caber no circulo do pin)
     `<g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">` +
