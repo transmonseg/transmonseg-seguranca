@@ -770,21 +770,23 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
-  const { cliente: clienteParam, tipos: tiposParam, problema: problemaParam } = await searchParams;
+  const { cliente: clienteParam, tipos: tiposParam, problema: problemaParam, nivel: nivelParam } = await searchParams;
   const supabase = createAdminClient();
 
   // Expandir tipos selecionados: o chip "Jammer/Sinal" abrange jammer, sinal e bloqueio.
-  // tiposSelecionados e a lista tecnica expandida usada nos filtros de lista e mapa.
   const tiposRaw = typeof tiposParam === "string" ? tiposParam : "";
   const tiposChips = tiposRaw ? tiposRaw.split(",").filter(Boolean) : [];
   const GRUPO_JAMMER = ["jammer", "sinal", "bloqueio"];
   const tiposSelecionados = tiposChips.flatMap((t) =>
     GRUPO_JAMMER.includes(t) ? GRUPO_JAMMER : [t]
   );
-  // Deduplicar
   const tiposSelecionadosSet = [...new Set(tiposSelecionados)];
 
   const soProblema = problemaParam === "1";
+
+  // Nivel selecionado pelo filtro ("critico" / "atencao" / ambos / nenhum)
+  const nivelRaw = typeof nivelParam === "string" ? nivelParam : "";
+  const niveisAtivos = nivelRaw ? nivelRaw.split(",").filter(Boolean) : [];
 
   const [
     { data: clientesRaw },
@@ -940,6 +942,25 @@ export default async function DashboardPage({
       .map((a) => a.id),
   ];
 
+  // Contagens para os badges dos chips da FiltrosBar (usa todos os alertas do cliente, sem filtros)
+  const contagensTipos: Record<string, number> = {};
+  for (const a of alertas) {
+    const t = a.tipo ?? "outro";
+    contagensTipos[t] = (contagensTipos[t] ?? 0) + 1;
+  }
+  // jammer agrupa sinal/bloqueio
+  const jammerTotal = (contagensTipos["jammer"] ?? 0) + (contagensTipos["sinal"] ?? 0) + (contagensTipos["bloqueio"] ?? 0);
+  if (jammerTotal > 0) contagensTipos["jammer"] = jammerTotal;
+
+  const contagensNivel = {
+    critico: alertas.filter((a) => a.nivel === "critico").length,
+    atencao: alertas.filter((a) => a.nivel === "atencao").length,
+  };
+
+  // Visibilidade das secoes por filtro de nivel
+  const mostrarCriticos = niveisAtivos.length === 0 || niveisAtivos.includes("critico");
+  const mostrarAtencao  = niveisAtivos.length === 0 || niveisAtivos.includes("atencao");
+
   /* --------------------------------------------------------------- */
   /* Render: layout dois paineis em lg+, coluna unica em mobile       */
   /* --------------------------------------------------------------- */
@@ -977,9 +998,9 @@ export default async function DashboardPage({
           <AlertaSonoro idsParaApitar={idsParaApitar} />
         </div>
 
-        {/* Barra de filtros por tipo de problema (sincroniza lista e mapa via URL) */}
+        {/* Barra de filtros */}
         <div style={{ marginTop: "1rem" }}>
-          <FiltrosBar />
+          <FiltrosBar contagens={{ tipos: contagensTipos, nivel: contagensNivel }} />
         </div>
       </section>
 
@@ -1002,6 +1023,7 @@ export default async function DashboardPage({
         >
 
           {/* CRITICOS */}
+          {mostrarCriticos && (
           <section aria-label="Alertas criticos" style={{ marginBottom: "1.5rem" }}>
             <SectionDivider
               label="Critico"
@@ -1053,8 +1075,10 @@ export default async function DashboardPage({
               )}
             </div>
           </section>
+          )}
 
           {/* ATENCAO */}
+          {mostrarAtencao && (
           <section aria-label="Veiculos em atencao" style={{ marginBottom: "1.5rem" }}>
             <SectionDivider
               label="Atencao"
@@ -1101,6 +1125,7 @@ export default async function DashboardPage({
               )}
             </div>
           </section>
+          )}
 
           {/* EM OPERACAO — ocultado quando "So com problema" esta ativo (nao e problema) */}
           {!soProblema && (

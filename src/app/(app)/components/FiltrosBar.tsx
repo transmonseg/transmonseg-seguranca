@@ -1,144 +1,198 @@
 "use client";
 
-/**
- * FiltrosBar — barra horizontal de chips para filtrar alertas e mapa
- * simultaneamente pela URL (sobrevive ao auto-refresh de 30s).
- *
- * Params de URL mantidos:
- *   cliente  — preservado ao navegar
- *   tipos    — lista separada por virgula dos tipos de alerta selecionados
- *   problema — "1" quando o chip "So com problema" esta ativo
- */
-
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 
-// Definicao dos chips de tipo
+/* ------------------------------------------------------------------ */
+/* Tipos                                                                */
+/* ------------------------------------------------------------------ */
+
 interface ChipTipo {
   label: string;
-  // tipos tecnicos que este chip representa (exato, minusculo)
   tipos: string[];
+  cor: string;
 }
 
+export interface Contagens {
+  tipos: Record<string, number>;
+  nivel: { critico: number; atencao: number };
+}
+
+interface Props {
+  contagens: Contagens;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dados dos chips de tipo                                             */
+/* ------------------------------------------------------------------ */
+
 const CHIPS_TIPO: ChipTipo[] = [
-  { label: "Desvio",         tipos: ["desvio"] },
-  { label: "Parada cliente", tipos: ["parada_cliente"] },
-  { label: "Parada longa",   tipos: ["parada_longa"] },
-  { label: "Tiroteio",       tipos: ["tiroteio"] },
-  { label: "Favela",         tipos: ["favela"] },
-  { label: "Jammer/Sinal",   tipos: ["jammer", "sinal", "bloqueio"] },
-  { label: "Excesso",        tipos: ["excesso"] },
-  { label: "Panico",         tipos: ["panico"] },
-  { label: "Bau",            tipos: ["bau"] },
+  { label: "Panico",         tipos: ["panico"],                        cor: "#ef4444" },
+  { label: "Bau",            tipos: ["bau"],                           cor: "#f97316" },
+  { label: "Favela",         tipos: ["favela"],                        cor: "#dc2626" },
+  { label: "Tiroteio",       tipos: ["tiroteio"],                      cor: "#b91c1c" },
+  { label: "Desvio",         tipos: ["desvio"],                        cor: "#f59e0b" },
+  { label: "Parada cliente", tipos: ["parada_cliente"],                 cor: "#3b82f6" },
+  { label: "Parada anomala", tipos: ["parada_anomala"],                 cor: "#f97316" },
+  { label: "Parada longa",   tipos: ["parada_longa"],                   cor: "#64748b" },
+  { label: "Jammer/Sinal",   tipos: ["jammer", "sinal", "bloqueio"],   cor: "#a855f7" },
+  { label: "Excesso",        tipos: ["excesso"],                        cor: "#ea580c" },
 ];
 
-export default function FiltrosBar() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const params = useSearchParams();
+/* ------------------------------------------------------------------ */
+/* Componente                                                           */
+/* ------------------------------------------------------------------ */
 
-  // Ler estado atual da URL
-  const tiposParam = params.get("tipos") ?? "";
-  const tiposAtivos = tiposParam ? tiposParam.split(",").filter(Boolean) : [];
-  const soProblema = params.get("problema") === "1";
-  const temFiltro = tiposAtivos.length > 0 || soProblema;
+export default function FiltrosBar({ contagens }: Props) {
+  const router    = useRouter();
+  const pathname  = usePathname();
+  const params    = useSearchParams();
 
-  // Navega preservando "cliente"
-  function navegar(novosParams: URLSearchParams) {
-    router.push(pathname + "?" + novosParams.toString(), { scroll: false });
+  /* --- ler estado da URL ------------------------------------------ */
+  const tiposAtivos  = (params.get("tipos") ?? "").split(",").filter(Boolean);
+  const niveisAtivos = (params.get("nivel") ?? "").split(",").filter(Boolean);
+  const soProblema   = params.get("problema") === "1";
+  const temFiltro    = tiposAtivos.length > 0 || niveisAtivos.length > 0 || soProblema;
+
+  /* --- helpers de URL -------------------------------------------- */
+  function baseParams(): URLSearchParams {
+    const p = new URLSearchParams();
+    const c = params.get("cliente");
+    if (c) p.set("cliente", c);
+    return p;
   }
 
-  function buildParams(): URLSearchParams {
-    const next = new URLSearchParams();
-    const cliente = params.get("cliente");
-    if (cliente) next.set("cliente", cliente);
-    return next;
+  function ir(p: URLSearchParams) {
+    router.push(pathname + "?" + p.toString(), { scroll: false });
   }
 
-  // Verifica se um chip de tipo esta ativo: basta qualquer dos seus tipos estar na lista
-  function chipAtivo(chip: ChipTipo): boolean {
-    return chip.tipos.some((t) => tiposAtivos.includes(t));
+  function buildUrl({
+    tipos = tiposAtivos,
+    niveis = niveisAtivos,
+    problema = soProblema,
+  }: { tipos?: string[]; niveis?: string[]; problema?: boolean } = {}) {
+    const p = baseParams();
+    if (tipos.length > 0)  p.set("tipos",    tipos.join(","));
+    if (niveis.length > 0) p.set("nivel",    niveis.join(","));
+    if (problema)          p.set("problema", "1");
+    return p;
   }
 
+  /* --- handlers --------------------------------------------------- */
   function alternarTipo(chip: ChipTipo) {
-    const ativo = chipAtivo(chip);
-    let proximos: string[];
-    if (ativo) {
-      // Remove todos os tipos do chip
-      proximos = tiposAtivos.filter((t) => !chip.tipos.includes(t));
-    } else {
-      // Adiciona todos os tipos do chip
-      const novos = chip.tipos.filter((t) => !tiposAtivos.includes(t));
-      proximos = [...tiposAtivos, ...novos];
-    }
-    const next = buildParams();
-    if (proximos.length > 0) next.set("tipos", proximos.join(","));
-    if (soProblema) next.set("problema", "1");
-    navegar(next);
+    const ativo   = chip.tipos.some((t) => tiposAtivos.includes(t));
+    const proximos = ativo
+      ? tiposAtivos.filter((t) => !chip.tipos.includes(t))
+      : [...tiposAtivos, ...chip.tipos.filter((t) => !tiposAtivos.includes(t))];
+    ir(buildUrl({ tipos: proximos }));
+  }
+
+  function alternarNivel(n: "critico" | "atencao") {
+    const ativo    = niveisAtivos.includes(n);
+    const proximos = ativo ? niveisAtivos.filter((x) => x !== n) : [...niveisAtivos, n];
+    ir(buildUrl({ niveis: proximos }));
   }
 
   function alternarProblema() {
-    const next = buildParams();
-    if (tiposAtivos.length > 0) next.set("tipos", tiposAtivos.join(","));
-    if (!soProblema) next.set("problema", "1");
-    navegar(next);
+    ir(buildUrl({ problema: !soProblema }));
   }
 
   function limpar() {
-    const next = buildParams();
-    navegar(next);
+    ir(baseParams());
+  }
+
+  /* --- utilitarios de render -------------------------------------- */
+  function chipTipoAtivo(chip: ChipTipo) {
+    return chip.tipos.some((t) => tiposAtivos.includes(t));
+  }
+
+  function contTipo(chip: ChipTipo): number {
+    return chip.tipos.reduce((s, t) => s + (contagens.tipos[t] ?? 0), 0);
+  }
+
+  /* Estilos base */
+  const base =
+    "inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-all cursor-pointer select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--accent)]";
+
+  const inativo: React.CSSProperties = {
+    backgroundColor: "transparent",
+    border: "1px solid var(--border)",
+    color: "var(--text-muted)",
+  };
+
+  function ativoStyle(cor: string): React.CSSProperties {
+    return {
+      backgroundColor: cor + "22",
+      border: `1px solid ${cor}`,
+      color: cor,
+    };
   }
 
   return (
     <div
-      className="flex flex-wrap items-center gap-2"
+      className="flex flex-wrap items-center gap-1.5"
       role="group"
-      aria-label="Filtros de alerta"
+      aria-label="Filtros"
     >
-      {/* Chips de tipo */}
+
+      {/* ============================================================
+          GRUPO 1: Nivel (critico / atencao)
+          ============================================================ */}
+
+      <GroupLabel>Nivel</GroupLabel>
+
+      <Chip
+        base={base}
+        style={niveisAtivos.includes("critico") ? ativoStyle("#ef4444") : inativo}
+        pressed={niveisAtivos.includes("critico")}
+        onClick={() => alternarNivel("critico")}
+      >
+        Critico
+        <Badge n={contagens.nivel.critico} cor="#ef4444" />
+      </Chip>
+
+      <Chip
+        base={base}
+        style={niveisAtivos.includes("atencao") ? ativoStyle("#f59e0b") : inativo}
+        pressed={niveisAtivos.includes("atencao")}
+        onClick={() => alternarNivel("atencao")}
+      >
+        Atencao
+        <Badge n={contagens.nivel.atencao} cor="#f59e0b" />
+      </Chip>
+
+      <Divider />
+
+      {/* ============================================================
+          GRUPO 2: Tipo de alerta
+          ============================================================ */}
+
+      <GroupLabel>Tipo</GroupLabel>
+
       {CHIPS_TIPO.map((chip) => {
-        const ativo = chipAtivo(chip);
+        const ativo = chipTipoAtivo(chip);
+        const n     = contTipo(chip);
         return (
-          <button
+          <Chip
             key={chip.label}
-            type="button"
-            aria-pressed={ativo}
+            base={base}
+            style={ativo ? ativoStyle(chip.cor) : inativo}
+            pressed={ativo}
             onClick={() => alternarTipo(chip)}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl transition-colors cursor-pointer"
-            style={
-              ativo
-                ? {
-                    backgroundColor: "var(--accent-dim)",
-                    border: "1px solid var(--accent)",
-                    color: "var(--accent)",
-                  }
-                : {
-                    backgroundColor: "transparent",
-                    border: "1px solid var(--border)",
-                    color: "var(--text-muted)",
-                  }
-            }
           >
             {chip.label}
-          </button>
+            <Badge n={n} cor={ativo ? chip.cor : "#888"} />
+          </Chip>
         );
       })}
 
-      {/* Separador visual */}
-      <div
-        style={{
-          width: "1px",
-          height: "20px",
-          backgroundColor: "var(--border)",
-          flexShrink: 0,
-        }}
-      />
+      <Divider />
 
-      {/* Chip-acao: So com problema */}
-      <button
-        type="button"
-        aria-pressed={soProblema}
-        onClick={alternarProblema}
-        className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl transition-colors cursor-pointer"
+      {/* ============================================================
+          GRUPO 3: Visao
+          ============================================================ */}
+
+      <Chip
+        base={base}
         style={
           soProblema
             ? {
@@ -146,31 +200,98 @@ export default function FiltrosBar() {
                 border: "1px solid var(--vermelho)",
                 color: "var(--vermelho)",
               }
-            : {
-                backgroundColor: "transparent",
-                border: "1px solid var(--border)",
-                color: "var(--text-muted)",
-              }
+            : inativo
         }
+        pressed={soProblema}
+        onClick={alternarProblema}
       >
-        So com problema
-      </button>
+        So alertas
+      </Chip>
 
-      {/* Limpar filtros */}
+      {/* Limpar */}
       {temFiltro && (
         <button
           type="button"
           onClick={limpar}
-          className="inline-flex items-center text-xs font-medium px-2 py-1.5 rounded-xl transition-colors cursor-pointer"
-          style={{
-            backgroundColor: "transparent",
-            border: "1px solid var(--border-subtle, var(--border))",
-            color: "var(--text-dim)",
-          }}
+          className="inline-flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg transition-colors cursor-pointer select-none"
+          style={{ color: "var(--text-dim)", border: "1px solid transparent" }}
+          title="Limpar todos os filtros"
         >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
           Limpar
         </button>
       )}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Sub-componentes internos                                            */
+/* ------------------------------------------------------------------ */
+
+function GroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      className="text-xs uppercase tracking-widest leading-none"
+      style={{ color: "var(--text-dim)", fontSize: "9px", letterSpacing: "0.12em", marginRight: "2px" }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Divider() {
+  return (
+    <div
+      style={{ width: "1px", height: "20px", backgroundColor: "var(--border)", flexShrink: 0, margin: "0 4px" }}
+    />
+  );
+}
+
+function Chip({
+  base,
+  style,
+  pressed,
+  onClick,
+  children,
+}: {
+  base: string;
+  style: React.CSSProperties;
+  pressed: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button type="button" aria-pressed={pressed} onClick={onClick} className={base} style={style}>
+      {children}
+    </button>
+  );
+}
+
+function Badge({ n, cor }: { n: number; cor: string }) {
+  if (n === 0) return null;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: "999px",
+        fontSize: "9px",
+        fontWeight: 700,
+        lineHeight: 1,
+        minWidth: "15px",
+        height: "15px",
+        padding: "0 3px",
+        backgroundColor: cor + "33",
+        color: cor,
+      }}
+    >
+      {n}
+    </span>
   );
 }

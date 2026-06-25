@@ -81,8 +81,10 @@ export default async function AnalisePage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const dias = Math.max(1, Math.min(90, parseInt((params.dias as string) ?? "30")));
-  const tipoFiltro = (params.tipo as string) || null;
+  const dias        = Math.max(1, Math.min(90, parseInt((params.dias as string) ?? "30")));
+  const tipoFiltro  = (params.tipo as string)   || null;
+  const nivelFiltro = (params.nivel as string)  || null;
+  const statusFiltro = (params.status as string) || null;
 
   const admin = createAdminClient();
   const cutoff = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
@@ -95,7 +97,10 @@ export default async function AnalisePage({
     .limit(500);
 
   const todos = (data ?? []) as unknown as AlertaRow[];
-  const filtrados = tipoFiltro ? todos.filter((r) => r.tipo === tipoFiltro) : todos;
+  const filtrados = todos
+    .filter((r) => !tipoFiltro   || r.tipo   === tipoFiltro)
+    .filter((r) => !nivelFiltro  || r.nivel  === nivelFiltro)
+    .filter((r) => !statusFiltro || r.status === statusFiltro);
 
   const total = filtrados.length;
   const criticos = filtrados.filter((r) => r.nivel === "critico").length;
@@ -128,62 +133,149 @@ export default async function AnalisePage({
       tipoFreq: [...d.tiposCont.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "?",
     }));
 
-  const periodoHref = (d: number) =>
-    `/analise?dias=${d}${tipoFiltro ? `&tipo=${tipoFiltro}` : ""}`;
+  // Helpers de URL que preservam todos os filtros ativos
+  function buildHref(overrides: {
+    dias?: number;
+    tipo?: string | null;
+    nivel?: string | null;
+    status?: string | null;
+  } = {}) {
+    const d  = overrides.dias   !== undefined ? overrides.dias   : dias;
+    const ti = overrides.tipo   !== undefined ? overrides.tipo   : tipoFiltro;
+    const ni = overrides.nivel  !== undefined ? overrides.nivel  : nivelFiltro;
+    const st = overrides.status !== undefined ? overrides.status : statusFiltro;
+    const p  = new URLSearchParams({ dias: String(d) });
+    if (ti) p.set("tipo",   ti);
+    if (ni) p.set("nivel",  ni);
+    if (st) p.set("status", st);
+    return `/analise?${p.toString()}`;
+  }
 
-  const tipoHref = (t: string | null) =>
-    `/analise?dias=${dias}${t ? `&tipo=${t}` : ""}`;
+  // Contagens de todos os dados (sem filtros) para os badges
+  const contTodos = todos;
+  function contNivel(n: string)  { return contTodos.filter((r) => r.nivel  === n).length; }
+  function contStatus(s: string) { return contTodos.filter((r) => r.status === s).length; }
+
+  const temFiltroAtivo = !!(tipoFiltro || nivelFiltro || statusFiltro);
 
   return (
     <div
       className="max-w-6xl mx-auto px-6 py-8 space-y-8"
       style={{ color: "var(--text)" }}
     >
-      {/* Titulo + seletor de periodo */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">Analise historica</h2>
-          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-            {total} alerta{total !== 1 ? "s" : ""} nos ultimos {dias} dias
-            {tipoFiltro && (
-              <span>
-                {" "}
-                &bull; filtrado por{" "}
-                <span style={{ color: COR_TIPO[tipoFiltro] ?? "var(--accent)" }}>
-                  {LABEL_TIPO[tipoFiltro] ?? tipoFiltro}
-                </span>
-              </span>
-            )}
-          </p>
+      {/* Cabecalho: titulo + filtros */}
+      <div className="space-y-4">
+        {/* Linha 1: titulo + periodo */}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">Analise historica</h2>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+              {total} alerta{total !== 1 ? "s" : ""} nos ultimos {dias} dias
+              {temFiltroAtivo && (
+                <span style={{ color: "var(--accent)" }}> &bull; filtros ativos</span>
+              )}
+            </p>
+          </div>
+
+          {/* Seletor de periodo */}
+          <div className="flex items-center gap-1">
+            {[7, 14, 30].map((d) => (
+              <Link
+                key={d}
+                href={buildHref({ dias: d })}
+                className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                style={{
+                  backgroundColor: dias === d ? "var(--accent-dim)" : "var(--card)",
+                  color: dias === d ? "var(--accent)" : "var(--text-muted)",
+                  border: `1px solid ${dias === d ? "var(--accent)" : "var(--border)"}`,
+                }}
+              >
+                {d} dias
+              </Link>
+            ))}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1">
-          {[7, 14, 30].map((d) => (
-            <Link
-              key={d}
-              href={periodoHref(d)}
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-              style={{
-                backgroundColor: dias === d ? "var(--accent-dim)" : "var(--card)",
-                color: dias === d ? "var(--accent)" : "var(--text-muted)",
-                border: `1px solid ${dias === d ? "var(--accent)" : "var(--border)"}`,
-              }}
-            >
-              {d} dias
-            </Link>
-          ))}
-          {tipoFiltro && (
-            <Link
-              href={tipoHref(null)}
-              className="ml-2 px-3 py-1.5 rounded-md text-xs font-medium"
-              style={{
-                backgroundColor: "var(--card)",
-                color: "var(--text-muted)",
-                border: "1px solid var(--border)",
-              }}
-            >
-              Limpar filtro
-            </Link>
+        {/* Linha 2: chips de filtro */}
+        <div
+          className="flex flex-wrap items-center gap-1.5 p-3 rounded-xl"
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+        >
+          {/* Grupo: Nivel */}
+          <span className="text-xs uppercase tracking-widest leading-none mr-1" style={{ color: "var(--text-dim)", fontSize: "9px" }}>
+            Nivel
+          </span>
+          {(["critico", "atencao"] as const).map((n) => {
+            const ativo = nivelFiltro === n;
+            const cor   = n === "critico" ? "#ef4444" : "#f59e0b";
+            const cnt   = contNivel(n);
+            return (
+              <Link
+                key={n}
+                href={buildHref({ nivel: ativo ? null : n })}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors"
+                style={ativo
+                  ? { backgroundColor: cor + "22", border: `1px solid ${cor}`, color: cor }
+                  : { backgroundColor: "transparent", border: "1px solid var(--border)", color: "var(--text-muted)" }
+                }
+              >
+                {n === "critico" ? "Critico" : "Atencao"}
+                {cnt > 0 && (
+                  <span style={{ fontSize: "9px", fontWeight: 700, backgroundColor: cor + "33", color: cor, borderRadius: "999px", padding: "0 3px", minWidth: "15px", height: "15px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                    {cnt}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+
+          {/* Divider */}
+          <div style={{ width: "1px", height: "20px", backgroundColor: "var(--border)", flexShrink: 0, margin: "0 4px" }} />
+
+          {/* Grupo: Status */}
+          <span className="text-xs uppercase tracking-widest leading-none mr-1" style={{ color: "var(--text-dim)", fontSize: "9px" }}>
+            Status
+          </span>
+          {(["ativo", "reconhecido", "resolvido", "falso_positivo"] as const).map((s) => {
+            const ativo  = statusFiltro === s;
+            const cor    = COR_STATUS[s] ?? "var(--text-muted)";
+            const cnt    = contStatus(s);
+            const label  = LABEL_STATUS[s] ?? s;
+            return (
+              <Link
+                key={s}
+                href={buildHref({ status: ativo ? null : s })}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors"
+                style={ativo
+                  ? { backgroundColor: cor + "22", border: `1px solid ${cor}`, color: cor }
+                  : { backgroundColor: "transparent", border: "1px solid var(--border)", color: "var(--text-muted)" }
+                }
+              >
+                {label}
+                {cnt > 0 && (
+                  <span style={{ fontSize: "9px", fontWeight: 700, backgroundColor: cor + "33", color: cor, borderRadius: "999px", padding: "0 3px", minWidth: "15px", height: "15px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                    {cnt}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+
+          {/* Limpar tudo */}
+          {temFiltroAtivo && (
+            <>
+              <div style={{ width: "1px", height: "20px", backgroundColor: "var(--border)", flexShrink: 0, margin: "0 4px" }} />
+              <Link
+                href={buildHref({ tipo: null, nivel: null, status: null })}
+                className="inline-flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg"
+                style={{ color: "var(--text-dim)" }}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+                Limpar
+              </Link>
+            </>
           )}
         </div>
       </div>
@@ -237,7 +329,7 @@ export default async function AnalisePage({
                 return (
                   <Link
                     key={tipo}
-                    href={tipoHref(ativo ? null : tipo)}
+                    href={buildHref({ tipo: ativo ? null : tipo })}
                     className="block group"
                     title={ativo ? "Remover filtro" : `Filtrar por ${LABEL_TIPO[tipo] ?? tipo}`}
                   >
