@@ -619,6 +619,9 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
   /* ---- Bases (perimetros GeoJSON) ---- */
   const [basesGeo, setBasesGeo] = useState<GeoJSON.FeatureCollection | null>(null);
 
+  /* ---- Calor de incidentes (30 dias) ---- */
+  const [alertasGeo, setAlertasGeo] = useState<{ lat: number; lng: number }[]>([]);
+
   /* ---- Busca na sidebar ---- */
   const [busca, setBusca] = useState("");
 
@@ -694,6 +697,9 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
         }
         if (d?.bases?.type === "FeatureCollection") {
           setBasesGeo(d.bases as GeoJSON.FeatureCollection);
+        }
+        if (Array.isArray(d?.alertas_geo)) {
+          setAlertasGeo(d.alertas_geo as { lat: number; lng: number }[]);
         }
       })
       .catch(() => {});
@@ -1512,6 +1518,23 @@ export default function MapaMonitor({ veiculos, cliente, clientes, clienteAtivoI
                   <GeoJSON key="roubo" data={rouboCarga} style={estiloRoubo} onEachFeature={popupRoubo} />
                 </LayersControl.Overlay>
               )}
+
+              <LayersControl.Overlay name="Calor de incidentes (30d)">
+                <LayerGroup>
+                  {alertasGeo.map((pt, i) => (
+                    <CircleMarker
+                      key={`heat${i}`}
+                      center={[pt.lat, pt.lng]}
+                      radius={18}
+                      pathOptions={{
+                        color: "transparent",
+                        fillColor: "#ef4444",
+                        fillOpacity: 0.07,
+                      }}
+                    />
+                  ))}
+                </LayerGroup>
+              </LayersControl.Overlay>
             </LayersControl>
 
             {/* Perimetro das bases (sempre visivel) */}

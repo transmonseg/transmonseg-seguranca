@@ -97,7 +97,25 @@ export async function GET(request: Request) {
       [clienteId]
     );
 
-    return Response.json({ veiculos, bases: basesRes.rows[0].gj, pontos: pontosEntrega });
+    // Posicoes de alertas dos ultimos 30 dias — usado para o layer de calor.
+    let alertasGeo: { lat: number; lng: number }[] = [];
+    try {
+      const alertasRes = await client.query<{ lat: number; lng: number }>(
+        `SELECT lat, lng
+         FROM alertas
+         WHERE cliente_id = $1
+           AND lat IS NOT NULL
+           AND lng IS NOT NULL
+           AND desde >= now() - interval '30 days'
+         LIMIT 2000`,
+        [clienteId]
+      );
+      alertasGeo = alertasRes.rows;
+    } catch {
+      alertasGeo = [];
+    }
+
+    return Response.json({ veiculos, bases: basesRes.rows[0].gj, pontos: pontosEntrega, alertas_geo: alertasGeo });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });
   } finally {
