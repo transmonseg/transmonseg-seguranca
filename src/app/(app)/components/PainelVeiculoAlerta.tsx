@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AcoesAlerta from "./AcoesAlerta";
 import CronometroSLA from "./CronometroSLA";
+import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 
 interface AlertaSimples {
   id: string;
@@ -38,6 +39,9 @@ function formatarDuracao(min: number): string {
 
 export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar }: Props) {
   const [telemetria, setTelemetria] = useState<Telemetria | null>(null);
+  const [cmdSirene, setCmdSirene] = useState<"idle" | "loading" | "ok" | "fallback">("idle");
+  const [cmdBloqueio, setCmdBloqueio] = useState<"idle" | "loading" | "ok" | "fallback">("idle");
+  const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!cv) return;
@@ -56,6 +60,19 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar }: Pr
       clearInterval(id);
     };
   }, [cv]);
+
+  async function acionar(tipo: "sirene" | "bloqueio") {
+    const setter = tipo === "sirene" ? setCmdSirene : setCmdBloqueio;
+    setter("loading");
+    const resultado = await enviarComandoVeiculo(cv, tipo);
+    if (resultado.ok) {
+      setter("ok");
+      setTimeout(() => setter("idle"), 3000);
+    } else {
+      setter("fallback");
+      if (resultado.portalUrl) setFallbackUrl(resultado.portalUrl);
+    }
+  }
 
   const velocidade = telemetria ? parseInt(telemetria.posicvelocidade ?? "0") || 0 : null;
   const ignicao = telemetria ? telemetria.posicignicao === "1" : null;
@@ -201,6 +218,103 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar }: Pr
           </div>
         )}
       </div>
+
+      {/* Saidas digitais: sirene e bloqueio */}
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          padding: "0.75rem 1rem",
+          borderTop: "1px solid var(--border-subtle)",
+          borderBottom: "1px solid var(--border-subtle)",
+        }}
+      >
+        <button
+          onClick={() => acionar("sirene")}
+          disabled={cmdSirene === "loading"}
+          style={{
+            flex: 1,
+            padding: "0.5rem",
+            borderRadius: 6,
+            fontSize: 12,
+            fontWeight: 600,
+            border: "1px solid var(--border)",
+            backgroundColor:
+              cmdSirene === "ok"
+                ? "var(--verde-dim, #14532d22)"
+                : cmdSirene === "fallback"
+                ? "var(--amarelo-dim, #92400e22)"
+                : "var(--card)",
+            color:
+              cmdSirene === "ok"
+                ? "var(--verde, #22c55e)"
+                : cmdSirene === "fallback"
+                ? "var(--amarelo, #f59e0b)"
+                : "var(--text)",
+            cursor: cmdSirene === "loading" ? "wait" : "pointer",
+          }}
+        >
+          {cmdSirene === "loading"
+            ? "Acionando..."
+            : cmdSirene === "ok"
+            ? "Sirene acionada"
+            : cmdSirene === "fallback"
+            ? "Ver no portal"
+            : "Acionar sirene"}
+        </button>
+
+        <button
+          onClick={() => acionar("bloqueio")}
+          disabled={cmdBloqueio === "loading"}
+          style={{
+            flex: 1,
+            padding: "0.5rem",
+            borderRadius: 6,
+            fontSize: 12,
+            fontWeight: 600,
+            border: `1px solid ${cmdBloqueio === "idle" ? "var(--vermelho, #ef4444)" : "var(--border)"}`,
+            backgroundColor:
+              cmdBloqueio === "ok"
+                ? "var(--verde-dim, #14532d22)"
+                : cmdBloqueio === "fallback"
+                ? "var(--amarelo-dim, #92400e22)"
+                : "var(--vermelho-dim, #7f1d1d22)",
+            color:
+              cmdBloqueio === "ok"
+                ? "var(--verde, #22c55e)"
+                : cmdBloqueio === "fallback"
+                ? "var(--amarelo, #f59e0b)"
+                : "var(--vermelho, #ef4444)",
+            cursor: cmdBloqueio === "loading" ? "wait" : "pointer",
+          }}
+        >
+          {cmdBloqueio === "loading"
+            ? "Bloqueando..."
+            : cmdBloqueio === "ok"
+            ? "Motor bloqueado"
+            : cmdBloqueio === "fallback"
+            ? "Ver no portal"
+            : "Bloquear motor"}
+        </button>
+      </div>
+
+      {/* Fallback: link direto para o portal quando endpoint nao confirmado */}
+      {(cmdSirene === "fallback" || cmdBloqueio === "fallback") && fallbackUrl && (
+        <div
+          style={{
+            padding: "0.5rem 1rem",
+            fontSize: 11,
+            color: "var(--text-dim)",
+            borderBottom: "1px solid var(--border-subtle)",
+          }}
+        >
+          Acao nao confirmada.{" "}
+          <a href={fallbackUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+            Abrir portal Unitrac
+          </a>{" "}
+          para acionar manualmente.
+        </div>
+      )}
 
       {/* Alertas e acoes */}
       <div style={{ padding: "0.75rem 1rem", display: "flex", flexDirection: "column", gap: 16 }}>
