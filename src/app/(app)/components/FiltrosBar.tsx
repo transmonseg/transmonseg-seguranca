@@ -53,7 +53,8 @@ export default function FiltrosBar({ contagens }: Props) {
   const tiposAtivos  = (params.get("tipos") ?? "").split(",").filter(Boolean);
   const niveisAtivos = (params.get("nivel") ?? "").split(",").filter(Boolean);
   const soProblema   = params.get("problema") === "1";
-  const temFiltro    = tiposAtivos.length > 0 || niveisAtivos.length > 0 || soProblema;
+  const soTurno      = params.get("turno") === "1";
+  const temFiltro    = tiposAtivos.length > 0 || niveisAtivos.length > 0 || soProblema || soTurno;
 
   /* --- helpers de URL -------------------------------------------- */
   function baseParams(): URLSearchParams {
@@ -71,11 +72,13 @@ export default function FiltrosBar({ contagens }: Props) {
     tipos = tiposAtivos,
     niveis = niveisAtivos,
     problema = soProblema,
-  }: { tipos?: string[]; niveis?: string[]; problema?: boolean } = {}) {
+    turno = soTurno,
+  }: { tipos?: string[]; niveis?: string[]; problema?: boolean; turno?: boolean } = {}) {
     const p = baseParams();
     if (tipos.length > 0)  p.set("tipos",    tipos.join(","));
     if (niveis.length > 0) p.set("nivel",    niveis.join(","));
     if (problema)          p.set("problema", "1");
+    if (turno)             p.set("turno",    "1");
     return p;
   }
 
@@ -96,6 +99,10 @@ export default function FiltrosBar({ contagens }: Props) {
 
   function alternarProblema() {
     ir(buildUrl({ problema: !soProblema }));
+  }
+
+  function alternarTurno() {
+    ir(buildUrl({ turno: !soTurno }));
   }
 
   function limpar() {
@@ -192,6 +199,23 @@ export default function FiltrosBar({ contagens }: Props) {
       {/* ============================================================
           GRUPO 3: Visao
           ============================================================ */}
+
+      <Chip
+        base={base}
+        style={
+          soTurno
+            ? {
+                backgroundColor: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                border: "1px solid var(--accent)",
+                color: "var(--accent)",
+              }
+            : inativo
+        }
+        pressed={soTurno}
+        onClick={alternarTurno}
+      >
+        Turno (8h)
+      </Chip>
 
       <Chip
         base={base}

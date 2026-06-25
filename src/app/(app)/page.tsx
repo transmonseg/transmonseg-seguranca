@@ -791,7 +791,7 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
-  const { cliente: clienteParam, tipos: tiposParam, problema: problemaParam, nivel: nivelParam } = await searchParams;
+  const { cliente: clienteParam, tipos: tiposParam, problema: problemaParam, nivel: nivelParam, turno: turnoParam } = await searchParams;
   const supabase = createAdminClient();
 
   // Expandir tipos selecionados: o chip "Jammer/Sinal" abrange jammer, sinal e bloqueio.
@@ -804,6 +804,8 @@ export default async function DashboardPage({
   const tiposSelecionadosSet = [...new Set(tiposSelecionados)];
 
   const soProblema = problemaParam === "1";
+  const soTurno = turnoParam === "1";
+  const cutoffTurno = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
 
   // Nivel selecionado pelo filtro ("critico" / "atencao" / ambos / nenhum)
   const nivelRaw = typeof nivelParam === "string" ? nivelParam : "";
@@ -820,10 +822,14 @@ export default async function DashboardPage({
     supabase.from("posicoes_atuais").select(
       "veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico, bau_aberto, nivel, motivo, local, entregas_feitas, entregas_total, parado_desde, updated_at"
     ),
-    supabase
-      .from("alertas")
-      .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score")
-      .in("status", ["ativo", "reconhecido"]),
+    (() => {
+      let q = supabase
+        .from("alertas")
+        .select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score")
+        .in("status", ["ativo", "reconhecido"]);
+      if (soTurno) q = q.gte("desde", cutoffTurno);
+      return q;
+    })(),
   ]);
 
   const clientes: Cliente[] = clientesRaw ?? [];
