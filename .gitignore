@@ -50,3 +50,6 @@ shot-*.png
 .motor-loop.log
 .dev-run.txt
 .devlog.txt
+
+# Claude Code worktrees
+.claude/
