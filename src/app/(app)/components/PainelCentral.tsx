@@ -465,6 +465,24 @@ export default function PainelCentral({
         mostrarPainelEsquerdo={mostrarAlertas}
         onTogglePainelEsquerdo={() => setMostrarAlertas((v) => !v)}
         onToggleSidebar={() => setMostrarOperacao((v) => !v)}
+        painelVeiculo={veiculoPanel ? (
+          <PainelVeiculoAlerta
+            cv={veiculoPanel.cv}
+            placa={veiculoPanel.placa}
+            alertas={alertasVeiculoPanel.map((a) => ({
+              id: a.id,
+              status: a.status,
+              nivel: a.nivel,
+              tipo: a.tipo,
+              motivo: a.motivo,
+              desde: a.desde,
+              score: a.score,
+            }))}
+            onFechar={() => setVeiculoPanel(null)}
+            onAlertaResolvido={removerAlerta}
+            empresa={empresaNome}
+          />
+        ) : undefined}
       />
 
       {/* Toast de critico novo — acima de tudo */}
@@ -510,29 +528,6 @@ export default function PainelCentral({
         </div>
       )}
 
-      {/* Painel flutuante do veiculo — acima de tudo */}
-      {veiculoPanel && (
-        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 1200 }}>
-          <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, pointerEvents: "auto" }}>
-            <PainelVeiculoAlerta
-              cv={veiculoPanel.cv}
-              placa={veiculoPanel.placa}
-              alertas={alertasVeiculoPanel.map((a) => ({
-                id: a.id,
-                status: a.status,
-                nivel: a.nivel,
-                tipo: a.tipo,
-                motivo: a.motivo,
-                desde: a.desde,
-                score: a.score,
-              }))}
-              onFechar={() => setVeiculoPanel(null)}
-              onAlertaResolvido={removerAlerta}
-              empresa={empresaNome}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

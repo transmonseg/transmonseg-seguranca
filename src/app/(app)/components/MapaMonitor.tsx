@@ -139,6 +139,7 @@ interface Props {
   mostrarPainelEsquerdo?: boolean;
   onTogglePainelEsquerdo?: () => void;
   onToggleSidebar?: () => void;
+  painelVeiculo?: ReactNode;
 }
 
 /* ------------------------------------------------------------------ */
@@ -709,6 +710,7 @@ export default function MapaMonitor({
   mostrarPainelEsquerdo = false,
   onTogglePainelEsquerdo,
   onToggleSidebar,
+  painelVeiculo,
 }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
@@ -1864,6 +1866,13 @@ export default function MapaMonitor({
               <span style={{ fontSize: 10, fontWeight: 800, writingMode: "vertical-lr", letterSpacing: "0.12em" }}>OPE</span>
               <span style={{ fontSize: 20, lineHeight: 1 }}>{mostrarSidebar ? "›" : "‹"}</span>
             </button>
+          )}
+
+          {/* Painel detalhe do veículo — dentro do MAP AREA, abaixo da toolbar */}
+          {painelVeiculo && (
+            <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, zIndex: 700, pointerEvents: "auto" }}>
+              {painelVeiculo}
+            </div>
           )}
 
           {/* Controles flutuantes (modo unificado, sem sidebar do mapa) */}
