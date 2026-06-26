@@ -1824,18 +1824,18 @@ export default function MapaMonitor({
                 top: "50%", transform: "translateY(-50%)",
                 zIndex: 600, transition: "left 0.2s ease",
                 display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center", gap: 4,
-                width: 22, padding: "20px 0",
-                background: "var(--card)",
+                alignItems: "center", justifyContent: "center", gap: 6,
+                width: 36, padding: "28px 0",
+                background: mostrarPainelEsquerdo ? "var(--card)" : "rgba(30,30,30,0.92)",
                 border: "1px solid var(--border)", borderLeft: "none",
-                borderRadius: "0 6px 6px 0",
+                borderRadius: "0 8px 8px 0",
                 cursor: "pointer",
-                color: mostrarPainelEsquerdo ? "var(--vermelho)" : "var(--text-muted)",
-                boxShadow: "3px 0 12px rgba(0,0,0,0.6)",
+                color: mostrarPainelEsquerdo ? "var(--vermelho)" : "#aaa",
+                boxShadow: "4px 0 16px rgba(0,0,0,0.7)",
               }}
             >
-              <span style={{ fontSize: 8, fontWeight: 800, writingMode: "vertical-lr", transform: "rotate(180deg)", letterSpacing: "0.1em" }}>ALT</span>
-              <span style={{ fontSize: 16, lineHeight: 1 }}>{mostrarPainelEsquerdo ? "‹" : "›"}</span>
+              <span style={{ fontSize: 20, lineHeight: 1 }}>{mostrarPainelEsquerdo ? "‹" : "›"}</span>
+              <span style={{ fontSize: 10, fontWeight: 800, writingMode: "vertical-lr", transform: "rotate(180deg)", letterSpacing: "0.12em" }}>ALT</span>
             </button>
           )}
 
@@ -1850,18 +1850,18 @@ export default function MapaMonitor({
                 top: "50%", transform: "translateY(-50%)",
                 zIndex: 600, transition: "right 0.2s ease",
                 display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center", gap: 4,
-                width: 22, padding: "20px 0",
-                background: "var(--card)",
+                alignItems: "center", justifyContent: "center", gap: 6,
+                width: 36, padding: "28px 0",
+                background: mostrarSidebar ? "var(--card)" : "rgba(30,30,30,0.92)",
                 border: "1px solid var(--border)", borderRight: "none",
-                borderRadius: "6px 0 0 6px",
+                borderRadius: "8px 0 0 8px",
                 cursor: "pointer",
-                color: mostrarSidebar ? "var(--accent)" : "var(--text-muted)",
-                boxShadow: "-3px 0 12px rgba(0,0,0,0.6)",
+                color: mostrarSidebar ? "var(--accent)" : "#aaa",
+                boxShadow: "-4px 0 16px rgba(0,0,0,0.7)",
               }}
             >
-              <span style={{ fontSize: 16, lineHeight: 1 }}>{mostrarSidebar ? "›" : "‹"}</span>
-              <span style={{ fontSize: 8, fontWeight: 800, writingMode: "vertical-lr", letterSpacing: "0.1em" }}>OPE</span>
+              <span style={{ fontSize: 10, fontWeight: 800, writingMode: "vertical-lr", letterSpacing: "0.12em" }}>OPE</span>
+              <span style={{ fontSize: 20, lineHeight: 1 }}>{mostrarSidebar ? "›" : "‹"}</span>
             </button>
           )}
 
