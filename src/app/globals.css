@@ -144,3 +144,7 @@ html, body {
   opacity: 0.92;
 }
 .leaflet-tooltip-placa::before { display: none; }
+
+/* Remove controles nativos do Leaflet — zoom e atribuicao ficam escondidos */
+.leaflet-control-zoom { display: none !important; }
+.leaflet-control-attribution { display: none !important; }

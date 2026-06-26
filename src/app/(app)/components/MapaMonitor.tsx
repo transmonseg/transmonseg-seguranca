@@ -27,6 +27,9 @@ import type { Layer } from "leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
+// Guard de módulo: impede que ClicarMapaVazio dispare ao clicar num marcador de veículo.
+let _ultimoCliqueMarcador = 0;
+
 /* ------------------------------------------------------------------ */
 /* Tipos                                                                */
 /* ------------------------------------------------------------------ */
@@ -132,6 +135,8 @@ interface Props {
   mostrarSidebar?: boolean;
   flyParaAlerta?: { lat: number; lng: number; gatilho: number } | null;
   onVeiculoComAlertaClicado?: (cv: string, placa: string) => void;
+  modoBarra?: "operacao" | "alertas";
+  onModoBarra?: (m: "operacao" | "alertas") => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -189,7 +194,7 @@ function CapturadorZoom({ onZoom }: { onZoom: (z: number) => void }) {
 }
 
 function ClicarMapaVazio({ onClicarVazio }: { onClicarVazio: () => void }) {
-  useMapEvents({ click: onClicarVazio });
+  useMapEvents({ click: () => { if (Date.now() - _ultimoCliqueMarcador > 150) onClicarVazio(); } });
   return null;
 }
 
@@ -375,7 +380,7 @@ function AjustarBoundsRastro({
   gatilho: number;
 }) {
   const map = useMap();
-  const ultimoGatilho = useRef(-1);
+  const ultimoGatilho = useRef(0);
 
   useEffect(() => {
     if (gatilho === ultimoGatilho.current) return;
@@ -698,6 +703,8 @@ export default function MapaMonitor({
   mostrarSidebar = true,
   flyParaAlerta = null,
   onVeiculoComAlertaClicado,
+  modoBarra,
+  onModoBarra,
 }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
@@ -956,11 +963,7 @@ export default function MapaMonitor({
     setCvSelecionado(v.cv);
     setPlacaSelecionada(v.placa);
     setPainelAberto(true);
-    const vm = veiculosMapa.find((x) => x.cv === v.cv);
-    if (vm?.lat != null && vm?.lng != null) {
-      setFlyParaVeiculo({ lat: vm.lat, lng: vm.lng, gatilho: Date.now() });
-    }
-  }, [veiculosMapa]);
+  }, []);
 
   const onClickVeiculoMapa = useCallback(
     (vm: VeiculoMapa) => {
@@ -1653,6 +1656,28 @@ export default function MapaMonitor({
           backgroundColor: "var(--card)",
           borderBottom: "1px solid var(--border)",
         }}>
+          {/* Toggle Operação | Alertas */}
+          {modoBarra !== undefined && onModoBarra && (
+            <>
+              <div style={{ display: "flex", gap: 2, padding: 2, borderRadius: 8, backgroundColor: "var(--bg)", border: "1px solid var(--border)" }}>
+                {(["operacao", "alertas"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => onModoBarra(m)}
+                    style={{
+                      padding: "3px 10px", borderRadius: 6, border: "1px solid transparent",
+                      cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em",
+                      backgroundColor: modoBarra === m ? "var(--accent-dim)" : "transparent",
+                      color: modoBarra === m ? "var(--accent)" : "var(--text-dim)",
+                    }}
+                  >
+                    {m === "operacao" ? "OPERAÇÃO" : "ALERTAS"}
+                  </button>
+                ))}
+              </div>
+              <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
+            </>
+          )}
           {/* Zoom pré-definido */}
           <div style={{ display: "flex", gap: 2 }}>
             {[
@@ -1790,7 +1815,7 @@ export default function MapaMonitor({
                 position: "absolute",
                 top: 10,
                 left: 10,
-                zIndex: 1000,
+                zIndex: 1100,
                 display: "flex",
                 flexDirection: "column",
                 gap: 6,
@@ -1903,6 +1928,7 @@ export default function MapaMonitor({
             center={[-22.9, -43.2]}
             zoom={10}
             preferCanvas
+            zoomControl={false}
             style={{ height: "100%", width: "100%", background: "#0a0a0a" }}
           >
             {pontosRastro.length > 0 && (
@@ -2075,7 +2101,7 @@ export default function MapaMonitor({
                   position={[vm.lat, vm.lng]}
                   icon={iconeStatus(vm, selecionado)}
                   zIndexOffset={selecionado ? 1000 : 0}
-                  eventHandlers={{ click: () => onClickVeiculoMapa(vm) }}
+                  eventHandlers={{ click: () => { _ultimoCliqueMarcador = Date.now(); onClickVeiculoMapa(vm); } }}
                 >
                   {mostrarRotulos && zoomMapa >= 13 && (
                     <Tooltip

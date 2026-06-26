@@ -466,45 +466,6 @@ export default function PainelCentral({
 
       {/* ======== MAPA ======== */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        {/* Toggle Operação | Alertas */}
-        <div
-          style={{
-            position: "absolute",
-            top: 12,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 1000,
-            display: "flex",
-            gap: 3,
-            padding: 3,
-            borderRadius: 10,
-            backgroundColor: "rgba(9,9,13,0.92)",
-            border: "1px solid var(--border)",
-            backdropFilter: "blur(6px)",
-          }}
-        >
-          {(["operacao", "alertas"] as const).map((m) => {
-            const ativo = modoBarra === m;
-            return (
-              <button
-                key={m}
-                onClick={() => setModoBarra(m)}
-                style={{
-                  padding: "0.35rem 0.9rem",
-                  borderRadius: 8,
-                  border: "1px solid transparent",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  backgroundColor: ativo ? "var(--accent-dim)" : "transparent",
-                  color: ativo ? "var(--accent)" : "var(--text-dim)",
-                }}
-              >
-                {m === "operacao" ? "Operação" : "Alertas"}
-              </button>
-            );
-          })}
-        </div>
 
         {/* Toast de critico novo — bottom-right, grande, 15s */}
         {toast && (
@@ -557,6 +518,8 @@ export default function PainelCentral({
           mostrarSidebar={modoBarra === "operacao"}
           flyParaAlerta={flyParaAlerta}
           onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
+          modoBarra={modoBarra}
+          onModoBarra={setModoBarra}
         />
 
         {/* Painel flutuante do veiculo (qualquer veiculo clicado) */}
