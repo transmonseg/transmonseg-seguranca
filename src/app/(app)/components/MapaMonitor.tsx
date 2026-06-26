@@ -695,6 +695,15 @@ export default function MapaMonitor({
 
   /* ---- Busca na sidebar ---- */
   const [busca, setBusca] = useState("");
+  // Voa para o veículo quando a busca retorna exatamente 1 resultado
+  useEffect(() => {
+    if (!busca.trim()) return;
+    const vms = veiculosMapa.filter((v) => v.placa.toUpperCase().includes(busca.toUpperCase()) && v.lat != null && v.lng != null);
+    if (vms.length === 1) {
+      setFlyParaVeiculo({ lat: vms[0].lat!, lng: vms[0].lng!, gatilho: Date.now() });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busca]);
 
   /* ---- Veiculo selecionado ---- */
   const [cvSelecionado, setCvSelecionado] = useState<string | null>(null);

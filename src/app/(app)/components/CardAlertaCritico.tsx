@@ -147,11 +147,12 @@ export interface CardAlertaProps {
   atraso_min?: number | null;
   score?: number | null;
   onFocarMapa?: (lat: number, lng: number) => void;
+  onAlertaResolvido?: (id: string) => void;
 }
 
 export default function CardAlertaCritico({
   id, status, nivel, tipo, placa, motivo, local, desde,
-  lat, lng, velocidade, ignicao, atraso_min, score, onFocarMapa,
+  lat, lng, velocidade, ignicao, atraso_min, score, onFocarMapa, onAlertaResolvido,
 }: CardAlertaProps) {
   const corNivel = nivel === "critico" ? "var(--vermelho)" : "var(--amarelo)";
   const bgNivel = nivel === "critico" ? "#160c0c" : "#16120a";
@@ -370,7 +371,7 @@ export default function CardAlertaCritico({
         )}
 
         {/* Acoes do operador */}
-        <AcoesAlerta id={id} status={status} desde={desde} />
+        <AcoesAlerta id={id} status={status} desde={desde} onSucesso={onAlertaResolvido} />
       </div>
     </div>
   );

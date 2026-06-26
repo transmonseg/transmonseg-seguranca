@@ -126,6 +126,17 @@ export default function PainelCentral({
     Notification.requestPermission().then((p) => setNotifLigada(p === "granted"));
   }, []);
 
+  // Remove alerta do estado sem esperar o próximo poll (optimistic)
+  const removerAlerta = useCallback((id: string) => {
+    setAlertas((prev) => prev.filter((a) => a.id !== id));
+    setVeiculoPanel((p) => {
+      // Fechar painel se o alerta era o único daquele veículo
+      if (!p) return p;
+      const restam = alertas.filter((a) => a.cv === p.cv && a.id !== id);
+      return restam.length === 0 ? null : p;
+    });
+  }, [alertas]);
+
   // Polling de alertas a cada 15s
   const atualizarAlertas = useCallback(() => {
     fetch(`/api/alertas?cliente=${encodeURIComponent(cliente)}`)
@@ -139,6 +150,8 @@ export default function PainelCentral({
             if (a.lat != null && a.lng != null) {
               setFlyParaAlerta({ lat: a.lat, lng: a.lng, gatilho: Date.now() });
             }
+            // Auto-abrir painel do veículo no novo crítico
+            setVeiculoPanel({ cv: a.cv, placa: a.placa });
             setToast({ placa: a.placa, tipo: a.tipo, id: a.id });
             if (typeof Notification !== "undefined" && Notification.permission === "granted") {
               new Notification(`Crítico: ${a.placa}`, {
@@ -155,7 +168,7 @@ export default function PainelCentral({
 
   useEffect(() => {
     if (!toast) return;
-    const id = setTimeout(() => setToast(null), 8000);
+    const id = setTimeout(() => setToast(null), 15000);
     return () => clearTimeout(id);
   }, [toast]);
 
@@ -442,6 +455,7 @@ export default function PainelCentral({
                             atraso_min={a.atraso_min}
                             score={a.score}
                             onFocarMapa={focarMapa}
+                            onAlertaResolvido={removerAlerta}
                           />
                         ))}
                       </div>
@@ -497,36 +511,46 @@ export default function PainelCentral({
           })}
         </div>
 
-        {/* Toast de critico novo */}
+        {/* Toast de critico novo — bottom-right, grande, 15s */}
         {toast && (
           <div
-            onClick={() => setToast(null)}
             style={{
               position: "absolute",
-              top: 12,
-              left: "50%",
-              transform: "translateX(-50%)",
+              bottom: 24,
+              right: 24,
               zIndex: 1002,
               display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "0.625rem 1rem",
-              borderRadius: 10,
-              cursor: "pointer",
-              backgroundColor: "rgba(20,4,4,0.96)",
-              border: "1px solid var(--vermelho, #ef4444)",
-              boxShadow: "0 8px 28px rgba(0,0,0,0.7)",
-              backdropFilter: "blur(8px)",
-              animation: "pulse-live 1.5s ease-in-out infinite",
+              alignItems: "flex-start",
+              gap: 14,
+              padding: "1rem 1.25rem",
+              borderRadius: 14,
+              backgroundColor: "rgba(20,4,4,0.97)",
+              border: "1.5px solid var(--vermelho, #ef4444)",
+              boxShadow: "0 12px 40px rgba(239,68,68,0.25), 0 4px 16px rgba(0,0,0,0.8)",
+              backdropFilter: "blur(10px)",
+              maxWidth: 320,
+              animation: "pulse-live 1.5s ease-in-out 3",
             }}
           >
-            <span style={{ width: 9, height: 9, borderRadius: "50%", backgroundColor: "var(--vermelho, #ef4444)", flexShrink: 0 }} />
-            <div>
-              <p style={{ fontSize: 12, fontWeight: 700, color: "var(--vermelho, #ef4444)", letterSpacing: "0.04em" }}>
-                NOVO CRÍTICO · {toast.placa}
+            <span style={{ width: 12, height: 12, borderRadius: "50%", backgroundColor: "var(--vermelho, #ef4444)", flexShrink: 0, marginTop: 3 }} />
+            <div style={{ flex: 1 }}>
+              <p style={{ fontSize: 13, fontWeight: 800, color: "var(--vermelho, #ef4444)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                Novo crítico
               </p>
-              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>{nomeTipo(chaveTipo(toast.tipo))}</p>
+              <p style={{ fontSize: 18, fontWeight: 700, color: "#fff", fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.1em", marginTop: 2 }}>
+                {toast.placa}
+              </p>
+              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>{nomeTipo(chaveTipo(toast.tipo))}</p>
             </div>
+            <button
+              onClick={() => setToast(null)}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", padding: 2, flexShrink: 0 }}
+              title="Fechar"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
           </div>
         )}
 
