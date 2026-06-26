@@ -1645,6 +1645,7 @@ export default function MapaMonitor({
           display: "flex",
           flexWrap: "wrap",
           alignItems: "center",
+          justifyContent: "center",
           gap: 6,
           padding: "6px 10px",
           backgroundColor: "var(--card)",
