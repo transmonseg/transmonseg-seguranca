@@ -460,12 +460,25 @@ export default function PainelCentral({
         clienteAtivoId={clienteAtivoId}
         mostrarSidebar={mostrarOperacao}
         flyParaAlerta={flyParaAlerta}
-        onVeiculoComAlertaClicado={() => setMostrarOperacao(true)}
+        onVeiculoComAlertaClicado={(cv, placa) => { setVeiculoPanel({ cv, placa }); setMostrarOperacao(true); }}
         painelEsquerdo={painelAlertasJsx}
         mostrarPainelEsquerdo={mostrarAlertas}
         onTogglePainelEsquerdo={() => setMostrarAlertas((v) => !v)}
-        onToggleSidebar={() => setMostrarOperacao((v) => !v)}
+        onToggleSidebar={() => { setMostrarOperacao((v) => { if (v) setVeiculoPanel(null); return !v; }); }}
         onAbrirSidebar={() => setMostrarOperacao(true)}
+        painelVeiculo={veiculoPanel ? (
+          <PainelVeiculoAlerta
+            cv={veiculoPanel.cv}
+            placa={veiculoPanel.placa}
+            alertas={alertasVeiculoPanel.map((a) => ({
+              id: a.id, status: a.status, nivel: a.nivel,
+              tipo: a.tipo, motivo: a.motivo, desde: a.desde, score: a.score,
+            }))}
+            onFechar={() => setVeiculoPanel(null)}
+            onAlertaResolvido={removerAlerta}
+            empresa={empresaNome}
+          />
+        ) : undefined}
       />
 
       {/* Toast de critico novo — acima de tudo */}

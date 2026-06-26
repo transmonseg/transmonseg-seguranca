@@ -1832,6 +1832,21 @@ export default function MapaMonitor({
             />
           )}
 
+          {/* PainelVeiculoAlerta — só aparece quando OPE está aberto, à esquerda dele */}
+          {mostrarSidebar && painelVeiculo && (
+            <div style={{
+              position: "absolute",
+              bottom: 16,
+              right: SIDEBAR_W + 12,
+              zIndex: 700,
+              maxHeight: "calc(100% - 32px)",
+              display: "flex",
+              flexDirection: "column",
+            }}>
+              {painelVeiculo}
+            </div>
+          )}
+
           {/* Aba ALERTAS (borda esquerda) */}
           {onTogglePainelEsquerdo && (
             <button

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import AcoesAlerta from "./AcoesAlerta";
 import CronometroSLA from "./CronometroSLA";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
@@ -86,29 +86,6 @@ function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): num
 const ROTULO = "var(--text-dim)";
 
 export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAlertaResolvido, empresa }: Props) {
-  /* ---- drag ---- */
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-  const [arrastando, setArrastando] = useState(false);
-  const dragRef = useRef<{ sx: number; sy: number; ix: number; iy: number } | null>(null);
-
-  function iniciarDrag(e: React.MouseEvent) {
-    e.preventDefault();
-    dragRef.current = { sx: e.clientX, sy: e.clientY, ix: pos.x, iy: pos.y };
-    setArrastando(true);
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      setPos({ x: dragRef.current.ix + ev.clientX - dragRef.current.sx, y: dragRef.current.iy + ev.clientY - dragRef.current.sy });
-    };
-    const onUp = () => {
-      dragRef.current = null;
-      setArrastando(false);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }
-
   const [telemetria, setTelemetria] = useState<Telemetria | null>(null);
   const [pontos, setPontos] = useState<PontoEntrega[]>([]);
   const [carregandoRota, setCarregandoRota] = useState(true);
@@ -220,24 +197,20 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAl
   return (
     <div
       style={{
-        width: "100%",
+        width: 320,
         maxHeight: "100%",
         display: "flex",
         flexDirection: "column",
         backgroundColor: "rgba(9,9,13,0.97)",
         border: `1px solid color-mix(in srgb, ${corNivel} 40%, var(--border))`,
         borderRadius: "0.875rem",
-        boxShadow: arrastando ? "0 16px 56px rgba(0,0,0,0.85)" : "0 10px 40px rgba(0,0,0,0.7)",
+        boxShadow: "0 10px 40px rgba(0,0,0,0.7)",
         backdropFilter: "blur(10px)",
         overflow: "hidden",
-        transform: `translate(${pos.x}px, ${pos.y}px)`,
-        transition: arrastando ? "none" : "box-shadow 0.15s",
-        userSelect: "none",
       }}
     >
-      {/* Cabecalho (drag handle) */}
+      {/* Cabecalho */}
       <div
-        onMouseDown={iniciarDrag}
         style={{
           ...blocoStyle,
           display: "flex",
@@ -245,7 +218,6 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAl
           justifyContent: "space-between",
           backgroundColor: `color-mix(in srgb, ${corNivel} 9%, transparent)`,
           flexShrink: 0,
-          cursor: arrastando ? "grabbing" : "grab",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
