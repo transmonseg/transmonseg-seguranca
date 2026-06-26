@@ -108,8 +108,8 @@ export default function PainelCentral({
   const [vista, setVista] = useState<Vista>("tudo");
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
-  const [mostrarAlertas, setMostrarAlertas] = useState(true);
-  const [mostrarOperacao, setMostrarOperacao] = useState(false);
+  // Modo da barra esquerda: operacao (Unitrac) ou alertas (inteligencia)
+  const [modoBarra, setModoBarra] = useState<"operacao" | "alertas">("alertas");
 
   // Notificacao de critico novo
   const [toast, setToast] = useState<{ placa: string; tipo: string; id: string } | null>(null);
@@ -255,17 +255,13 @@ export default function PainelCentral({
   };
 
   return (
-    <div style={{ position: "relative", flex: 1, overflow: "hidden" }}>
-      {/* ======== SIDEBAR DE ALERTAS (overlay esquerdo) ======== */}
-      {mostrarAlertas && (
+    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
+      {/* ======== SIDEBAR DE ALERTAS (modo alertas) ======== */}
+      {modoBarra === "alertas" && (
       <div
         style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
           width: SIDEBAR_W,
-          zIndex: 600,
+          flexShrink: 0,
           display: "flex",
           flexDirection: "column",
           backgroundColor: "var(--bg)",
@@ -468,87 +464,88 @@ export default function PainelCentral({
       </div>
       )}
 
-      {/* Mapa — sempre full width */}
-      <MapaMonitor
-        cliente={cliente}
-        veiculos={veiculos}
-        clientes={clientes}
-        clienteAtivoId={clienteAtivoId}
-        mostrarSidebar={mostrarOperacao}
-        flyParaAlerta={flyParaAlerta}
-        onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
-        mostrarAlertas={mostrarAlertas}
-        onMostrarAlertas={() => setMostrarAlertas(v => !v)}
-        mostrarOperacao={mostrarOperacao}
-        onMostrarOperacao={() => setMostrarOperacao(v => !v)}
-      />
+      {/* ======== MAPA ======== */}
+      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
 
-      {/* Toast de critico novo — bottom-right, grande, 15s */}
-      {toast && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 24,
-            right: 24,
-            zIndex: 1002,
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 14,
-            padding: "1rem 1.25rem",
-            borderRadius: 14,
-            backgroundColor: "rgba(20,4,4,0.97)",
-            border: "1.5px solid var(--vermelho, #ef4444)",
-            boxShadow: "0 12px 40px rgba(239,68,68,0.25), 0 4px 16px rgba(0,0,0,0.8)",
-            backdropFilter: "blur(10px)",
-            maxWidth: 320,
-            animation: "pulse-live 1.5s ease-in-out 3",
-          }}
-        >
-          <span style={{ width: 12, height: 12, borderRadius: "50%", backgroundColor: "var(--vermelho, #ef4444)", flexShrink: 0, marginTop: 3 }} />
-          <div style={{ flex: 1 }}>
-            <p style={{ fontSize: 13, fontWeight: 800, color: "var(--vermelho, #ef4444)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
-              Novo crítico
-            </p>
-            <p style={{ fontSize: 18, fontWeight: 700, color: "#fff", fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.1em", marginTop: 2 }}>
-              {toast.placa}
-            </p>
-            <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>{nomeTipo(chaveTipo(toast.tipo))}</p>
-          </div>
-          <button
-            onClick={() => setToast(null)}
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", padding: 2, flexShrink: 0 }}
-            title="Fechar"
+        {/* Toast de critico novo — bottom-right, grande, 15s */}
+        {toast && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: 24,
+              right: 24,
+              zIndex: 1002,
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 14,
+              padding: "1rem 1.25rem",
+              borderRadius: 14,
+              backgroundColor: "rgba(20,4,4,0.97)",
+              border: "1.5px solid var(--vermelho, #ef4444)",
+              boxShadow: "0 12px 40px rgba(239,68,68,0.25), 0 4px 16px rgba(0,0,0,0.8)",
+              backdropFilter: "blur(10px)",
+              maxWidth: 320,
+              animation: "pulse-live 1.5s ease-in-out 3",
+            }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-      )}
-
-      {/* Painel flutuante do veiculo (qualquer veiculo clicado) */}
-      {veiculoPanel && (
-        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 1001 }}>
-          <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, pointerEvents: "auto" }}>
-            <PainelVeiculoAlerta
-              cv={veiculoPanel.cv}
-              placa={veiculoPanel.placa}
-              alertas={alertasVeiculoPanel.map((a) => ({
-                id: a.id,
-                status: a.status,
-                nivel: a.nivel,
-                tipo: a.tipo,
-                motivo: a.motivo,
-                desde: a.desde,
-                score: a.score,
-              }))}
-              onFechar={() => setVeiculoPanel(null)}
-              onAlertaResolvido={removerAlerta}
-              empresa={empresaNome}
-            />
+            <span style={{ width: 12, height: 12, borderRadius: "50%", backgroundColor: "var(--vermelho, #ef4444)", flexShrink: 0, marginTop: 3 }} />
+            <div style={{ flex: 1 }}>
+              <p style={{ fontSize: 13, fontWeight: 800, color: "var(--vermelho, #ef4444)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                Novo crítico
+              </p>
+              <p style={{ fontSize: 18, fontWeight: 700, color: "#fff", fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.1em", marginTop: 2 }}>
+                {toast.placa}
+              </p>
+              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>{nomeTipo(chaveTipo(toast.tipo))}</p>
+            </div>
+            <button
+              onClick={() => setToast(null)}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", padding: 2, flexShrink: 0 }}
+              title="Fechar"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
           </div>
-        </div>
-      )}
+        )}
+
+        <MapaMonitor
+          cliente={cliente}
+          veiculos={veiculos}
+          clientes={clientes}
+          clienteAtivoId={clienteAtivoId}
+          mostrarSidebar={modoBarra === "operacao"}
+          flyParaAlerta={flyParaAlerta}
+          onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
+          modoBarra={modoBarra}
+          onModoBarra={setModoBarra}
+        />
+
+        {/* Painel flutuante do veiculo (qualquer veiculo clicado) */}
+        {veiculoPanel && (
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 1001 }}>
+            <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, pointerEvents: "auto" }}>
+              <PainelVeiculoAlerta
+                cv={veiculoPanel.cv}
+                placa={veiculoPanel.placa}
+                alertas={alertasVeiculoPanel.map((a) => ({
+                  id: a.id,
+                  status: a.status,
+                  nivel: a.nivel,
+                  tipo: a.tipo,
+                  motivo: a.motivo,
+                  desde: a.desde,
+                  score: a.score,
+                }))}
+                onFechar={() => setVeiculoPanel(null)}
+                onAlertaResolvido={removerAlerta}
+                empresa={empresaNome}
+              />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
