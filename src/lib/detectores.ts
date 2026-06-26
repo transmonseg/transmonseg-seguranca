@@ -62,36 +62,34 @@ export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
   return null;
 }
 
-export function detectarIgnicaoForaJanela(
-  p: PosicaoNormalizada,
-  emOperacao: boolean,
-  foraDaBase: boolean
-): Alerta | null {
-  if (!p.fresco || !p.ignicao || emOperacao || !foraDaBase) return null;
-  return {
-    nivel: "critico",
-    tipo: "ignicao_noturna",
-    motivo: "Motor ligado fora do horário de operação (possível movimentação não autorizada)",
-    score: 85,
-  };
-}
-
+// Veiculo fora da base, motor ligado e SEM rota/entrega programada no dia.
+// Roda 24h: o que define a suspeita NAO e o horario (existe entrega de madrugada),
+// e sim nao ter rota. Motor ligado parado pode ser recarga/descanso (atencao);
+// em movimento fora da base sem rota e deslocamento indevido (critico).
+// Substitui o antigo detector "ignicao_noturna", que disparava por horario.
 export function detectarSaidaNaoAutorizada(
   p: PosicaoNormalizada,
-  ctx: { foraDaBase: boolean; temPendentes: boolean; emOperacao: boolean; entregasTotal?: number }
+  ctx: { foraDaBase: boolean; temPendentes: boolean; entregasTotal?: number }
 ): Alerta | null {
   if (!p.fresco || !p.ignicao) return null;
-  if (!ctx.foraDaBase || ctx.temPendentes || !ctx.emOperacao) return null;
-  // undefined = API Unitrac indisponível; não sabemos se havia entregas.
-  // Nao disparar para evitar falsos positivos em falha de API.
+  if (!ctx.foraDaBase || ctx.temPendentes) return null;
+  // undefined = API de rota indisponivel; sem saber se ha entregas, nao dispara.
   if (ctx.entregasTotal === undefined) return null;
-  // Veículo que terminou entregas (entregasTotal > 0) está legitimamente retornando.
+  // Tem (ou teve) entregas no dia = esta trabalhando legitimamente.
   if (ctx.entregasTotal > 0) return null;
+  if (p.velocidade > 0) {
+    return {
+      nivel: "critico",
+      tipo: "saida_nao_autorizada",
+      motivo: "Em movimento fora da base sem rota programada",
+      score: 80,
+    };
+  }
   return {
-    nivel: "critico",
+    nivel: "atencao",
     tipo: "saida_nao_autorizada",
-    motivo: "Veículo saiu da base sem entregas programadas",
-    score: 78,
+    motivo: "Parado fora da base sem rota programada",
+    score: 45,
   };
 }
 
@@ -379,11 +377,9 @@ export function avaliar(
     detectarPanico(p),
     detectarBau(p),
     detectarJammer(p),
-    detectarIgnicaoForaJanela(p, ctx.emOperacao, ctx.foraDaBase),
     detectarSaidaNaoAutorizada(p, {
       foraDaBase: ctx.foraDaBase,
       temPendentes: ctx.temPendentes ?? false,
-      emOperacao: ctx.emOperacao,
       entregasTotal: ctx.entregasTotal,
     }),
     detectarExcessoVelocidade(p),

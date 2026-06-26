@@ -9,7 +9,6 @@ import {
   detectarParadaLonga,
   detectarDesvio,
   detectarTiroteioProximo,
-  detectarIgnicaoForaJanela,
   detectarSaidaNaoAutorizada,
   foraDeRota,
   avaliar,
@@ -519,84 +518,79 @@ describe("avaliar", () => {
   });
 });
 
-describe("detectarIgnicaoForaJanela", () => {
-  it("ignicao ligada fora do horario de operacao, fora da base retorna critico ignicao_noturna", () => {
-    const a = detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), false, true);
-    expect(a).not.toBeNull();
-    expect(a?.nivel).toBe("critico");
-    expect(a?.tipo).toBe("ignicao_noturna");
-    expect(a?.score).toBe(85);
-  });
-  it("ignicao desligada fora do horario retorna null", () => {
-    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: false, fresco: true }), false, true)).toBeNull();
-  });
-  it("ignicao ligada DENTRO do horario retorna null", () => {
-    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), true, true)).toBeNull();
-  });
-  it("posicao nao fresca retorna null (dado congelado nao e sinal de movimento)", () => {
-    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: false }), false, true)).toBeNull();
-  });
-  it("dentro da base retorna null (mecanico ligando motor no deposito nao e alerta)", () => {
-    expect(detectarIgnicaoForaJanela(posicaoBase({ ignicao: true, fresco: true }), false, false)).toBeNull();
-  });
-});
-
 describe("detectarSaidaNaoAutorizada", () => {
-  it("fora da base, sem pendentes, sem entregas programadas, ignicao ligada, em operacao retorna critico", () => {
+  it("fora da base, sem rota, ignicao ligada e EM MOVIMENTO retorna critico", () => {
     const a = detectarSaidaNaoAutorizada(
-      posicaoBase({ ignicao: true, fresco: true }),
-      { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 0 }
+      posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
     );
     expect(a).not.toBeNull();
     expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("saida_nao_autorizada");
-    expect(a?.score).toBe(78);
+    expect(a?.score).toBe(80);
   });
-  it("com pendentes (tem rota) retorna null", () => {
+  it("fora da base, sem rota, ignicao ligada e PARADO retorna atencao (pode ser recarga)", () => {
+    const a = detectarSaidaNaoAutorizada(
+      posicaoBase({ ignicao: true, fresco: true, velocidade: 0 }),
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
+    );
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.tipo).toBe("saida_nao_autorizada");
+    expect(a?.score).toBe(45);
+  });
+  it("dispara 24h: nao depende mais de horario de operacao (movimento de madrugada)", () => {
+    const a = detectarSaidaNaoAutorizada(
+      posicaoBase({ ignicao: true, fresco: true, velocidade: 50 }),
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
+    );
+    expect(a?.nivel).toBe("critico");
+  });
+  it("com pendentes (tem rota) retorna null mesmo em movimento", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true }),
-        { foraDaBase: true, temPendentes: true, emOperacao: true, entregasTotal: 0 }
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
+        { foraDaBase: true, temPendentes: true, entregasTotal: 0 }
       )
     ).toBeNull();
   });
-  it("entregasTotal > 0 (terminou rota, voltando pra base) retorna null", () => {
+  it("entregasTotal > 0 (tem/teve entregas no dia) retorna null", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true }),
-        { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 5 }
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
+        { foraDaBase: true, temPendentes: false, entregasTotal: 5 }
+      )
+    ).toBeNull();
+  });
+  it("entregasTotal undefined (API de rota indisponivel) retorna null", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
+        { foraDaBase: true, temPendentes: false, entregasTotal: undefined }
       )
     ).toBeNull();
   });
   it("dentro da base retorna null", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true }),
-        { foraDaBase: false, temPendentes: false, emOperacao: true, entregasTotal: 0 }
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
+        { foraDaBase: false, temPendentes: false, entregasTotal: 0 }
       )
     ).toBeNull();
   });
   it("ignicao desligada retorna null", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: false, fresco: true }),
-        { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 0 }
-      )
-    ).toBeNull();
-  });
-  it("fora de operacao retorna null", () => {
-    expect(
-      detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true }),
-        { foraDaBase: true, temPendentes: false, emOperacao: false, entregasTotal: 0 }
+        posicaoBase({ ignicao: false, fresco: true, velocidade: 0 }),
+        { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
       )
     ).toBeNull();
   });
   it("posicao nao fresca retorna null", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: false }),
-        { foraDaBase: true, temPendentes: false, emOperacao: true, entregasTotal: 0 }
+        posicaoBase({ ignicao: true, fresco: false, velocidade: 40 }),
+        { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
       )
     ).toBeNull();
   });
