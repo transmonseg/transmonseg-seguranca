@@ -198,11 +198,11 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAl
     <div
       style={{
         position: "absolute",
-        top: 12,
+        top: 58,
         right: 12,
         zIndex: 1001,
         width: 340,
-        maxHeight: "calc(100% - 24px)",
+        maxHeight: "calc(100% - 70px)",
         display: "flex",
         flexDirection: "column",
         backgroundColor: "rgba(9,9,13,0.97)",

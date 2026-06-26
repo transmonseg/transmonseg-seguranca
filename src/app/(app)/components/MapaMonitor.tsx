@@ -932,7 +932,6 @@ export default function MapaMonitor({
       ]);
       if (Array.isArray(dRastro?.pontos)) {
         setRastro(dRastro.pontos);
-        if (dRastro.pontos.length > 0) setGatilhoBounds((g) => g + 1);
       }
       if (Array.isArray(dStops?.paradas)) setParadas(dStops.paradas);
       if (dTel?.posicao) setTelemetria(dTel.posicao as Telemetria);
@@ -1255,7 +1254,7 @@ export default function MapaMonitor({
                   left: 0,
                   right: 0,
                   zIndex: 50,
-                  backgroundColor: "var(--bg-card)",
+                  backgroundColor: "var(--card)",
                   border: "1px solid var(--border)",
                   borderRadius: "0.5rem",
                   overflow: "hidden",
@@ -2194,6 +2193,13 @@ export default function MapaMonitor({
                       position={[p.lat, p.lng]}
                       icon={iconeAlvo(i + 1, p.feito, p.ordem === proximoOrdem)}
                     >
+                      {p.nome && (
+                        <Tooltip direction="top" offset={[0, -8]} className="leaflet-tooltip-placa" sticky>
+                          <span style={{ color: p.feito ? "#9ca3af" : p.ordem === proximoOrdem ? "#f97316" : "#fbbf24" }}>
+                            #{i + 1}
+                          </span>{" "}{p.nome}
+                        </Tooltip>
+                      )}
                       <Popup>
                         <div style={{ fontWeight: 700, fontSize: 13, color: p.feito ? "#6b7280" : "#f97316" }}>
                           {p.feito ? "Realizado" : "Pendente"} — #{i + 1}
