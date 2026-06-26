@@ -722,6 +722,9 @@ export default function MapaMonitor({
   /* ---- Gatilho de fitBounds ---- */
   const [gatilhoBounds, setGatilhoBounds] = useState(0);
 
+  /* ---- Fly para veiculo selecionado ---- */
+  const [flyParaVeiculo, setFlyParaVeiculo] = useState<{ lat: number; lng: number; gatilho: number } | null>(null);
+
   /* ---- Gatilho de enquadrar frota inteira ---- */
   const [gatilhoFrota, setGatilhoFrota] = useState(0);
 
@@ -877,7 +880,10 @@ export default function MapaMonitor({
         resTel.json(),
         resAlvos.json(),
       ]);
-      if (Array.isArray(dRastro?.pontos)) setRastro(dRastro.pontos);
+      if (Array.isArray(dRastro?.pontos)) {
+        setRastro(dRastro.pontos);
+        if (dRastro.pontos.length > 0) setGatilhoBounds((g) => g + 1);
+      }
       if (Array.isArray(dStops?.paradas)) setParadas(dStops.paradas);
       if (dTel?.posicao) setTelemetria(dTel.posicao as Telemetria);
       if (Array.isArray(dAlvos?.pontos)) setAlvos(dAlvos.pontos as PontoEntregaUI[]);
@@ -901,15 +907,20 @@ export default function MapaMonitor({
     setCvSelecionado(v.cv);
     setPlacaSelecionada(v.placa);
     setPainelAberto(true);
-    setGatilhoBounds((g) => g + 1);
-  }, []);
+    const vm = veiculosMapa.find((x) => x.cv === v.cv);
+    if (vm?.lat != null && vm?.lng != null) {
+      setFlyParaVeiculo({ lat: vm.lat, lng: vm.lng, gatilho: Date.now() });
+    }
+  }, [veiculosMapa]);
 
   const onClickVeiculoMapa = useCallback(
     (vm: VeiculoMapa) => {
       setCvSelecionado(vm.cv);
       setPlacaSelecionada(vm.placa);
       setPainelAberto(true);
-      setGatilhoBounds((g) => g + 1);
+      if (vm.lat != null && vm.lng != null) {
+        setFlyParaVeiculo({ lat: vm.lat, lng: vm.lng, gatilho: Date.now() });
+      }
       if (onVeiculoComAlertaClicado) onVeiculoComAlertaClicado(vm.cv, vm.placa);
     },
     [onVeiculoComAlertaClicado]
@@ -1666,6 +1677,7 @@ export default function MapaMonitor({
               <AjustarBoundsFrota pontos={pontosFrota} gatilho={gatilhoFrota} />
             )}
             {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
+            {flyParaVeiculo && <AutoFlyAlerta flyPara={flyParaVeiculo} />}
 
             {googleApiKey ? (
               <TileLayer
