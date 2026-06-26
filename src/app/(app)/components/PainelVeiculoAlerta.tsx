@@ -220,18 +220,14 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAl
   return (
     <div
       style={{
-        position: "absolute",
-        bottom: 16,
-        right: 16,
-        zIndex: 1001,
         width: 340,
-        maxHeight: "calc(100% - 32px)",
+        maxHeight: "100%",
         display: "flex",
         flexDirection: "column",
         backgroundColor: "rgba(9,9,13,0.97)",
         border: `1px solid color-mix(in srgb, ${corNivel} 40%, var(--border))`,
         borderRadius: "0.875rem",
-        boxShadow: "0 10px 40px rgba(0,0,0,0.7)",
+        boxShadow: arrastando ? "0 16px 56px rgba(0,0,0,0.85)" : "0 10px 40px rgba(0,0,0,0.7)",
         backdropFilter: "blur(10px)",
         overflow: "hidden",
         transform: `translate(${pos.x}px, ${pos.y}px)`,
