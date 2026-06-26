@@ -7,7 +7,7 @@
  * rastro/paradas ao selecionar, painel de telemetria flutuante.
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
 import {
   MapContainer,
@@ -135,6 +135,10 @@ interface Props {
   mostrarSidebar?: boolean;
   flyParaAlerta?: { lat: number; lng: number; gatilho: number } | null;
   onVeiculoComAlertaClicado?: (cv: string, placa: string) => void;
+  painelEsquerdo?: ReactNode;
+  mostrarPainelEsquerdo?: boolean;
+  onTogglePainelEsquerdo?: () => void;
+  onToggleSidebar?: () => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -701,6 +705,10 @@ export default function MapaMonitor({
   mostrarSidebar = true,
   flyParaAlerta = null,
   onVeiculoComAlertaClicado,
+  painelEsquerdo,
+  mostrarPainelEsquerdo = false,
+  onTogglePainelEsquerdo,
+  onToggleSidebar,
 }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
@@ -1132,9 +1140,494 @@ export default function MapaMonitor({
   /* Render                                                               */
   /* ------------------------------------------------------------------ */
 
+  const conteudoOperacao = (
+    <>
+      {/* Seletor de cliente */}
+      <div style={{ padding: "0.5rem 0.875rem", borderBottom: "1px solid var(--border)", display: "flex", gap: 4, flexWrap: "wrap" }}>
+        {clientes.map((c) => (
+          <Link
+            key={c.id}
+            href={`?cliente=${c.cod}`}
+            style={{
+              padding: "0.25rem 0.625rem",
+              borderRadius: 6,
+              fontSize: 11,
+              fontWeight: 700,
+              backgroundColor: c.id === clienteAtivoId ? "var(--accent-dim)" : "transparent",
+              border: `1px solid ${c.id === clienteAtivoId ? "var(--accent)" : "var(--border)"}`,
+              color: c.id === clienteAtivoId ? "var(--accent)" : "var(--text-dim)",
+              textDecoration: "none",
+            }}
+          >
+            {c.nome}
+          </Link>
+        ))}
+      </div>
+
+      {/* Cabecalho da sidebar */}
+      <div
+        style={{
+          padding: "0.75rem 0.875rem",
+          borderBottom: "1px solid var(--border)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          flexShrink: 0,
+        }}
+      >
+        {/* Busca */}
+        <input
+          type="text"
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="Buscar placa..."
+          style={{
+            width: "100%",
+            padding: "0.5rem 0.75rem",
+            backgroundColor: "var(--bg)",
+            border: "1px solid var(--border)",
+            borderRadius: "0.5rem",
+            color: "var(--text)",
+            fontSize: 12,
+            fontFamily: "var(--font-geist-mono, monospace)",
+            letterSpacing: "0.06em",
+            outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+
+        {/* Periodo */}
+        <div style={{ position: "relative" }}>
+          <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
+            Período:
+          </p>
+          <button
+            disabled={!cvSelecionado}
+            onClick={() => setDropdownPeriodoAberto((v) => !v)}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "0.3rem 0.6rem",
+              borderRadius: "0.375rem",
+              border: "1px solid var(--border)",
+              cursor: cvSelecionado ? "pointer" : "not-allowed",
+              fontSize: 12,
+              fontWeight: 600,
+              backgroundColor: "var(--bg)",
+              color: "var(--accent)",
+              opacity: !cvSelecionado ? 0.4 : 1,
+            }}
+          >
+            <span>{PERIODOS.find((p) => p.horas === horas)?.label ?? `${horas}h`}</span>
+            <svg width={10} height={10} viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, transform: dropdownPeriodoAberto ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+              <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+
+          {dropdownPeriodoAberto && (
+            <>
+              {/* Backdrop para fechar ao clicar fora */}
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 49 }}
+                onClick={() => setDropdownPeriodoAberto(false)}
+              />
+              <div style={{
+                position: "absolute",
+                top: "calc(100% + 4px)",
+                left: 0,
+                right: 0,
+                zIndex: 50,
+                backgroundColor: "var(--card)",
+                border: "1px solid var(--border)",
+                borderRadius: "0.5rem",
+                overflow: "hidden",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+              }}>
+                {PERIODOS.map((p) => (
+                  <button
+                    key={p.horas}
+                    onClick={() => { setHoras(p.horas); setDropdownPeriodoAberto(false); }}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "0.4rem 0.75rem",
+                      border: "none",
+                      borderBottom: "1px solid var(--border)",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: horas === p.horas ? 700 : 500,
+                      backgroundColor: horas === p.horas ? "var(--accent-dim)" : "transparent",
+                      color: horas === p.horas ? "var(--accent)" : "var(--text)",
+                      transition: "background 0.1s",
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Filtro comunicacao */}
+        <div>
+          <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
+            Comunicacao:
+          </p>
+          <div style={{ display: "flex", gap: 3 }}>
+            {FILTROS_COMM.map((f) => (
+              <button
+                key={f.min}
+                onClick={() => setFiltroComm((prev) => (prev === f.min ? null : f.min))}
+                style={{
+                  flex: 1,
+                  padding: "0.25rem 0",
+                  borderRadius: "0.375rem",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  backgroundColor: filtroComm === f.min ? "rgba(245,158,11,0.15)" : "var(--bg)",
+                  color: filtroComm === f.min ? "var(--amarelo)" : "var(--text-dim)",
+                  transition: "all 0.12s",
+                }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Botoes de acao */}
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          <button
+            onClick={() => setMostrarRastro((v) => !v)}
+            disabled={!cvSelecionado}
+            style={{
+              flex: 1,
+              padding: "0.3rem 0",
+              borderRadius: "0.375rem",
+              border: `1px solid ${mostrarRastro ? "var(--accent)" : "var(--border)"}`,
+              cursor: cvSelecionado ? "pointer" : "not-allowed",
+              fontSize: 10,
+              fontWeight: 600,
+              backgroundColor: mostrarRastro ? "var(--accent-dim)" : "transparent",
+              color: mostrarRastro ? "var(--accent)" : "var(--text-dim)",
+              opacity: !cvSelecionado ? 0.4 : 1,
+            }}
+          >
+            Rastro
+          </button>
+          <button
+            onClick={() => setMostrarParadas((v) => !v)}
+            disabled={!cvSelecionado}
+            style={{
+              flex: 1,
+              padding: "0.3rem 0",
+              borderRadius: "0.375rem",
+              border: `1px solid ${mostrarParadas ? "#f59e0b" : "var(--border)"}`,
+              cursor: cvSelecionado ? "pointer" : "not-allowed",
+              fontSize: 10,
+              fontWeight: 600,
+              backgroundColor: mostrarParadas ? "rgba(245,158,11,0.1)" : "transparent",
+              color: mostrarParadas ? "#f59e0b" : "var(--text-dim)",
+              opacity: !cvSelecionado ? 0.4 : 1,
+            }}
+          >
+            Paradas
+          </button>
+          {cvSelecionado && (
+            <button
+              onClick={() => setPainelAberto((v) => !v)}
+              style={{
+                flex: 1,
+                padding: "0.3rem 0",
+                borderRadius: "0.375rem",
+                border: `1px solid ${painelAberto ? "var(--verde)" : "var(--border)"}`,
+                cursor: "pointer",
+                fontSize: 10,
+                fontWeight: 600,
+                backgroundColor: painelAberto ? "rgba(34,197,94,0.1)" : "transparent",
+                color: painelAberto ? "var(--verde)" : "var(--text-dim)",
+              }}
+            >
+              Telemetria
+            </button>
+          )}
+        </div>
+
+        {/* Centralizar e Limpar */}
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={() => setGatilhoBounds((g) => g + 1)}
+            disabled={!cvSelecionado || pontosRastro.length === 0}
+            style={{
+              flex: 1,
+              padding: "0.3rem 0",
+              borderRadius: "0.375rem",
+              border: "1px solid var(--border)",
+              cursor: cvSelecionado && pontosRastro.length > 0 ? "pointer" : "not-allowed",
+              fontSize: 10,
+              fontWeight: 600,
+              backgroundColor: "var(--bg)",
+              color: "var(--text-muted)",
+              opacity: !cvSelecionado || pontosRastro.length === 0 ? 0.35 : 1,
+            }}
+          >
+            Centralizar
+          </button>
+          <button
+            onClick={limparSelecao}
+            disabled={!cvSelecionado}
+            style={{
+              flex: 1,
+              padding: "0.3rem 0",
+              borderRadius: "0.375rem",
+              border: "1px solid var(--border)",
+              cursor: cvSelecionado ? "pointer" : "not-allowed",
+              fontSize: 10,
+              fontWeight: 600,
+              backgroundColor: "var(--bg)",
+              color: "var(--text-muted)",
+              opacity: !cvSelecionado ? 0.35 : 1,
+            }}
+          >
+            Limpar
+          </button>
+        </div>
+
+        {/* Indicador de carregamento */}
+        {carregando && (
+          <div style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--text-dim)", fontSize: 10 }}>
+            <span
+              style={{
+                display: "inline-block",
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                backgroundColor: "var(--accent)",
+              }}
+            />
+            buscando...
+          </div>
+        )}
+      </div>
+
+      {/* Lista de grupos */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "0.5rem 0" }}>
+        {temGrupos
+          ? gruposFiltrados.map((grupo) => {
+              const expandido = gruposExpandidos.has(grupo.gvc);
+              const cvGrupo = grupo.veiculos.map((v) => v.cv);
+              const qtdChecked = cvGrupo.filter((cv) => cvsSelecionados.has(cv)).length;
+              const todosMarcados = qtdChecked === cvGrupo.length;
+              const nenhumMarcado = qtdChecked === 0;
+              const indeterminado = !todosMarcados && !nenhumMarcado;
+              const qtdNoMapa = veiculosMapa.filter((v) => cvGrupo.includes(v.cv)).length;
+
+              return (
+                <div key={grupo.gvc}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "0.4rem 0.75rem",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      borderBottom: "1px solid var(--border-subtle)",
+                    }}
+                    onClick={() => toggleGrupo(grupo.gvc)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={todosMarcados}
+                      ref={(el) => {
+                        if (el) el.indeterminate = indeterminado;
+                      }}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        toggleCvGrupo(cvGrupo, e.target.checked);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ cursor: "pointer", flexShrink: 0 }}
+                    />
+                    <span
+                      style={{
+                        color: "var(--text-dim)",
+                        fontSize: 10,
+                        transition: "transform 0.15s",
+                        display: "inline-block",
+                        transform: expandido ? "rotate(90deg)" : "rotate(0deg)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {"▶"}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--text-muted)",
+                        flex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={grupo.gvn}
+                    >
+                      {grupo.gvn}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        color: "var(--text-dim)",
+                        flexShrink: 0,
+                        fontFamily: "var(--font-geist-mono, monospace)",
+                      }}
+                    >
+                      ({qtdNoMapa})
+                    </span>
+                  </div>
+
+                  {expandido && (
+                    <div>
+                      {grupo.veiculos
+                        .filter((v) =>
+                          busca.trim()
+                            ? v.placa.toUpperCase().includes(busca.toUpperCase())
+                            : true
+                        )
+                        .map((v) => {
+                          const selecionado = cvSelecionado === v.cv;
+                          const posicao = veiculosMapa.find((vm) => vm.cv === v.cv);
+                          const cor = posicao ? corVeiculo(posicao) : "#57534e";
+                          const visivelMapa = cvsSelecionados.has(v.cv);
+
+                          return (
+                            <div
+                              key={v.cv}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "0.3rem 0.75rem 0.3rem 1.75rem",
+                                cursor: "pointer",
+                                backgroundColor: selecionado ? "var(--accent-dim)" : "transparent",
+                                borderLeft: selecionado ? "2px solid var(--accent)" : "2px solid transparent",
+                                transition: "all 0.1s",
+                              }}
+                              onClick={() => selecionarVeiculo(v)}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={visivelMapa}
+                                onChange={(e) => {
+                                  e.stopPropagation();
+                                  toggleCv(v.cv);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ cursor: "pointer", flexShrink: 0 }}
+                              />
+                              <span
+                                style={{
+                                  width: 8,
+                                  height: 8,
+                                  borderRadius: "50%",
+                                  backgroundColor: cor,
+                                  flexShrink: 0,
+                                  border: "1px solid rgba(255,255,255,0.2)",
+                                  display: "inline-block",
+                                }}
+                              />
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  fontFamily: "var(--font-geist-mono, monospace)",
+                                  color: selecionado ? "var(--accent)" : "var(--text-muted)",
+                                  letterSpacing: "0.06em",
+                                  fontWeight: selecionado ? 700 : 400,
+                                }}
+                              >
+                                {v.placa}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          : veiculos
+              .filter((v) =>
+                busca.trim()
+                  ? v.placa.toUpperCase().includes(busca.toUpperCase())
+                  : true
+              )
+              .map((v) => {
+                const selecionado = cvSelecionado === v.cv;
+                const posicao = veiculosMapa.find((vm) => vm.cv === v.cv);
+                const cor = posicao ? corVeiculo(posicao) : "#57534e";
+                const visivelMapa = cvsSelecionados.has(v.cv);
+                return (
+                  <div
+                    key={v.cv}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "0.3rem 0.75rem",
+                      cursor: "pointer",
+                      backgroundColor: selecionado ? "var(--accent-dim)" : "transparent",
+                      borderLeft: selecionado ? "2px solid var(--accent)" : "2px solid transparent",
+                    }}
+                    onClick={() => selecionarVeiculo(v)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={visivelMapa}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        toggleCv(v.cv);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ cursor: "pointer", flexShrink: 0 }}
+                    />
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        backgroundColor: cor,
+                        flexShrink: 0,
+                        display: "inline-block",
+                      }}
+                    />
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontFamily: "var(--font-geist-mono, monospace)",
+                        color: selecionado ? "var(--accent)" : "var(--text-muted)",
+                        letterSpacing: "0.06em",
+                      }}
+                    >
+                      {v.placa}
+                    </span>
+                  </div>
+                );
+              })}
+      </div>
+    </>
+  );
+
   return (
     <div
       style={{
+        display: "flex",
+        flexDirection: "column",
         position: "relative",
         height: "100%",
         minHeight: 480,
@@ -1142,509 +1635,9 @@ export default function MapaMonitor({
       }}
     >
       {/* ============================================================
-          SIDEBAR (oculta quando mostrarSidebar=false — overlay absoluto)
-          ============================================================ */}
-      <div
-        style={{
-          position: "absolute",
-          right: 0,
-          top: 0,
-          bottom: 0,
-          width: mostrarSidebar ? SIDEBAR_W : 0,
-          zIndex: 500,
-          display: "flex",
-          flexDirection: "column",
-          backgroundColor: "var(--card)",
-          borderLeft: mostrarSidebar ? "1px solid var(--border)" : "none",
-          overflowY: mostrarSidebar ? "auto" : "hidden",
-          overflowX: "hidden",
-          transition: "width 0.2s ease",
-        }}
-      >
-        {/* Seletor de cliente */}
-        <div style={{ padding: "0.5rem 0.875rem", borderBottom: "1px solid var(--border)", display: "flex", gap: 4, flexWrap: "wrap" }}>
-          {clientes.map((c) => (
-            <Link
-              key={c.id}
-              href={`?cliente=${c.cod}`}
-              style={{
-                padding: "0.25rem 0.625rem",
-                borderRadius: 6,
-                fontSize: 11,
-                fontWeight: 700,
-                backgroundColor: c.id === clienteAtivoId ? "var(--accent-dim)" : "transparent",
-                border: `1px solid ${c.id === clienteAtivoId ? "var(--accent)" : "var(--border)"}`,
-                color: c.id === clienteAtivoId ? "var(--accent)" : "var(--text-dim)",
-                textDecoration: "none",
-              }}
-            >
-              {c.nome}
-            </Link>
-          ))}
-        </div>
-
-        {/* Cabecalho da sidebar */}
-        <div
-          style={{
-            padding: "0.75rem 0.875rem",
-            borderBottom: "1px solid var(--border)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            flexShrink: 0,
-          }}
-        >
-          {/* Busca */}
-          <input
-            type="text"
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Buscar placa..."
-            style={{
-              width: "100%",
-              padding: "0.5rem 0.75rem",
-              backgroundColor: "var(--bg)",
-              border: "1px solid var(--border)",
-              borderRadius: "0.5rem",
-              color: "var(--text)",
-              fontSize: 12,
-              fontFamily: "var(--font-geist-mono, monospace)",
-              letterSpacing: "0.06em",
-              outline: "none",
-              boxSizing: "border-box",
-            }}
-          />
-
-          {/* Periodo */}
-          <div style={{ position: "relative" }}>
-            <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
-              Período:
-            </p>
-            <button
-              disabled={!cvSelecionado}
-              onClick={() => setDropdownPeriodoAberto((v) => !v)}
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "0.3rem 0.6rem",
-                borderRadius: "0.375rem",
-                border: "1px solid var(--border)",
-                cursor: cvSelecionado ? "pointer" : "not-allowed",
-                fontSize: 12,
-                fontWeight: 600,
-                backgroundColor: "var(--bg)",
-                color: "var(--accent)",
-                opacity: !cvSelecionado ? 0.4 : 1,
-              }}
-            >
-              <span>{PERIODOS.find((p) => p.horas === horas)?.label ?? `${horas}h`}</span>
-              <svg width={10} height={10} viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, transform: dropdownPeriodoAberto ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
-                <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-
-            {dropdownPeriodoAberto && (
-              <>
-                {/* Backdrop para fechar ao clicar fora */}
-                <div
-                  style={{ position: "fixed", inset: 0, zIndex: 49 }}
-                  onClick={() => setDropdownPeriodoAberto(false)}
-                />
-                <div style={{
-                  position: "absolute",
-                  top: "calc(100% + 4px)",
-                  left: 0,
-                  right: 0,
-                  zIndex: 50,
-                  backgroundColor: "var(--card)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "0.5rem",
-                  overflow: "hidden",
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
-                }}>
-                  {PERIODOS.map((p) => (
-                    <button
-                      key={p.horas}
-                      onClick={() => { setHoras(p.horas); setDropdownPeriodoAberto(false); }}
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "0.4rem 0.75rem",
-                        border: "none",
-                        borderBottom: "1px solid var(--border)",
-                        cursor: "pointer",
-                        fontSize: 12,
-                        fontWeight: horas === p.horas ? 700 : 500,
-                        backgroundColor: horas === p.horas ? "var(--accent-dim)" : "transparent",
-                        color: horas === p.horas ? "var(--accent)" : "var(--text)",
-                        transition: "background 0.1s",
-                      }}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Filtro comunicacao */}
-          <div>
-            <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
-              Comunicacao:
-            </p>
-            <div style={{ display: "flex", gap: 3 }}>
-              {FILTROS_COMM.map((f) => (
-                <button
-                  key={f.min}
-                  onClick={() => setFiltroComm((prev) => (prev === f.min ? null : f.min))}
-                  style={{
-                    flex: 1,
-                    padding: "0.25rem 0",
-                    borderRadius: "0.375rem",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    backgroundColor: filtroComm === f.min ? "rgba(245,158,11,0.15)" : "var(--bg)",
-                    color: filtroComm === f.min ? "var(--amarelo)" : "var(--text-dim)",
-                    transition: "all 0.12s",
-                  }}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Botoes de acao */}
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            <button
-              onClick={() => setMostrarRastro((v) => !v)}
-              disabled={!cvSelecionado}
-              style={{
-                flex: 1,
-                padding: "0.3rem 0",
-                borderRadius: "0.375rem",
-                border: `1px solid ${mostrarRastro ? "var(--accent)" : "var(--border)"}`,
-                cursor: cvSelecionado ? "pointer" : "not-allowed",
-                fontSize: 10,
-                fontWeight: 600,
-                backgroundColor: mostrarRastro ? "var(--accent-dim)" : "transparent",
-                color: mostrarRastro ? "var(--accent)" : "var(--text-dim)",
-                opacity: !cvSelecionado ? 0.4 : 1,
-              }}
-            >
-              Rastro
-            </button>
-            <button
-              onClick={() => setMostrarParadas((v) => !v)}
-              disabled={!cvSelecionado}
-              style={{
-                flex: 1,
-                padding: "0.3rem 0",
-                borderRadius: "0.375rem",
-                border: `1px solid ${mostrarParadas ? "#f59e0b" : "var(--border)"}`,
-                cursor: cvSelecionado ? "pointer" : "not-allowed",
-                fontSize: 10,
-                fontWeight: 600,
-                backgroundColor: mostrarParadas ? "rgba(245,158,11,0.1)" : "transparent",
-                color: mostrarParadas ? "#f59e0b" : "var(--text-dim)",
-                opacity: !cvSelecionado ? 0.4 : 1,
-              }}
-            >
-              Paradas
-            </button>
-            {cvSelecionado && (
-              <button
-                onClick={() => setPainelAberto((v) => !v)}
-                style={{
-                  flex: 1,
-                  padding: "0.3rem 0",
-                  borderRadius: "0.375rem",
-                  border: `1px solid ${painelAberto ? "var(--verde)" : "var(--border)"}`,
-                  cursor: "pointer",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  backgroundColor: painelAberto ? "rgba(34,197,94,0.1)" : "transparent",
-                  color: painelAberto ? "var(--verde)" : "var(--text-dim)",
-                }}
-              >
-                Telemetria
-              </button>
-            )}
-          </div>
-
-          {/* Centralizar e Limpar */}
-          <div style={{ display: "flex", gap: 4 }}>
-            <button
-              onClick={() => setGatilhoBounds((g) => g + 1)}
-              disabled={!cvSelecionado || pontosRastro.length === 0}
-              style={{
-                flex: 1,
-                padding: "0.3rem 0",
-                borderRadius: "0.375rem",
-                border: "1px solid var(--border)",
-                cursor: cvSelecionado && pontosRastro.length > 0 ? "pointer" : "not-allowed",
-                fontSize: 10,
-                fontWeight: 600,
-                backgroundColor: "var(--bg)",
-                color: "var(--text-muted)",
-                opacity: !cvSelecionado || pontosRastro.length === 0 ? 0.35 : 1,
-              }}
-            >
-              Centralizar
-            </button>
-            <button
-              onClick={limparSelecao}
-              disabled={!cvSelecionado}
-              style={{
-                flex: 1,
-                padding: "0.3rem 0",
-                borderRadius: "0.375rem",
-                border: "1px solid var(--border)",
-                cursor: cvSelecionado ? "pointer" : "not-allowed",
-                fontSize: 10,
-                fontWeight: 600,
-                backgroundColor: "var(--bg)",
-                color: "var(--text-muted)",
-                opacity: !cvSelecionado ? 0.35 : 1,
-              }}
-            >
-              Limpar
-            </button>
-          </div>
-
-          {/* Indicador de carregamento */}
-          {carregando && (
-            <div style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--text-dim)", fontSize: 10 }}>
-              <span
-                style={{
-                  display: "inline-block",
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  backgroundColor: "var(--accent)",
-                }}
-              />
-              buscando...
-            </div>
-          )}
-        </div>
-
-        {/* Lista de grupos */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "0.5rem 0" }}>
-          {temGrupos
-            ? gruposFiltrados.map((grupo) => {
-                const expandido = gruposExpandidos.has(grupo.gvc);
-                const cvGrupo = grupo.veiculos.map((v) => v.cv);
-                const qtdChecked = cvGrupo.filter((cv) => cvsSelecionados.has(cv)).length;
-                const todosMarcados = qtdChecked === cvGrupo.length;
-                const nenhumMarcado = qtdChecked === 0;
-                const indeterminado = !todosMarcados && !nenhumMarcado;
-                const qtdNoMapa = veiculosMapa.filter((v) => cvGrupo.includes(v.cv)).length;
-
-                return (
-                  <div key={grupo.gvc}>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "0.4rem 0.75rem",
-                        cursor: "pointer",
-                        userSelect: "none",
-                        borderBottom: "1px solid var(--border-subtle)",
-                      }}
-                      onClick={() => toggleGrupo(grupo.gvc)}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={todosMarcados}
-                        ref={(el) => {
-                          if (el) el.indeterminate = indeterminado;
-                        }}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          toggleCvGrupo(cvGrupo, e.target.checked);
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ cursor: "pointer", flexShrink: 0 }}
-                      />
-                      <span
-                        style={{
-                          color: "var(--text-dim)",
-                          fontSize: 10,
-                          transition: "transform 0.15s",
-                          display: "inline-block",
-                          transform: expandido ? "rotate(90deg)" : "rotate(0deg)",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {"▶"}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          color: "var(--text-muted)",
-                          flex: 1,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                        title={grupo.gvn}
-                      >
-                        {grupo.gvn}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 10,
-                          color: "var(--text-dim)",
-                          flexShrink: 0,
-                          fontFamily: "var(--font-geist-mono, monospace)",
-                        }}
-                      >
-                        ({qtdNoMapa})
-                      </span>
-                    </div>
-
-                    {expandido && (
-                      <div>
-                        {grupo.veiculos
-                          .filter((v) =>
-                            busca.trim()
-                              ? v.placa.toUpperCase().includes(busca.toUpperCase())
-                              : true
-                          )
-                          .map((v) => {
-                            const selecionado = cvSelecionado === v.cv;
-                            const posicao = veiculosMapa.find((vm) => vm.cv === v.cv);
-                            const cor = posicao ? corVeiculo(posicao) : "#57534e";
-                            const visivelMapa = cvsSelecionados.has(v.cv);
-
-                            return (
-                              <div
-                                key={v.cv}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 6,
-                                  padding: "0.3rem 0.75rem 0.3rem 1.75rem",
-                                  cursor: "pointer",
-                                  backgroundColor: selecionado ? "var(--accent-dim)" : "transparent",
-                                  borderLeft: selecionado ? "2px solid var(--accent)" : "2px solid transparent",
-                                  transition: "all 0.1s",
-                                }}
-                                onClick={() => selecionarVeiculo(v)}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={visivelMapa}
-                                  onChange={(e) => {
-                                    e.stopPropagation();
-                                    toggleCv(v.cv);
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  style={{ cursor: "pointer", flexShrink: 0 }}
-                                />
-                                <span
-                                  style={{
-                                    width: 8,
-                                    height: 8,
-                                    borderRadius: "50%",
-                                    backgroundColor: cor,
-                                    flexShrink: 0,
-                                    border: "1px solid rgba(255,255,255,0.2)",
-                                    display: "inline-block",
-                                  }}
-                                />
-                                <span
-                                  style={{
-                                    fontSize: 12,
-                                    fontFamily: "var(--font-geist-mono, monospace)",
-                                    color: selecionado ? "var(--accent)" : "var(--text-muted)",
-                                    letterSpacing: "0.06em",
-                                    fontWeight: selecionado ? 700 : 400,
-                                  }}
-                                >
-                                  {v.placa}
-                                </span>
-                              </div>
-                            );
-                          })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            : veiculos
-                .filter((v) =>
-                  busca.trim()
-                    ? v.placa.toUpperCase().includes(busca.toUpperCase())
-                    : true
-                )
-                .map((v) => {
-                  const selecionado = cvSelecionado === v.cv;
-                  const posicao = veiculosMapa.find((vm) => vm.cv === v.cv);
-                  const cor = posicao ? corVeiculo(posicao) : "#57534e";
-                  const visivelMapa = cvsSelecionados.has(v.cv);
-                  return (
-                    <div
-                      key={v.cv}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "0.3rem 0.75rem",
-                        cursor: "pointer",
-                        backgroundColor: selecionado ? "var(--accent-dim)" : "transparent",
-                        borderLeft: selecionado ? "2px solid var(--accent)" : "2px solid transparent",
-                      }}
-                      onClick={() => selecionarVeiculo(v)}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={visivelMapa}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          toggleCv(v.cv);
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ cursor: "pointer", flexShrink: 0 }}
-                      />
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          backgroundColor: cor,
-                          flexShrink: 0,
-                          display: "inline-block",
-                        }}
-                      />
-                      <span
-                        style={{
-                          fontSize: 12,
-                          fontFamily: "var(--font-geist-mono, monospace)",
-                          color: selecionado ? "var(--accent)" : "var(--text-muted)",
-                          letterSpacing: "0.06em",
-                        }}
-                      >
-                        {v.placa}
-                      </span>
-                    </div>
-                  );
-                })}
-        </div>
-      </div>
-
-      {/* ============================================================
           COLUNA DIREITA: MAPA + LEGENDA (sempre ocupa tudo)
           ============================================================ */}
-      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
         {/* ── TOOLBAR UNITRAC ── */}
         <div style={{
@@ -1787,6 +1780,91 @@ export default function MapaMonitor({
 
         {/* Mapa */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          {/* Painel ALERTAS (esquerda) */}
+          {painelEsquerdo !== undefined && (
+            <div style={{
+              position: "absolute", left: 0, top: 0, bottom: 0,
+              width: mostrarPainelEsquerdo ? 380 : 0,
+              zIndex: 500,
+              display: "flex", flexDirection: "column",
+              backgroundColor: "var(--bg)",
+              borderRight: mostrarPainelEsquerdo ? "1px solid var(--border)" : "none",
+              overflowY: mostrarPainelEsquerdo ? "auto" : "hidden",
+              overflowX: "hidden",
+              transition: "width 0.2s ease",
+              flexShrink: 0,
+            }}>
+              {painelEsquerdo}
+            </div>
+          )}
+
+          {/* Painel OPERAÇÃO (direita) */}
+          <div style={{
+            position: "absolute", right: 0, top: 0, bottom: 0,
+            width: mostrarSidebar ? SIDEBAR_W : 0,
+            zIndex: 500,
+            display: "flex", flexDirection: "column",
+            backgroundColor: "var(--card)",
+            borderLeft: mostrarSidebar ? "1px solid var(--border)" : "none",
+            overflowY: mostrarSidebar ? "auto" : "hidden",
+            overflowX: "hidden",
+            transition: "width 0.2s ease",
+          }}>
+            {conteudoOperacao}
+          </div>
+
+          {/* Aba ALERTAS (borda esquerda) */}
+          {onTogglePainelEsquerdo && (
+            <button
+              onClick={onTogglePainelEsquerdo}
+              title={mostrarPainelEsquerdo ? "Fechar alertas" : "Alertas"}
+              style={{
+                position: "absolute",
+                left: mostrarPainelEsquerdo ? 380 : 0,
+                top: "50%", transform: "translateY(-50%)",
+                zIndex: 600, transition: "left 0.2s ease",
+                display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center", gap: 4,
+                width: 22, padding: "20px 0",
+                background: "var(--card)",
+                border: "1px solid var(--border)", borderLeft: "none",
+                borderRadius: "0 6px 6px 0",
+                cursor: "pointer",
+                color: mostrarPainelEsquerdo ? "var(--vermelho)" : "var(--text-muted)",
+                boxShadow: "3px 0 12px rgba(0,0,0,0.6)",
+              }}
+            >
+              <span style={{ fontSize: 8, fontWeight: 800, writingMode: "vertical-lr", transform: "rotate(180deg)", letterSpacing: "0.1em" }}>ALT</span>
+              <span style={{ fontSize: 16, lineHeight: 1 }}>{mostrarPainelEsquerdo ? "‹" : "›"}</span>
+            </button>
+          )}
+
+          {/* Aba OPERAÇÃO (borda direita) */}
+          {onToggleSidebar && (
+            <button
+              onClick={onToggleSidebar}
+              title={mostrarSidebar ? "Fechar operação" : "Operação"}
+              style={{
+                position: "absolute",
+                right: mostrarSidebar ? SIDEBAR_W : 0,
+                top: "50%", transform: "translateY(-50%)",
+                zIndex: 600, transition: "right 0.2s ease",
+                display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center", gap: 4,
+                width: 22, padding: "20px 0",
+                background: "var(--card)",
+                border: "1px solid var(--border)", borderRight: "none",
+                borderRadius: "6px 0 0 6px",
+                cursor: "pointer",
+                color: mostrarSidebar ? "var(--accent)" : "var(--text-muted)",
+                boxShadow: "-3px 0 12px rgba(0,0,0,0.6)",
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1 }}>{mostrarSidebar ? "›" : "‹"}</span>
+              <span style={{ fontSize: 8, fontWeight: 800, writingMode: "vertical-lr", letterSpacing: "0.1em" }}>OPE</span>
+            </button>
+          )}
+
           {/* Controles flutuantes (modo unificado, sem sidebar do mapa) */}
           {!mostrarSidebar && (
             <div

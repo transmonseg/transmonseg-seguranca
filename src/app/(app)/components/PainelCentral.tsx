@@ -89,8 +89,6 @@ const EXPANDIR_PADRAO = new Set([
   "saida_nao_autorizada",
 ]);
 
-const SIDEBAR_W = 380;
-const OPERACAO_W = 280;
 
 export default function PainelCentral({
   cliente,
@@ -256,297 +254,218 @@ export default function PainelCentral({
     );
   };
 
-  return (
-    <div style={{ position: "relative", height: "100%", overflow: "hidden" }}>
-      {/* ======== SIDEBAR DE ALERTAS (overlay absoluto, esquerda) ======== */}
+  const painelAlertasJsx = (
+    <>
+      {/* Cabecalho fixo */}
       <div
         style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: mostrarAlertas ? SIDEBAR_W : 0,
-          zIndex: 600,
+          flexShrink: 0,
+          padding: "0.75rem 0.875rem",
+          borderBottom: "1px solid var(--border)",
           display: "flex",
           flexDirection: "column",
-          backgroundColor: "var(--bg)",
-          borderRight: mostrarAlertas ? "1px solid var(--border)" : "none",
-          overflow: "hidden",
-          transition: "width 0.2s ease",
+          gap: 9,
         }}
       >
-        {/* Cabecalho fixo */}
-        <div
-          style={{
-            flexShrink: 0,
-            padding: "0.75rem 0.875rem",
-            borderBottom: "1px solid var(--border)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 9,
-          }}
-        >
-          {/* Cliente + apito + notif */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-              {clientes.map((c) => (
-                <Link
-                  key={c.id}
-                  href={`?cliente=${c.cod}`}
-                  style={{
-                    padding: "0.25rem 0.625rem",
-                    borderRadius: 6,
-                    fontSize: 11,
-                    fontWeight: 700,
-                    backgroundColor: c.id === clienteAtivoId ? "var(--accent-dim)" : "transparent",
-                    border: `1px solid ${c.id === clienteAtivoId ? "var(--accent)" : "var(--border)"}`,
-                    color: c.id === clienteAtivoId ? "var(--accent)" : "var(--text-dim)",
-                    textDecoration: "none",
-                  }}
-                >
-                  {c.nome}
-                </Link>
-              ))}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-              <AlertaSonoro idsParaApitar={idsParaApitar} />
-              <button
-                onClick={ativarNotificacoes}
-                title={notifLigada ? "Notificações ativas" : "Ativar notificações de crítico"}
+        {/* Cliente + apito + notif */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {clientes.map((c) => (
+              <Link
+                key={c.id}
+                href={`?cliente=${c.cod}`}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 30,
-                  height: 30,
-                  borderRadius: 7,
-                  cursor: "pointer",
-                  border: `1px solid ${notifLigada ? "var(--verde)" : "var(--border)"}`,
-                  backgroundColor: notifLigada ? "rgba(34,197,94,0.12)" : "transparent",
-                  color: notifLigada ? "var(--verde)" : "var(--text-dim)",
+                  padding: "0.25rem 0.625rem",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  backgroundColor: c.id === clienteAtivoId ? "var(--accent-dim)" : "transparent",
+                  border: `1px solid ${c.id === clienteAtivoId ? "var(--accent)" : "var(--border)"}`,
+                  color: c.id === clienteAtivoId ? "var(--accent)" : "var(--text-dim)",
+                  textDecoration: "none",
                 }}
               >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-              </button>
-            </div>
+                {c.nome}
+              </Link>
+            ))}
           </div>
-
-          {/* Segmented de nivel: Tudo | Criticos | Atencao */}
-          <div
-            style={{
-              display: "flex",
-              gap: 3,
-              padding: 3,
-              borderRadius: 9,
-              backgroundColor: "var(--card)",
-              border: "1px solid var(--border)",
-            }}
-          >
-            {segBtn("tudo", "Tudo", nCriticos + nAtencao, "var(--accent)")}
-            {segBtn("critico", "Críticos", nCriticos, "var(--vermelho)")}
-            {segBtn("atencao", "Atenção", nAtencao, "var(--amarelo)")}
-          </div>
-        </div>
-
-        {/* Lista scrollavel agrupada por tipo */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "0.625rem 0.75rem" }}>
-          {grupos.length === 0 ? (
-            <p
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            <AlertaSonoro idsParaApitar={idsParaApitar} />
+            <button
+              onClick={ativarNotificacoes}
+              title={notifLigada ? "Notificações ativas" : "Ativar notificações de crítico"}
               style={{
-                fontSize: 12,
-                color: "var(--text-dim)",
-                padding: "0.875rem",
-                backgroundColor: "var(--card)",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                textAlign: "center",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 30,
+                height: 30,
+                borderRadius: 7,
+                cursor: "pointer",
+                border: `1px solid ${notifLigada ? "var(--verde)" : "var(--border)"}`,
+                backgroundColor: notifLigada ? "rgba(34,197,94,0.12)" : "transparent",
+                color: notifLigada ? "var(--verde)" : "var(--text-dim)",
               }}
             >
-              {vista === "critico"
-                ? "Nenhuma ocorrência crítica."
-                : vista === "atencao"
-                ? "Nada em atenção."
-                : "Tudo tranquilo. Sem alertas."}
-            </p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {grupos.map((g) => {
-                const aberto = estaExpandido(g.tipo);
-                const cor = g.temCritico ? "var(--vermelho)" : "var(--amarelo)";
-                return (
-                  <section key={g.tipo}>
-                    {/* Cabecalho do grupo (clicavel) */}
-                    <button
-                      onClick={() => alternarGrupo(g.tipo)}
-                      style={{
-                        width: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "0.5rem 0.625rem",
-                        borderRadius: 8,
-                        cursor: "pointer",
-                        border: "1px solid var(--border)",
-                        backgroundColor: "var(--card)",
-                        color: "var(--text)",
-                        textAlign: "left",
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          backgroundColor: cor,
-                          flexShrink: 0,
-                          display: "inline-block",
-                        }}
-                      />
-                      <span style={{ fontSize: 12.5, fontWeight: 700, flex: 1, color: "var(--text)" }}>
-                        {nomeTipo(g.tipo)}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: "var(--font-geist-mono, monospace)",
-                          fontSize: 12,
-                          fontWeight: 700,
-                          color: cor,
-                          minWidth: 18,
-                          textAlign: "right",
-                        }}
-                      >
-                        {g.lista.length}
-                      </span>
-                      <svg
-                        width="13"
-                        height="13"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="var(--text-dim)"
-                        strokeWidth="2.2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{ flexShrink: 0, transform: aberto ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
-                      >
-                        <polyline points="9 18 15 12 9 6" />
-                      </svg>
-                    </button>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            </button>
+          </div>
+        </div>
 
-                    {/* Cards do grupo */}
-                    {aberto && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
-                        {g.lista.map((a) => (
-                          <CardAlertaCritico
-                            key={a.id}
-                            id={a.id}
-                            status={a.status}
-                            nivel={a.nivel}
-                            tipo={a.tipo}
-                            placa={a.placa}
-                            motivo={a.motivo}
-                            local={a.local}
-                            desde={a.desde}
-                            lat={a.lat}
-                            lng={a.lng}
-                            velocidade={a.velocidade}
-                            ignicao={a.ignicao}
-                            atraso_min={a.atraso_min}
-                            score={a.score}
-                            onFocarMapa={focarMapa}
-                            onAlertaResolvido={removerAlerta}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                );
-              })}
-            </div>
-          )}
+        {/* Segmented de nivel: Tudo | Criticos | Atencao */}
+        <div
+          style={{
+            display: "flex",
+            gap: 3,
+            padding: 3,
+            borderRadius: 9,
+            backgroundColor: "var(--card)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          {segBtn("tudo", "Tudo", nCriticos + nAtencao, "var(--accent)")}
+          {segBtn("critico", "Críticos", nCriticos, "var(--vermelho)")}
+          {segBtn("atencao", "Atenção", nAtencao, "var(--amarelo)")}
         </div>
       </div>
 
-      {/* ======== MAPA (sempre ocupa tudo, stacking context isolado) ======== */}
-      <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
-        <MapaMonitor
-          cliente={cliente}
-          veiculos={veiculos}
-          clientes={clientes}
-          clienteAtivoId={clienteAtivoId}
-          mostrarSidebar={mostrarOperacao}
-          flyParaAlerta={flyParaAlerta}
-          onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
-        />
+      {/* Lista scrollavel agrupada por tipo */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "0.625rem 0.75rem" }}>
+        {grupos.length === 0 ? (
+          <p
+            style={{
+              fontSize: 12,
+              color: "var(--text-dim)",
+              padding: "0.875rem",
+              backgroundColor: "var(--card)",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              textAlign: "center",
+            }}
+          >
+            {vista === "critico"
+              ? "Nenhuma ocorrência crítica."
+              : vista === "atencao"
+              ? "Nada em atenção."
+              : "Tudo tranquilo. Sem alertas."}
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {grupos.map((g) => {
+              const aberto = estaExpandido(g.tipo);
+              const cor = g.temCritico ? "var(--vermelho)" : "var(--amarelo)";
+              return (
+                <section key={g.tipo}>
+                  {/* Cabecalho do grupo (clicavel) */}
+                  <button
+                    onClick={() => alternarGrupo(g.tipo)}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "0.5rem 0.625rem",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      border: "1px solid var(--border)",
+                      backgroundColor: "var(--card)",
+                      color: "var(--text)",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        backgroundColor: cor,
+                        flexShrink: 0,
+                        display: "inline-block",
+                      }}
+                    />
+                    <span style={{ fontSize: 12.5, fontWeight: 700, flex: 1, color: "var(--text)" }}>
+                      {nomeTipo(g.tipo)}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-geist-mono, monospace)",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: cor,
+                        minWidth: 18,
+                        textAlign: "right",
+                      }}
+                    >
+                      {g.lista.length}
+                    </span>
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--text-dim)"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ flexShrink: 0, transform: aberto ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
+                    >
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </button>
+
+                  {/* Cards do grupo */}
+                  {aberto && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+                      {g.lista.map((a) => (
+                        <CardAlertaCritico
+                          key={a.id}
+                          id={a.id}
+                          status={a.status}
+                          nivel={a.nivel}
+                          tipo={a.tipo}
+                          placa={a.placa}
+                          motivo={a.motivo}
+                          local={a.local}
+                          desde={a.desde}
+                          lat={a.lat}
+                          lng={a.lng}
+                          velocidade={a.velocidade}
+                          ignicao={a.ignicao}
+                          atraso_min={a.atraso_min}
+                          score={a.score}
+                          onFocarMapa={focarMapa}
+                          onAlertaResolvido={removerAlerta}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        )}
       </div>
+    </>
+  );
 
-      {/* Aba flutuante ALERTAS — esquerda */}
-      <button
-        onClick={() => setMostrarAlertas((v) => !v)}
-        title={mostrarAlertas ? "Fechar alertas" : "Alertas"}
-        style={{
-          position: "absolute",
-          left: mostrarAlertas ? SIDEBAR_W : 0,
-          top: "50%",
-          transform: "translateY(-50%)",
-          zIndex: 700,
-          transition: "left 0.2s ease",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 5,
-          width: 20,
-          padding: "18px 0",
-          background: "var(--card)",
-          border: "1px solid var(--border)",
-          borderLeft: "none",
-          borderRadius: "0 6px 6px 0",
-          cursor: "pointer",
-          color: mostrarAlertas ? "var(--vermelho)" : "var(--text-dim)",
-          boxShadow: "2px 0 10px rgba(0,0,0,0.5)",
-        }}
-      >
-        <span style={{ fontSize: 9, fontWeight: 800, writingMode: "vertical-lr", transform: "rotate(180deg)", letterSpacing: "0.08em" }}>
-          ALT
-        </span>
-        <span style={{ fontSize: 13, lineHeight: 1 }}>{mostrarAlertas ? "‹" : "›"}</span>
-      </button>
-
-      {/* Aba flutuante OPERAÇÃO — direita */}
-      <button
-        onClick={() => setMostrarOperacao((v) => !v)}
-        title={mostrarOperacao ? "Fechar operação" : "Operação"}
-        style={{
-          position: "absolute",
-          right: mostrarOperacao ? OPERACAO_W : 0,
-          top: "50%",
-          transform: "translateY(-50%)",
-          zIndex: 700,
-          transition: "right 0.2s ease",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 5,
-          width: 20,
-          padding: "18px 0",
-          background: "var(--card)",
-          border: "1px solid var(--border)",
-          borderRight: "none",
-          borderRadius: "6px 0 0 6px",
-          cursor: "pointer",
-          color: mostrarOperacao ? "var(--accent)" : "var(--text-dim)",
-          boxShadow: "-2px 0 10px rgba(0,0,0,0.5)",
-        }}
-      >
-        <span style={{ fontSize: 13, lineHeight: 1 }}>{mostrarOperacao ? "›" : "‹"}</span>
-        <span style={{ fontSize: 9, fontWeight: 800, writingMode: "vertical-lr", letterSpacing: "0.08em" }}>
-          OPE
-        </span>
-      </button>
+  return (
+    <div style={{ height: "100%", position: "relative", overflow: "hidden" }}>
+      <MapaMonitor
+        cliente={cliente}
+        veiculos={veiculos}
+        clientes={clientes}
+        clienteAtivoId={clienteAtivoId}
+        mostrarSidebar={mostrarOperacao}
+        flyParaAlerta={flyParaAlerta}
+        onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
+        painelEsquerdo={painelAlertasJsx}
+        mostrarPainelEsquerdo={mostrarAlertas}
+        onTogglePainelEsquerdo={() => setMostrarAlertas((v) => !v)}
+        onToggleSidebar={() => setMostrarOperacao((v) => !v)}
+      />
 
       {/* Toast de critico novo — acima de tudo */}
       {toast && (
