@@ -409,10 +409,12 @@ function PainelTelemetria({
   placa,
   dados,
   onFechar,
+  rightOffset = 0,
 }: {
   placa: string;
   dados: Telemetria | null;
   onFechar: () => void;
+  rightOffset?: number;
 }) {
   const velocidade = dados ? parseInt(dados.posicvelocidade ?? "0") || 0 : null;
   const ignicao = dados ? dados.posicignicao === "1" : null;
@@ -433,12 +435,18 @@ function PainelTelemetria({
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
+        position: "absolute",
+        top: 12,
+        right: 12 + rightOffset,
+        zIndex: 1000,
+        width: 268,
         backgroundColor: "rgba(10,10,10,0.96)",
+        border: "1px solid var(--border)",
+        borderRadius: "0.875rem",
         overflow: "hidden",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+        backdropFilter: "blur(8px)",
+        transition: "right 0.2s ease",
       }}
     >
       <div
@@ -1811,13 +1819,18 @@ export default function MapaMonitor({
             overflow: "hidden",
             transition: "width 0.2s ease",
           }}>
-            {painelVeiculo
-              ? painelVeiculo
-              : (cvSelecionado && painelAberto && placaSelecionada
-                  ? <PainelTelemetria placa={placaSelecionada} dados={telemetria} onFechar={() => setPainelAberto(false)} />
-                  : conteudoOperacao)
-            }
+            {conteudoOperacao}
           </div>
+
+          {/* PainelTelemetria flutuante — à esquerda do OPE quando aberto */}
+          {cvSelecionado && painelAberto && placaSelecionada && (
+            <PainelTelemetria
+              placa={placaSelecionada}
+              dados={telemetria}
+              onFechar={() => setPainelAberto(false)}
+              rightOffset={mostrarSidebar ? SIDEBAR_W : 0}
+            />
+          )}
 
           {/* Aba ALERTAS (borda esquerda) */}
           {onTogglePainelEsquerdo && (
