@@ -16,6 +16,7 @@ import {
   CircleMarker,
   Marker,
   Popup,
+  Tooltip,
   GeoJSON,
   LayersControl,
   LayerGroup,
@@ -166,6 +167,19 @@ function corVeiculo(v: VeiculoMapa): string {
   if (v.ignicao && v.velocidade === 0) return "#9fb3ce";
   if (v.atraso_min > 60) return "#57534e";
   return "#57534e";
+}
+
+/* ------------------------------------------------------------------ */
+/* Controla zoom do mapa via estado externo                            */
+/* ------------------------------------------------------------------ */
+
+function ControlaZoom({ zoom, gatilho }: { zoom: number; gatilho: number }) {
+  const map = useMap();
+  const prev = useRef(0);
+  useEffect(() => {
+    if (gatilho !== prev.current) { prev.current = gatilho; map.setZoom(zoom); }
+  }, [zoom, gatilho, map]);
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -695,6 +709,21 @@ export default function MapaMonitor({
 
   /* ---- Busca na sidebar ---- */
   const [busca, setBusca] = useState("");
+
+  /* ---- Toolbar: zoom, localizar, rota ---- */
+  const [zoomCmd, setZoomCmd] = useState<{ zoom: number; g: number } | null>(null);
+  const [buscaRapida, setBuscaRapida] = useState("");
+  const [origemRota, setOrigemRota] = useState("");
+  const [destinoRota, setDestinoRota] = useState("");
+  const [rotaPolyline, setRotaPolyline] = useState<[number, number][] | null>(null);
+  const [carregandoRota, setCarregandoRota] = useState(false);
+
+  /* ---- Camadas extras ---- */
+  const [mostrarRotulos, setMostrarRotulos] = useState(true);
+  const [mostrarAlvosTodos, setMostrarAlvosTodos] = useState(false);
+  const [alvosTodos, setAlvosTodos] = useState<PontoEntregaUI[]>([]);
+  const [carregandoAlvosTodos, setCarregandoAlvosTodos] = useState(false);
+
   // Voa para o veículo quando a busca retorna exatamente 1 resultado
   useEffect(() => {
     if (!busca.trim()) return;
@@ -1031,6 +1060,55 @@ export default function MapaMonitor({
   /* ------------------------------------------------------------------ */
 
   const temGrupos = grupos.length > 0;
+
+  /* ---- Localizar veículo pela barra rápida ---- */
+  const localizarVeiculo = useCallback(() => {
+    if (!buscaRapida.trim()) return;
+    const t = buscaRapida.toUpperCase();
+    const vm = veiculosMapa.find((v) => v.placa.toUpperCase().includes(t) && v.lat != null && v.lng != null);
+    if (vm) setFlyParaVeiculo({ lat: vm.lat!, lng: vm.lng!, gatilho: Date.now() });
+    // também filtra na sidebar
+    setBusca(buscaRapida);
+  }, [buscaRapida, veiculosMapa]);
+
+  /* ---- Visualizar rota (Origem→Destino via OSRM + Nominatim) ---- */
+  const visualizarRota = useCallback(async () => {
+    if (!origemRota.trim() || !destinoRota.trim()) return;
+    setCarregandoRota(true);
+    setRotaPolyline(null);
+    try {
+      const geocode = async (q: string) => {
+        const r = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br`,
+          { headers: { "Accept-Language": "pt-BR" } }
+        );
+        const d = await r.json();
+        return d[0] ? { lat: parseFloat(d[0].lat), lng: parseFloat(d[0].lon) } : null;
+      };
+      const [o, dt] = await Promise.all([geocode(origemRota), geocode(destinoRota)]);
+      if (!o || !dt) return;
+      const r = await fetch(
+        `https://router.project-osrm.org/route/v1/driving/${o.lng},${o.lat};${dt.lng},${dt.lat}?overview=full&geometries=geojson`
+      );
+      const data = await r.json();
+      const coords = data.routes?.[0]?.geometry?.coordinates as [number, number][] | undefined;
+      if (coords) setRotaPolyline(coords.map(([lng, lat]) => [lat, lng] as [number, number]));
+    } catch { /* silently */ } finally { setCarregandoRota(false); }
+  }, [origemRota, destinoRota]);
+
+  /* ---- Carregar/descarregar pontos de entrega de todos os veículos ---- */
+  const toggleAlvosTodos = useCallback(async () => {
+    if (mostrarAlvosTodos) { setMostrarAlvosTodos(false); setAlvosTodos([]); return; }
+    setMostrarAlvosTodos(true);
+    setCarregandoAlvosTodos(true);
+    try {
+      const cvs = veiculosVisiveis.slice(0, 40).map((v) => v.cv);
+      const resultados = await Promise.all(
+        cvs.map((cv) => fetch(`/api/alvos?cv=${encodeURIComponent(cv)}`).then((r) => r.json()))
+      );
+      setAlvosTodos(resultados.flatMap((r) => (r.pontos as PontoEntregaUI[]) ?? []));
+    } catch { /* silently */ } finally { setCarregandoAlvosTodos(false); }
+  }, [mostrarAlvosTodos, veiculosVisiveis]);
 
   const gruposFiltrados = busca.trim()
     ? grupos
@@ -1555,6 +1633,146 @@ export default function MapaMonitor({
           COLUNA DIREITA: MAPA + LEGENDA
           ============================================================ */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
+
+        {/* ── TOOLBAR UNITRAC ── */}
+        <div style={{
+          flexShrink: 0,
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 10px",
+          backgroundColor: "var(--card)",
+          borderBottom: "1px solid var(--border)",
+        }}>
+          {/* Zoom pré-definido */}
+          <div style={{ display: "flex", gap: 2 }}>
+            {[
+              { label: "RUA", zoom: 17 },
+              { label: "QUADRA", zoom: 15 },
+              { label: "BAIRRO", zoom: 13 },
+              { label: "CIDADE", zoom: 11 },
+            ].map(({ label, zoom }) => (
+              <button
+                key={label}
+                onClick={() => setZoomCmd({ zoom, g: Date.now() })}
+                style={{
+                  padding: "4px 9px", borderRadius: 6, border: "1px solid var(--border)",
+                  fontSize: 10, fontWeight: 700, cursor: "pointer", letterSpacing: "0.06em",
+                  backgroundColor: "transparent", color: "var(--text-dim)",
+                }}
+              >{label}</button>
+            ))}
+            <button
+              onClick={() => setGatilhoFrota((g) => g + 1)}
+              style={{
+                padding: "4px 9px", borderRadius: 6, border: "1px solid var(--accent)",
+                fontSize: 10, fontWeight: 700, cursor: "pointer", letterSpacing: "0.06em",
+                backgroundColor: "var(--accent-dim)", color: "var(--accent)",
+              }}
+            >VEÍCULOS</button>
+          </div>
+
+          <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
+
+          {/* Localizar veículo */}
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <input
+              type="text"
+              value={buscaRapida}
+              onChange={(e) => setBuscaRapida(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && localizarVeiculo()}
+              placeholder="Placa..."
+              style={{
+                padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
+                fontSize: 11, fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.08em",
+                backgroundColor: "var(--bg)", color: "var(--text)", width: 100, outline: "none",
+              }}
+            />
+            <button
+              onClick={localizarVeiculo}
+              style={{
+                padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)",
+                fontSize: 10, fontWeight: 700, cursor: "pointer",
+                backgroundColor: "var(--bg)", color: "var(--text-muted)",
+              }}
+            >LOCALIZAR</button>
+          </div>
+
+          <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
+
+          {/* Visualizar rota */}
+          <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              type="text"
+              value={origemRota}
+              onChange={(e) => setOrigemRota(e.target.value)}
+              placeholder="Origem"
+              style={{
+                padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
+                fontSize: 11, backgroundColor: "var(--bg)", color: "var(--text)", width: 130, outline: "none",
+              }}
+            />
+            <input
+              type="text"
+              value={destinoRota}
+              onChange={(e) => setDestinoRota(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && visualizarRota()}
+              placeholder="Destino"
+              style={{
+                padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
+                fontSize: 11, backgroundColor: "var(--bg)", color: "var(--text)", width: 130, outline: "none",
+              }}
+            />
+            <button
+              onClick={visualizarRota}
+              disabled={carregandoRota || !origemRota.trim() || !destinoRota.trim()}
+              style={{
+                padding: "4px 10px", borderRadius: 6, border: "1px solid var(--accent)",
+                fontSize: 10, fontWeight: 700, cursor: "pointer",
+                backgroundColor: "var(--accent-dim)", color: "var(--accent)",
+                opacity: (!origemRota.trim() || !destinoRota.trim()) ? 0.4 : 1,
+              }}
+            >{carregandoRota ? "..." : "VER ROTA"}</button>
+            {rotaPolyline && (
+              <button
+                onClick={() => { setRotaPolyline(null); setOrigemRota(""); setDestinoRota(""); }}
+                style={{
+                  padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)",
+                  fontSize: 10, fontWeight: 700, cursor: "pointer",
+                  backgroundColor: "transparent", color: "var(--text-dim)",
+                }}
+              >LIMPAR</button>
+            )}
+          </div>
+
+          <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
+
+          {/* Toggles de camada */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button
+              onClick={() => setMostrarRotulos((v) => !v)}
+              style={{
+                padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                border: `1px solid ${mostrarRotulos ? "var(--accent)" : "var(--border)"}`,
+                backgroundColor: mostrarRotulos ? "var(--accent-dim)" : "transparent",
+                color: mostrarRotulos ? "var(--accent)" : "var(--text-dim)",
+              }}
+            >RÓTULOS</button>
+            <button
+              onClick={toggleAlvosTodos}
+              disabled={carregandoAlvosTodos}
+              style={{
+                padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                border: `1px solid ${mostrarAlvosTodos ? "#f97316" : "var(--border)"}`,
+                backgroundColor: mostrarAlvosTodos ? "rgba(249,115,22,0.15)" : "transparent",
+                color: mostrarAlvosTodos ? "#f97316" : "var(--text-dim)",
+              }}
+            >{carregandoAlvosTodos ? "..." : "ENTREGAS"}</button>
+          </div>
+        </div>
+        {/* ── FIM TOOLBAR ── */}
+
         {/* Mapa */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
           {/* Controles flutuantes (modo unificado, sem sidebar do mapa) */}
@@ -1687,6 +1905,38 @@ export default function MapaMonitor({
             )}
             {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
             {flyParaVeiculo && <AutoFlyAlerta flyPara={flyParaVeiculo} />}
+            {zoomCmd && <ControlaZoom zoom={zoomCmd.zoom} gatilho={zoomCmd.g} />}
+
+            {/* Rota Origem→Destino */}
+            {rotaPolyline && (
+              <>
+                <Polyline positions={rotaPolyline} pathOptions={{ color: "#000", weight: 5, opacity: 0.4 }} />
+                <Polyline positions={rotaPolyline} pathOptions={{ color: "#38bdf8", weight: 3, opacity: 0.9 }} />
+              </>
+            )}
+
+            {/* Pontos de entrega de todos os veículos */}
+            {mostrarAlvosTodos && alvosTodos.map((p, i) => (
+              <CircleMarker
+                key={`at-${i}`}
+                center={[p.lat, p.lng]}
+                radius={p.feito ? 5 : 7}
+                pathOptions={{
+                  color: p.feito ? "#6b7280" : "#f97316",
+                  fillColor: p.feito ? "#6b7280" : "#f97316",
+                  fillOpacity: p.feito ? 0.4 : 0.85,
+                  weight: 1.5,
+                }}
+              >
+                <Popup>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: p.feito ? "#6b7280" : "#f97316" }}>
+                    {p.feito ? "Realizado" : "Pendente"}
+                  </div>
+                  {p.nome && <div style={{ fontSize: 11 }}>{p.nome}</div>}
+                  {p.documento && <div style={{ fontSize: 11, color: "#666" }}>Doc: {p.documento}</div>}
+                </Popup>
+              </CircleMarker>
+            ))}
 
             {googleApiKey ? (
               <TileLayer
@@ -1816,7 +2066,32 @@ export default function MapaMonitor({
                   icon={iconeStatus(vm, selecionado)}
                   zIndexOffset={selecionado ? 1000 : 0}
                   eventHandlers={{ click: () => onClickVeiculoMapa(vm) }}
-                />
+                >
+                  {mostrarRotulos && (
+                    <Tooltip
+                      permanent
+                      direction="top"
+                      offset={[0, -4]}
+                      opacity={0.92}
+                      className=""
+                    >
+                      <span style={{
+                        fontFamily: "var(--font-geist-mono, monospace)",
+                        fontWeight: 700,
+                        fontSize: 9,
+                        letterSpacing: "0.08em",
+                        color: selecionado ? "var(--accent, #38bdf8)" : "#e2e8f0",
+                        textShadow: "0 1px 3px #000",
+                        whiteSpace: "nowrap",
+                        background: "rgba(0,0,0,0.65)",
+                        padding: "1px 4px",
+                        borderRadius: 3,
+                      }}>
+                        {vm.placa}
+                      </span>
+                    </Tooltip>
+                  )}
+                </Marker>
               );
             })}
 
