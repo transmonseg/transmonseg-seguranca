@@ -1155,7 +1155,7 @@ export default function MapaMonitor({
       <div
         style={{
           position: "absolute",
-          left: 0,
+          right: 0,
           top: 0,
           bottom: 0,
           width: mostrarSidebar ? SIDEBAR_W : 0,
@@ -1163,7 +1163,7 @@ export default function MapaMonitor({
           display: "flex",
           flexDirection: "column",
           backgroundColor: "var(--card)",
-          borderRight: mostrarSidebar ? "1px solid var(--border)" : "none",
+          borderLeft: mostrarSidebar ? "1px solid var(--border)" : "none",
           overflowY: mostrarSidebar ? "auto" : "hidden",
           overflowX: "hidden",
           transition: "width 0.2s ease",
