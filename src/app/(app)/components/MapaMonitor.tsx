@@ -75,6 +75,12 @@ interface PontoEntregaUI {
   ordem: number;
   nome: string;
   feito: boolean;
+  documento: string | null;
+  identificador: string | null;
+  dataInicio: string | null;
+  dataRealizado: string | null;
+  observacoes: string | null;
+  rota: string | null;
 }
 
 interface Telemetria {
@@ -318,6 +324,12 @@ function formatarDataHora(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+// Igual a formatarDataHora, mas aceita null (campos opcionais dos alvos).
+function formatarHora(iso: string | null): string | null {
+  if (!iso) return null;
+  return formatarDataHora(iso);
 }
 
 function idadeTexto(min: number): string {
@@ -1044,7 +1056,7 @@ export default function MapaMonitor({
           {clientes.map((c) => (
             <Link
               key={c.id}
-              href={`/monitoramento?cliente=${c.cod}`}
+              href={`?cliente=${c.cod}`}
               style={{
                 padding: "0.25rem 0.625rem",
                 borderRadius: 6,
@@ -1891,10 +1903,25 @@ export default function MapaMonitor({
                     >
                       <Popup>
                         <div style={{ fontWeight: 700, fontSize: 13, color: p.feito ? "#6b7280" : "#f97316" }}>
-                          {p.feito ? "Entregue" : "Pendente"} — #{i + 1}
+                          {p.feito ? "Realizado" : "Pendente"} — #{i + 1}
                         </div>
                         {p.nome && (
                           <div style={{ fontSize: 12, marginTop: 2 }}>{p.nome}</div>
+                        )}
+                        {p.identificador && (
+                          <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>ID: {p.identificador}</div>
+                        )}
+                        {p.documento && (
+                          <div style={{ fontSize: 11, color: "#666", marginTop: 1 }}>Documento: {p.documento}</div>
+                        )}
+                        {formatarHora(p.dataInicio) && (
+                          <div style={{ fontSize: 11, color: "#666", marginTop: 1 }}>Prevista: {formatarHora(p.dataInicio)}</div>
+                        )}
+                        {formatarHora(p.dataRealizado) && (
+                          <div style={{ fontSize: 11, color: "#15803d", marginTop: 1 }}>Realizada: {formatarHora(p.dataRealizado)}</div>
+                        )}
+                        {p.observacoes && (
+                          <div style={{ fontSize: 11, color: "#666", marginTop: 1 }}>Obs: {p.observacoes}</div>
                         )}
                       </Popup>
                     </Marker>

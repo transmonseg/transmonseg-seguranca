@@ -20,6 +20,7 @@ interface Props {
   placa: string;
   alertas: AlertaSimples[];
   onFechar: () => void;
+  empresa?: string;
 }
 
 interface Telemetria {
@@ -55,6 +56,21 @@ function formatarDist(m: number): string {
   return `${(m / 1000).toFixed(1)} km`;
 }
 
+function formatarDataHora(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  // O datagps do Unitrac ja vem formatado (ex: "26/06/26 01:01:33"), que o
+  // Date nao parseia. Nesse caso devolve o texto cru em vez de "Invalid Date".
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6371000;
   const toR = (d: number) => (d * Math.PI) / 180;
@@ -68,7 +84,7 @@ function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): num
 
 const ROTULO = "var(--text-dim)";
 
-export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar }: Props) {
+export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, empresa }: Props) {
   const [telemetria, setTelemetria] = useState<Telemetria | null>(null);
   const [pontos, setPontos] = useState<PontoEntrega[]>([]);
   const [carregandoRota, setCarregandoRota] = useState(true);
@@ -133,6 +149,7 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar }: Pr
   const lat = telemetria ? parseFloat(telemetria.posiclatitude ?? "") : NaN;
   const lng = telemetria ? parseFloat(telemetria.posiclongitude ?? "") : NaN;
   const posValida = Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
+  const dataGps = formatarDataHora(telemetria?.datagps as string | undefined);
 
   const temCritico = alertas.some((a) => a.nivel === "critico");
   const corNivel = temCritico
@@ -301,6 +318,37 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar }: Pr
               {atraso === null ? "--" : atraso > 0 ? `${formatarDuracao(atraso)}` : "ao vivo"}
             </p>
           </div>
+        </div>
+
+        {/* Localizacao / empresa */}
+        <div style={blocoStyle}>
+          {empresa && (
+            <div style={{ marginBottom: 6 }}>
+              <p style={rotuloStyle}>empresa</p>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>{empresa}</p>
+            </div>
+          )}
+          <p style={rotuloStyle}>localizacao</p>
+          {posValida ? (
+            <>
+              <p style={{ fontFamily: "var(--font-geist-mono, monospace)", fontSize: 11, color: "var(--text-muted)" }}>
+                {lat.toFixed(5)}, {lng.toFixed(5)}
+              </p>
+              <a
+                href={`https://www.google.com/maps?q=${lat},${lng}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ fontSize: 11, color: "var(--accent)" }}
+              >
+                abrir no Google Maps
+              </a>
+            </>
+          ) : (
+            <p style={{ fontSize: 11, color: "var(--text-dim)" }}>sem posicao</p>
+          )}
+          {dataGps && (
+            <p style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 4 }}>GPS: {dataGps}</p>
+          )}
         </div>
 
         {/* Rota do dia */}

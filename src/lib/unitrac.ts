@@ -60,6 +60,12 @@ export type AlvoUnitrac = {
   pontoraio?: number; // raio do ponto em metros (ex.: 50)
   pontonome?: string;
   alvoordem?: number;
+  alvodocumento?: string;
+  pontoidentificador?: string;
+  alvodatainicio?: string;
+  alvodatarealizado?: string;
+  alvoobservacoes?: string | null;
+  alvorota?: string;
   [key: string]: unknown;
 };
 
@@ -77,6 +83,12 @@ export type PontoEntrega = {
   ordem: number;
   nome: string;
   feito: boolean;
+  documento: string | null;
+  identificador: string | null;
+  dataInicio: string | null;
+  dataRealizado: string | null;
+  observacoes: string | null;
+  rota: string | null;
 };
 
 // Busca alvos (paradas/entregas) de uma lista de CVs.
@@ -129,6 +141,18 @@ export function agruparPontosPorPlaca(alvos: AlvoUnitrac[]): Map<string, PontoEn
       ordem: Number(a.alvoordem) || 0,
       nome: String(a.pontonome ?? ""),
       feito: a.alvosituacaoservico === 1,
+      documento: a.alvodocumento ? String(a.alvodocumento) : null,
+      identificador: a.pontoidentificador ? String(a.pontoidentificador) : null,
+      dataInicio:
+        a.alvodatainicio && !String(a.alvodatainicio).startsWith("0001")
+          ? String(a.alvodatainicio)
+          : null,
+      dataRealizado:
+        a.alvodatarealizado && !String(a.alvodatarealizado).startsWith("0001")
+          ? String(a.alvodatarealizado)
+          : null,
+      observacoes: a.alvoobservacoes != null ? String(a.alvoobservacoes) : null,
+      rota: a.alvorota ? String(a.alvorota) : null,
     });
     mapa.set(a.placa, lista);
   }

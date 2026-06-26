@@ -108,6 +108,9 @@ export default function PainelCentral({
   const [vista, setVista] = useState<Vista>("tudo");
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
+  // Modo da barra esquerda: operacao (Unitrac) ou alertas (inteligencia)
+  const [modoBarra, setModoBarra] = useState<"operacao" | "alertas">("alertas");
+
   // Notificacao de critico novo
   const [toast, setToast] = useState<{ placa: string; tipo: string; id: string } | null>(null);
   const [notifLigada, setNotifLigada] = useState(false);
@@ -203,6 +206,8 @@ export default function PainelCentral({
     setFlyParaAlerta({ lat, lng, gatilho: Date.now() });
   }, []);
 
+  const empresaNome = clientes.find((c) => c.id === clienteAtivoId)?.nome;
+
   // Botao do segmented de nivel
   const segBtn = (alvo: Vista, rotulo: string, n: number, cor: string) => {
     const ativo = vista === alvo;
@@ -243,7 +248,8 @@ export default function PainelCentral({
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
-      {/* ======== SIDEBAR DE ALERTAS ======== */}
+      {/* ======== SIDEBAR DE ALERTAS (modo alertas) ======== */}
+      {modoBarra === "alertas" && (
       <div
         style={{
           width: SIDEBAR_W,
@@ -447,9 +453,50 @@ export default function PainelCentral({
           )}
         </div>
       </div>
+      )}
 
       {/* ======== MAPA ======== */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        {/* Toggle Operação | Alertas */}
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 1000,
+            display: "flex",
+            gap: 3,
+            padding: 3,
+            borderRadius: 10,
+            backgroundColor: "rgba(9,9,13,0.92)",
+            border: "1px solid var(--border)",
+            backdropFilter: "blur(6px)",
+          }}
+        >
+          {(["operacao", "alertas"] as const).map((m) => {
+            const ativo = modoBarra === m;
+            return (
+              <button
+                key={m}
+                onClick={() => setModoBarra(m)}
+                style={{
+                  padding: "0.35rem 0.9rem",
+                  borderRadius: 8,
+                  border: "1px solid transparent",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  backgroundColor: ativo ? "var(--accent-dim)" : "transparent",
+                  color: ativo ? "var(--accent)" : "var(--text-dim)",
+                }}
+              >
+                {m === "operacao" ? "Operação" : "Alertas"}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Toast de critico novo */}
         {toast && (
           <div
@@ -488,7 +535,7 @@ export default function PainelCentral({
           veiculos={veiculos}
           clientes={clientes}
           clienteAtivoId={clienteAtivoId}
-          mostrarSidebar={false}
+          mostrarSidebar={modoBarra === "operacao"}
           flyParaAlerta={flyParaAlerta}
           onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
         />
@@ -510,6 +557,7 @@ export default function PainelCentral({
                   score: a.score,
                 }))}
                 onFechar={() => setVeiculoPanel(null)}
+                empresa={empresaNome}
               />
             </div>
           </div>
