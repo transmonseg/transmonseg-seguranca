@@ -1868,10 +1868,12 @@ export default function MapaMonitor({
             </button>
           )}
 
-          {/* Painel detalhe do veículo — dentro do MAP AREA, abaixo da toolbar */}
+          {/* Painel detalhe do veículo — flutuante arrastável dentro do MAP AREA */}
           {painelVeiculo && (
-            <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, zIndex: 700, pointerEvents: "auto" }}>
-              {painelVeiculo}
+            <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 700 }}>
+              <div style={{ pointerEvents: "auto", width: 0, height: 0 }}>
+                {painelVeiculo}
+              </div>
             </div>
           )}
 
