@@ -135,10 +135,6 @@ interface Props {
   mostrarSidebar?: boolean;
   flyParaAlerta?: { lat: number; lng: number; gatilho: number } | null;
   onVeiculoComAlertaClicado?: (cv: string, placa: string) => void;
-  mostrarAlertas?: boolean;
-  onMostrarAlertas?: (v: boolean) => void;
-  mostrarOperacao?: boolean;
-  onMostrarOperacao?: (v: boolean) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -705,10 +701,6 @@ export default function MapaMonitor({
   mostrarSidebar = true,
   flyParaAlerta = null,
   onVeiculoComAlertaClicado,
-  mostrarAlertas,
-  onMostrarAlertas,
-  mostrarOperacao,
-  onMostrarOperacao,
 }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
@@ -1665,40 +1657,6 @@ export default function MapaMonitor({
           backgroundColor: "var(--card)",
           borderBottom: "1px solid var(--border)",
         }}>
-          {/* Botões independentes: Alertas | Operação */}
-          {(onMostrarAlertas || onMostrarOperacao) && (
-            <>
-              <div style={{ display: "flex", gap: 2 }}>
-                {onMostrarAlertas && (
-                  <button
-                    onClick={() => onMostrarAlertas(!mostrarAlertas)}
-                    style={{
-                      padding: "3px 10px", borderRadius: 6, border: "1px solid transparent",
-                      cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em",
-                      backgroundColor: mostrarAlertas ? "rgba(239,68,68,0.15)" : "transparent",
-                      color: mostrarAlertas ? "var(--vermelho)" : "var(--text-dim)",
-                    }}
-                  >
-                    ALERTAS
-                  </button>
-                )}
-                {onMostrarOperacao && (
-                  <button
-                    onClick={() => onMostrarOperacao(!mostrarOperacao)}
-                    style={{
-                      padding: "3px 10px", borderRadius: 6, border: "1px solid transparent",
-                      cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em",
-                      backgroundColor: mostrarOperacao ? "var(--accent-dim)" : "transparent",
-                      color: mostrarOperacao ? "var(--accent)" : "var(--text-dim)",
-                    }}
-                  >
-                    OPERAÇÃO
-                  </button>
-                )}
-              </div>
-              <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
-            </>
-          )}
           {/* Zoom pré-definido */}
           <div style={{ display: "flex", gap: 2 }}>
             {[

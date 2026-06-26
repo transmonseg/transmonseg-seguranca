@@ -90,6 +90,7 @@ const EXPANDIR_PADRAO = new Set([
 ]);
 
 const SIDEBAR_W = 380;
+const OPERACAO_W = 280;
 
 export default function PainelCentral({
   cliente,
@@ -478,12 +479,74 @@ export default function PainelCentral({
           mostrarSidebar={mostrarOperacao}
           flyParaAlerta={flyParaAlerta}
           onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
-          mostrarAlertas={mostrarAlertas}
-          onMostrarAlertas={setMostrarAlertas}
-          mostrarOperacao={mostrarOperacao}
-          onMostrarOperacao={setMostrarOperacao}
         />
       </div>
+
+      {/* Aba flutuante ALERTAS — esquerda */}
+      <button
+        onClick={() => setMostrarAlertas((v) => !v)}
+        title={mostrarAlertas ? "Fechar alertas" : "Alertas"}
+        style={{
+          position: "absolute",
+          left: mostrarAlertas ? SIDEBAR_W : 0,
+          top: "50%",
+          transform: "translateY(-50%)",
+          zIndex: 700,
+          transition: "left 0.2s ease",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 5,
+          width: 20,
+          padding: "18px 0",
+          background: "var(--card)",
+          border: "1px solid var(--border)",
+          borderLeft: "none",
+          borderRadius: "0 6px 6px 0",
+          cursor: "pointer",
+          color: mostrarAlertas ? "var(--vermelho)" : "var(--text-dim)",
+          boxShadow: "2px 0 10px rgba(0,0,0,0.5)",
+        }}
+      >
+        <span style={{ fontSize: 9, fontWeight: 800, writingMode: "vertical-lr", transform: "rotate(180deg)", letterSpacing: "0.08em" }}>
+          ALT
+        </span>
+        <span style={{ fontSize: 13, lineHeight: 1 }}>{mostrarAlertas ? "‹" : "›"}</span>
+      </button>
+
+      {/* Aba flutuante OPERAÇÃO — direita */}
+      <button
+        onClick={() => setMostrarOperacao((v) => !v)}
+        title={mostrarOperacao ? "Fechar operação" : "Operação"}
+        style={{
+          position: "absolute",
+          right: mostrarOperacao ? OPERACAO_W : 0,
+          top: "50%",
+          transform: "translateY(-50%)",
+          zIndex: 700,
+          transition: "right 0.2s ease",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 5,
+          width: 20,
+          padding: "18px 0",
+          background: "var(--card)",
+          border: "1px solid var(--border)",
+          borderRight: "none",
+          borderRadius: "6px 0 0 6px",
+          cursor: "pointer",
+          color: mostrarOperacao ? "var(--accent)" : "var(--text-dim)",
+          boxShadow: "-2px 0 10px rgba(0,0,0,0.5)",
+        }}
+      >
+        <span style={{ fontSize: 13, lineHeight: 1 }}>{mostrarOperacao ? "›" : "‹"}</span>
+        <span style={{ fontSize: 9, fontWeight: 800, writingMode: "vertical-lr", letterSpacing: "0.08em" }}>
+          OPE
+        </span>
+      </button>
 
       {/* Toast de critico novo — acima de tudo */}
       {toast && (
