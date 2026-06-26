@@ -140,6 +140,7 @@ interface Props {
   onTogglePainelEsquerdo?: () => void;
   onToggleSidebar?: () => void;
   painelVeiculo?: ReactNode;
+  onAbrirSidebar?: () => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -432,17 +433,12 @@ function PainelTelemetria({
   return (
     <div
       style={{
-        position: "absolute",
-        top: 12,
-        right: 12,
-        zIndex: 1000,
-        width: 260,
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
         backgroundColor: "rgba(10,10,10,0.96)",
-        border: "1px solid var(--border)",
-        borderRadius: "0.875rem",
         overflow: "hidden",
-        boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
-        backdropFilter: "blur(8px)",
       }}
     >
       <div
@@ -711,6 +707,7 @@ export default function MapaMonitor({
   onTogglePainelEsquerdo,
   onToggleSidebar,
   painelVeiculo,
+  onAbrirSidebar,
 }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
@@ -969,16 +966,18 @@ export default function MapaMonitor({
     setCvSelecionado(v.cv);
     setPlacaSelecionada(v.placa);
     setPainelAberto(true);
-  }, []);
+    onAbrirSidebar?.();
+  }, [onAbrirSidebar]);
 
   const onClickVeiculoMapa = useCallback(
     (vm: VeiculoMapa) => {
       setCvSelecionado(vm.cv);
       setPlacaSelecionada(vm.placa);
       setPainelAberto(true);
+      onAbrirSidebar?.();
       if (onVeiculoComAlertaClicado) onVeiculoComAlertaClicado(vm.cv, vm.placa);
     },
-    [onVeiculoComAlertaClicado]
+    [onVeiculoComAlertaClicado, onAbrirSidebar]
   );
 
   const limparSelecao = useCallback(() => {
@@ -1809,11 +1808,15 @@ export default function MapaMonitor({
             display: "flex", flexDirection: "column",
             backgroundColor: "var(--card)",
             borderLeft: mostrarSidebar ? "1px solid var(--border)" : "none",
-            overflowY: mostrarSidebar ? "auto" : "hidden",
-            overflowX: "hidden",
+            overflow: "hidden",
             transition: "width 0.2s ease",
           }}>
-            {conteudoOperacao}
+            {painelVeiculo
+              ? painelVeiculo
+              : (cvSelecionado && painelAberto && placaSelecionada
+                  ? <PainelTelemetria placa={placaSelecionada} dados={telemetria} onFechar={() => setPainelAberto(false)} />
+                  : conteudoOperacao)
+            }
           </div>
 
           {/* Aba ALERTAS (borda esquerda) */}
@@ -1868,22 +1871,6 @@ export default function MapaMonitor({
             </button>
           )}
 
-          {/* Painel detalhe do veículo — posiciona à esquerda do OPE quando aberto */}
-          {painelVeiculo && (
-            <div style={{
-              position: "absolute",
-              bottom: 16,
-              right: mostrarSidebar ? SIDEBAR_W + 16 : 16,
-              zIndex: 700,
-              maxHeight: "calc(100% - 32px)",
-              display: "flex",
-              flexDirection: "column",
-              transition: "right 0.2s ease",
-              pointerEvents: "auto",
-            }}>
-              {painelVeiculo}
-            </div>
-          )}
 
           {/* Controles flutuantes (modo unificado, sem sidebar do mapa) */}
           {!mostrarSidebar && (
@@ -1992,14 +1979,6 @@ export default function MapaMonitor({
             })}
           </div>
 
-          {/* Painel de telemetria flutuante */}
-          {cvSelecionado && painelAberto && placaSelecionada && (
-            <PainelTelemetria
-              placa={placaSelecionada}
-              dados={telemetria}
-              onFechar={() => setPainelAberto(false)}
-            />
-          )}
 
           <MapContainer
             center={[-22.9, -43.2]}

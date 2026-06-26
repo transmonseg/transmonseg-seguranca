@@ -460,11 +460,12 @@ export default function PainelCentral({
         clienteAtivoId={clienteAtivoId}
         mostrarSidebar={mostrarOperacao}
         flyParaAlerta={flyParaAlerta}
-        onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
+        onVeiculoComAlertaClicado={(cv, placa) => { setVeiculoPanel({ cv, placa }); setMostrarOperacao(true); }}
         painelEsquerdo={painelAlertasJsx}
         mostrarPainelEsquerdo={mostrarAlertas}
         onTogglePainelEsquerdo={() => setMostrarAlertas((v) => !v)}
         onToggleSidebar={() => setMostrarOperacao((v) => !v)}
+        onAbrirSidebar={() => setMostrarOperacao(true)}
         painelVeiculo={veiculoPanel ? (
           <PainelVeiculoAlerta
             cv={veiculoPanel.cv}

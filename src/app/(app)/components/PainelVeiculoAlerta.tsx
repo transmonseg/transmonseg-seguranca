@@ -220,7 +220,7 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAl
   return (
     <div
       style={{
-        width: 340,
+        width: "100%",
         maxHeight: "100%",
         display: "flex",
         flexDirection: "column",
@@ -249,7 +249,6 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAl
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
-          <span style={{ color: "var(--text-dim)", fontSize: 13, letterSpacing: 2, flexShrink: 0, opacity: 0.5 }}>⠿⠿</span>
           <span
             style={{
               display: "inline-block",
