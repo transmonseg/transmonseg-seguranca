@@ -24,6 +24,8 @@ import {
 import type { Layer } from "leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster";
+import "leaflet.markercluster/dist/MarkerCluster.css";
 
 /* ------------------------------------------------------------------ */
 /* Tipos                                                                */
@@ -649,6 +651,76 @@ function AjustarBoundsFrota({
   return null;
 }
 
+// Agrupa os marcadores de veiculo em clusters para nao virar uma bola
+// ilegivel quando muitos estao na mesma regiao. Integracao imperativa
+// com leaflet.markercluster via useMap (react-leaflet nao tem wrapper v5).
+function ClusterVeiculos({
+  veiculos,
+  cvSelecionado,
+  onClickVeiculo,
+}: {
+  veiculos: VeiculoMapa[];
+  cvSelecionado: string | null;
+  onClickVeiculo: (vm: VeiculoMapa) => void;
+}) {
+  const map = useMap();
+  const grupoRef = useRef<L.MarkerClusterGroup | null>(null);
+
+  useEffect(() => {
+    const grupo = L.markerClusterGroup({
+      chunkedLoading: true,
+      maxClusterRadius: 48,
+      disableClusteringAtZoom: 15,
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+      iconCreateFunction: (cluster) => {
+        const filhos = cluster.getAllChildMarkers();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const temAlerta = filhos.some((m) => (m.options as any).temAlerta);
+        const n = cluster.getChildCount();
+        const cor = temAlerta ? "#ef4444" : "#38bdf8";
+        const size = n >= 50 ? 46 : n >= 10 ? 40 : 34;
+        const html =
+          `<div style="width:${size}px;height:${size}px;border-radius:50%;` +
+          `display:flex;align-items:center;justify-content:center;` +
+          `background:rgba(9,9,13,0.9);border:2px solid ${cor};` +
+          `box-shadow:0 0 0 4px ${cor}22,0 3px 10px rgba(0,0,0,0.6);` +
+          `color:${cor};font-family:monospace;font-weight:800;font-size:${n >= 100 ? 12 : 13}px;">` +
+          `${n}</div>`;
+        return L.divIcon({ html, className: "", iconSize: [size, size] });
+      },
+    });
+    grupoRef.current = grupo;
+    map.addLayer(grupo);
+    return () => {
+      map.removeLayer(grupo);
+      grupoRef.current = null;
+    };
+  }, [map]);
+
+  useEffect(() => {
+    const grupo = grupoRef.current;
+    if (!grupo) return;
+    grupo.clearLayers();
+    const markers: L.Marker[] = [];
+    for (const vm of veiculos) {
+      if (vm.lat === null || vm.lng === null) continue;
+      const selecionado = cvSelecionado === vm.cv;
+      const m = L.marker([vm.lat, vm.lng], {
+        icon: iconeStatus(vm, selecionado),
+        zIndexOffset: selecionado ? 1000 : 0,
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (m.options as any).temAlerta = vm.nivel === "vermelho" || vm.tipo !== null;
+      m.on("click", () => onClickVeiculo(vm));
+      markers.push(m);
+    }
+    grupo.addLayers(markers);
+  }, [veiculos, cvSelecionado, onClickVeiculo]);
+
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Componente principal                                                 */
 /* ------------------------------------------------------------------ */
@@ -891,6 +963,17 @@ export default function MapaMonitor({
     setPainelAberto(true);
     setGatilhoBounds((g) => g + 1);
   }, []);
+
+  const onClickVeiculoMapa = useCallback(
+    (vm: VeiculoMapa) => {
+      setCvSelecionado(vm.cv);
+      setPlacaSelecionada(vm.placa);
+      setPainelAberto(true);
+      setGatilhoBounds((g) => g + 1);
+      if (onVeiculoComAlertaClicado) onVeiculoComAlertaClicado(vm.cv, vm.placa);
+    },
+    [onVeiculoComAlertaClicado]
+  );
 
   const limparSelecao = useCallback(() => {
     setCvSelecionado(null);
@@ -1761,53 +1844,12 @@ export default function MapaMonitor({
               />
             )}
 
-            {/* Todos os veiculos visiveis */}
-            {veiculosVisiveis.map((vm) => {
-              if (vm.lat === null || vm.lng === null) return null;
-              const selecionado = cvSelecionado === vm.cv;
-              return (
-                <Marker
-                  key={vm.cv}
-                  position={[vm.lat, vm.lng]}
-                  icon={iconeStatus(vm, selecionado)}
-                  zIndexOffset={selecionado ? 1000 : 0}
-                  eventHandlers={{
-                    click: () => {
-                      selecionarVeiculo({ placa: vm.placa, cv: vm.cv });
-                      if (vm.tipo !== null && onVeiculoComAlertaClicado) {
-                        onVeiculoComAlertaClicado(vm.cv, vm.placa);
-                      }
-                    },
-                  }}
-                >
-                  <Popup>
-                    <div style={{ fontFamily: "var(--font-geist-mono, monospace)", fontWeight: 700, fontSize: 13 }}>
-                      {vm.placa}
-                    </div>
-                    <div style={{ fontSize: 12, marginTop: 2 }}>
-                      {vm.velocidade > 0 ? `${vm.velocidade} km/h` : "parado"} ·{" "}
-                      ignicao {vm.ignicao ? "ligada" : "desligada"}
-                    </div>
-                    {vm.atraso_min > 0 && (
-                      <div style={{ fontSize: 11, color: "#d97706", marginTop: 2 }}>
-                        sem comm ha {formatarDuracao(vm.atraso_min)}
-                      </div>
-                    )}
-                    {vm.local && (
-                      <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>{vm.local}</div>
-                    )}
-                    <a
-                      href={`https://www.google.com/maps?q=${vm.lat},${vm.lng}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontSize: 12, color: "#1d4ed8", display: "inline-block", marginTop: 4 }}
-                    >
-                      abrir no Google Maps
-                    </a>
-                  </Popup>
-                </Marker>
-              );
-            })}
+            {/* Todos os veiculos visiveis, agrupados em clusters */}
+            <ClusterVeiculos
+              veiculos={veiculosVisiveis}
+              cvSelecionado={cvSelecionado}
+              onClickVeiculo={onClickVeiculoMapa}
+            />
 
             {/* Rastro: contorno preto + linha ciano viva */}
             {mostrarRastro && pontosRastro.length > 1 && (

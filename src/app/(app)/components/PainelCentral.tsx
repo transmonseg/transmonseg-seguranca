@@ -550,8 +550,8 @@ export default function PainelCentral({
           onVeiculoComAlertaClicado={(cv, placa) => setVeiculoPanel({ cv, placa })}
         />
 
-        {/* Painel flutuante do veiculo com alerta */}
-        {veiculoPanel && alertasVeiculoPanel.length > 0 && (
+        {/* Painel flutuante do veiculo (qualquer veiculo clicado) */}
+        {veiculoPanel && (
           <div
             style={{
               position: "absolute",
