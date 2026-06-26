@@ -75,6 +75,21 @@ export default function PainelCentral({
 
   const [veiculoPanel, setVeiculoPanel] = useState<{ cv: string; placa: string } | null>(null);
 
+  // Notificacao de critico novo
+  const [toast, setToast] = useState<{ placa: string; tipo: string; id: string } | null>(null);
+  const [notifLigada, setNotifLigada] = useState(false);
+
+  useEffect(() => {
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      setNotifLigada(true);
+    }
+  }, []);
+
+  const ativarNotificacoes = useCallback(() => {
+    if (typeof Notification === "undefined") return;
+    Notification.requestPermission().then((p) => setNotifLigada(p === "granted"));
+  }, []);
+
   // Polling de alertas a cada 15s
   const atualizarAlertas = useCallback(() => {
     fetch(`/api/alertas?cliente=${encodeURIComponent(cliente)}`)
@@ -84,19 +99,35 @@ export default function PainelCentral({
         const novos = d.alertas as AlertaEnriquecido[];
         setAlertas(novos);
         for (const a of novos) {
-          if (
-            a.nivel === "critico" &&
-            !vistosRef.current.has(a.id) &&
-            a.lat != null &&
-            a.lng != null
-          ) {
-            setFlyParaAlerta({ lat: a.lat, lng: a.lng, gatilho: Date.now() });
+          if (a.nivel === "critico" && !vistosRef.current.has(a.id)) {
+            if (a.lat != null && a.lng != null) {
+              setFlyParaAlerta({ lat: a.lat, lng: a.lng, gatilho: Date.now() });
+            }
+            // Toast visual
+            setToast({ placa: a.placa, tipo: a.tipo, id: a.id });
+            // Notificacao do navegador
+            if (
+              typeof Notification !== "undefined" &&
+              Notification.permission === "granted"
+            ) {
+              new Notification(`Crítico: ${a.placa}`, {
+                body: `${a.tipo}${a.local ? " · " + a.local : ""}`,
+                tag: a.id,
+              });
+            }
           }
           vistosRef.current.add(a.id);
         }
       })
       .catch(() => {});
   }, [cliente]);
+
+  // Esconde o toast depois de 8s
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 8000);
+    return () => clearTimeout(id);
+  }, [toast]);
 
   useEffect(() => {
     const id = setInterval(atualizarAlertas, 15000);
@@ -175,7 +206,7 @@ export default function PainelCentral({
     <div
       style={{
         display: "flex",
-        height: "calc(100vh - var(--header-h, 64px))",
+        height: "100%",
         overflow: "hidden",
       }}
     >
@@ -230,7 +261,30 @@ export default function PainelCentral({
 
           {/* Apito + metricas */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <AlertaSonoro idsParaApitar={idsParaApitar} />
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <AlertaSonoro idsParaApitar={idsParaApitar} />
+              <button
+                onClick={ativarNotificacoes}
+                title={notifLigada ? "Notificações ativas" : "Ativar notificações de crítico"}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 30,
+                  height: 30,
+                  borderRadius: 7,
+                  cursor: "pointer",
+                  border: `1px solid ${notifLigada ? "var(--verde)" : "var(--border)"}`,
+                  backgroundColor: notifLigada ? "rgba(34,197,94,0.12)" : "transparent",
+                  color: notifLigada ? "var(--verde)" : "var(--text-dim)",
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </button>
+            </div>
             <div style={{ display: "flex", gap: 14 }}>
               <div style={{ textAlign: "center" }}>
                 <p
@@ -445,6 +499,47 @@ export default function PainelCentral({
 
       {/* ======== MAPA (ocupar restante) ======== */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        {/* Toast de critico novo */}
+        {toast && (
+          <div
+            onClick={() => setToast(null)}
+            style={{
+              position: "absolute",
+              top: 12,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 1002,
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "0.625rem 1rem",
+              borderRadius: 10,
+              cursor: "pointer",
+              backgroundColor: "rgba(20,4,4,0.96)",
+              border: "1px solid var(--vermelho, #ef4444)",
+              boxShadow: "0 8px 28px rgba(0,0,0,0.7)",
+              backdropFilter: "blur(8px)",
+              animation: "pulse-live 1.5s ease-in-out infinite",
+            }}
+          >
+            <span
+              style={{
+                width: 9,
+                height: 9,
+                borderRadius: "50%",
+                backgroundColor: "var(--vermelho, #ef4444)",
+                flexShrink: 0,
+              }}
+            />
+            <div>
+              <p style={{ fontSize: 12, fontWeight: 700, color: "var(--vermelho, #ef4444)", letterSpacing: "0.04em" }}>
+                NOVO CRÍTICO · {toast.placa}
+              </p>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>{toast.tipo}</p>
+            </div>
+          </div>
+        )}
+
         <MapaMonitor
           cliente={cliente}
           veiculos={veiculos}

@@ -13,7 +13,7 @@ export default async function AppLayout({
   const inicial = nome.charAt(0).toUpperCase();
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       {/* ============================================================
           HEADER DE COMANDO
           ============================================================ */}
@@ -124,7 +124,7 @@ export default async function AppLayout({
       </header>
 
       {/* Conteudo principal */}
-      <main className="flex-1">
+      <main className="flex-1 min-h-0 overflow-y-auto">
         <AutoRefresh segundos={30} />
         {children}
       </main>

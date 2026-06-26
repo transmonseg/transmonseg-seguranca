@@ -620,6 +620,35 @@ function AutoFlyAlerta({
   return null;
 }
 
+// Enquadra toda a frota no mapa: uma vez no primeiro load e novamente
+// sempre que `gatilho` muda (botao "Centralizar frota").
+function AjustarBoundsFrota({
+  pontos,
+  gatilho,
+}: {
+  pontos: [number, number][];
+  gatilho: number;
+}) {
+  const map = useMap();
+  const jaAjustouLoad = useRef(false);
+  const ultimoGatilho = useRef(0);
+
+  useEffect(() => {
+    const mudouGatilho = gatilho !== ultimoGatilho.current;
+    if (jaAjustouLoad.current && !mudouGatilho) return;
+    if (pontos.length === 0) return;
+    ultimoGatilho.current = gatilho;
+    jaAjustouLoad.current = true;
+    try {
+      map.fitBounds(L.latLngBounds(pontos), { padding: [50, 50], maxZoom: 14 });
+    } catch {
+      /* bounds invalido */
+    }
+  }, [pontos, gatilho, map]);
+
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Componente principal                                                 */
 /* ------------------------------------------------------------------ */
@@ -680,6 +709,9 @@ export default function MapaMonitor({
 
   /* ---- Gatilho de fitBounds ---- */
   const [gatilhoBounds, setGatilhoBounds] = useState(0);
+
+  /* ---- Gatilho de enquadrar frota inteira ---- */
+  const [gatilhoFrota, setGatilhoFrota] = useState(0);
 
   /* ---- Camadas de risco ---- */
   const [favelas, setFavelas] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -923,6 +955,10 @@ export default function MapaMonitor({
   /* ------------------------------------------------------------------ */
 
   const pontosRastro: [number, number][] = rastro.map((p) => [p.lat, p.lng]);
+
+  const pontosFrota: [number, number][] = veiculosVisiveis
+    .filter((v) => v.lat !== null && v.lng !== null)
+    .map((v) => [v.lat as number, v.lng as number]);
 
   const posAtual = telemetria
     ? {
@@ -1478,6 +1514,84 @@ export default function MapaMonitor({
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
         {/* Mapa */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          {/* Controles flutuantes (modo unificado, sem sidebar do mapa) */}
+          {!mostrarSidebar && (
+            <div
+              style={{
+                position: "absolute",
+                top: 10,
+                left: 10,
+                zIndex: 1000,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                background: "rgba(6,8,16,0.9)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: 10,
+                padding: 8,
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              <button
+                onClick={() => setGatilhoFrota((g) => g + 1)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "0.35rem 0.6rem",
+                  borderRadius: 7,
+                  border: "1px solid var(--border)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  backgroundColor: "var(--accent-dim)",
+                  color: "var(--accent)",
+                }}
+                title="Enquadrar todos os veiculos"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+                Ver toda a frota
+              </button>
+
+              <div>
+                <p style={{ color: "rgba(255,255,255,0.55)", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
+                  Sem comunicacao
+                </p>
+                <div style={{ display: "flex", gap: 3 }}>
+                  {FILTROS_COMM.map((f) => (
+                    <button
+                      key={f.min}
+                      onClick={() => setFiltroComm((prev) => (prev === f.min ? null : f.min))}
+                      style={{
+                        flex: 1,
+                        padding: "0.25rem 0.4rem",
+                        borderRadius: 6,
+                        border: "none",
+                        cursor: "pointer",
+                        fontSize: 10,
+                        fontWeight: 600,
+                        whiteSpace: "nowrap",
+                        backgroundColor: filtroComm === f.min ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.06)",
+                        color: filtroComm === f.min ? "var(--amarelo)" : "rgba(255,255,255,0.7)",
+                      }}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <p style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", fontFamily: "var(--font-geist-mono, monospace)" }}>
+                {veiculosVisiveis.length} de {veiculosMapa.length} no mapa
+              </p>
+            </div>
+          )}
+
           {/* Legenda de status */}
           <div style={{
             position: "absolute", bottom: 28, left: 10, zIndex: 1000,
@@ -1524,6 +1638,9 @@ export default function MapaMonitor({
           >
             {pontosRastro.length > 0 && (
               <AjustarBoundsRastro pontos={pontosRastro} gatilho={gatilhoBounds} />
+            )}
+            {!cvSelecionado && (
+              <AjustarBoundsFrota pontos={pontosFrota} gatilho={gatilhoFrota} />
             )}
             {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
 
