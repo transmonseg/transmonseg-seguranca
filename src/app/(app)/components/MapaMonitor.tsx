@@ -164,7 +164,7 @@ const FILTROS_COMM = [
   { label: "60 min", min: 60 },
 ] as const;
 
-const SIDEBAR_W = 280;
+const SIDEBAR_W = 340;
 
 /* ------------------------------------------------------------------ */
 /* Cores de marcador                                                    */
@@ -981,7 +981,6 @@ export default function MapaMonitor({
     (vm: VeiculoMapa) => {
       setCvSelecionado(vm.cv);
       setPlacaSelecionada(vm.placa);
-      setPainelAberto(true);
       onAbrirSidebar?.();
       if (onVeiculoComAlertaClicado) onVeiculoComAlertaClicado(vm.cv, vm.placa);
     },
@@ -1808,44 +1807,19 @@ export default function MapaMonitor({
             </div>
           )}
 
-          {/* Painel OPERAÇÃO (direita) */}
+          {/* Painel OPERAÇÃO — só exibe PainelVeiculoAlerta quando selecionado */}
           <div style={{
             position: "absolute", right: 0, top: 0, bottom: 0,
             width: mostrarSidebar ? SIDEBAR_W : 0,
             zIndex: 500,
             display: "flex", flexDirection: "column",
             backgroundColor: "var(--card)",
-            borderLeft: mostrarSidebar ? "1px solid var(--border)" : "none",
+            borderLeft: mostrarSidebar && painelVeiculo ? "1px solid var(--border)" : "none",
             overflow: "hidden",
             transition: "width 0.2s ease",
           }}>
-            {conteudoOperacao}
+            {painelVeiculo}
           </div>
-
-          {/* PainelTelemetria flutuante — à esquerda do OPE quando aberto */}
-          {cvSelecionado && painelAberto && placaSelecionada && (
-            <PainelTelemetria
-              placa={placaSelecionada}
-              dados={telemetria}
-              onFechar={() => setPainelAberto(false)}
-              rightOffset={mostrarSidebar ? SIDEBAR_W : 0}
-            />
-          )}
-
-          {/* PainelVeiculoAlerta — só aparece quando OPE está aberto, à esquerda dele */}
-          {mostrarSidebar && painelVeiculo && (
-            <div style={{
-              position: "absolute",
-              bottom: 16,
-              right: SIDEBAR_W + 12,
-              zIndex: 700,
-              maxHeight: "calc(100% - 32px)",
-              display: "flex",
-              flexDirection: "column",
-            }}>
-              {painelVeiculo}
-            </div>
-          )}
 
           {/* Aba ALERTAS (borda esquerda) */}
           {onTogglePainelEsquerdo && (

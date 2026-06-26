@@ -197,7 +197,7 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAl
   return (
     <div
       style={{
-        width: 320,
+        width: "100%",
         maxHeight: "100%",
         display: "flex",
         flexDirection: "column",

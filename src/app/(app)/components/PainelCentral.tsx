@@ -474,7 +474,7 @@ export default function PainelCentral({
               id: a.id, status: a.status, nivel: a.nivel,
               tipo: a.tipo, motivo: a.motivo, desde: a.desde, score: a.score,
             }))}
-            onFechar={() => setVeiculoPanel(null)}
+            onFechar={() => { setVeiculoPanel(null); setMostrarOperacao(false); }}
             onAlertaResolvido={removerAlerta}
             empresa={empresaNome}
           />
