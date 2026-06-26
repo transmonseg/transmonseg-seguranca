@@ -21,6 +21,7 @@ import {
   LayersControl,
   LayerGroup,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 import type { Layer } from "leaflet";
 import L from "leaflet";
@@ -179,6 +180,11 @@ function ControlaZoom({ zoom, gatilho }: { zoom: number; gatilho: number }) {
   useEffect(() => {
     if (gatilho !== prev.current) { prev.current = gatilho; map.setZoom(zoom); }
   }, [zoom, gatilho, map]);
+  return null;
+}
+
+function CapturadorZoom({ onZoom }: { onZoom: (z: number) => void }) {
+  useMapEvents({ zoomend: (e) => onZoom(e.target.getZoom()) });
   return null;
 }
 
@@ -719,7 +725,8 @@ export default function MapaMonitor({
   const [carregandoRota, setCarregandoRota] = useState(false);
 
   /* ---- Camadas extras ---- */
-  const [mostrarRotulos, setMostrarRotulos] = useState(true);
+  const [mostrarRotulos, setMostrarRotulos] = useState(false);
+  const [zoomMapa, setZoomMapa] = useState(10);
   const [mostrarAlvosTodos, setMostrarAlvosTodos] = useState(false);
   const [alvosTodos, setAlvosTodos] = useState<PontoEntregaUI[]>([]);
   const [carregandoAlvosTodos, setCarregandoAlvosTodos] = useState(false);
@@ -1855,7 +1862,7 @@ export default function MapaMonitor({
 
           {/* Legenda de status */}
           <div style={{
-            position: "absolute", bottom: 28, left: 10, zIndex: 1000,
+            position: "absolute", bottom: 28, right: 10, zIndex: 1000,
             background: "rgba(6,8,16,0.88)", border: "1px solid rgba(255,255,255,0.1)",
             borderRadius: 8, padding: "8px 12px", backdropFilter: "blur(6px)",
             display: "flex", flexDirection: "column", gap: 5, pointerEvents: "none",
@@ -1906,6 +1913,7 @@ export default function MapaMonitor({
             {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
             {flyParaVeiculo && <AutoFlyAlerta flyPara={flyParaVeiculo} />}
             {zoomCmd && <ControlaZoom zoom={zoomCmd.zoom} gatilho={zoomCmd.g} />}
+            <CapturadorZoom onZoom={setZoomMapa} />
 
             {/* Rota Origem→Destino */}
             {rotaPolyline && (
@@ -2067,7 +2075,7 @@ export default function MapaMonitor({
                   zIndexOffset={selecionado ? 1000 : 0}
                   eventHandlers={{ click: () => onClickVeiculoMapa(vm) }}
                 >
-                  {mostrarRotulos && (
+                  {mostrarRotulos && zoomMapa >= 13 && (
                     <Tooltip
                       permanent
                       direction="top"
