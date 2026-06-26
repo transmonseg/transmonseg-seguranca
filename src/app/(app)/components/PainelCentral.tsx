@@ -147,11 +147,6 @@ export default function PainelCentral({
         setAlertas(novos);
         for (const a of novos) {
           if (a.nivel === "critico" && !vistosRef.current.has(a.id)) {
-            if (a.lat != null && a.lng != null) {
-              setFlyParaAlerta({ lat: a.lat, lng: a.lng, gatilho: Date.now() });
-            }
-            // Auto-abrir painel do veículo no novo crítico
-            setVeiculoPanel({ cv: a.cv, placa: a.placa });
             setToast({ placa: a.placa, tipo: a.tipo, id: a.id });
             if (typeof Notification !== "undefined" && Notification.permission === "granted") {
               new Notification(`Crítico: ${a.placa}`, {

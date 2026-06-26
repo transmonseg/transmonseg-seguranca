@@ -188,6 +188,11 @@ function CapturadorZoom({ onZoom }: { onZoom: (z: number) => void }) {
   return null;
 }
 
+function ClicarMapaVazio({ onClicarVazio }: { onClicarVazio: () => void }) {
+  useMapEvents({ click: onClicarVazio });
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Cache de icones Leaflet                                             */
 /* ------------------------------------------------------------------ */
@@ -963,9 +968,6 @@ export default function MapaMonitor({
       setCvSelecionado(vm.cv);
       setPlacaSelecionada(vm.placa);
       setPainelAberto(true);
-      if (vm.lat != null && vm.lng != null) {
-        setFlyParaVeiculo({ lat: vm.lat, lng: vm.lng, gatilho: Date.now() });
-      }
       if (onVeiculoComAlertaClicado) onVeiculoComAlertaClicado(vm.cv, vm.placa);
     },
     [onVeiculoComAlertaClicado]
@@ -1914,6 +1916,7 @@ export default function MapaMonitor({
             {flyParaVeiculo && <AutoFlyAlerta flyPara={flyParaVeiculo} />}
             {zoomCmd && <ControlaZoom zoom={zoomCmd.zoom} gatilho={zoomCmd.g} />}
             <CapturadorZoom onZoom={setZoomMapa} />
+            <ClicarMapaVazio onClicarVazio={limparSelecao} />
 
             {/* Rota Origem→Destino */}
             {rotaPolyline && (
@@ -2079,24 +2082,10 @@ export default function MapaMonitor({
                     <Tooltip
                       permanent
                       direction="top"
-                      offset={[0, -4]}
-                      opacity={0.92}
-                      className=""
+                      offset={[0, -2]}
+                      className="leaflet-tooltip-placa"
                     >
-                      <span style={{
-                        fontFamily: "var(--font-geist-mono, monospace)",
-                        fontWeight: 700,
-                        fontSize: 9,
-                        letterSpacing: "0.08em",
-                        color: selecionado ? "var(--accent, #38bdf8)" : "#e2e8f0",
-                        textShadow: "0 1px 3px #000",
-                        whiteSpace: "nowrap",
-                        background: "rgba(0,0,0,0.65)",
-                        padding: "1px 4px",
-                        borderRadius: 3,
-                      }}>
-                        {vm.placa}
-                      </span>
+                      {vm.placa}
                     </Tooltip>
                   )}
                 </Marker>
