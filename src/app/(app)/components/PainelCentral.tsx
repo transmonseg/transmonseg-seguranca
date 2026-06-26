@@ -3,9 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import AlertaSonoro from "./AlertaSonoro";
-import FiltrosBar, { type Contagens } from "./FiltrosBar";
 import CardAlertaCritico from "./CardAlertaCritico";
 import PainelVeiculoAlerta from "./PainelVeiculoAlerta";
 
@@ -38,21 +36,58 @@ interface Props {
   alertasIniciais: AlertaEnriquecido[];
 }
 
+type Vista = "tudo" | "critico" | "atencao";
+
 function ordemSeveridade(tipo: string): number {
   const t = tipo?.toLowerCase() ?? "";
   if (t === "panico") return 0;
   if (t === "bau") return 1;
   if (t === "favela") return 2;
   if (t === "tiroteio") return 3;
-  if (t === "ignicao_noturna") return 4;
+  if (t === "jammer" || t.includes("sinal") || t.includes("bloqueio")) return 4;
   if (t === "saida_nao_autorizada") return 5;
-  if (t === "parada_cliente") return 6;
-  if (t === "parada_anomala") return 7;
-  if (t === "parada_longa") return 8;
-  if (t === "desvio" || t === "excesso") return 9;
-  if (t === "jammer" || t.includes("sinal") || t.includes("bloqueio")) return 11;
-  return 10;
+  if (t === "ignicao_noturna") return 6;
+  if (t === "parada_cliente") return 7;
+  if (t === "parada_anomala") return 8;
+  if (t === "parada_longa") return 9;
+  if (t === "desvio" || t === "excesso") return 10;
+  return 11;
 }
+
+// Normaliza o tipo para a chave de grupo (jammer/sinal/bloqueio viram "jammer").
+function chaveTipo(t: string): string {
+  const x = (t ?? "").toLowerCase();
+  if (x === "jammer" || x.includes("sinal") || x.includes("bloqueio")) return "jammer";
+  return x;
+}
+
+const NOME_TIPO: Record<string, string> = {
+  panico: "Pânico",
+  bau: "Baú aberto",
+  favela: "Favela / risco",
+  tiroteio: "Tiroteio",
+  jammer: "Jammer / sinal",
+  saida_nao_autorizada: "Saída não autorizada",
+  ignicao_noturna: "Ignição noturna",
+  parada_cliente: "Parada no cliente",
+  parada_anomala: "Parada anômala",
+  parada_longa: "Parada longa",
+  desvio: "Desvio de rota",
+  excesso: "Excesso de velocidade",
+};
+function nomeTipo(t: string): string {
+  return NOME_TIPO[t] ?? t.replace(/_/g, " ");
+}
+
+// Tipos graves que ja abrem expandidos; os demais comecam recolhidos.
+const EXPANDIR_PADRAO = new Set([
+  "panico",
+  "bau",
+  "favela",
+  "tiroteio",
+  "jammer",
+  "saida_nao_autorizada",
+]);
 
 const SIDEBAR_W = 380;
 
@@ -63,17 +98,15 @@ export default function PainelCentral({
   veiculos,
   alertasIniciais,
 }: Props) {
-  const searchParams = useSearchParams();
-
   const [alertas, setAlertas] = useState<AlertaEnriquecido[]>(alertasIniciais);
-  const [flyParaAlerta, setFlyParaAlerta] = useState<{
-    lat: number;
-    lng: number;
-    gatilho: number;
-  } | null>(null);
+  const [flyParaAlerta, setFlyParaAlerta] = useState<{ lat: number; lng: number; gatilho: number } | null>(null);
   const vistosRef = useRef<Set<string>>(new Set(alertasIniciais.map((a) => a.id)));
 
   const [veiculoPanel, setVeiculoPanel] = useState<{ cv: string; placa: string } | null>(null);
+
+  // Filtro de nivel e grupos recolhidos
+  const [vista, setVista] = useState<Vista>("tudo");
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
   // Notificacao de critico novo
   const [toast, setToast] = useState<{ placa: string; tipo: string; id: string } | null>(null);
@@ -103,15 +136,10 @@ export default function PainelCentral({
             if (a.lat != null && a.lng != null) {
               setFlyParaAlerta({ lat: a.lat, lng: a.lng, gatilho: Date.now() });
             }
-            // Toast visual
             setToast({ placa: a.placa, tipo: a.tipo, id: a.id });
-            // Notificacao do navegador
-            if (
-              typeof Notification !== "undefined" &&
-              Notification.permission === "granted"
-            ) {
+            if (typeof Notification !== "undefined" && Notification.permission === "granted") {
               new Notification(`Crítico: ${a.placa}`, {
-                body: `${a.tipo}${a.local ? " · " + a.local : ""}`,
+                body: `${nomeTipo(chaveTipo(a.tipo))}${a.local ? " · " + a.local : ""}`,
                 tag: a.id,
               });
             }
@@ -122,7 +150,6 @@ export default function PainelCentral({
       .catch(() => {});
   }, [cliente]);
 
-  // Esconde o toast depois de 8s
   useEffect(() => {
     if (!toast) return;
     const id = setTimeout(() => setToast(null), 8000);
@@ -134,82 +161,88 @@ export default function PainelCentral({
     return () => clearInterval(id);
   }, [atualizarAlertas]);
 
-  // Filtros da URL
-  const tiposParam = searchParams.get("tipos") ?? "";
-  const nivelParam = searchParams.get("nivel") ?? "";
-  const soProblema = searchParams.get("problema") === "1";
-  const soTurno = searchParams.get("turno") === "1";
-
-  const tiposChips = tiposParam ? tiposParam.split(",").filter(Boolean) : [];
-  const GRUPO_JAMMER = ["jammer", "sinal", "bloqueio"];
-  const tiposSel = [
-    ...new Set(
-      tiposChips.flatMap((t) => (GRUPO_JAMMER.includes(t) ? GRUPO_JAMMER : [t]))
-    ),
-  ];
-  const niveisAtivos = nivelParam ? nivelParam.split(",").filter(Boolean) : [];
-  const cutoffTurno = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
-
-  const alertasFiltrados = alertas.filter((a) => {
-    if (soTurno && a.status !== "ativo" && a.desde < cutoffTurno) return false;
-    if (tiposSel.length > 0 && !tiposSel.includes(a.tipo?.toLowerCase() ?? "")) return false;
-    return true;
-  });
-
-  const mostrarCriticos = niveisAtivos.length === 0 || niveisAtivos.includes("critico");
-  const mostrarAtencao = niveisAtivos.length === 0 || niveisAtivos.includes("atencao");
-
-  const criticos = alertasFiltrados
-    .filter((a) => a.nivel === "critico")
-    .sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo));
-
-  const atencao = alertasFiltrados
-    .filter((a) => a.nivel === "atencao")
-    .sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo));
+  const nCriticos = alertas.filter((a) => a.nivel === "critico").length;
+  const nAtencao = alertas.filter((a) => a.nivel === "atencao").length;
 
   const idsParaApitar = [
     ...alertas.filter((a) => a.nivel === "critico").map((a) => a.id),
-    ...alertas
-      .filter((a) => a.nivel === "atencao" && a.tipo === "parada_cliente")
-      .map((a) => a.id),
+    ...alertas.filter((a) => a.nivel === "atencao" && a.tipo === "parada_cliente").map((a) => a.id),
   ];
 
-  // Contagens para FiltrosBar
-  const contagensTipos: Record<string, number> = {};
-  for (const a of alertas) {
-    const t = a.tipo ?? "outro";
-    contagensTipos[t] = (contagensTipos[t] ?? 0) + 1;
+  // Lista visivel conforme o filtro de nivel
+  const visiveis = alertas.filter((a) =>
+    vista === "critico" ? a.nivel === "critico" : vista === "atencao" ? a.nivel === "atencao" : true
+  );
+
+  // Agrupa por tipo
+  const mapaGrupos = new Map<string, AlertaEnriquecido[]>();
+  for (const a of visiveis) {
+    const k = chaveTipo(a.tipo);
+    const lista = mapaGrupos.get(k) ?? [];
+    lista.push(a);
+    mapaGrupos.set(k, lista);
   }
-  const jammerTotal =
-    (contagensTipos["jammer"] ?? 0) +
-    (contagensTipos["sinal"] ?? 0) +
-    (contagensTipos["bloqueio"] ?? 0);
-  if (jammerTotal > 0) contagensTipos["jammer"] = jammerTotal;
+  const grupos = [...mapaGrupos.entries()]
+    .map(([tipo, lista]) => ({
+      tipo,
+      lista: lista.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || (b.desde < a.desde ? -1 : 1)),
+      temCritico: lista.some((a) => a.nivel === "critico"),
+    }))
+    .sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo));
 
-  const contagens: Contagens = {
-    tipos: contagensTipos,
-    nivel: {
-      critico: alertas.filter((a) => a.nivel === "critico").length,
-      atencao: alertas.filter((a) => a.nivel === "atencao").length,
-    },
-  };
+  function estaExpandido(tipo: string): boolean {
+    return toggled[tipo] ?? EXPANDIR_PADRAO.has(tipo);
+  }
+  function alternarGrupo(tipo: string) {
+    setToggled((t) => ({ ...t, [tipo]: !estaExpandido(tipo) }));
+  }
 
-  const alertasVeiculoPanel = veiculoPanel
-    ? alertas.filter((a) => a.cv === veiculoPanel.cv)
-    : [];
+  const alertasVeiculoPanel = veiculoPanel ? alertas.filter((a) => a.cv === veiculoPanel.cv) : [];
 
   const focarMapa = useCallback((lat: number, lng: number) => {
     setFlyParaAlerta({ lat, lng, gatilho: Date.now() });
   }, []);
 
+  // Botao do segmented de nivel
+  const segBtn = (alvo: Vista, rotulo: string, n: number, cor: string) => {
+    const ativo = vista === alvo;
+    return (
+      <button
+        onClick={() => setVista(alvo)}
+        style={{
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+          padding: "0.4rem 0.5rem",
+          borderRadius: 7,
+          cursor: "pointer",
+          border: "1px solid transparent",
+          backgroundColor: ativo ? "color-mix(in srgb, " + cor + " 16%, transparent)" : "transparent",
+          color: ativo ? cor : "var(--text-dim)",
+          fontSize: 11,
+          fontWeight: 700,
+          transition: "background 0.12s",
+        }}
+      >
+        {rotulo}
+        <span
+          style={{
+            fontFamily: "var(--font-geist-mono, monospace)",
+            fontSize: 11,
+            fontWeight: 700,
+            color: ativo ? cor : "var(--text-dim)",
+          }}
+        >
+          {n}
+        </span>
+      </button>
+    );
+  };
+
   return (
-    <div
-      style={{
-        display: "flex",
-        height: "100%",
-        overflow: "hidden",
-      }}
-    >
+    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
       {/* ======== SIDEBAR DE ALERTAS ======== */}
       <div
         style={{
@@ -222,46 +255,40 @@ export default function PainelCentral({
           overflow: "hidden",
         }}
       >
-        {/* Cabecalho fixo da sidebar */}
+        {/* Cabecalho fixo */}
         <div
           style={{
             flexShrink: 0,
-            padding: "0.875rem 1rem",
+            padding: "0.75rem 0.875rem",
             borderBottom: "1px solid var(--border)",
             display: "flex",
             flexDirection: "column",
-            gap: 10,
+            gap: 9,
           }}
         >
-          {/* Seletor de cliente */}
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {clientes.map((c) => (
-              <Link
-                key={c.id}
-                href={`?cliente=${c.cod}`}
-                style={{
-                  padding: "0.25rem 0.625rem",
-                  borderRadius: 6,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  backgroundColor:
-                    c.id === clienteAtivoId ? "var(--accent-dim)" : "transparent",
-                  border: `1px solid ${
-                    c.id === clienteAtivoId ? "var(--accent)" : "var(--border)"
-                  }`,
-                  color:
-                    c.id === clienteAtivoId ? "var(--accent)" : "var(--text-dim)",
-                  textDecoration: "none",
-                }}
-              >
-                {c.nome}
-              </Link>
-            ))}
-          </div>
-
-          {/* Apito + metricas */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {/* Cliente + apito + notif */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {clientes.map((c) => (
+                <Link
+                  key={c.id}
+                  href={`?cliente=${c.cod}`}
+                  style={{
+                    padding: "0.25rem 0.625rem",
+                    borderRadius: 6,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    backgroundColor: c.id === clienteAtivoId ? "var(--accent-dim)" : "transparent",
+                    border: `1px solid ${c.id === clienteAtivoId ? "var(--accent)" : "var(--border)"}`,
+                    color: c.id === clienteAtivoId ? "var(--accent)" : "var(--text-dim)",
+                    textDecoration: "none",
+                  }}
+                >
+                  {c.nome}
+                </Link>
+              ))}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <AlertaSonoro idsParaApitar={idsParaApitar} />
               <button
                 onClick={ativarNotificacoes}
@@ -285,219 +312,143 @@ export default function PainelCentral({
                 </svg>
               </button>
             </div>
-            <div style={{ display: "flex", gap: 14 }}>
-              <div style={{ textAlign: "center" }}>
-                <p
-                  style={{
-                    fontFamily: "var(--font-geist-mono, monospace)",
-                    fontWeight: 700,
-                    fontSize: "1.1rem",
-                    color: criticos.length > 0 ? "var(--vermelho)" : "var(--text-dim)",
-                    lineHeight: 1,
-                  }}
-                >
-                  {criticos.length}
-                </p>
-                <p
-                  style={{
-                    fontSize: 9,
-                    color: "var(--text-dim)",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.1em",
-                    marginTop: 2,
-                  }}
-                >
-                  críticos
-                </p>
-              </div>
-              <div style={{ textAlign: "center" }}>
-                <p
-                  style={{
-                    fontFamily: "var(--font-geist-mono, monospace)",
-                    fontWeight: 700,
-                    fontSize: "1.1rem",
-                    color: atencao.length > 0 ? "var(--amarelo)" : "var(--text-dim)",
-                    lineHeight: 1,
-                  }}
-                >
-                  {atencao.length}
-                </p>
-                <p
-                  style={{
-                    fontSize: 9,
-                    color: "var(--text-dim)",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.1em",
-                    marginTop: 2,
-                  }}
-                >
-                  atenção
-                </p>
-              </div>
-            </div>
           </div>
 
-          {/* Filtros */}
-          <FiltrosBar contagens={contagens} />
+          {/* Segmented de nivel: Tudo | Criticos | Atencao */}
+          <div
+            style={{
+              display: "flex",
+              gap: 3,
+              padding: 3,
+              borderRadius: 9,
+              backgroundColor: "var(--card)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            {segBtn("tudo", "Tudo", nCriticos + nAtencao, "var(--accent)")}
+            {segBtn("critico", "Críticos", nCriticos, "var(--vermelho)")}
+            {segBtn("atencao", "Atenção", nAtencao, "var(--amarelo)")}
+          </div>
         </div>
 
-        {/* Lista scrollavel de alertas */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "0.875rem 1rem" }}>
-          {mostrarCriticos && (
-            <section style={{ marginBottom: "1.25rem" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    backgroundColor: criticos.length > 0 ? "var(--vermelho)" : "var(--border)",
-                    display: "inline-block",
-                    flexShrink: 0,
-                  }}
-                />
-                <h2
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.14em",
-                    color: "var(--text-muted)",
-                    margin: 0,
-                  }}
-                >
-                  Crítico
-                  <span
-                    style={{
-                      marginLeft: 8,
-                      fontFamily: "var(--font-geist-mono, monospace)",
-                      color: criticos.length > 0 ? "var(--vermelho)" : "var(--text-dim)",
-                    }}
-                  >
-                    {criticos.length}
-                  </span>
-                </h2>
-                <div style={{ flex: 1, height: 1, backgroundColor: "var(--border)" }} />
-              </div>
-              {criticos.length === 0 ? (
-                <p
-                  style={{
-                    fontSize: 12,
-                    color: "var(--text-dim)",
-                    padding: "0.75rem",
-                    backgroundColor: "var(--card)",
-                    borderRadius: 8,
-                    border: "1px solid var(--border)",
-                  }}
-                >
-                  Nenhuma ocorrência crítica.
-                </p>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {criticos.map((a) => (
-                    <CardAlertaCritico
-                      key={a.id}
-                      id={a.id}
-                      status={a.status}
-                      nivel={a.nivel}
-                      tipo={a.tipo}
-                      placa={a.placa}
-                      motivo={a.motivo}
-                      local={a.local}
-                      desde={a.desde}
-                      lat={a.lat}
-                      lng={a.lng}
-                      velocidade={a.velocidade}
-                      ignicao={a.ignicao}
-                      atraso_min={a.atraso_min}
-                      score={a.score}
-                      onFocarMapa={focarMapa}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
+        {/* Lista scrollavel agrupada por tipo */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "0.625rem 0.75rem" }}>
+          {grupos.length === 0 ? (
+            <p
+              style={{
+                fontSize: 12,
+                color: "var(--text-dim)",
+                padding: "0.875rem",
+                backgroundColor: "var(--card)",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                textAlign: "center",
+              }}
+            >
+              {vista === "critico"
+                ? "Nenhuma ocorrência crítica."
+                : vista === "atencao"
+                ? "Nada em atenção."
+                : "Tudo tranquilo. Sem alertas."}
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {grupos.map((g) => {
+                const aberto = estaExpandido(g.tipo);
+                const cor = g.temCritico ? "var(--vermelho)" : "var(--amarelo)";
+                return (
+                  <section key={g.tipo}>
+                    {/* Cabecalho do grupo (clicavel) */}
+                    <button
+                      onClick={() => alternarGrupo(g.tipo)}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "0.5rem 0.625rem",
+                        borderRadius: 8,
+                        cursor: "pointer",
+                        border: "1px solid var(--border)",
+                        backgroundColor: "var(--card)",
+                        color: "var(--text)",
+                        textAlign: "left",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          backgroundColor: cor,
+                          flexShrink: 0,
+                          display: "inline-block",
+                        }}
+                      />
+                      <span style={{ fontSize: 12.5, fontWeight: 700, flex: 1, color: "var(--text)" }}>
+                        {nomeTipo(g.tipo)}
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: "var(--font-geist-mono, monospace)",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: cor,
+                          minWidth: 18,
+                          textAlign: "right",
+                        }}
+                      >
+                        {g.lista.length}
+                      </span>
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="var(--text-dim)"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{ flexShrink: 0, transform: aberto ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
+                      >
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
 
-          {mostrarAtencao && !soProblema && (
-            <section>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    backgroundColor: atencao.length > 0 ? "var(--amarelo)" : "var(--border)",
-                    display: "inline-block",
-                    flexShrink: 0,
-                  }}
-                />
-                <h2
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.14em",
-                    color: "var(--text-muted)",
-                    margin: 0,
-                  }}
-                >
-                  Atenção
-                  <span
-                    style={{
-                      marginLeft: 8,
-                      fontFamily: "var(--font-geist-mono, monospace)",
-                      color: atencao.length > 0 ? "var(--amarelo)" : "var(--text-dim)",
-                    }}
-                  >
-                    {atencao.length}
-                  </span>
-                </h2>
-                <div style={{ flex: 1, height: 1, backgroundColor: "var(--border)" }} />
-              </div>
-              {atencao.length === 0 ? (
-                <p
-                  style={{
-                    fontSize: 12,
-                    color: "var(--text-dim)",
-                    padding: "0.75rem",
-                    backgroundColor: "var(--card)",
-                    borderRadius: 8,
-                    border: "1px solid var(--border)",
-                  }}
-                >
-                  Nada em atenção.
-                </p>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {atencao.map((a) => (
-                    <CardAlertaCritico
-                      key={a.id}
-                      id={a.id}
-                      status={a.status}
-                      nivel={a.nivel}
-                      tipo={a.tipo}
-                      placa={a.placa}
-                      motivo={a.motivo}
-                      local={a.local}
-                      desde={a.desde}
-                      lat={a.lat}
-                      lng={a.lng}
-                      velocidade={a.velocidade}
-                      ignicao={a.ignicao}
-                      atraso_min={a.atraso_min}
-                      score={a.score}
-                      onFocarMapa={focarMapa}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
+                    {/* Cards do grupo */}
+                    {aberto && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+                        {g.lista.map((a) => (
+                          <CardAlertaCritico
+                            key={a.id}
+                            id={a.id}
+                            status={a.status}
+                            nivel={a.nivel}
+                            tipo={a.tipo}
+                            placa={a.placa}
+                            motivo={a.motivo}
+                            local={a.local}
+                            desde={a.desde}
+                            lat={a.lat}
+                            lng={a.lng}
+                            velocidade={a.velocidade}
+                            ignicao={a.ignicao}
+                            atraso_min={a.atraso_min}
+                            score={a.score}
+                            onFocarMapa={focarMapa}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>
 
-      {/* ======== MAPA (ocupar restante) ======== */}
+      {/* ======== MAPA ======== */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         {/* Toast de critico novo */}
         {toast && (
@@ -522,20 +473,12 @@ export default function PainelCentral({
               animation: "pulse-live 1.5s ease-in-out infinite",
             }}
           >
-            <span
-              style={{
-                width: 9,
-                height: 9,
-                borderRadius: "50%",
-                backgroundColor: "var(--vermelho, #ef4444)",
-                flexShrink: 0,
-              }}
-            />
+            <span style={{ width: 9, height: 9, borderRadius: "50%", backgroundColor: "var(--vermelho, #ef4444)", flexShrink: 0 }} />
             <div>
               <p style={{ fontSize: 12, fontWeight: 700, color: "var(--vermelho, #ef4444)", letterSpacing: "0.04em" }}>
                 NOVO CRÍTICO · {toast.placa}
               </p>
-              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>{toast.tipo}</p>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>{nomeTipo(chaveTipo(toast.tipo))}</p>
             </div>
           </div>
         )}
@@ -552,14 +495,7 @@ export default function PainelCentral({
 
         {/* Painel flutuante do veiculo (qualquer veiculo clicado) */}
         {veiculoPanel && (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              pointerEvents: "none",
-              zIndex: 1001,
-            }}
-          >
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 1001 }}>
             <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, pointerEvents: "auto" }}>
               <PainelVeiculoAlerta
                 cv={veiculoPanel.cv}
