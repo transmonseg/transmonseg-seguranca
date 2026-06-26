@@ -576,6 +576,7 @@ export default function PainelCentral({
                   score: a.score,
                 }))}
                 onFechar={() => setVeiculoPanel(null)}
+                onAlertaResolvido={removerAlerta}
                 empresa={empresaNome}
               />
             </div>

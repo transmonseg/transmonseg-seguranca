@@ -20,6 +20,7 @@ interface Props {
   placa: string;
   alertas: AlertaSimples[];
   onFechar: () => void;
+  onAlertaResolvido?: (id: string) => void;
   empresa?: string;
 }
 
@@ -84,7 +85,7 @@ function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): num
 
 const ROTULO = "var(--text-dim)";
 
-export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, empresa }: Props) {
+export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, onAlertaResolvido, empresa }: Props) {
   const [telemetria, setTelemetria] = useState<Telemetria | null>(null);
   const [pontos, setPontos] = useState<PontoEntrega[]>([]);
   const [carregandoRota, setCarregandoRota] = useState(true);
@@ -534,7 +535,7 @@ export default function PainelVeiculoAlerta({ cv, placa, alertas, onFechar, empr
                   <div style={{ marginBottom: 6 }}>
                     <CronometroSLA desde={a.desde} />
                   </div>
-                  <AcoesAlerta id={a.id} status={a.status} desde={a.desde} />
+                  <AcoesAlerta id={a.id} status={a.status} desde={a.desde} onSucesso={onAlertaResolvido} />
                 </div>
               ))}
             </div>
