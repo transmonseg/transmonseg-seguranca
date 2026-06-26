@@ -135,8 +135,10 @@ interface Props {
   mostrarSidebar?: boolean;
   flyParaAlerta?: { lat: number; lng: number; gatilho: number } | null;
   onVeiculoComAlertaClicado?: (cv: string, placa: string) => void;
-  modoBarra?: "operacao" | "alertas";
-  onModoBarra?: (m: "operacao" | "alertas") => void;
+  mostrarAlertas?: boolean;
+  onMostrarAlertas?: (v: boolean) => void;
+  mostrarOperacao?: boolean;
+  onMostrarOperacao?: (v: boolean) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -703,8 +705,10 @@ export default function MapaMonitor({
   mostrarSidebar = true,
   flyParaAlerta = null,
   onVeiculoComAlertaClicado,
-  modoBarra,
-  onModoBarra,
+  mostrarAlertas,
+  onMostrarAlertas,
+  mostrarOperacao,
+  onMostrarOperacao,
 }: Props) {
   useEffect(() => { fixIcones(); }, []);
 
@@ -1139,25 +1143,30 @@ export default function MapaMonitor({
   return (
     <div
       style={{
-        display: "flex",
+        position: "relative",
         height: "100%",
         minHeight: 480,
         overflow: "hidden",
       }}
     >
       {/* ============================================================
-          SIDEBAR (oculta quando mostrarSidebar=false)
+          SIDEBAR (oculta quando mostrarSidebar=false — overlay absoluto)
           ============================================================ */}
-      {mostrarSidebar && <div
+      <div
         style={{
-          width: SIDEBAR_W,
-          flexShrink: 0,
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: mostrarSidebar ? SIDEBAR_W : 0,
+          zIndex: 500,
           display: "flex",
           flexDirection: "column",
           backgroundColor: "var(--card)",
-          borderRight: "1px solid var(--border)",
-          overflowY: "auto",
+          borderRight: mostrarSidebar ? "1px solid var(--border)" : "none",
+          overflowY: mostrarSidebar ? "auto" : "hidden",
           overflowX: "hidden",
+          transition: "width 0.2s ease",
         }}
       >
         {/* Seletor de cliente */}
@@ -1638,12 +1647,12 @@ export default function MapaMonitor({
                   );
                 })}
         </div>
-      </div>}
+      </div>
 
       {/* ============================================================
-          COLUNA DIREITA: MAPA + LEGENDA
+          COLUNA DIREITA: MAPA + LEGENDA (sempre ocupa tudo)
           ============================================================ */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}>
 
         {/* ── TOOLBAR UNITRAC ── */}
         <div style={{
@@ -1656,24 +1665,36 @@ export default function MapaMonitor({
           backgroundColor: "var(--card)",
           borderBottom: "1px solid var(--border)",
         }}>
-          {/* Toggle Operação | Alertas */}
-          {modoBarra !== undefined && onModoBarra && (
+          {/* Botões independentes: Alertas | Operação */}
+          {(onMostrarAlertas || onMostrarOperacao) && (
             <>
-              <div style={{ display: "flex", gap: 2, padding: 2, borderRadius: 8, backgroundColor: "var(--bg)", border: "1px solid var(--border)" }}>
-                {(["operacao", "alertas"] as const).map((m) => (
+              <div style={{ display: "flex", gap: 2 }}>
+                {onMostrarAlertas && (
                   <button
-                    key={m}
-                    onClick={() => onModoBarra(m)}
+                    onClick={() => onMostrarAlertas(!mostrarAlertas)}
                     style={{
                       padding: "3px 10px", borderRadius: 6, border: "1px solid transparent",
                       cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em",
-                      backgroundColor: modoBarra === m ? "var(--accent-dim)" : "transparent",
-                      color: modoBarra === m ? "var(--accent)" : "var(--text-dim)",
+                      backgroundColor: mostrarAlertas ? "rgba(239,68,68,0.15)" : "transparent",
+                      color: mostrarAlertas ? "var(--vermelho)" : "var(--text-dim)",
                     }}
                   >
-                    {m === "operacao" ? "OPERAÇÃO" : "ALERTAS"}
+                    ALERTAS
                   </button>
-                ))}
+                )}
+                {onMostrarOperacao && (
+                  <button
+                    onClick={() => onMostrarOperacao(!mostrarOperacao)}
+                    style={{
+                      padding: "3px 10px", borderRadius: 6, border: "1px solid transparent",
+                      cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em",
+                      backgroundColor: mostrarOperacao ? "var(--accent-dim)" : "transparent",
+                      color: mostrarOperacao ? "var(--accent)" : "var(--text-dim)",
+                    }}
+                  >
+                    OPERAÇÃO
+                  </button>
+                )}
               </div>
               <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
             </>
