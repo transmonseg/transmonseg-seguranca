@@ -79,15 +79,8 @@ function nomeTipo(t: string): string {
   return NOME_TIPO[t] ?? t.replace(/_/g, " ");
 }
 
-// Tipos graves que ja abrem expandidos; os demais comecam recolhidos.
-const EXPANDIR_PADRAO = new Set([
-  "panico",
-  "bau",
-  "favela",
-  "tiroteio",
-  "jammer",
-  "saida_nao_autorizada",
-]);
+// Todos os grupos comecam recolhidos; o operador abre o que quiser.
+const EXPANDIR_PADRAO = new Set<string>();
 
 
 export default function PainelCentral({
@@ -114,7 +107,7 @@ export default function PainelCentral({
   const [mostrarOperacao, setMostrarOperacao] = useState(false);
 
   // Fila de toasts de criticos novos
-  interface ToastInfo { id: string; placa: string; tipo: string; lat: number | null; lng: number | null; motivo: string | null; }
+  interface ToastInfo { id: string; cv: string; placa: string; tipo: string; lat: number | null; lng: number | null; motivo: string | null; }
   const [toastsCriticos, setToastsCriticos] = useState<ToastInfo[]>([]);
   const [notifLigada, setNotifLigada] = useState(false);
   // Ref do veiculo atualmente selecionado no mapa (recebido via onCvChange)
@@ -174,13 +167,18 @@ export default function PainelCentral({
         if (novosCriticos.length > 0) {
           // Adiciona a fila de toasts (max 5, mais recente na frente)
           setToastsCriticos(prev => {
-            const entradas = novosCriticos.map(a => ({ id: a.id, placa: a.placa, tipo: a.tipo, lat: a.lat, lng: a.lng, motivo: a.motivo }));
+            const entradas = novosCriticos.map(a => ({ id: a.id, cv: a.cv, placa: a.placa, tipo: a.tipo, lat: a.lat, lng: a.lng, motivo: a.motivo }));
             return [...entradas, ...prev].slice(0, 5);
           });
-          // Zoom celestial apenas se nao ha veiculo selecionado no mapa
+          // Zoom + painel automatico apenas se nenhum veiculo esta selecionado
           const primeiro = novosCriticos[0];
-          if (cvSelecionadoRef.current === null && primeiro.lat != null && primeiro.lng != null) {
-            setCriticoFly({ lat: primeiro.lat, lng: primeiro.lng, gatilho: Date.now() });
+          if (cvSelecionadoRef.current === null) {
+            if (primeiro.lat != null && primeiro.lng != null) {
+              setCriticoFly({ lat: primeiro.lat, lng: primeiro.lng, gatilho: Date.now() });
+            }
+            selecionarVeiculoMapaRef.current?.(primeiro.cv, primeiro.placa);
+            setVeiculoPanel({ cv: primeiro.cv, placa: primeiro.placa });
+            setMostrarOperacao(true);
           }
         }
         if (todosNovos.length > 0) {
@@ -563,7 +561,6 @@ export default function PainelCentral({
               boxShadow: "0 0 32px rgba(239,68,68,0.25), 0 4px 20px rgba(0,0,0,0.9)",
               backdropFilter: "blur(14px)",
               pointerEvents: "auto",
-              animation: "pulse-live 1.5s ease-in-out 3",
             }}
           >
             <span
@@ -573,7 +570,6 @@ export default function PainelCentral({
                 borderRadius: "50%",
                 backgroundColor: "var(--vermelho, #ef4444)",
                 flexShrink: 0,
-                boxShadow: "0 0 8px rgba(239,68,68,0.9)",
               }}
             />
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -589,14 +585,18 @@ export default function PainelCentral({
               </p>
             </div>
             <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "center" }}>
-              {toastsCriticos[0].lat != null && toastsCriticos[0].lng != null && (
-                <button
-                  onClick={() => setFlyParaAlerta({ lat: toastsCriticos[0].lat!, lng: toastsCriticos[0].lng!, gatilho: Date.now() })}
-                  style={{ padding: "0.3rem 0.65rem", borderRadius: 7, fontSize: 11, fontWeight: 800, background: "var(--vermelho, #ef4444)", color: "#fff", border: "none", cursor: "pointer", letterSpacing: "0.05em" }}
-                >
-                  FOCAR
-                </button>
-              )}
+              <button
+                onClick={() => {
+                  const t = toastsCriticos[0];
+                  if (t.lat != null && t.lng != null) setFlyParaAlerta({ lat: t.lat, lng: t.lng, gatilho: Date.now() });
+                  selecionarVeiculoMapaRef.current?.(t.cv, t.placa);
+                  setVeiculoPanel({ cv: t.cv, placa: t.placa });
+                  setMostrarOperacao(true);
+                }}
+                style={{ padding: "0.3rem 0.65rem", borderRadius: 7, fontSize: 11, fontWeight: 800, background: "var(--vermelho, #ef4444)", color: "#fff", border: "none", cursor: "pointer", letterSpacing: "0.05em" }}
+              >
+                FOCAR
+              </button>
               <button
                 onClick={() => setToastsCriticos(prev => prev.slice(1))}
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", padding: 2, lineHeight: 0 }}

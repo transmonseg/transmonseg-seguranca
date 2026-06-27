@@ -71,7 +71,14 @@ export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
 // Substitui o antigo detector "ignicao_noturna", que disparava por horario.
 export function detectarSaidaNaoAutorizada(
   p: PosicaoNormalizada,
-  ctx: { foraDaBase: boolean; temPendentes: boolean; entregasTotal?: number }
+  ctx: {
+    foraDaBase: boolean;
+    temPendentes: boolean;
+    entregasTotal?: number;
+    rumoMovimento?: number | null;
+    rumoBase?: number | null;
+    distBaseM?: number | null;
+  }
 ): Alerta | null {
   if (!p.fresco || !p.ignicao) return null;
   if (!ctx.foraDaBase || ctx.temPendentes) return null;
@@ -79,6 +86,11 @@ export function detectarSaidaNaoAutorizada(
   if (ctx.entregasTotal === undefined) return null;
   // Tem (ou teve) entregas no dia = esta trabalhando legitimamente.
   if (ctx.entregasTotal > 0) return null;
+  // Veiculo se aproximando da base (ate 3km, heading dentro de 60 graus): retornando, nao dispara.
+  if (
+    ctx.rumoMovimento != null && ctx.rumoBase != null && ctx.distBaseM != null &&
+    ctx.distBaseM <= 3000 && difAnguloGraus(ctx.rumoMovimento, ctx.rumoBase) <= 60
+  ) return null;
   if (p.velocidade > 0) {
     return {
       nivel: "critico",
@@ -394,6 +406,8 @@ export function avaliar(
     rumoAlvo?: number | null;
     distCorredorM?: number | null;
     jaForaCorretor?: boolean;
+    rumoBase?: number | null;
+    distBaseM?: number | null;
     distTiroteioM?: number | null;
     tiroteioIdadeMin?: number | null;
     // Parada anomala (opcional — so roda se estavEmMovimento for fornecido)
@@ -412,6 +426,9 @@ export function avaliar(
       foraDaBase: ctx.foraDaBase,
       temPendentes: ctx.temPendentes ?? false,
       entregasTotal: ctx.entregasTotal,
+      rumoMovimento: ctx.rumoMovimento ?? null,
+      rumoBase: ctx.rumoBase ?? null,
+      distBaseM: ctx.distBaseM ?? null,
     }),
     detectarExcessoVelocidade(p),
     detectarParadaCliente({

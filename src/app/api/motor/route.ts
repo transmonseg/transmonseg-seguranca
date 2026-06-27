@@ -456,6 +456,20 @@ export async function POST(request: Request) {
           const baseOcupada = basesCliente.find((b) => pontoEmGeo(pos.lng, pos.lat, b.geom));
           const foraDaBase = !baseOcupada;
 
+          // Rumo e distância até a base mais próxima (para suprimir saida_nao_autorizada ao retornar)
+          let rumoBase: number | null = null;
+          let distBaseM: number | null = null;
+          if (foraDaBase && basesCliente.length > 0) {
+            const porDist = basesCliente
+              .map(b => { const c = centroideGeo(b.geom); return c ? { c, dist: haversineM(pos.lat, pos.lng, c.lat, c.lng) } : null; })
+              .filter((x): x is { c: { lat: number; lng: number }; dist: number } => x !== null)
+              .sort((a, b) => a.dist - b.dist);
+            if (porDist[0]) {
+              distBaseM = porDist[0].dist;
+              rumoBase = rumoGraus(pos.lat, pos.lng, porDist[0].c.lat, porDist[0].c.lng);
+            }
+          }
+
           // ─── Desvio de rota: distância aos pontos de entrega pendentes ──
           // A rota planejada são os alvos (pontos) do veículo. O detector de
           // desvio compara a distância atual ao ponto pendente mais próximo
@@ -625,6 +639,8 @@ export async function POST(request: Request) {
                   jaParedoNoCicloAnterior,
                   distCorredorM,
                   jaForaCorretor,
+                  rumoBase,
+                  distBaseM,
                 })
               : null;
 
