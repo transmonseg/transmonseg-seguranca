@@ -111,9 +111,16 @@ export default function PainelCentral({
   const [mostrarAlertas, setMostrarAlertas] = useState(true);
   const [mostrarOperacao, setMostrarOperacao] = useState(false);
 
-  // Notificacao de critico novo
-  const [toast, setToast] = useState<{ placa: string; tipo: string; id: string } | null>(null);
+  // Fila de toasts de criticos novos
+  interface ToastInfo { id: string; placa: string; tipo: string; lat: number | null; lng: number | null; motivo: string | null; }
+  const [toastsCriticos, setToastsCriticos] = useState<ToastInfo[]>([]);
   const [notifLigada, setNotifLigada] = useState(false);
+  // Ref do veiculo atualmente selecionado no mapa (recebido via onCvChange)
+  const cvSelecionadoRef = useRef<string | null>(null);
+  // Trigger de zoom celestial para o mapa
+  const [criticoFly, setCriticoFly] = useState<{ lat: number; lng: number; gatilho: number } | null>(null);
+  // IDs novos (para badge NOVO nos cards) — removidos após 60s
+  const [novosIds, setNovosIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -145,27 +152,56 @@ export default function PainelCentral({
         if (!Array.isArray(d?.alertas)) return;
         const novos = d.alertas as AlertaEnriquecido[];
         setAlertas(novos);
+        const novosCriticos: AlertaEnriquecido[] = [];
+        const todosNovos: AlertaEnriquecido[] = [];
         for (const a of novos) {
-          if (a.nivel === "critico" && !vistosRef.current.has(a.id)) {
-            setToast({ placa: a.placa, tipo: a.tipo, id: a.id });
-            if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-              new Notification(`Crítico: ${a.placa}`, {
-                body: `${nomeTipo(chaveTipo(a.tipo))}${a.local ? " · " + a.local : ""}`,
-                tag: a.id,
-              });
+          if (!vistosRef.current.has(a.id)) {
+            todosNovos.push(a);
+            if (a.nivel === "critico") {
+              novosCriticos.push(a);
+              if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+                new Notification(`Crítico: ${a.placa}`, {
+                  body: `${nomeTipo(chaveTipo(a.tipo))}${a.local ? " · " + a.local : ""}`,
+                  tag: a.id,
+                });
+              }
             }
           }
           vistosRef.current.add(a.id);
+        }
+        if (novosCriticos.length > 0) {
+          // Adiciona a fila de toasts (max 5, mais recente na frente)
+          setToastsCriticos(prev => {
+            const entradas = novosCriticos.map(a => ({ id: a.id, placa: a.placa, tipo: a.tipo, lat: a.lat, lng: a.lng, motivo: a.motivo }));
+            return [...entradas, ...prev].slice(0, 5);
+          });
+          // Zoom celestial apenas se nao ha veiculo selecionado no mapa
+          const primeiro = novosCriticos[0];
+          if (cvSelecionadoRef.current === null && primeiro.lat != null && primeiro.lng != null) {
+            setCriticoFly({ lat: primeiro.lat, lng: primeiro.lng, gatilho: Date.now() });
+          }
+        }
+        if (todosNovos.length > 0) {
+          const ids = todosNovos.map(a => a.id);
+          setNovosIds(prev => new Set([...prev, ...ids]));
+          setTimeout(() => {
+            setNovosIds(prev => { const s = new Set(prev); for (const id of ids) s.delete(id); return s; });
+          }, 60000);
         }
       })
       .catch(() => {});
   }, [cliente]);
 
+  // Auto-dismiss do toast mais recente (topo da fila) apos 25s
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(null), 15000);
-    return () => clearTimeout(id);
-  }, [toast]);
+    if (toastsCriticos.length === 0) return;
+    const topoId = toastsCriticos[0].id;
+    const t = setTimeout(() => {
+      setToastsCriticos(prev => prev.filter(x => x.id !== topoId));
+    }, 25000);
+    return () => clearTimeout(t);
+  }, [toastsCriticos[0]?.id]);
 
   useEffect(() => {
     const id = setInterval(atualizarAlertas, 15000);
@@ -436,6 +472,7 @@ export default function PainelCentral({
                           ignicao={a.ignicao}
                           atraso_min={a.atraso_min}
                           score={a.score}
+                          novo={novosIds.has(a.id)}
                           onFocarMapa={focarMapa}
                           onAlertaResolvido={removerAlerta}
                         />
@@ -460,6 +497,8 @@ export default function PainelCentral({
         clienteAtivoId={clienteAtivoId}
         mostrarSidebar={mostrarOperacao}
         flyParaAlerta={flyParaAlerta}
+        flyParaAlertaCritico={criticoFly}
+        onCvChange={(cv) => { cvSelecionadoRef.current = cv; }}
         onVeiculoComAlertaClicado={(cv, placa) => { setVeiculoPanel({ cv, placa }); setMostrarOperacao(true); }}
         painelEsquerdo={painelAlertasJsx}
         mostrarPainelEsquerdo={mostrarAlertas}
@@ -481,46 +520,105 @@ export default function PainelCentral({
         ) : undefined}
       />
 
-      {/* Toast de critico novo — acima de tudo */}
-      {toast && (
+      {/* Multi-toast de criticos — centrado no topo, abaixo do header */}
+      {toastsCriticos.length > 0 && (
         <div
           style={{
-            position: "absolute",
-            bottom: 24,
-            right: 24,
-            zIndex: 1200,
+            position: "fixed",
+            top: 64,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 1300,
             display: "flex",
-            alignItems: "flex-start",
-            gap: 14,
-            padding: "1rem 1.25rem",
-            borderRadius: 14,
-            backgroundColor: "rgba(20,4,4,0.97)",
-            border: "1.5px solid var(--vermelho, #ef4444)",
-            boxShadow: "0 12px 40px rgba(239,68,68,0.25), 0 4px 16px rgba(0,0,0,0.8)",
-            backdropFilter: "blur(10px)",
-            maxWidth: 320,
-            animation: "pulse-live 1.5s ease-in-out 3",
+            flexDirection: "column",
+            gap: 8,
+            alignItems: "center",
+            width: "100%",
+            maxWidth: 460,
+            pointerEvents: "none",
+            padding: "0 12px",
           }}
         >
-          <span style={{ width: 12, height: 12, borderRadius: "50%", backgroundColor: "var(--vermelho, #ef4444)", flexShrink: 0, marginTop: 3 }} />
-          <div style={{ flex: 1 }}>
-            <p style={{ fontSize: 13, fontWeight: 800, color: "var(--vermelho, #ef4444)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
-              Novo crítico
-            </p>
-            <p style={{ fontSize: 18, fontWeight: 700, color: "#fff", fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.1em", marginTop: 2 }}>
-              {toast.placa}
-            </p>
-            <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>{nomeTipo(chaveTipo(toast.tipo))}</p>
-          </div>
-          <button
-            onClick={() => setToast(null)}
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", padding: 2, flexShrink: 0 }}
-            title="Fechar"
+          {/* Toast principal (mais recente) */}
+          <div
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "0.8rem 1rem",
+              borderRadius: 12,
+              backgroundColor: "rgba(16,2,2,0.97)",
+              border: "1.5px solid var(--vermelho, #ef4444)",
+              boxShadow: "0 0 32px rgba(239,68,68,0.25), 0 4px 20px rgba(0,0,0,0.9)",
+              backdropFilter: "blur(14px)",
+              pointerEvents: "auto",
+              animation: "pulse-live 1.5s ease-in-out 3",
+            }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                backgroundColor: "var(--vermelho, #ef4444)",
+                flexShrink: 0,
+                boxShadow: "0 0 8px rgba(239,68,68,0.9)",
+              }}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 10, fontWeight: 800, color: "var(--vermelho, #ef4444)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                Alerta critico
+              </p>
+              <p style={{ fontSize: 19, fontWeight: 700, color: "#fff", fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.1em", marginTop: 1, lineHeight: 1 }}>
+                {toastsCriticos[0].placa}
+              </p>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {nomeTipo(chaveTipo(toastsCriticos[0].tipo))}
+                {toastsCriticos[0].motivo ? ` — ${toastsCriticos[0].motivo.slice(0, 55)}` : ""}
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "center" }}>
+              {toastsCriticos[0].lat != null && toastsCriticos[0].lng != null && (
+                <button
+                  onClick={() => setFlyParaAlerta({ lat: toastsCriticos[0].lat!, lng: toastsCriticos[0].lng!, gatilho: Date.now() })}
+                  style={{ padding: "0.3rem 0.65rem", borderRadius: 7, fontSize: 11, fontWeight: 800, background: "var(--vermelho, #ef4444)", color: "#fff", border: "none", cursor: "pointer", letterSpacing: "0.05em" }}
+                >
+                  FOCAR
+                </button>
+              )}
+              <button
+                onClick={() => setToastsCriticos(prev => prev.slice(1))}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", padding: 2, lineHeight: 0 }}
+                title="Fechar"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Contador de pendentes + dispensar todos */}
+          {toastsCriticos.length > 1 && (
+            <button
+              onClick={() => setToastsCriticos([])}
+              style={{
+                padding: "0.28rem 1rem",
+                borderRadius: 20,
+                fontSize: 11,
+                fontWeight: 700,
+                color: "var(--vermelho, #ef4444)",
+                backgroundColor: "rgba(239,68,68,0.1)",
+                border: "1px solid rgba(239,68,68,0.3)",
+                cursor: "pointer",
+                letterSpacing: "0.04em",
+                pointerEvents: "auto",
+              }}
+            >
+              +{toastsCriticos.length - 1} {toastsCriticos.length - 1 === 1 ? "outro critico" : "outros criticos"} — dispensar todos
+            </button>
+          )}
         </div>
       )}
 

@@ -134,7 +134,9 @@ interface Props {
   clienteAtivoId: string;
   mostrarSidebar?: boolean;
   flyParaAlerta?: { lat: number; lng: number; gatilho: number } | null;
+  flyParaAlertaCritico?: { lat: number; lng: number; gatilho: number } | null;
   onVeiculoComAlertaClicado?: (cv: string, placa: string) => void;
+  onCvChange?: (cv: string | null) => void;
   painelEsquerdo?: ReactNode;
   mostrarPainelEsquerdo?: boolean;
   onTogglePainelEsquerdo?: () => void;
@@ -448,6 +450,22 @@ function AutoFlyAlerta({
   return null;
 }
 
+// Zoom celestial dramatico para alertas criticos (zoom 17, 2.5s, ease suave).
+function AutoFlyCritico({
+  flyPara,
+}: {
+  flyPara: { lat: number; lng: number; gatilho: number } | null;
+}) {
+  const map = useMap();
+  const prev = useRef(-1);
+  useEffect(() => {
+    if (!flyPara || flyPara.gatilho === prev.current) return;
+    prev.current = flyPara.gatilho;
+    map.flyTo([flyPara.lat, flyPara.lng], 17, { animate: true, duration: 2.5, easeLinearity: 0.05 });
+  }, [flyPara, map]);
+  return null;
+}
+
 // Enquadra toda a frota no mapa: uma vez no primeiro load e novamente
 // sempre que `gatilho` muda (botao "Centralizar frota").
 function AjustarBoundsFrota({
@@ -488,7 +506,9 @@ export default function MapaMonitor({
   clienteAtivoId,
   mostrarSidebar = true,
   flyParaAlerta = null,
+  flyParaAlertaCritico = null,
   onVeiculoComAlertaClicado,
+  onCvChange,
   painelEsquerdo,
   mostrarPainelEsquerdo = false,
   onTogglePainelEsquerdo,
@@ -541,6 +561,8 @@ export default function MapaMonitor({
   /* ---- Veiculo selecionado ---- */
   const [cvSelecionado, setCvSelecionado] = useState<string | null>(null);
   const [placaSelecionada, setPlacaSelecionada] = useState<string | null>(null);
+
+  useEffect(() => { onCvChange?.(cvSelecionado); }, [cvSelecionado, onCvChange]);
 
   /* ---- Periodo ---- */
   const [horas, setHoras] = useState<HorasPeriodo>(24);
@@ -1728,6 +1750,7 @@ export default function MapaMonitor({
             )}
             {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
             {flyParaVeiculo && <AutoFlyAlerta flyPara={flyParaVeiculo} />}
+            <AutoFlyCritico flyPara={flyParaAlertaCritico} />
             {zoomCmd && <ControlaZoom zoom={zoomCmd.zoom} gatilho={zoomCmd.g} />}
             <CapturadorZoom onZoom={setZoomMapa} />
             <ClicarMapaVazio onClicarVazio={limparSelecao} />
