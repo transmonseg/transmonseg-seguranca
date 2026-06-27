@@ -100,6 +100,8 @@ export default function PainelCentral({
   const [alertas, setAlertas] = useState<AlertaEnriquecido[]>(alertasIniciais);
   const [flyParaAlerta, setFlyParaAlerta] = useState<{ lat: number; lng: number; gatilho: number } | null>(null);
   const vistosRef = useRef<Set<string>>(new Set(alertasIniciais.map((a) => a.id)));
+  const limparSelecaoMapaRef = useRef<(() => void) | null>(null);
+  const selecionarVeiculoMapaRef = useRef<((cv: string, placa: string) => void) | null>(null);
 
   const [veiculoPanel, setVeiculoPanel] = useState<{ cv: string; placa: string } | null>(null);
 
@@ -246,8 +248,13 @@ export default function PainelCentral({
 
   const alertasVeiculoPanel = veiculoPanel ? alertas.filter((a) => a.cv === veiculoPanel.cv) : [];
 
-  const focarMapa = useCallback((lat: number, lng: number) => {
+  const focarMapa = useCallback((lat: number, lng: number, cv?: string, placa?: string) => {
     setFlyParaAlerta({ lat, lng, gatilho: Date.now() });
+    if (cv && placa) {
+      selecionarVeiculoMapaRef.current?.(cv, placa);
+      setVeiculoPanel({ cv, placa });
+      setMostrarOperacao(true);
+    }
   }, []);
 
   const empresaNome = clientes.find((c) => c.id === clienteAtivoId)?.nome;
@@ -459,6 +466,7 @@ export default function PainelCentral({
                         <CardAlertaCritico
                           key={a.id}
                           id={a.id}
+                          cv={a.cv}
                           status={a.status}
                           nivel={a.nivel}
                           tipo={a.tipo}
@@ -499,6 +507,8 @@ export default function PainelCentral({
         flyParaAlerta={flyParaAlerta}
         flyParaAlertaCritico={criticoFly}
         onCvChange={(cv) => { cvSelecionadoRef.current = cv; }}
+        limparSelecaoRef={limparSelecaoMapaRef}
+        selecionarVeiculoRef={selecionarVeiculoMapaRef}
         onVeiculoComAlertaClicado={(cv, placa) => { setVeiculoPanel({ cv, placa }); setMostrarOperacao(true); }}
         painelEsquerdo={painelAlertasJsx}
         mostrarPainelEsquerdo={mostrarAlertas}
@@ -513,7 +523,7 @@ export default function PainelCentral({
               id: a.id, status: a.status, nivel: a.nivel,
               tipo: a.tipo, motivo: a.motivo, desde: a.desde, score: a.score,
             }))}
-            onFechar={() => setVeiculoPanel(null)}
+            onFechar={() => { setVeiculoPanel(null); setMostrarOperacao(false); limparSelecaoMapaRef.current?.(); }}
             onAlertaResolvido={removerAlerta}
             empresa={empresaNome}
           />

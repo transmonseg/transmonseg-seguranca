@@ -146,14 +146,15 @@ export interface CardAlertaProps {
   ignicao?: boolean | null;
   atraso_min?: number | null;
   score?: number | null;
+  cv?: string;
   novo?: boolean;
-  onFocarMapa?: (lat: number, lng: number) => void;
+  onFocarMapa?: (lat: number, lng: number, cv?: string, placa?: string) => void;
   onAlertaResolvido?: (id: string) => void;
 }
 
 export default function CardAlertaCritico({
   id, status, nivel, tipo, placa, motivo, local, desde,
-  lat, lng, velocidade, ignicao, atraso_min, score, novo, onFocarMapa, onAlertaResolvido,
+  lat, lng, velocidade, ignicao, atraso_min, score, cv, novo, onFocarMapa, onAlertaResolvido,
 }: CardAlertaProps) {
   const corNivel = nivel === "critico" ? "var(--vermelho)" : "var(--amarelo)";
   const bgNivel = nivel === "critico" ? "#160c0c" : "#16120a";
@@ -283,7 +284,7 @@ export default function CardAlertaCritico({
               {temCoordenadas && onFocarMapa && (
                 <button
                   type="button"
-                  onClick={() => onFocarMapa(lat!, lng!)}
+                  onClick={() => onFocarMapa(lat!, lng!, cv, placa)}
                   className="flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg transition-colors"
                   style={{
                     backgroundColor: "var(--card)",

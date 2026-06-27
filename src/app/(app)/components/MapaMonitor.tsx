@@ -7,7 +7,7 @@
  * rastro/paradas ao selecionar, painel de telemetria flutuante.
  */
 
-import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
+import { useEffect, useRef, useState, useCallback, type ReactNode, type MutableRefObject } from "react";
 import Link from "next/link";
 import {
   MapContainer,
@@ -137,6 +137,8 @@ interface Props {
   flyParaAlertaCritico?: { lat: number; lng: number; gatilho: number } | null;
   onVeiculoComAlertaClicado?: (cv: string, placa: string) => void;
   onCvChange?: (cv: string | null) => void;
+  limparSelecaoRef?: MutableRefObject<(() => void) | null>;
+  selecionarVeiculoRef?: MutableRefObject<((cv: string, placa: string) => void) | null>;
   painelEsquerdo?: ReactNode;
   mostrarPainelEsquerdo?: boolean;
   onTogglePainelEsquerdo?: () => void;
@@ -509,6 +511,8 @@ export default function MapaMonitor({
   flyParaAlertaCritico = null,
   onVeiculoComAlertaClicado,
   onCvChange,
+  limparSelecaoRef,
+  selecionarVeiculoRef,
   painelEsquerdo,
   mostrarPainelEsquerdo = false,
   onTogglePainelEsquerdo,
@@ -792,6 +796,22 @@ export default function MapaMonitor({
     setAlvos([]);
     setPainelAberto(false);
   }, []);
+
+  // Expoe limparSelecao e selecionarVeiculo para o componente pai via refs
+  useEffect(() => {
+    if (limparSelecaoRef) limparSelecaoRef.current = limparSelecao;
+    if (selecionarVeiculoRef) {
+      selecionarVeiculoRef.current = (cv: string, placa: string) => {
+        setCvSelecionado(cv);
+        setPlacaSelecionada(placa);
+      };
+    }
+    return () => {
+      if (limparSelecaoRef) limparSelecaoRef.current = null;
+      if (selecionarVeiculoRef) selecionarVeiculoRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [limparSelecao]);
 
   /* ------------------------------------------------------------------ */
   /* Checkboxes de grupos                                                 */
@@ -1745,9 +1765,7 @@ export default function MapaMonitor({
             {pontosRastro.length > 0 && (
               <AjustarBoundsRastro pontos={pontosRastro} gatilho={gatilhoBounds} />
             )}
-            {!cvSelecionado && (
-              <AjustarBoundsFrota pontos={pontosFrota} gatilho={gatilhoFrota} />
-            )}
+            <AjustarBoundsFrota pontos={pontosFrota} gatilho={gatilhoFrota} />
             {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
             {flyParaVeiculo && <AutoFlyAlerta flyPara={flyParaVeiculo} />}
             <AutoFlyCritico flyPara={flyParaAlertaCritico} />
