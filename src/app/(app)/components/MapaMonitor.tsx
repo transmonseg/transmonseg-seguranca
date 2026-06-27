@@ -518,20 +518,15 @@ export default function MapaMonitor({
   /* ---- Busca na sidebar ---- */
   const [busca, setBusca] = useState("");
 
-  /* ---- Toolbar: zoom, localizar, rota ---- */
+  /* ---- Toolbar: zoom, localizar placa ---- */
   const [zoomCmd, setZoomCmd] = useState<{ zoom: number; g: number } | null>(null);
   const [buscaRapida, setBuscaRapida] = useState("");
-  const [origemRota, setOrigemRota] = useState("");
-  const [destinoRota, setDestinoRota] = useState("");
-  const [rotaPolyline, setRotaPolyline] = useState<[number, number][] | null>(null);
-  const [carregandoRota, setCarregandoRota] = useState(false);
+  const [comboAberto, setComboAberto] = useState(false);
 
   /* ---- Camadas extras ---- */
   const [mostrarRotulos, setMostrarRotulos] = useState(false);
   const [zoomMapa, setZoomMapa] = useState(10);
-  const [mostrarAlvosTodos, setMostrarAlvosTodos] = useState(false);
-  const [alvosTodos, setAlvosTodos] = useState<PontoEntregaUI[]>([]);
-  const [carregandoAlvosTodos, setCarregandoAlvosTodos] = useState(false);
+  const [filtroEntregas, setFiltroEntregas] = useState<"pendentes" | "feitas" | "todas">("todas");
 
   // Voa para o veículo quando a busca retorna exatamente 1 resultado
   useEffect(() => {
@@ -863,54 +858,19 @@ export default function MapaMonitor({
 
   const temGrupos = grupos.length > 0;
 
-  /* ---- Localizar veículo pela barra rápida ---- */
-  const localizarVeiculo = useCallback(() => {
-    if (!buscaRapida.trim()) return;
-    const t = buscaRapida.toUpperCase();
-    const vm = veiculosMapa.find((v) => v.placa.toUpperCase().includes(t) && v.lat != null && v.lng != null);
-    if (vm) setFlyParaVeiculo({ lat: vm.lat!, lng: vm.lng!, gatilho: Date.now() });
-    // também filtra na sidebar
-    setBusca(buscaRapida);
-  }, [buscaRapida, veiculosMapa]);
-
-  /* ---- Visualizar rota (Origem→Destino via OSRM + Nominatim) ---- */
-  const visualizarRota = useCallback(async () => {
-    if (!origemRota.trim() || !destinoRota.trim()) return;
-    setCarregandoRota(true);
-    setRotaPolyline(null);
-    try {
-      const geocode = async (q: string) => {
-        const r = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br`,
-          { headers: { "Accept-Language": "pt-BR" } }
-        );
-        const d = await r.json();
-        return d[0] ? { lat: parseFloat(d[0].lat), lng: parseFloat(d[0].lon) } : null;
-      };
-      const [o, dt] = await Promise.all([geocode(origemRota), geocode(destinoRota)]);
-      if (!o || !dt) return;
-      const r = await fetch(
-        `https://router.project-osrm.org/route/v1/driving/${o.lng},${o.lat};${dt.lng},${dt.lat}?overview=full&geometries=geojson`
-      );
-      const data = await r.json();
-      const coords = data.routes?.[0]?.geometry?.coordinates as [number, number][] | undefined;
-      if (coords) setRotaPolyline(coords.map(([lng, lat]) => [lat, lng] as [number, number]));
-    } catch { /* silently */ } finally { setCarregandoRota(false); }
-  }, [origemRota, destinoRota]);
-
-  /* ---- Carregar/descarregar pontos de entrega de todos os veículos ---- */
-  const toggleAlvosTodos = useCallback(async () => {
-    if (mostrarAlvosTodos) { setMostrarAlvosTodos(false); setAlvosTodos([]); return; }
-    setMostrarAlvosTodos(true);
-    setCarregandoAlvosTodos(true);
-    try {
-      const cvs = veiculosVisiveis.slice(0, 40).map((v) => v.cv);
-      const resultados = await Promise.all(
-        cvs.map((cv) => fetch(`/api/alvos?cv=${encodeURIComponent(cv)}`).then((r) => r.json()))
-      );
-      setAlvosTodos(resultados.flatMap((r) => (r.pontos as PontoEntregaUI[]) ?? []));
-    } catch { /* silently */ } finally { setCarregandoAlvosTodos(false); }
-  }, [mostrarAlvosTodos, veiculosVisiveis]);
+  /* ---- Selecionar placa pelo seletor: foca, dá zoom e isola o veículo ---- */
+  const selecionarPlaca = useCallback((vm: VeiculoMapa) => {
+    setCvSelecionado(vm.cv);
+    setPlacaSelecionada(vm.placa);
+    onAbrirSidebar?.();
+    onVeiculoComAlertaClicado?.(vm.cv, vm.placa);
+    if (vm.lat != null && vm.lng != null) {
+      setFlyParaVeiculo({ lat: vm.lat, lng: vm.lng, gatilho: Date.now() });
+      setZoomCmd({ zoom: 16, g: Date.now() });
+    }
+    setBuscaRapida(vm.placa);
+    setComboAberto(false);
+  }, [onAbrirSidebar, onVeiculoComAlertaClicado]);
 
   const gruposFiltrados = busca.trim()
     ? grupos
@@ -922,6 +882,22 @@ export default function MapaMonitor({
         }))
         .filter((g) => g.veiculos.length > 0)
     : grupos;
+
+  /* ---- Placas para o seletor (digitação + lista rolável, estilo Unitrac) ---- */
+  const placasFiltradas = veiculosMapa
+    .filter((v) => v.lat != null && v.lng != null)
+    .filter((v) => !buscaRapida.trim() || v.placa.toUpperCase().includes(buscaRapida.toUpperCase()))
+    .sort((a, b) => a.placa.localeCompare(b.placa));
+
+  /* ---- Marcadores no mapa: isola o selecionado (some o resto) ---- */
+  const markersFrota = cvSelecionado
+    ? veiculosVisiveis.filter((v) => v.cv === cvSelecionado)
+    : veiculosVisiveis;
+
+  /* ---- Entregas do veículo selecionado, com filtro pendentes/feitas/todas ---- */
+  const alvosFiltrados = alvos.filter((p) =>
+    filtroEntregas === "todas" ? true : filtroEntregas === "feitas" ? p.feito : !p.feito
+  );
 
   /* ------------------------------------------------------------------ */
   /* Render                                                               */
@@ -1468,101 +1444,139 @@ export default function MapaMonitor({
 
           <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
 
-          {/* Localizar veículo */}
-          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          {/* Seletor de placa (digita ou abre a lista, estilo Unitrac) */}
+          <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ position: "absolute", left: 8, pointerEvents: "none" }}>
+              <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
             <input
               type="text"
               value={buscaRapida}
-              onChange={(e) => setBuscaRapida(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && localizarVeiculo()}
-              placeholder="Placa..."
+              onChange={(e) => { setBuscaRapida(e.target.value); setComboAberto(true); }}
+              onFocus={() => setComboAberto(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && placasFiltradas[0]) selecionarPlaca(placasFiltradas[0]);
+                if (e.key === "Escape") setComboAberto(false);
+              }}
+              placeholder="Buscar placa"
               style={{
-                padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
+                padding: "5px 26px 5px 26px", borderRadius: 6,
+                border: `1px solid ${comboAberto ? "var(--accent)" : "var(--border)"}`,
                 fontSize: 11, fontFamily: "var(--font-geist-mono, monospace)", letterSpacing: "0.08em",
-                backgroundColor: "var(--bg)", color: "var(--text)", width: 100, outline: "none",
+                backgroundColor: "var(--bg)", color: "var(--text)", width: 150, outline: "none",
               }}
             />
-            <button
-              onClick={localizarVeiculo}
-              style={{
-                padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)",
-                fontSize: 10, fontWeight: 700, cursor: "pointer",
-                backgroundColor: "var(--bg)", color: "var(--text-muted)",
-              }}
-            >LOCALIZAR</button>
-          </div>
-
-          <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
-
-          {/* Visualizar rota */}
-          <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              type="text"
-              value={origemRota}
-              onChange={(e) => setOrigemRota(e.target.value)}
-              placeholder="Origem"
-              style={{
-                padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
-                fontSize: 11, backgroundColor: "var(--bg)", color: "var(--text)", width: 130, outline: "none",
-              }}
-            />
-            <input
-              type="text"
-              value={destinoRota}
-              onChange={(e) => setDestinoRota(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && visualizarRota()}
-              placeholder="Destino"
-              style={{
-                padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
-                fontSize: 11, backgroundColor: "var(--bg)", color: "var(--text)", width: 130, outline: "none",
-              }}
-            />
-            <button
-              onClick={visualizarRota}
-              disabled={carregandoRota || !origemRota.trim() || !destinoRota.trim()}
-              style={{
-                padding: "4px 10px", borderRadius: 6, border: "1px solid var(--accent)",
-                fontSize: 10, fontWeight: 700, cursor: "pointer",
-                backgroundColor: "var(--accent-dim)", color: "var(--accent)",
-                opacity: (!origemRota.trim() || !destinoRota.trim()) ? 0.4 : 1,
-              }}
-            >{carregandoRota ? "..." : "VER ROTA"}</button>
-            {rotaPolyline && (
+            {buscaRapida ? (
               <button
-                onClick={() => { setRotaPolyline(null); setOrigemRota(""); setDestinoRota(""); }}
-                style={{
-                  padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)",
-                  fontSize: 10, fontWeight: 700, cursor: "pointer",
-                  backgroundColor: "transparent", color: "var(--text-dim)",
-                }}
-              >LIMPAR</button>
+                onClick={() => { setBuscaRapida(""); setComboAberto(true); }}
+                title="Limpar"
+                style={{ position: "absolute", right: 4, background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", fontSize: 14, lineHeight: 1, padding: 2 }}
+              >&times;</button>
+            ) : (
+              <span style={{ position: "absolute", right: 7, color: "var(--text-dim)", fontSize: 9, pointerEvents: "none" }}>▼</span>
+            )}
+
+            {/* Dropdown rolável de placas */}
+            {comboAberto && (
+              <>
+                <div onClick={() => setComboAberto(false)} style={{ position: "fixed", inset: 0, zIndex: 1090 }} />
+                <div style={{
+                  position: "absolute", top: "calc(100% + 4px)", left: 0,
+                  width: 200, maxHeight: 260, overflowY: "auto", zIndex: 1100,
+                  background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8,
+                  boxShadow: "0 12px 32px rgba(0,0,0,0.6)", padding: 4,
+                }}>
+                  <div style={{ padding: "4px 8px", fontSize: 9, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                    {placasFiltradas.length} veículo(s)
+                  </div>
+                  {placasFiltradas.length === 0 ? (
+                    <div style={{ padding: "8px", fontSize: 11, color: "var(--text-dim)", textAlign: "center" }}>Nenhuma placa</div>
+                  ) : placasFiltradas.slice(0, 200).map((v) => {
+                    const sel = v.cv === cvSelecionado;
+                    const cor = v.nivel === "vermelho" || v.tipo ? "var(--vermelho)" : v.ignicao && v.velocidade > 0 ? "var(--verde)" : "var(--text-dim)";
+                    return (
+                      <button
+                        key={v.cv}
+                        onClick={() => selecionarPlaca(v)}
+                        style={{
+                          width: "100%", display: "flex", alignItems: "center", gap: 8,
+                          padding: "6px 8px", borderRadius: 6, border: "none", cursor: "pointer", textAlign: "left",
+                          background: sel ? "var(--accent-dim)" : "transparent",
+                        }}
+                        onMouseEnter={(e) => { if (!sel) e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
+                        onMouseLeave={(e) => { if (!sel) e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: cor, flexShrink: 0 }} />
+                        <span style={{ fontFamily: "var(--font-geist-mono, monospace)", fontSize: 11, letterSpacing: "0.06em", color: sel ? "var(--accent)" : "var(--text)", fontWeight: sel ? 700 : 500 }}>
+                          {v.placa}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
 
+          {/* Limpar seleção (isolamento) */}
+          {cvSelecionado && (
+            <button
+              onClick={limparSelecao}
+              title="Mostrar toda a frota"
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "5px 10px", borderRadius: 6, border: "1px solid var(--accent)",
+                fontSize: 10, fontWeight: 700, cursor: "pointer",
+                backgroundColor: "var(--accent-dim)", color: "var(--accent)",
+              }}
+            >
+              <span style={{ fontSize: 12, lineHeight: 1 }}>&times;</span> ISOLADO
+            </button>
+          )}
+
           <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
 
-          {/* Toggles de camada */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <button
-              onClick={() => setMostrarRotulos((v) => !v)}
-              style={{
-                padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
-                border: `1px solid ${mostrarRotulos ? "var(--accent)" : "var(--border)"}`,
-                backgroundColor: mostrarRotulos ? "var(--accent-dim)" : "transparent",
-                color: mostrarRotulos ? "var(--accent)" : "var(--text-dim)",
-              }}
-            >RÓTULOS</button>
-            <button
-              onClick={toggleAlvosTodos}
-              disabled={carregandoAlvosTodos}
-              style={{
-                padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
-                border: `1px solid ${mostrarAlvosTodos ? "#f97316" : "var(--border)"}`,
-                backgroundColor: mostrarAlvosTodos ? "rgba(249,115,22,0.15)" : "transparent",
-                color: mostrarAlvosTodos ? "#f97316" : "var(--text-dim)",
-              }}
-            >{carregandoAlvosTodos ? "..." : "ENTREGAS"}</button>
-          </div>
+          {/* Filtro de entregas — só quando há carro selecionado com entregas */}
+          {cvSelecionado && alvos.length > 0 && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 9, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Entregas</span>
+                <div style={{ display: "flex", gap: 2, padding: 2, borderRadius: 7, background: "var(--bg)", border: "1px solid var(--border)" }}>
+                  {([
+                    { k: "pendentes", label: `Pendentes` },
+                    { k: "feitas", label: `Feitas` },
+                    { k: "todas", label: `Todas` },
+                  ] as const).map(({ k, label }) => {
+                    const ativo = filtroEntregas === k;
+                    return (
+                      <button
+                        key={k}
+                        onClick={() => setFiltroEntregas(k)}
+                        style={{
+                          padding: "3px 9px", borderRadius: 5, border: "none", cursor: "pointer",
+                          fontSize: 10, fontWeight: 700,
+                          background: ativo ? "#f97316" : "transparent",
+                          color: ativo ? "#0a0a0a" : "var(--text-dim)",
+                        }}
+                      >{label}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{ width: 1, height: 24, backgroundColor: "var(--border)", flexShrink: 0 }} />
+            </>
+          )}
+
+          {/* Rótulos */}
+          <button
+            onClick={() => setMostrarRotulos((v) => !v)}
+            style={{
+              padding: "5px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+              border: `1px solid ${mostrarRotulos ? "var(--accent)" : "var(--border)"}`,
+              backgroundColor: mostrarRotulos ? "var(--accent-dim)" : "transparent",
+              color: mostrarRotulos ? "var(--accent)" : "var(--text-dim)",
+            }}
+          >RÓTULOS</button>
         </div>
         {/* ── FIM TOOLBAR ── */}
 
@@ -1718,37 +1732,6 @@ export default function MapaMonitor({
             <CapturadorZoom onZoom={setZoomMapa} />
             <ClicarMapaVazio onClicarVazio={limparSelecao} />
 
-            {/* Rota Origem→Destino */}
-            {rotaPolyline && (
-              <>
-                <Polyline positions={rotaPolyline} pathOptions={{ color: "#000", weight: 5, opacity: 0.4 }} />
-                <Polyline positions={rotaPolyline} pathOptions={{ color: "#38bdf8", weight: 3, opacity: 0.9 }} />
-              </>
-            )}
-
-            {/* Pontos de entrega de todos os veículos */}
-            {mostrarAlvosTodos && alvosTodos.map((p, i) => (
-              <CircleMarker
-                key={`at-${i}`}
-                center={[p.lat, p.lng]}
-                radius={p.feito ? 5 : 7}
-                pathOptions={{
-                  color: p.feito ? "#6b7280" : "#f97316",
-                  fillColor: p.feito ? "#6b7280" : "#f97316",
-                  fillOpacity: p.feito ? 0.4 : 0.85,
-                  weight: 1.5,
-                }}
-              >
-                <Popup>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: p.feito ? "#6b7280" : "#f97316" }}>
-                    {p.feito ? "Realizado" : "Pendente"}
-                  </div>
-                  {p.nome && <div style={{ fontSize: 11 }}>{p.nome}</div>}
-                  {p.documento && <div style={{ fontSize: 11, color: "#666" }}>Doc: {p.documento}</div>}
-                </Popup>
-              </CircleMarker>
-            ))}
-
             {googleApiKey ? (
               <TileLayer
                 url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
@@ -1866,8 +1849,8 @@ export default function MapaMonitor({
               />
             )}
 
-            {/* Todos os veiculos visiveis, individuais (estilo Unitrac) */}
-            {veiculosVisiveis.map((vm) => {
+            {/* Veículos no mapa — isola o selecionado (some o resto) */}
+            {markersFrota.map((vm) => {
               if (vm.lat === null || vm.lng === null) return null;
               const selecionado = cvSelecionado === vm.cv;
               return (
@@ -1965,13 +1948,15 @@ export default function MapaMonitor({
 
             {/* Pontos de entrega (alvos) do veiculo selecionado */}
             {(() => {
-              if (alvos.length === 0) return null;
+              if (alvosFiltrados.length === 0) return null;
               const pendentes = alvos.filter((p) => !p.feito).sort((a, b) => a.ordem - b.ordem);
               const proximoOrdem = pendentes[0]?.ordem ?? -1;
-              const waypoints: [number, number][] = [
+              // Linha de rota só faz sentido para o trajeto pendente
+              const mostrarRota = filtroEntregas !== "feitas";
+              const waypoints: [number, number][] = mostrarRota ? [
                 ...(posValida && posAtual ? [[posAtual.lat, posAtual.lng] as [number, number]] : []),
                 ...pendentes.map((p) => [p.lat, p.lng] as [number, number]),
-              ];
+              ] : [];
               return (
                 <>
                   {/* Linha dashed: posicao atual -> proximos pontos em ordem */}
@@ -1988,7 +1973,7 @@ export default function MapaMonitor({
                     </>
                   )}
                   {/* Marcadores numerados */}
-                  {alvos.sort((a, b) => a.ordem - b.ordem).map((p, i) => (
+                  {[...alvosFiltrados].sort((a, b) => a.ordem - b.ordem).map((p, i) => (
                     <Marker
                       key={`alvo-${p.ordem}-${i}`}
                       position={[p.lat, p.lng]}
