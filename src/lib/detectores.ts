@@ -51,11 +51,13 @@ export function detectarBau(p: PosicaoNormalizada): Alerta | null {
 }
 
 export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
-  if (p.ignicao && p.atraso >= 15 && p.atraso <= 720) {
+  // 30 min antes de classificar como jammer — evita falso critico por GPS em
+  // predio/tunel/garagem (perda curta de sinal e comum no ambiente urbano do RJ).
+  if (p.ignicao && p.atraso >= 30 && p.atraso <= 720) {
     return {
       nivel: "critico",
       tipo: "jammer",
-      motivo: `Sinal perdido ha ${p.atraso}min (possivel bloqueador)`,
+      motivo: `Sinal perdido ha ${p.atraso}min com ignicao ligada (possivel bloqueador)`,
       score: 80,
     };
   }
@@ -94,7 +96,9 @@ export function detectarSaidaNaoAutorizada(
 }
 
 export function detectarExcessoVelocidade(p: PosicaoNormalizada): Alerta | null {
-  if (p.velocidade > 100) {
+  // 120 km/h: rodovias federais do RJ permitem 110-120 km/h para veiculos pesados;
+  // 100 km/h gerava falso atencao em qualquer estrada normal.
+  if (p.velocidade > 120) {
     return {
       nivel: "atencao",
       tipo: "excesso",
@@ -188,7 +192,9 @@ export function detectarParadaAnomala(ctx: {
   if (!ctx.jaParedoNoCicloAnterior) return null; // aguarda um ciclo antes de disparar
   if (ctx.temPOIProximo) return null; // parada em local legitimo
 
-  const limiteMin = ctx.estavEmMovimento ? 12 : 25;
+  // 20 min em cidade (vinha de >= 30km/h), 35 min em estrada — limites anteriores
+  // (12/25 min) disparavam para praticamente qualquer parada em trânsito pesado do RJ.
+  const limiteMin = ctx.estavEmMovimento ? 20 : 35;
   if (ctx.paradoMin < limiteMin || ctx.paradoMin >= 90) return null; // >= 90 ja e parada_longa
 
   let score = 55;
@@ -253,10 +259,13 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
 
   // ── MODO CORREDOR (OSRM): mais preciso, sem falsos positivos por via tortuosa ──
   if (ctx.distCorredorM != null) {
-    const CORREDOR_M = 400;
-    if (ctx.distCorredorM <= CORREDOR_M) return null; // dentro do corredor
+    // 800m de tolerancia: ruas estreitas, obras e rerotas urbanas comuns no RJ
+    // fazem o veiculo ficar facilmente 400-700m do corredor OSRM sem desviar de fato.
+    // Critico so acima de 3km: desvio real e inequivoco da rota planejada.
+    const CORREDOR_M = 800;
+    if (ctx.distCorredorM <= CORREDOR_M) return null;
     const km = (ctx.distCorredorM / 1000).toFixed(1).replace(".", ",");
-    if (ctx.distCorredorM >= 1000) {
+    if (ctx.distCorredorM >= 3000) {
       return {
         nivel: "critico",
         tipo: "desvio",
@@ -327,7 +336,11 @@ export function detectarTiroteioProximo(
   if (ctx.distTiroteioM === null) return null;
   if (!p.fresco) return null; // sem posição confiável, não dá pra cruzar
   const quando = fmtIdade(ctx.tiroteioIdadeMin);
-  if (ctx.distTiroteioM <= 1500) {
+  // Critico so dentro de 600m — risco REAL para o veiculo.
+  // 600m-2km vira atencao: o fogo esta proximo mas nao imediato.
+  // Acima de 2km suprimido: no RJ com Fogo Cruzado constante, 3km disparava
+  // alertas criticos para praticamente toda a frota ao mesmo tempo (falso positivo).
+  if (ctx.distTiroteioM <= 600) {
     return {
       nivel: "critico",
       tipo: "tiroteio",
@@ -335,12 +348,12 @@ export function detectarTiroteioProximo(
       score: 88,
     };
   }
-  if (ctx.distTiroteioM <= 3000) {
+  if (ctx.distTiroteioM <= 2000) {
     return {
-      nivel: "critico",
+      nivel: "atencao",
       tipo: "tiroteio",
-      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) próximo à rota`,
-      score: 82,
+      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) proximo a rota`,
+      score: 60,
     };
   }
   return null;
