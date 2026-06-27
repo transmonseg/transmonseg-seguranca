@@ -402,227 +402,6 @@ function AjustarBoundsRastro({
 }
 
 /* ------------------------------------------------------------------ */
-/* Painel de telemetria flutuante                                      */
-/* ------------------------------------------------------------------ */
-
-function PainelTelemetria({
-  placa,
-  dados,
-  onFechar,
-  rightOffset = 0,
-}: {
-  placa: string;
-  dados: Telemetria | null;
-  onFechar: () => void;
-  rightOffset?: number;
-}) {
-  const velocidade = dados ? parseInt(dados.posicvelocidade ?? "0") || 0 : null;
-  const ignicao = dados ? dados.posicignicao === "1" : null;
-  const evento = dados?.tipevnome ?? null;
-  const atraso = dados ? parseInt(dados.atraso ?? "0") || 0 : null;
-
-  const entradas = dados
-    ? Array.from({ length: 10 }, (_, i) => i + 1).filter(
-        (i) => dados[`posicentrada${i}`] === "1"
-      )
-    : [];
-  const saidas = dados
-    ? Array.from({ length: 4 }, (_, i) => i + 1).filter(
-        (i) => dados[`posicsaida${i}`] === "1"
-      )
-    : [];
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 12,
-        right: 12 + rightOffset,
-        zIndex: 1000,
-        width: 268,
-        backgroundColor: "rgba(10,10,10,0.96)",
-        border: "1px solid var(--border)",
-        borderRadius: "0.875rem",
-        overflow: "hidden",
-        boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
-        backdropFilter: "blur(8px)",
-        transition: "right 0.2s ease",
-      }}
-    >
-      <div
-        style={{
-          padding: "0.75rem 1rem",
-          borderBottom: "1px solid var(--border-subtle)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          backgroundColor: "var(--accent-dim)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              backgroundColor: ignicao ? "var(--verde)" : "var(--text-dim)",
-            }}
-          />
-          <span
-            style={{
-              fontFamily: "var(--font-geist-mono, monospace)",
-              color: "var(--text)",
-              fontSize: "1rem",
-              letterSpacing: "0.1em",
-              fontWeight: 700,
-            }}
-          >
-            {placa}
-          </span>
-        </div>
-        <button
-          onClick={onFechar}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--text-dim)",
-            padding: "2px 4px",
-            lineHeight: 1,
-            fontSize: 18,
-          }}
-          title="Fechar painel"
-        >
-          &times;
-        </button>
-      </div>
-
-      <div style={{ padding: "0.875rem 1rem", display: "flex", flexDirection: "column", gap: 10 }}>
-        {dados === null ? (
-          <p style={{ color: "var(--text-dim)", fontSize: 12, textAlign: "center" }}>
-            carregando telemetria...
-          </p>
-        ) : (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <div>
-                <p style={{ color: "var(--text-dim)", fontSize: 10, marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                  velocidade
-                </p>
-                <p
-                  style={{
-                    fontFamily: "var(--font-geist-mono, monospace)",
-                    fontSize: "1.25rem",
-                    color: (velocidade ?? 0) > 0 ? "var(--accent)" : "var(--text-muted)",
-                    lineHeight: 1,
-                    fontWeight: 700,
-                  }}
-                >
-                  {velocidade ?? "--"}
-                  <span style={{ fontSize: 10, fontWeight: 400, marginLeft: 3, color: "var(--text-dim)" }}>
-                    km/h
-                  </span>
-                </p>
-              </div>
-              <div>
-                <p style={{ color: "var(--text-dim)", fontSize: 10, marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                  ignicao
-                </p>
-                <p
-                  style={{
-                    fontSize: "0.875rem",
-                    color: ignicao ? "var(--verde)" : "var(--text-dim)",
-                    fontWeight: 600,
-                  }}
-                >
-                  {ignicao ? "ligada" : "desligada"}
-                </p>
-              </div>
-            </div>
-
-            {evento && (
-              <div
-                style={{
-                  padding: "0.5rem 0.75rem",
-                  backgroundColor: "var(--card-hover)",
-                  borderRadius: "0.5rem",
-                  border: "1px solid var(--border-subtle)",
-                }}
-              >
-                <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>
-                  ultimo evento
-                </p>
-                <p style={{ color: "var(--text-muted)", fontSize: 12 }}>{evento}</p>
-              </div>
-            )}
-
-            {atraso !== null && atraso > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    backgroundColor: "var(--amarelo)",
-                  }}
-                />
-                <p style={{ color: "var(--text-muted)", fontSize: 11 }}>
-                  sem comunicacao ha {formatarDuracao(atraso)}
-                </p>
-              </div>
-            )}
-
-            {(entradas.length > 0 || saidas.length > 0) && (
-              <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 8 }}>
-                <p style={{ color: "var(--text-dim)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>
-                  sensores ativos
-                </p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                  {entradas.map((i) => (
-                    <span
-                      key={`E${i}`}
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 600,
-                        padding: "2px 6px",
-                        borderRadius: 4,
-                        backgroundColor: "rgba(34,197,94,0.12)",
-                        border: "1px solid rgba(34,197,94,0.25)",
-                        color: "var(--verde)",
-                      }}
-                    >
-                      E{i}
-                    </span>
-                  ))}
-                  {saidas.map((i) => (
-                    <span
-                      key={`S${i}`}
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 600,
-                        padding: "2px 6px",
-                        borderRadius: 4,
-                        backgroundColor: "rgba(159,179,206,0.12)",
-                        border: "1px solid rgba(159,179,206,0.25)",
-                        color: "var(--accent)",
-                      }}
-                    >
-                      S{i}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Item de legenda                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -973,9 +752,9 @@ export default function MapaMonitor({
   const selecionarVeiculo = useCallback((v: VeiculoOpcao) => {
     setCvSelecionado(v.cv);
     setPlacaSelecionada(v.placa);
-    setPainelAberto(true);
     onAbrirSidebar?.();
-  }, [onAbrirSidebar]);
+    onVeiculoComAlertaClicado?.(v.cv, v.placa);
+  }, [onAbrirSidebar, onVeiculoComAlertaClicado]);
 
   const onClickVeiculoMapa = useCallback(
     (vm: VeiculoMapa) => {
@@ -1807,19 +1586,35 @@ export default function MapaMonitor({
             </div>
           )}
 
-          {/* Painel OPERAÇÃO — só exibe PainelVeiculoAlerta quando selecionado */}
+          {/* Painel OPERAÇÃO (direita) — lista de veículos */}
           <div style={{
             position: "absolute", right: 0, top: 0, bottom: 0,
             width: mostrarSidebar ? SIDEBAR_W : 0,
             zIndex: 500,
             display: "flex", flexDirection: "column",
             backgroundColor: "var(--card)",
-            borderLeft: mostrarSidebar && painelVeiculo ? "1px solid var(--border)" : "none",
-            overflow: "hidden",
+            borderLeft: mostrarSidebar ? "1px solid var(--border)" : "none",
+            overflowY: mostrarSidebar ? "auto" : "hidden",
+            overflowX: "hidden",
             transition: "width 0.2s ease",
           }}>
-            {painelVeiculo}
+            {conteudoOperacao}
           </div>
+
+          {/* Ficha do veículo — flutua à ESQUERDA da operação quando há carro selecionado */}
+          {painelVeiculo && (
+            <div style={{
+              position: "absolute",
+              top: 12, bottom: 12,
+              right: (mostrarSidebar ? SIDEBAR_W : 0) + 12,
+              width: 330,
+              zIndex: 700,
+              display: "flex", flexDirection: "column",
+              transition: "right 0.2s ease",
+            }}>
+              {painelVeiculo}
+            </div>
+          )}
 
           {/* Aba ALERTAS (borda esquerda) */}
           {onTogglePainelEsquerdo && (
@@ -1873,84 +1668,6 @@ export default function MapaMonitor({
             </button>
           )}
 
-
-          {/* Controles flutuantes (modo unificado, sem sidebar do mapa) */}
-          {!mostrarSidebar && (
-            <div
-              style={{
-                position: "absolute",
-                top: 10,
-                left: 10,
-                zIndex: 1100,
-                display: "flex",
-                flexDirection: "column",
-                gap: 6,
-                background: "rgba(6,8,16,0.9)",
-                border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: 10,
-                padding: 8,
-                backdropFilter: "blur(6px)",
-              }}
-            >
-              <button
-                onClick={() => setGatilhoFrota((g) => g + 1)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "0.35rem 0.6rem",
-                  borderRadius: 7,
-                  border: "1px solid var(--border)",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  backgroundColor: "var(--accent-dim)",
-                  color: "var(--accent)",
-                }}
-                title="Enquadrar todos os veiculos"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 3 21 3 21 9" />
-                  <polyline points="9 21 3 21 3 15" />
-                  <line x1="21" y1="3" x2="14" y2="10" />
-                  <line x1="3" y1="21" x2="10" y2="14" />
-                </svg>
-                Ver toda a frota
-              </button>
-
-              <div>
-                <p style={{ color: "rgba(255,255,255,0.55)", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>
-                  Sem comunicacao
-                </p>
-                <div style={{ display: "flex", gap: 3 }}>
-                  {FILTROS_COMM.map((f) => (
-                    <button
-                      key={f.min}
-                      onClick={() => setFiltroComm((prev) => (prev === f.min ? null : f.min))}
-                      style={{
-                        flex: 1,
-                        padding: "0.25rem 0.4rem",
-                        borderRadius: 6,
-                        border: "none",
-                        cursor: "pointer",
-                        fontSize: 10,
-                        fontWeight: 600,
-                        whiteSpace: "nowrap",
-                        backgroundColor: filtroComm === f.min ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.06)",
-                        color: filtroComm === f.min ? "var(--amarelo)" : "rgba(255,255,255,0.7)",
-                      }}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <p style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", fontFamily: "var(--font-geist-mono, monospace)" }}>
-                {veiculosVisiveis.length} de {veiculosMapa.length} no mapa
-              </p>
-            </div>
-          )}
 
           {/* Legenda de status */}
           <div style={{
