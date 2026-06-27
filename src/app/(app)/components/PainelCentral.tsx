@@ -464,7 +464,7 @@ export default function PainelCentral({
         painelEsquerdo={painelAlertasJsx}
         mostrarPainelEsquerdo={mostrarAlertas}
         onTogglePainelEsquerdo={() => setMostrarAlertas((v) => !v)}
-        onToggleSidebar={() => { setMostrarOperacao((v) => { if (v) setVeiculoPanel(null); return !v; }); }}
+        onToggleSidebar={() => { if (mostrarOperacao) setVeiculoPanel(null); setMostrarOperacao((v) => !v); }}
         onAbrirSidebar={() => setMostrarOperacao(true)}
         painelVeiculo={veiculoPanel ? (
           <PainelVeiculoAlerta
@@ -474,7 +474,7 @@ export default function PainelCentral({
               id: a.id, status: a.status, nivel: a.nivel,
               tipo: a.tipo, motivo: a.motivo, desde: a.desde, score: a.score,
             }))}
-            onFechar={() => { setVeiculoPanel(null); setMostrarOperacao(false); }}
+            onFechar={() => setVeiculoPanel(null)}
             onAlertaResolvido={removerAlerta}
             empresa={empresaNome}
           />
