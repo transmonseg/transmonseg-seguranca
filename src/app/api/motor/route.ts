@@ -300,11 +300,11 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, fora_corredor");
 
     const mapaPosAtual = new Map<
       string,
-      { lat: number | null; lng: number | null; velocidade: number | null; parado_desde: string | null }
+      { lat: number | null; lng: number | null; velocidade: number | null; parado_desde: string | null; fora_corredor: boolean }
     >();
 
     for (const row of posatuaisRows ?? []) {
@@ -313,6 +313,7 @@ export async function POST(request: Request) {
         lng: row.lng,
         velocidade: row.velocidade,
         parado_desde: row.parado_desde,
+        fora_corredor: row.fora_corredor ?? false,
       });
     }
 
@@ -528,6 +529,12 @@ export async function POST(request: Request) {
             }
           }
 
+          // Debounce OSRM: o veiculo ja estava fora do corredor no ciclo anterior?
+          const jaForaCorretor = anterior?.fora_corredor ?? false;
+          // Estado atual fora do corredor (para salvar no upsert e alimentar o proximo ciclo).
+          const CORREDOR_TOLERANCIA_M = 800;
+          const foraCorretor = distCorredorM !== null && distCorredorM > CORREDOR_TOLERANCIA_M;
+
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
           let tiroteioIdadeMin: number | null = null;
@@ -617,6 +624,7 @@ export async function POST(request: Request) {
                   temPOIProximo: temPOI,
                   jaParedoNoCicloAnterior,
                   distCorredorM,
+                  jaForaCorretor,
                 })
               : null;
 
@@ -675,13 +683,13 @@ export async function POST(request: Request) {
               `INSERT INTO posicoes_atuais
                 (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
                  panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
-                 entregas_feitas, entregas_total, local)
+                 entregas_feitas, entregas_total, local, fora_corredor)
                VALUES
                 ($1, $2, $3,
                  ST_SetSRID(ST_MakePoint($4, $2), 4326)::geography,
                  $5, $6, $7, $8, $9, $10, $11,
                  $12::timestamptz, $13::timestamptz, $14::timestamptz,
-                 $15, $16, $17)
+                 $15, $16, $17, $18)
                ON CONFLICT (veiculo_id) DO UPDATE SET
                  lat              = EXCLUDED.lat,
                  lng              = EXCLUDED.lng,
@@ -698,7 +706,8 @@ export async function POST(request: Request) {
                  updated_at       = EXCLUDED.updated_at,
                  entregas_feitas  = EXCLUDED.entregas_feitas,
                  entregas_total   = EXCLUDED.entregas_total,
-                 local            = COALESCE(EXCLUDED.local, posicoes_atuais.local)`,
+                 local            = COALESCE(EXCLUDED.local, posicoes_atuais.local),
+                 fora_corredor    = EXCLUDED.fora_corredor`,
               [
                 veiculo_id,
                 pos.lat,
@@ -717,6 +726,7 @@ export async function POST(request: Request) {
                 entregas_feitas,
                 entregas_total,
                 localVeiculo,
+                foraCorretor,
               ]
             );
           } finally {

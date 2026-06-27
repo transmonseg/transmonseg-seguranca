@@ -227,8 +227,10 @@ export type CtxDesvio = {
   rumoMovimento: number | null;
   rumoAlvo: number | null;
   // Corredor OSRM (quando disponível): distância mínima ao corredor de rota.
-  // Se presente, substitui a lógica de distAlvoM + rumo (mais preciso).
   distCorredorM?: number | null;
+  // Anti-falso-positivo: true se o veículo já estava fora do corredor no ciclo anterior.
+  // Obrigatório para disparar no modo OSRM — exige 2 ciclos consecutivos fora.
+  jaForaCorretor?: boolean;
 };
 
 // O veículo está FORA DE ROTA agora? Condição FROUXA, usada para MANTER um
@@ -259,17 +261,32 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
 
   // ── MODO CORREDOR (OSRM): mais preciso, sem falsos positivos por via tortuosa ──
   if (ctx.distCorredorM != null) {
-    // 800m de tolerancia: ruas estreitas, obras e rerotas urbanas comuns no RJ
-    // fazem o veiculo ficar facilmente 400-700m do corredor OSRM sem desviar de fato.
-    // Critico so acima de 3km: desvio real e inequivoco da rota planejada.
+    // 800m de tolerancia: ruas estreitas, obras e rerotas urbanas comuns no RJ.
     const CORREDOR_M = 800;
     if (ctx.distCorredorM <= CORREDOR_M) return null;
+
+    // Heading check: se o veiculo esta se movendo EM DIRECAO ao proximo waypoint
+    // (angulo <= 75 graus), provavelmente esta tomando rua alternativa ao mesmo
+    // destino — nao e desvio real, e sim rota paralela nao mapeada no OSRM.
+    if (
+      ctx.rumoMovimento !== null &&
+      ctx.rumoAlvo !== null &&
+      difAnguloGraus(ctx.rumoMovimento, ctx.rumoAlvo) <= 75
+    ) {
+      return null;
+    }
+
+    // Debounce de 2 ciclos consecutivos: exige que o veiculo JA estivesse fora
+    // do corredor no ciclo anterior. Elimina falsos positivos por GPS bounce,
+    // ponto GPS unico ruim ou divergencia momentanea do OSRM.
+    if (!ctx.jaForaCorretor) return null;
+
     const km = (ctx.distCorredorM / 1000).toFixed(1).replace(".", ",");
     if (ctx.distCorredorM >= 3000) {
       return {
         nivel: "critico",
         tipo: "desvio",
-        motivo: `Fora do corredor de rota: ${km}km da rota planejada`,
+        motivo: `Fora do corredor de rota por ${km}km (2+ ciclos confirmados)`,
         score: 72,
       };
     }
@@ -376,6 +393,7 @@ export function avaliar(
     rumoMovimento?: number | null;
     rumoAlvo?: number | null;
     distCorredorM?: number | null;
+    jaForaCorretor?: boolean;
     distTiroteioM?: number | null;
     tiroteioIdadeMin?: number | null;
     // Parada anomala (opcional — so roda se estavEmMovimento for fornecido)
@@ -436,6 +454,7 @@ export function avaliar(
           rumoMovimento: ctx.rumoMovimento ?? null,
           rumoAlvo: ctx.rumoAlvo ?? null,
           distCorredorM: ctx.distCorredorM ?? null,
+          jaForaCorretor: ctx.jaForaCorretor ?? false,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
