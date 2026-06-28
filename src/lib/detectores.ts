@@ -78,6 +78,7 @@ export function detectarSaidaNaoAutorizada(
     rumoMovimento?: number | null;
     rumoBase?: number | null;
     distBaseM?: number | null;
+    temPOIProximo?: boolean;
   }
 ): Alerta | null {
   if (!p.fresco || !p.ignicao) return null;
@@ -86,6 +87,12 @@ export function detectarSaidaNaoAutorizada(
   if (ctx.entregasTotal === undefined) return null;
   // Tem (ou teve) entregas no dia = esta trabalhando legitimamente.
   if (ctx.entregasTotal > 0) return null;
+  // Perto da base (< 2km): saindo para o dia, manobrando ou abastecendo na
+  // propria base. A grande fonte de falso positivo (veiculo que acabou de sair).
+  if (ctx.distBaseM != null && ctx.distBaseM < 2000) return null;
+  // Parado perto de posto/POI legitimo (Overpass): abastecimento ou parada de
+  // apoio (pegar carga, lanche), nao deslocamento indevido.
+  if (p.velocidade === 0 && ctx.temPOIProximo) return null;
   // Veiculo se aproximando da base (ate 3km, heading dentro de 60 graus): retornando, nao dispara.
   if (
     ctx.rumoMovimento != null && ctx.rumoBase != null && ctx.distBaseM != null &&
@@ -199,10 +206,14 @@ export function detectarParadaAnomala(ctx: {
   emZonaRisco: boolean;       // dentro de geofence tipo "risco"
   temPOIProximo: boolean;     // posto/restaurante/farmacia a <80m
   jaParedoNoCicloAnterior: boolean; // anti-pisca
+  vizinhosParados?: number;   // outros veiculos da frota parados num raio curto
 }): Alerta | null {
   if (!ctx.emOperacao || !ctx.foraDaBase || ctx.noCliente) return null;
   if (!ctx.jaParedoNoCicloAnterior) return null; // aguarda um ciclo antes de disparar
   if (ctx.temPOIProximo) return null; // parada em local legitimo
+  // Congestionamento: 2+ outros veiculos da frota parados na mesma area =
+  // transito/fila, nao roubo. Comparar veiculos entre si mata o falso positivo.
+  if ((ctx.vizinhosParados ?? 0) >= 2) return null;
 
   // 20 min em cidade (vinha de >= 30km/h), 35 min em estrada — limites anteriores
   // (12/25 min) disparavam para praticamente qualquer parada em trânsito pesado do RJ.
@@ -416,6 +427,7 @@ export function avaliar(
     emZonaRisco?: boolean;
     temPOIProximo?: boolean;
     jaParedoNoCicloAnterior?: boolean;
+    vizinhosParados?: number;
   }
 ): Alerta | null {
   const candidatos: Alerta[] = [
@@ -429,6 +441,7 @@ export function avaliar(
       rumoMovimento: ctx.rumoMovimento ?? null,
       rumoBase: ctx.rumoBase ?? null,
       distBaseM: ctx.distBaseM ?? null,
+      temPOIProximo: ctx.temPOIProximo ?? false,
     }),
     detectarExcessoVelocidade(p),
     detectarParadaCliente({
@@ -455,6 +468,7 @@ export function avaliar(
           emZonaRisco: ctx.emZonaRisco ?? false,
           temPOIProximo: ctx.temPOIProximo ?? false,
           jaParedoNoCicloAnterior: ctx.jaParedoNoCicloAnterior ?? false,
+          vizinhosParados: ctx.vizinhosParados ?? 0,
         })
       : null,
     detectarTiroteioProximo(p, {

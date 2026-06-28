@@ -223,6 +223,7 @@ export async function POST(request: Request) {
   const agora = new Date();
   const erros: string[] = [];
   const emOperacao = emHorarioOperacao(agora);
+  const desde2h = new Date(agora.getTime() - 2 * 60 * 60 * 1000).toISOString();
 
   // Contador de geocodes novos consumidos neste ciclo
   const contadorGeocodesNovos = { valor: 0 };
@@ -410,6 +411,48 @@ export async function POST(request: Request) {
         erros.push(msg);
       }
 
+      // Pre-passada: coleta os veiculos PARADOS e frescos do cliente. Usado para
+      // detectar congestionamento — varios parados na mesma area = transito/fila,
+      // nao roubo. Comparar veiculos entre si mata o falso positivo de parada anomala.
+      const paradosFrescos: { lat: number; lng: number }[] = [];
+      for (const raw of posicoesRaw) {
+        try {
+          const p = normalizar(raw as Record<string, unknown>);
+          if (p.fresco && p.velocidade === 0 && p.lat != null && p.lng != null) {
+            paradosFrescos.push({ lat: p.lat, lng: p.lng });
+          }
+        } catch { /* posicao malformada: ignora na pre-passada */ }
+      }
+      const RAIO_CONGESTION_M = 250;
+
+      // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
+      const { data: todosAlertasAbertos } = await supabase
+        .from("alertas")
+        .select("id, tipo, veiculo_id")
+        .eq("cliente_id", cliente.id)
+        .in("status", ["ativo", "reconhecido"]);
+
+      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string }[]>();
+      for (const ab of todosAlertasAbertos ?? []) {
+        const lista = mapaAlertasAbertos.get(ab.veiculo_id) ?? [];
+        lista.push({ id: ab.id, tipo: ab.tipo });
+        mapaAlertasAbertos.set(ab.veiculo_id, lista);
+      }
+
+      const { data: todosFalsosRecentes } = await supabase
+        .from("alertas")
+        .select("tipo, veiculo_id")
+        .eq("cliente_id", cliente.id)
+        .eq("status", "falso_positivo")
+        .gte("resolvido_em", desde2h);
+
+      const mapaTiposSilenciados = new Map<string, Set<string>>();
+      for (const fp of todosFalsosRecentes ?? []) {
+        const set = mapaTiposSilenciados.get(fp.veiculo_id) ?? new Set<string>();
+        set.add(fp.tipo);
+        mapaTiposSilenciados.set(fp.veiculo_id, set);
+      }
+
       // Normalizar e processar cada posicao
       for (const raw of posicoesRaw) {
         try {
@@ -593,6 +636,13 @@ export async function POST(request: Request) {
             paradoMin >= 12 && paradoMin < 90 &&
             foraDaBase && !noCliente && emOperacao;
 
+          // Candidato a SAIDA NAO AUTORIZADA parado: tambem precisa de temPOI para
+          // suprimir abastecimento/parada de apoio (so faz sentido fora ~2km da base).
+          const candidatoSaidaParado =
+            pos.fresco && pos.ignicao && pos.velocidade === 0 &&
+            foraDaBase && !temPendentes && alvosApiOk && entregas_total === 0 &&
+            (distBaseM == null || distBaseM >= 2000);
+
           let estavEmMovimento = false;
           let esMadrugada = false;
           let temPOI = false;
@@ -612,7 +662,21 @@ export async function POST(request: Request) {
               10
             );
             esMadrugada = horaSP >= 0 && horaSP < 5;
+          }
+          // POI consultado para parada anomala E saida nao autorizada parada.
+          if (candidatoParadaAnomala || candidatoSaidaParado) {
             temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
+          }
+
+          // Congestionamento: quantos OUTROS veiculos da frota estao parados num
+          // raio curto. >= 2 => transito/fila, suprime a parada anomala (anti-FP).
+          let vizinhosParados = 0;
+          if (candidatoParadaAnomala) {
+            let dentro = 0;
+            for (const q of paradosFrescos) {
+              if (haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentro++;
+            }
+            vizinhosParados = Math.max(0, dentro - 1); // exclui o proprio veiculo
           }
 
           const alerta = alertaJammer
@@ -636,6 +700,7 @@ export async function POST(request: Request) {
                   esMadrugada,
                   emZonaRisco: false,
                   temPOIProximo: temPOI,
+                  vizinhosParados,
                   jaParedoNoCicloAnterior,
                   distCorredorM,
                   jaForaCorretor,
@@ -699,13 +764,13 @@ export async function POST(request: Request) {
               `INSERT INTO posicoes_atuais
                 (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
                  panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
-                 entregas_feitas, entregas_total, local, fora_corredor)
+                 entregas_feitas, entregas_total, local, fora_corredor, rumo)
                VALUES
                 ($1, $2, $3,
                  ST_SetSRID(ST_MakePoint($4, $2), 4326)::geography,
                  $5, $6, $7, $8, $9, $10, $11,
                  $12::timestamptz, $13::timestamptz, $14::timestamptz,
-                 $15, $16, $17, $18)
+                 $15, $16, $17, $18, $19)
                ON CONFLICT (veiculo_id) DO UPDATE SET
                  lat              = EXCLUDED.lat,
                  lng              = EXCLUDED.lng,
@@ -723,7 +788,8 @@ export async function POST(request: Request) {
                  entregas_feitas  = EXCLUDED.entregas_feitas,
                  entregas_total   = EXCLUDED.entregas_total,
                  local            = COALESCE(EXCLUDED.local, posicoes_atuais.local),
-                 fora_corredor    = EXCLUDED.fora_corredor`,
+                 fora_corredor    = EXCLUDED.fora_corredor,
+                 rumo             = EXCLUDED.rumo`,
               [
                 veiculo_id,
                 pos.lat,
@@ -743,6 +809,7 @@ export async function POST(request: Request) {
                 entregas_total,
                 localVeiculo,
                 foraCorretor,
+                rumoMovimento !== null ? Math.round(rumoMovimento) : null,
               ]
             );
           } finally {
@@ -755,24 +822,9 @@ export async function POST(request: Request) {
           if (!deveGerenciarAlertas) continue;
           if (pos.fresco) totalFrescos++;
 
-          // Alertas EM ABERTO (ativo OU reconhecido pelo operador). Reconhecido
-          // conta como em aberto: o operador assumiu, NAO duplicar nem recriar.
-          const { data: alertasAbertos } = await supabase
-            .from("alertas")
-            .select("id, tipo")
-            .eq("veiculo_id", veiculo_id)
-            .in("status", ["ativo", "reconhecido"]);
-
-          // Tipos SILENCIADOS: o operador marcou falso positivo ha pouco (2h).
-          // Respeitamos a decisao dele e nao recriamos o alerta nesse periodo.
-          const desde2h = new Date(agora.getTime() - 2 * 60 * 60 * 1000).toISOString();
-          const { data: falsosRecentes } = await supabase
-            .from("alertas")
-            .select("tipo")
-            .eq("veiculo_id", veiculo_id)
-            .eq("status", "falso_positivo")
-            .gte("resolvido_em", desde2h);
-          const tiposSilenciados = new Set((falsosRecentes ?? []).map((a) => a.tipo));
+          // Alertas EM ABERTO e tipos silenciados — pré-carregados em lote por cliente.
+          const alertasAbertos = mapaAlertasAbertos.get(veiculo_id) ?? [];
+          const tiposSilenciados = mapaTiposSilenciados.get(veiculo_id) ?? new Set<string>();
 
           // Resolucao automatica generica: todos os tipos EXCETO favela e desvio,
           // que tem ciclo de vida proprio (tratados separado).
@@ -979,6 +1031,28 @@ export async function POST(request: Request) {
       .eq("status", "ativo");
 
     totalAlertasAtivos = qtdAlertasAtivos ?? 0;
+
+    // Limpeza periódica — 1x/hora para manter banco dentro da cota free (500MB).
+    if (agora.getMinutes() === 0) {
+      const pgClean = await pool.connect();
+      try {
+        await pgClean.query(
+          `DELETE FROM alertas
+           WHERE status IN ('resolvido', 'falso_positivo')
+             AND COALESCE(resolvido_em, created_at) < now() - interval '90 days'`
+        );
+        await pgClean.query(
+          `DELETE FROM poi_cache WHERE atualizado_em < now() - interval '7 days'`
+        );
+        await pgClean.query(
+          `DELETE FROM eventos WHERE ts < now() - interval '7 days'`
+        );
+      } catch (errClean) {
+        console.warn("Limpeza periódica falhou (não crítico):", errClean);
+      } finally {
+        pgClean.release();
+      }
+    }
 
     return Response.json({
       processados: totalProcessados,

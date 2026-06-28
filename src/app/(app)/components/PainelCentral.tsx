@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useTransition } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import AlertaSonoro from "./AlertaSonoro";
 import CardAlertaCritico from "./CardAlertaCritico";
 import PainelVeiculoAlerta from "./PainelVeiculoAlerta";
+import { resolverVarios } from "../acoes-alertas";
 
 const MapaMonitor = dynamic(() => import("./MapaMonitor"), { ssr: false });
 
@@ -117,6 +118,11 @@ export default function PainelCentral({
   // IDs novos (para badge NOVO nos cards) — removidos após 60s
   const [novosIds, setNovosIds] = useState<Set<string>>(new Set());
 
+  // Resolver todos: confirmação inline + pending
+  const [resolvendoTodos, startResolverTodos] = useTransition();
+  const [confirmarResolver, setConfirmarResolver] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       setNotifLigada(true);
@@ -204,9 +210,25 @@ export default function PainelCentral({
   }, [toastsCriticos[0]?.id]);
 
   useEffect(() => {
+    atualizarAlertas(); // busca imediata (evita esperar 15s ao trocar de cliente)
     const id = setInterval(atualizarAlertas, 15000);
     return () => clearInterval(id);
   }, [atualizarAlertas]);
+
+  // Trocar de cliente (Nutry/Benassi) NAO remonta o componente — o Next so passa
+  // novas props. Sem isto o estado ficava preso no cliente anterior. Ressincroniza
+  // os alertas com a prop nova e limpa a selecao/toasts do cliente antigo.
+  const primeiroRenderRef = useRef(true);
+  useEffect(() => {
+    if (primeiroRenderRef.current) { primeiroRenderRef.current = false; return; }
+    setAlertas(alertasIniciais);
+    vistosRef.current = new Set(alertasIniciais.map((a) => a.id));
+    setVeiculoPanel(null);
+    setToastsCriticos([]);
+    setMostrarOperacao(false);
+    limparSelecaoMapaRef.current?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clienteAtivoId]);
 
   const nCriticos = alertas.filter((a) => a.nivel === "critico").length;
   const nAtencao = alertas.filter((a) => a.nivel === "atencao").length;
@@ -254,6 +276,34 @@ export default function PainelCentral({
       setMostrarOperacao(true);
     }
   }, []);
+
+  // Resolve todos os alertas visíveis (respeita o filtro de nível ativo).
+  // Primeiro clique pede confirmação; segundo clique (em até 4s) executa.
+  function executarResolverTodos() {
+    const ids = visiveis.map((a) => a.id);
+    if (ids.length === 0 || resolvendoTodos) return;
+    if (!confirmarResolver) {
+      setConfirmarResolver(true);
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = setTimeout(() => setConfirmarResolver(false), 4000);
+      return;
+    }
+    setConfirmarResolver(false);
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    const idsSet = new Set(ids);
+    startResolverTodos(async () => {
+      const r = await resolverVarios(ids);
+      if (!r?.erro) {
+        setAlertas((prev) => prev.filter((a) => !idsSet.has(a.id)));
+        setToastsCriticos((prev) => prev.filter((t) => !idsSet.has(t.id)));
+        setVeiculoPanel((p) => {
+          if (!p) return p;
+          const restam = alertas.filter((a) => a.cv === p.cv && !idsSet.has(a.id));
+          return restam.length === 0 ? null : p;
+        });
+      }
+    });
+  }
 
   const empresaNome = clientes.find((c) => c.id === clienteAtivoId)?.nome;
 
@@ -371,6 +421,47 @@ export default function PainelCentral({
           {segBtn("critico", "Críticos", nCriticos, "var(--vermelho)")}
           {segBtn("atencao", "Atenção", nAtencao, "var(--amarelo)")}
         </div>
+
+        {/* Resolver todos (respeita o filtro de nível ativo) */}
+        {visiveis.length > 0 && (
+          <button
+            onClick={executarResolverTodos}
+            disabled={resolvendoTodos}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 7,
+              padding: "0.5rem 0.625rem",
+              borderRadius: 8,
+              cursor: resolvendoTodos ? "default" : "pointer",
+              fontSize: 11.5,
+              fontWeight: 700,
+              letterSpacing: "0.02em",
+              transition: "all 0.12s",
+              border: confirmarResolver
+                ? "1px solid var(--verde)"
+                : "1px solid color-mix(in srgb, var(--verde) 30%, transparent)",
+              backgroundColor: confirmarResolver
+                ? "color-mix(in srgb, var(--verde) 22%, transparent)"
+                : "color-mix(in srgb, var(--verde) 8%, transparent)",
+              color: "var(--verde)",
+              opacity: resolvendoTodos ? 0.6 : 1,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            {resolvendoTodos
+              ? "Resolvendo..."
+              : confirmarResolver
+              ? `Confirmar — resolver ${visiveis.length}?`
+              : `Resolver ${
+                  vista === "critico" ? "críticos" : vista === "atencao" ? "em atenção" : "todos"
+                } (${visiveis.length})`}
+          </button>
+        )}
       </div>
 
       {/* Lista scrollavel agrupada por tipo */}

@@ -48,3 +48,20 @@ export async function resolverAlerta(id: string): Promise<ResultadoAcao> {
 export async function marcarFalsoPositivo(id: string): Promise<ResultadoAcao> {
   return atualizar(id, { status: "falso_positivo", resolvido_em: new Date().toISOString() });
 }
+
+// Resolve vários alertas de uma vez (botão "Resolver todos" do painel).
+export async function resolverVarios(
+  ids: string[]
+): Promise<ResultadoAcao & { resolvidos?: number }> {
+  const opId = await operadorAtual();
+  if (!opId) return { erro: "Sessao expirada." };
+  if (ids.length === 0) return { ok: true, resolvidos: 0 };
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("alertas")
+    .update({ status: "resolvido", resolvido_em: new Date().toISOString(), operador_id: opId })
+    .in("id", ids);
+  if (error) return { erro: "Não foi possível resolver os alertas." };
+  revalidatePath("/");
+  return { ok: true, resolvidos: ids.length };
+}

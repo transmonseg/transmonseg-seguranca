@@ -58,6 +58,7 @@ interface VeiculoMapa {
   local: string | null;
   entregas_feitas: number | null;
   entregas_total: number | null;
+  rumo?: number | null;
 }
 
 interface PontRastro {
@@ -168,7 +169,15 @@ const FILTROS_COMM = [
   { label: "60 min", min: 60 },
 ] as const;
 
-const SIDEBAR_W = 340;
+/* ------------------------------------------------------------------ */
+/* Busca de placa                                                       */
+/* ------------------------------------------------------------------ */
+
+// Normaliza placa para busca: ignora caixa, hifen e espacos.
+// "ABC-1234" casa com "abc1234", "abc 1234", "ABC1234" etc.
+function normalizaPlaca(s: string): string {
+  return s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
 
 /* ------------------------------------------------------------------ */
 /* Cores de marcador                                                    */
@@ -232,15 +241,34 @@ function iconeAlvo(numero: number, feito: boolean, proximo: boolean): L.DivIcon 
 function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
   const cor = corVeiculo(v);
   const semComm = v.atraso_min > 60;
-  const chave = `truck-${cor}-${selecionado ? 1 : 0}-${semComm ? 1 : 0}`;
+  const critico = v.nivel === "vermelho";
+  // Quantiza rumo em 16 direções (22.5° cada) para cache eficiente
+  const temSeta = v.velocidade > 5 && v.rumo != null;
+  const quantRumo = temSeta && v.rumo != null ? Math.round(v.rumo / 22.5) % 16 : -1;
+  const chave = `truck-${cor}-${selecionado ? 1 : 0}-${semComm ? 1 : 0}-${critico ? 1 : 0}-r${quantRumo}`;
   if (_iconeCache[chave]) return _iconeCache[chave];
+
+  // Seta de heading: linha do centro do pin em direção ao rumo
+  let setaSvg = "";
+  if (temSeta && v.rumo != null) {
+    const rumoRad = (v.rumo * Math.PI) / 180;
+    const cx = 15; const cy = 15; const len = 9;
+    const x2 = (cx + Math.sin(rumoRad) * len).toFixed(1);
+    const y2 = (cy - Math.cos(rumoRad) * len).toFixed(1);
+    setaSvg = `<line x1="${cx}" y1="${cy}" x2="${x2}" y2="${y2}" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.95"/>` +
+      `<circle cx="${x2}" cy="${y2}" r="2" fill="white" opacity="0.95"/>`;
+  }
 
   let html: string;
 
   if (selecionado) {
-    // Circulo de destaque com caminhao SVG e glow colorido
     const s = 44;
+    const ring = critico
+      ? `<div class="marker-ping-ring" style="top:-6px;left:-6px;width:56px;height:56px;"></div>`
+      : "";
     html =
+      `<div style="position:relative;width:${s}px;height:${s}px">` +
+      ring +
       `<div style="width:${s}px;height:${s}px;display:flex;align-items:center;justify-content:center;` +
       `background:rgba(4,4,8,0.96);border:3px solid ${cor};border-radius:50%;` +
       `box-shadow:0 0 0 3px rgba(0,0,0,0.8),0 0 20px ${cor}99,0 4px 14px rgba(0,0,0,0.95)">` +
@@ -248,26 +276,28 @@ function iconeStatus(v: VeiculoMapa, selecionado: boolean): L.DivIcon {
       `<rect x="1" y="3" width="15" height="13"/>` +
       `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
       `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
-      `</svg></div>`;
+      `</svg></div></div>`;
     const ic = L.divIcon({ html, className: "", iconSize: [s, s], iconAnchor: [s / 2, s / 2], popupAnchor: [0, -s / 2] });
     _iconeCache[chave] = ic;
     return ic;
   }
 
-  // Todos os demais: pin GPS (teardrop) com caminhao dentro.
-  // Cor muda por status; opacidade reduzida para sem comunicacao.
+  // Pin GPS (teardrop) com caminhao, seta de heading e ring critico
   const alpha = semComm ? "0.5" : "1";
+  const ring = critico
+    ? `<div class="marker-ping-ring" style="top:-4px;left:-4px;width:38px;height:38px;"></div>`
+    : "";
   html =
-    `<div style="width:30px;height:38px;opacity:${alpha}">` +
+    `<div style="position:relative;width:30px;height:38px;opacity:${alpha}">` +
+    ring +
     `<svg width="30" height="38" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg">` +
-    // Pin colorido com borda branca fina
     `<path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>` +
-    // Caminhao (Lucide truck, escalonado para caber no circulo do pin)
     `<g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">` +
     `<rect x="1" y="3" width="15" height="13"/>` +
     `<polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>` +
     `<circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>` +
     `</g>` +
+    setaSvg +
     `</svg></div>`;
 
   const ic = L.divIcon({ html, className: "", iconSize: [30, 38], iconAnchor: [15, 36], popupAnchor: [0, -36] });
@@ -468,6 +498,27 @@ function AutoFlyCritico({
   return null;
 }
 
+// Modo perseguicao: enquanto ativo, a camera acompanha a posicao do veiculo
+// selecionado conforme ela atualiza (panTo suave). So move quando a posicao muda.
+function SeguirVeiculo({
+  pos,
+  ativo,
+}: {
+  pos: { lat: number; lng: number } | null;
+  ativo: boolean;
+}) {
+  const map = useMap();
+  const ultima = useRef<string>("");
+  useEffect(() => {
+    if (!ativo || !pos) return;
+    const chave = `${pos.lat.toFixed(5)},${pos.lng.toFixed(5)}`;
+    if (chave === ultima.current) return;
+    ultima.current = chave;
+    map.panTo([pos.lat, pos.lng], { animate: true, duration: 0.8 });
+  }, [pos, ativo, map]);
+  return null;
+}
+
 // Enquadra toda a frota no mapa: uma vez no primeiro load e novamente
 // sempre que `gatilho` muda (botao "Centralizar frota").
 function AjustarBoundsFrota({
@@ -555,7 +606,7 @@ export default function MapaMonitor({
   // Voa para o veículo quando a busca retorna exatamente 1 resultado
   useEffect(() => {
     if (!busca.trim()) return;
-    const vms = veiculosMapa.filter((v) => v.placa.toUpperCase().includes(busca.toUpperCase()) && v.lat != null && v.lng != null);
+    const vms = veiculosMapa.filter((v) => normalizaPlaca(v.placa).includes(normalizaPlaca(busca)) && v.lat != null && v.lng != null);
     if (vms.length === 1) {
       setFlyParaVeiculo({ lat: vms[0].lat!, lng: vms[0].lng!, gatilho: Date.now() });
     }
@@ -592,6 +643,21 @@ export default function MapaMonitor({
 
   /* ---- Fly para veiculo selecionado ---- */
   const [flyParaVeiculo, setFlyParaVeiculo] = useState<{ lat: number; lng: number; gatilho: number } | null>(null);
+
+  /* ---- Modo perseguicao: camera acompanha o veiculo selecionado ---- */
+  const [seguir, setSeguir] = useState(true);
+
+  /* ---- Largura da janela: paineis responsivos (notebook nao pode tapar o mapa) ---- */
+  const [larguraJanela, setLarguraJanela] = useState(1920);
+  useEffect(() => {
+    const upd = () => setLarguraJanela(window.innerWidth);
+    upd();
+    window.addEventListener("resize", upd);
+    return () => window.removeEventListener("resize", upd);
+  }, []);
+  const telaCompacta = larguraJanela < 1280;
+  const LARG_ESQ = larguraJanela < 1100 ? 300 : larguraJanela < 1440 ? 330 : 360;
+  const LARG_DIR = telaCompacta ? 330 : 360;
 
   /* ---- Gatilho de enquadrar frota inteira ---- */
   const [gatilhoFrota, setGatilhoFrota] = useState(0);
@@ -782,6 +848,10 @@ export default function MapaMonitor({
       setCvSelecionado(vm.cv);
       setPlacaSelecionada(vm.placa);
       onAbrirSidebar?.();
+      // Zoom + centraliza no veiculo ao clicar (antes nao aproximava).
+      if (vm.lat != null && vm.lng != null) {
+        setFlyParaVeiculo({ lat: vm.lat, lng: vm.lng, gatilho: Date.now() });
+      }
       if (onVeiculoComAlertaClicado) onVeiculoComAlertaClicado(vm.cv, vm.placa);
     },
     [onVeiculoComAlertaClicado, onAbrirSidebar]
@@ -883,7 +953,15 @@ export default function MapaMonitor({
     Number.isFinite(posAtual.lng) &&
     !(posAtual.lat === 0 && posAtual.lng === 0);
 
-  const corIgnicao = telemetria?.posicignicao === "1" ? "#22c55e" : "#9fb3ce";
+  // Cor do marcador ao vivo do selecionado: o ALERTA (vermelho/amarelo) tem
+  // prioridade. So cai na cor de ignicao quando o veiculo nao esta em alerta —
+  // antes pintava verde por ignicao ligada, escondendo o alerta ao selecionar.
+  const vmSelecionado = veiculosMapa.find((v) => v.cv === cvSelecionado);
+  const corSelecionado = vmSelecionado
+    ? corVeiculo(vmSelecionado)
+    : telemetria?.posicignicao === "1"
+      ? "#22c55e"
+      : "#9fb3ce";
 
   /* ------------------------------------------------------------------ */
   /* Basemap                                                              */
@@ -919,7 +997,7 @@ export default function MapaMonitor({
         .map((g) => ({
           ...g,
           veiculos: g.veiculos.filter((v) =>
-            v.placa.toUpperCase().includes(busca.toUpperCase())
+            normalizaPlaca(v.placa).includes(normalizaPlaca(busca))
           ),
         }))
         .filter((g) => g.veiculos.length > 0)
@@ -928,7 +1006,7 @@ export default function MapaMonitor({
   /* ---- Placas para o seletor (digitação + lista rolável, estilo Unitrac) ---- */
   const placasFiltradas = veiculosMapa
     .filter((v) => v.lat != null && v.lng != null)
-    .filter((v) => !buscaRapida.trim() || v.placa.toUpperCase().includes(buscaRapida.toUpperCase()))
+    .filter((v) => !buscaRapida.trim() || normalizaPlaca(v.placa).includes(normalizaPlaca(buscaRapida)))
     .sort((a, b) => a.placa.localeCompare(b.placa));
 
   /* ---- Marcadores no mapa: isola o selecionado (some o resto) ---- */
@@ -985,6 +1063,14 @@ export default function MapaMonitor({
           type="text"
           value={busca}
           onChange={(e) => setBusca(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              const alvo = veiculosMapa.find(
+                (v) => v.lat != null && v.lng != null && normalizaPlaca(v.placa).includes(normalizaPlaca(busca))
+              );
+              if (alvo) selecionarPlaca(alvo);
+            }
+          }}
           placeholder="Buscar placa..."
           style={{
             width: "100%",
@@ -1163,8 +1249,27 @@ export default function MapaMonitor({
           )}
         </div>
 
-        {/* Centralizar e Limpar */}
+        {/* Seguir, Centralizar e Limpar */}
         <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={() => setSeguir((v) => !v)}
+            disabled={!cvSelecionado}
+            title="Câmera acompanha o veículo em tempo real"
+            style={{
+              flex: 1,
+              padding: "0.3rem 0",
+              borderRadius: "0.375rem",
+              border: `1px solid ${seguir && cvSelecionado ? "var(--verde)" : "var(--border)"}`,
+              cursor: cvSelecionado ? "pointer" : "not-allowed",
+              fontSize: 10,
+              fontWeight: 600,
+              backgroundColor: seguir && cvSelecionado ? "rgba(34,197,94,0.1)" : "transparent",
+              color: seguir && cvSelecionado ? "var(--verde)" : "var(--text-dim)",
+              opacity: !cvSelecionado ? 0.35 : 1,
+            }}
+          >
+            Seguir
+          </button>
           <button
             onClick={() => setGatilhoBounds((g) => g + 1)}
             disabled={!cvSelecionado || pontosRastro.length === 0}
@@ -1302,7 +1407,7 @@ export default function MapaMonitor({
                       {grupo.veiculos
                         .filter((v) =>
                           busca.trim()
-                            ? v.placa.toUpperCase().includes(busca.toUpperCase())
+                            ? normalizaPlaca(v.placa).includes(normalizaPlaca(busca))
                             : true
                         )
                         .map((v) => {
@@ -1369,7 +1474,7 @@ export default function MapaMonitor({
           : veiculos
               .filter((v) =>
                 busca.trim()
-                  ? v.placa.toUpperCase().includes(busca.toUpperCase())
+                  ? normalizaPlaca(v.placa).includes(normalizaPlaca(busca))
                   : true
               )
               .map((v) => {
@@ -1628,7 +1733,7 @@ export default function MapaMonitor({
           {painelEsquerdo !== undefined && (
             <div style={{
               position: "absolute", left: 0, top: 0, bottom: 0,
-              width: mostrarPainelEsquerdo ? 380 : 0,
+              width: mostrarPainelEsquerdo ? LARG_ESQ : 0,
               zIndex: 500,
               display: "flex", flexDirection: "column",
               backgroundColor: "var(--bg)",
@@ -1642,33 +1747,26 @@ export default function MapaMonitor({
             </div>
           )}
 
-          {/* Painel OPERAÇÃO (direita) — lista de veículos */}
-          <div style={{
-            position: "absolute", right: 0, top: 0, bottom: 0,
-            width: mostrarSidebar ? SIDEBAR_W : 0,
-            zIndex: 500,
-            display: "flex", flexDirection: "column",
-            backgroundColor: "var(--card)",
-            borderLeft: mostrarSidebar ? "1px solid var(--border)" : "none",
-            overflowY: mostrarSidebar ? "auto" : "hidden",
-            overflowX: "hidden",
-            transition: "width 0.2s ease",
-          }}>
-            {conteudoOperacao}
-          </div>
-
-          {/* Ficha do veículo — flutua à ESQUERDA da operação quando há carro selecionado */}
-          {painelVeiculo && (
+          {/* Painel DIREITO — UMA coluna: ficha do veículo (topo) + operação.
+              Antes a ficha flutuava sobre o mapa e tapava tudo no notebook. */}
+          {(mostrarSidebar || painelVeiculo) && (
             <div style={{
-              position: "absolute",
-              top: 12, bottom: 12,
-              right: (mostrarSidebar ? SIDEBAR_W : 0) + 12,
-              width: 330,
-              zIndex: 700,
+              position: "absolute", right: 0, top: 0, bottom: 0,
+              width: LARG_DIR,
+              zIndex: 600,
               display: "flex", flexDirection: "column",
-              transition: "right 0.2s ease",
+              backgroundColor: "var(--card)",
+              borderLeft: "1px solid var(--border)",
+              overflowY: "auto",
+              overflowX: "hidden",
+              transition: "width 0.2s ease",
             }}>
-              {painelVeiculo}
+              {painelVeiculo && (
+                <div style={{ flexShrink: 0, padding: 8, borderBottom: painelVeiculo ? "1px solid var(--border)" : "none" }}>
+                  {painelVeiculo}
+                </div>
+              )}
+              {conteudoOperacao}
             </div>
           )}
 
@@ -1705,7 +1803,7 @@ export default function MapaMonitor({
               title={mostrarSidebar ? "Fechar operação" : "Operação"}
               style={{
                 position: "absolute",
-                right: mostrarSidebar ? SIDEBAR_W : 0,
+                right: (mostrarSidebar || painelVeiculo) ? LARG_DIR : 0,
                 top: "50%", transform: "translateY(-50%)",
                 zIndex: 600, transition: "right 0.2s ease",
                 display: "flex", flexDirection: "column",
@@ -1727,7 +1825,8 @@ export default function MapaMonitor({
 
           {/* Legenda de status */}
           <div style={{
-            position: "absolute", bottom: 28, right: 10, zIndex: 1000,
+            position: "absolute", bottom: 28, right: ((mostrarSidebar || painelVeiculo) ? LARG_DIR : 0) + 10, zIndex: 1000,
+            transition: "right 0.2s ease",
             background: "rgba(6,8,16,0.88)", border: "1px solid rgba(255,255,255,0.1)",
             borderRadius: 8, padding: "8px 12px", backdropFilter: "blur(6px)",
             display: "flex", flexDirection: "column", gap: 5, pointerEvents: "none",
@@ -1769,6 +1868,9 @@ export default function MapaMonitor({
             {flyParaAlerta && <AutoFlyAlerta flyPara={flyParaAlerta} />}
             {flyParaVeiculo && <AutoFlyAlerta flyPara={flyParaVeiculo} />}
             <AutoFlyCritico flyPara={flyParaAlertaCritico} />
+            {cvSelecionado && (
+              <SeguirVeiculo pos={posValida ? posAtual : null} ativo={seguir} />
+            )}
             {zoomCmd && <ControlaZoom zoom={zoomCmd.zoom} gatilho={zoomCmd.g} />}
             <CapturadorZoom onZoom={setZoomMapa} />
             <ClicarMapaVazio onClicarVazio={limparSelecao} />
@@ -1899,10 +2001,11 @@ export default function MapaMonitor({
                   key={vm.cv}
                   position={[vm.lat, vm.lng]}
                   icon={iconeStatus(vm, selecionado)}
-                  zIndexOffset={selecionado ? 1000 : 0}
+                  zIndexOffset={selecionado ? 10000 : vm.nivel === "vermelho" ? 500 : 0}
+                  riseOnHover
                   eventHandlers={{ click: () => { _ultimoCliqueMarcador = Date.now(); onClickVeiculoMapa(vm); } }}
                 >
-                  {mostrarRotulos && zoomMapa >= 13 && (
+                  {mostrarRotulos && zoomMapa >= 12 && (
                     <Tooltip
                       permanent
                       direction="top"
@@ -2060,7 +2163,7 @@ export default function MapaMonitor({
             {posValida && posAtual && (
               <Marker
                 position={[posAtual.lat, posAtual.lng]}
-                icon={iconeStatusSelecionado(corIgnicao)}
+                icon={iconeStatusSelecionado(corSelecionado)}
                 zIndexOffset={2000}
               >
                 <Popup>

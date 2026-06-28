@@ -7,6 +7,7 @@ import {
   detectarExcessoVelocidade,
   detectarParadaCliente,
   detectarParadaLonga,
+  detectarParadaAnomala,
   detectarDesvio,
   detectarTiroteioProximo,
   detectarSaidaNaoAutorizada,
@@ -83,8 +84,11 @@ describe("detectarJammer", () => {
     expect(alerta?.tipo).toBe("jammer");
     expect(alerta?.score).toBe(80);
   });
-  it("atraso no limite inferior (15) aciona jammer", () => {
-    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 15 }))).not.toBeNull();
+  it("atraso no limite inferior (30) aciona jammer", () => {
+    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 30 }))).not.toBeNull();
+  });
+  it("atraso abaixo da janela (15) nao aciona jammer", () => {
+    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 15 }))).toBeNull();
   });
   it("atraso no limite superior (720) aciona jammer", () => {
     expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 720 }))).not.toBeNull();
@@ -101,14 +105,17 @@ describe("detectarJammer", () => {
 });
 
 describe("detectarExcessoVelocidade", () => {
-  it("velocidade=120 retorna excesso atencao", () => {
-    const alerta = detectarExcessoVelocidade(posicaoBase({ velocidade: 120 }));
+  it("velocidade=121 retorna excesso atencao", () => {
+    const alerta = detectarExcessoVelocidade(posicaoBase({ velocidade: 121 }));
     expect(alerta).not.toBeNull();
     expect(alerta?.nivel).toBe("atencao");
     expect(alerta?.tipo).toBe("excesso");
     expect(alerta?.score).toBe(40);
   });
-  it("velocidade=100 nao aciona (limite e >100)", () => {
+  it("velocidade=120 nao aciona (limite e >120)", () => {
+    expect(detectarExcessoVelocidade(posicaoBase({ velocidade: 120 }))).toBeNull();
+  });
+  it("velocidade=100 nao aciona", () => {
     expect(detectarExcessoVelocidade(posicaoBase({ velocidade: 100 }))).toBeNull();
   });
   it("velocidade=60 nao aciona", () => {
@@ -381,17 +388,24 @@ describe("detectarDesvio", () => {
 
 describe("detectarTiroteioProximo", () => {
   const fresco = posicaoBase({ fresco: true });
-  it("tiroteio a 800m com posicao fresca retorna critico", () => {
-    const a = detectarTiroteioProximo(fresco, { distTiroteioM: 800, tiroteioIdadeMin: 25 });
+  it("tiroteio a 500m com posicao fresca retorna critico", () => {
+    const a = detectarTiroteioProximo(fresco, { distTiroteioM: 500, tiroteioIdadeMin: 25 });
     expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("tiroteio");
-    expect(a?.motivo).toContain("800m");
+    expect(a?.score).toBe(88);
+    expect(a?.motivo).toContain("500m");
     expect(a?.motivo).toContain("25min");
   });
-  it("tiroteio a 2km retorna critico (toda a faixa ate 3km e critico)", () => {
+  it("tiroteio a 800m retorna atencao (faixa 600m-2km)", () => {
+    const a = detectarTiroteioProximo(fresco, { distTiroteioM: 800, tiroteioIdadeMin: 25 });
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.tipo).toBe("tiroteio");
+    expect(a?.motivo).toContain("800m");
+  });
+  it("tiroteio a 2km retorna atencao", () => {
     const a = detectarTiroteioProximo(fresco, { distTiroteioM: 2000, tiroteioIdadeMin: 10 });
-    expect(a?.nivel).toBe("critico");
-    expect(a?.score).toBe(82);
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.score).toBe(60);
     expect(a?.motivo).toContain("2,0km");
   });
   it("tiroteio a 4km nao aciona (longe)", () => {
@@ -463,8 +477,8 @@ describe("avaliar", () => {
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("jammer");
   });
-  it("velocidade=120 retorna excesso atencao", () => {
-    const alerta = avaliar(posicaoBase({ velocidade: 120 }), ctxOp);
+  it("velocidade=121 retorna excesso atencao", () => {
+    const alerta = avaliar(posicaoBase({ velocidade: 121 }), ctxOp);
     expect(alerta?.nivel).toBe("atencao");
     expect(alerta?.tipo).toBe("excesso");
   });
@@ -518,6 +532,37 @@ describe("avaliar", () => {
   });
 });
 
+describe("detectarParadaAnomala — supressao por congestionamento", () => {
+  // Cenario base: parada suspeita que DISPARA (cidade, 25min, fora de rota).
+  const ctxParada = {
+    paradoMin: 25,
+    emOperacao: true,
+    foraDaBase: true,
+    noCliente: false,
+    estavEmMovimento: true,
+    esMadrugada: false,
+    emZonaRisco: false,
+    temPOIProximo: false,
+    jaParedoNoCicloAnterior: true,
+  };
+
+  it("veiculo parado isolado (sem vizinhos) dispara parada_anomala", () => {
+    const a = detectarParadaAnomala({ ...ctxParada, vizinhosParados: 0 });
+    expect(a).not.toBeNull();
+    expect(a?.tipo).toBe("parada_anomala");
+  });
+
+  it("2+ veiculos parados na mesma area (transito) NAO dispara", () => {
+    const a = detectarParadaAnomala({ ...ctxParada, vizinhosParados: 2 });
+    expect(a).toBeNull();
+  });
+
+  it("1 vizinho parado por perto ainda dispara (nao e aglomeracao)", () => {
+    const a = detectarParadaAnomala({ ...ctxParada, vizinhosParados: 1 });
+    expect(a).not.toBeNull();
+  });
+});
+
 describe("detectarSaidaNaoAutorizada", () => {
   it("fora da base, sem rota, ignicao ligada e EM MOVIMENTO retorna critico", () => {
     const a = detectarSaidaNaoAutorizada(
@@ -538,6 +583,27 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(a?.nivel).toBe("atencao");
     expect(a?.tipo).toBe("saida_nao_autorizada");
     expect(a?.score).toBe(45);
+  });
+  it("perto da base (distBaseM 1500m) NAO dispara — saindo/manobrando/abastecendo na base", () => {
+    const a = detectarSaidaNaoAutorizada(
+      posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0, distBaseM: 1500 }
+    );
+    expect(a).toBeNull();
+  });
+  it("longe da base (distBaseM 5000m) em movimento ainda dispara critico", () => {
+    const a = detectarSaidaNaoAutorizada(
+      posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0, distBaseM: 5000 }
+    );
+    expect(a?.nivel).toBe("critico");
+  });
+  it("parado perto de posto/POI NAO dispara — abastecendo/parada legitima", () => {
+    const a = detectarSaidaNaoAutorizada(
+      posicaoBase({ ignicao: true, fresco: true, velocidade: 0 }),
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0, distBaseM: 5000, temPOIProximo: true }
+    );
+    expect(a).toBeNull();
   });
   it("dispara 24h: nao depende mais de horario de operacao (movimento de madrugada)", () => {
     const a = detectarSaidaNaoAutorizada(
