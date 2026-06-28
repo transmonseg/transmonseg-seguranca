@@ -598,13 +598,8 @@ export default function PainelCentral({
         onCvChange={(cv) => { cvSelecionadoRef.current = cv; }}
         limparSelecaoRef={limparSelecaoMapaRef}
         selecionarVeiculoRef={selecionarVeiculoMapaRef}
-        onVeiculoComAlertaClicado={(cv, placa) => { setVeiculoPanel({ cv, placa }); setMostrarOperacao(true); }}
-        painelEsquerdo={painelAlertasJsx}
-        mostrarPainelEsquerdo={mostrarAlertas}
-        onTogglePainelEsquerdo={() => setMostrarAlertas((v) => !v)}
-        onToggleSidebar={() => { if (mostrarOperacao) setVeiculoPanel(null); setMostrarOperacao((v) => !v); }}
-        onAbrirSidebar={() => setMostrarOperacao(true)}
-        painelVeiculo={veiculoPanel ? (
+        onVeiculoComAlertaClicado={(cv, placa) => { setVeiculoPanel({ cv, placa }); setMostrarAlertas(true); }}
+        painelEsquerdo={veiculoPanel ? (
           <PainelVeiculoAlerta
             cv={veiculoPanel.cv}
             placa={veiculoPanel.placa}
@@ -612,11 +607,15 @@ export default function PainelCentral({
               id: a.id, status: a.status, nivel: a.nivel,
               tipo: a.tipo, motivo: a.motivo, desde: a.desde, score: a.score,
             }))}
-            onFechar={() => { setVeiculoPanel(null); setMostrarOperacao(false); limparSelecaoMapaRef.current?.(); }}
+            onFechar={() => { setVeiculoPanel(null); limparSelecaoMapaRef.current?.(); }}
             onAlertaResolvido={removerAlerta}
             empresa={empresaNome}
           />
-        ) : undefined}
+        ) : painelAlertasJsx}
+        mostrarPainelEsquerdo={mostrarAlertas || !!veiculoPanel}
+        onTogglePainelEsquerdo={() => { if (veiculoPanel) { setVeiculoPanel(null); limparSelecaoMapaRef.current?.(); } else setMostrarAlertas((v) => !v); }}
+        onToggleSidebar={() => setMostrarOperacao((v) => !v)}
+        onAbrirSidebar={() => setMostrarOperacao(true)}
       />
 
       {/* Multi-toast de criticos — centrado no topo, abaixo do header */}
@@ -682,7 +681,7 @@ export default function PainelCentral({
                   if (t.lat != null && t.lng != null) setFlyParaAlerta({ lat: t.lat, lng: t.lng, gatilho: Date.now() });
                   selecionarVeiculoMapaRef.current?.(t.cv, t.placa);
                   setVeiculoPanel({ cv: t.cv, placa: t.placa });
-                  setMostrarOperacao(true);
+                  setMostrarAlertas(true);
                 }}
                 style={{ padding: "0.3rem 0.65rem", borderRadius: 7, fontSize: 11, fontWeight: 800, background: "var(--vermelho, #ef4444)", color: "#fff", border: "none", cursor: "pointer", letterSpacing: "0.05em" }}
               >

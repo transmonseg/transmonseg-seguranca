@@ -144,7 +144,6 @@ interface Props {
   mostrarPainelEsquerdo?: boolean;
   onTogglePainelEsquerdo?: () => void;
   onToggleSidebar?: () => void;
-  painelVeiculo?: ReactNode;
   onAbrirSidebar?: () => void;
 }
 
@@ -568,7 +567,6 @@ export default function MapaMonitor({
   mostrarPainelEsquerdo = false,
   onTogglePainelEsquerdo,
   onToggleSidebar,
-  painelVeiculo,
   onAbrirSidebar,
 }: Props) {
   useEffect(() => { fixIcones(); }, []);
@@ -1749,7 +1747,7 @@ export default function MapaMonitor({
 
           {/* Painel DIREITO — UMA coluna: ficha do veículo (topo) + operação.
               Antes a ficha flutuava sobre o mapa e tapava tudo no notebook. */}
-          {(mostrarSidebar || painelVeiculo) && (
+          {mostrarSidebar && (
             <div style={{
               position: "absolute", right: 0, top: 0, bottom: 0,
               width: LARG_DIR,
@@ -1761,11 +1759,6 @@ export default function MapaMonitor({
               overflowX: "hidden",
               transition: "width 0.2s ease",
             }}>
-              {painelVeiculo && (
-                <div style={{ flexShrink: 0, padding: 8, borderBottom: painelVeiculo ? "1px solid var(--border)" : "none" }}>
-                  {painelVeiculo}
-                </div>
-              )}
               {conteudoOperacao}
             </div>
           )}
@@ -1803,7 +1796,7 @@ export default function MapaMonitor({
               title={mostrarSidebar ? "Fechar operação" : "Operação"}
               style={{
                 position: "absolute",
-                right: (mostrarSidebar || painelVeiculo) ? LARG_DIR : 0,
+                right: mostrarSidebar ? LARG_DIR : 0,
                 top: "50%", transform: "translateY(-50%)",
                 zIndex: 600, transition: "right 0.2s ease",
                 display: "flex", flexDirection: "column",
@@ -1825,7 +1818,7 @@ export default function MapaMonitor({
 
           {/* Legenda de status */}
           <div style={{
-            position: "absolute", bottom: 28, right: ((mostrarSidebar || painelVeiculo) ? LARG_DIR : 0) + 10, zIndex: 1000,
+            position: "absolute", bottom: 28, right: (mostrarSidebar ? LARG_DIR : 0) + 10, zIndex: 1000,
             transition: "right 0.2s ease",
             background: "rgba(6,8,16,0.88)", border: "1px solid rgba(255,255,255,0.1)",
             borderRadius: 8, padding: "8px 12px", backdropFilter: "blur(6px)",
