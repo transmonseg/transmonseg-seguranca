@@ -1036,10 +1036,19 @@ export async function POST(request: Request) {
     if (agora.getMinutes() === 0) {
       const pgClean = await pool.connect();
       try {
+        // Campos pesados (geom, lat, lng, contexto) — zeramos logo que resolve;
+        // o motor pode ter resolvido sem limpar, então varremos aqui também.
+        await pgClean.query(
+          `UPDATE alertas
+           SET geom = NULL, lat = NULL, lng = NULL, contexto = '{}'
+           WHERE status IN ('resolvido', 'falso_positivo')
+             AND geom IS NOT NULL`
+        );
+        // Alertas resolvidos > 30 dias: apenas texto necessário para o dashboard.
         await pgClean.query(
           `DELETE FROM alertas
            WHERE status IN ('resolvido', 'falso_positivo')
-             AND COALESCE(resolvido_em, created_at) < now() - interval '90 days'`
+             AND COALESCE(resolvido_em, created_at) < now() - interval '30 days'`
         );
         await pgClean.query(
           `DELETE FROM poi_cache WHERE atualizado_em < now() - interval '7 days'`

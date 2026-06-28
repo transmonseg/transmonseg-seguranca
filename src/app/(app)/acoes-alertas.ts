@@ -38,15 +38,17 @@ export async function reconhecerAlerta(id: string): Promise<ResultadoAcao> {
   return atualizar(id, { status: "reconhecido" });
 }
 
+// Campos pesados removidos ao resolver — texto basta para o dashboard histórico.
+const STRIP_PESADO = { geom: null, lat: null, lng: null, contexto: {} };
+
 // Operador tratou e encerrou (ligou, confirmou, resolveu).
 export async function resolverAlerta(id: string): Promise<ResultadoAcao> {
-  return atualizar(id, { status: "resolvido", resolvido_em: new Date().toISOString() });
+  return atualizar(id, { status: "resolvido", resolvido_em: new Date().toISOString(), ...STRIP_PESADO });
 }
 
-// Operador classificou como engano: encerra e SILENCIA o tipo por 2h no motor
-// (vira rótulo de treino para afinar a detecção).
+// Operador classificou como engano: encerra e SILENCIA o tipo por 2h no motor.
 export async function marcarFalsoPositivo(id: string): Promise<ResultadoAcao> {
-  return atualizar(id, { status: "falso_positivo", resolvido_em: new Date().toISOString() });
+  return atualizar(id, { status: "falso_positivo", resolvido_em: new Date().toISOString(), ...STRIP_PESADO });
 }
 
 // Resolve vários alertas de uma vez (botão "Resolver todos" do painel).
@@ -59,7 +61,7 @@ export async function resolverVarios(
   const admin = createAdminClient();
   const { error } = await admin
     .from("alertas")
-    .update({ status: "resolvido", resolvido_em: new Date().toISOString(), operador_id: opId })
+    .update({ status: "resolvido", resolvido_em: new Date().toISOString(), operador_id: opId, ...STRIP_PESADO })
     .in("id", ids);
   if (error) return { erro: "Não foi possível resolver os alertas." };
   revalidatePath("/");
