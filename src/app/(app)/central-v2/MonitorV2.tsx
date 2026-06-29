@@ -1369,9 +1369,9 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                     <div style={{ fontSize: 11, color: T.dim }}>Sem rota hoje</div>
                   ) : (
                     <>
-                      {/* progresso */}
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: FONT_MONO, color: T.text }}>
+                      {/* progresso compacto */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: FONT_MONO, color: T.text, flexShrink: 0 }}>
                           {alvosFeitos}/{alvosTotal}
                         </span>
                         <div style={{ flex: 1, height: 3, background: `${T.border}88`, borderRadius: 2, overflow: "hidden" }}>
@@ -1382,51 +1382,30 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                           }} />
                         </div>
                       </div>
-                      {/* lista completa: feitos + pendentes */}
-                      <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 96, overflowY: "auto", overflowX: "hidden" }}>
-                        {alvosOrdenados.map((p, i) => {
-                          const isPendente = !p.feito;
-                          const isProximo = isPendente && p.ordem === alvosPendentes[0]?.ordem;
-                          return (
-                            <div key={`alvo-row-${i}`} style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
-                              {p.feito ? (
-                                <span style={{
-                                  flexShrink: 0, width: 15, height: 15, borderRadius: "50%",
-                                  display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                  fontSize: 9, background: T.green + "33", color: T.green,
-                                }}>✓</span>
-                              ) : (
-                                <span style={{
-                                  flexShrink: 0, width: 15, height: 15, borderRadius: "50%",
-                                  display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                  fontSize: 8, fontWeight: 800, fontFamily: FONT_MONO, lineHeight: 1,
-                                  background: isProximo ? "#f97316" : T.border,
-                                  color: isProximo ? "#0a0a0a" : T.muted,
-                                }}>{p.ordem}</span>
-                              )}
-                              <span style={{
-                                flex: 1, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                                fontWeight: isProximo ? 600 : 400,
-                                color: p.feito ? T.dim : isProximo ? T.text : T.muted,
-                                textDecoration: p.feito ? "line-through" : "none",
-                              }}>
-                                {p.nome || `Ponto ${p.ordem}`}{p.documento && <span style={{ color: T.dim, fontWeight: 400 }}> · {p.documento}</span>}
-                              </span>
-                              {isProximo && etaProxima != null && (
-                                <span style={{
-                                  flexShrink: 0, fontSize: 9, fontFamily: FONT_MONO,
-                                  color: "#f97316", fontWeight: 700, marginLeft: 4,
-                                }}>~{etaProxima}min</span>
-                              )}
-                              {p.dist != null && (
-                                <span style={{ flexShrink: 0, fontSize: 9, color: isProximo ? "#f97316" : T.dim, fontFamily: FONT_MONO }}>
-                                  {formatarDist(p.dist)}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
+                      {/* só a próxima entrega */}
+                      {proximoCliente ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+                          <span style={{
+                            flexShrink: 0, width: 14, height: 14, borderRadius: "50%",
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                            fontSize: 7, fontWeight: 800, fontFamily: FONT_MONO, lineHeight: 1,
+                            background: "#f97316", color: "#0a0a0a",
+                          }}>{proximoCliente.ordem}</span>
+                          <span style={{
+                            flex: 1, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                            fontWeight: 600, color: T.text,
+                          }}>
+                            {proximoCliente.nome || `Ponto ${proximoCliente.ordem}`}
+                          </span>
+                          {etaProxima != null && (
+                            <span style={{ flexShrink: 0, fontSize: 9, fontFamily: FONT_MONO, color: "#f97316", fontWeight: 700 }}>
+                              ~{etaProxima}min
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 10, color: T.green, fontWeight: 600 }}>Rota concluída</div>
+                      )}
                     </>
                   )}
                 </div>
