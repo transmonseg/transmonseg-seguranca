@@ -170,8 +170,8 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const [confirmarResolver, setConfirmarResolver] = useState(false);
   const [resolvendoTodos, startResolver] = useTransition();
 
-  // Filtro por tipo de alerta (sidebar)
-  const [filtroTipo, setFiltroTipo] = useState<string | null>(null);
+  // Filtro por tipo de alerta (sidebar) — multi-select
+  const [filtroTipos, setFiltroTipos] = useState<Set<string>>(new Set());
 
   // Theme + satellite (satélite padrão = true)
   const [tema, setTema] = useState<"dark" | "light">("dark");
@@ -233,6 +233,14 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const setVistaComPersistencia = useCallback((v: "tudo" | "critico" | "atencao") => {
     localStorage.setItem("transmonseg-vista", v);
     setVista(v);
+  }, []);
+
+  const toggleFiltroTipo = useCallback((tipo: string) => {
+    setFiltroTipos(prev => {
+      const next = new Set(prev);
+      if (next.has(tipo)) next.delete(tipo); else next.add(tipo);
+      return next;
+    });
   }, []);
 
   const tocarPanico = useCallback(() => {
@@ -584,7 +592,11 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
 
   // ── Derived ──────────────────────────────────────────────────────────
   const vmFiltrado: VeiculoMapa[] = useMemo(() => {
-    const base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
+    let base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
+    if (filtroTipos.size > 0) {
+      const cvsComTipo = new Set(alertas.filter(a => filtroTipos.has(a.tipo)).map(a => a.cv));
+      base = base.filter(v => cvsComTipo.has(v.cv));
+    }
     if (!cvSelecionado || base.some(v => v.cv === cvSelecionado)) return base;
     // Veículo selecionado via alerta mas fora do feed ao vivo — injeta posição do alerta
     const al = alertas.find(a => a.cv === cvSelecionado && a.lat && a.lng);
@@ -597,7 +609,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
       lat: al.lat, lng: al.lng, local: al.local, rumo: null,
     };
     return [...base, sintetico];
-  }, [veiculosMapa, filtroComm, cvSelecionado, alertas]);
+  }, [veiculosMapa, filtroComm, filtroTipos, cvSelecionado, alertas]);
 
   const vmAtual = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
 
@@ -608,9 +620,9 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     : null;
 
   const alertasFiltrados = alertas.filter(a => {
-    if (vista === "critico") return a.nivel === "critico";
-    if (vista === "atencao") return a.nivel === "atencao";
-    if (filtroTipo && a.tipo !== filtroTipo) return false;
+    if (vista === "critico" && a.nivel !== "critico") return false;
+    if (vista === "atencao" && a.nivel !== "atencao") return false;
+    if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
     return true;
   });
 
@@ -639,6 +651,19 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   }));
   const alvosPendentes = alvosOrdenados.filter(p => !p.feito);
   const proximoCliente = alvosPendentes[0] ?? null;
+
+  // Progresso de entregas por placa (para exibir nos cards de alerta)
+  const progressoPorPlaca = useMemo(() => {
+    const m = new Map<string, { feitos: number; total: number }>();
+    for (const a of alvosGlobais) {
+      if (!a.placa) continue;
+      const e = m.get(a.placa) ?? { feitos: 0, total: 0 };
+      e.total++;
+      if (a.feito) e.feitos++;
+      m.set(a.placa, e);
+    }
+    return m;
+  }, [alvosGlobais]);
 
   // Cor de status do veiculo selecionado
   const placaColor = vmAtual
@@ -937,35 +962,46 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             })}
           </div>
 
-          {/* Chips de tipo — filtro rápido por categoria */}
+          {/* Chips de tipo — multi-select, filtra sidebar + mapa */}
           {(() => {
-            const tiposAtivos = [...new Set(alertasFiltrados.map(a => a.tipo))].sort(
-              (a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0)
-            );
-            if (tiposAtivos.length === 0) return null;
+            // Tipos disponíveis com base na vista (nível), mas SEM filtro de tipo para não sumir
+            const tiposDisponiveis = [...new Set(alertas.filter(a => {
+              if (vista === "critico" && a.nivel !== "critico") return false;
+              if (vista === "atencao" && a.nivel !== "atencao") return false;
+              return true;
+            }).map(a => a.tipo))].sort((a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0));
+            if (tiposDisponiveis.length === 0) return null;
             return (
               <div style={{
-                display: "flex", gap: 4, padding: "4px 6px",
-                overflowX: "auto", flexShrink: 0, borderBottom: `1px solid ${T.border}`,
-                scrollbarWidth: "none",
+                display: "flex", gap: 3, padding: "5px 6px",
+                flexWrap: "wrap", borderBottom: `1px solid ${T.border}`,
+                flexShrink: 0,
               }}>
-                <button onClick={() => setFiltroTipo(null)} style={{
-                  flexShrink: 0, height: 20, padding: "0 8px", borderRadius: 10,
-                  border: `1px solid ${filtroTipo === null ? T.accent : T.border}`,
-                  background: filtroTipo === null ? `${T.accent}22` : "transparent",
-                  color: filtroTipo === null ? T.accent : T.muted,
-                  fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: FONT_SANS,
-                }}>TODOS</button>
-                {tiposAtivos.map(tipo => (
-                  <button key={tipo} onClick={() => setFiltroTipo(filtroTipo === tipo ? null : tipo)} style={{
-                    flexShrink: 0, height: 20, padding: "0 8px", borderRadius: 10,
-                    border: `1px solid ${filtroTipo === tipo ? T.accent : T.border}`,
-                    background: filtroTipo === tipo ? `${T.accent}22` : "transparent",
-                    color: filtroTipo === tipo ? T.accent : T.muted,
-                    fontSize: 9, fontWeight: 600, cursor: "pointer", fontFamily: FONT_SANS,
-                    whiteSpace: "nowrap",
-                  }}>{NOME_TIPO[tipo] ?? tipo}</button>
-                ))}
+                {tiposDisponiveis.map(tipo => {
+                  const ativo = filtroTipos.has(tipo);
+                  const count = alertas.filter(a => a.tipo === tipo).length;
+                  return (
+                    <button key={tipo} onClick={() => toggleFiltroTipo(tipo)} style={{
+                      height: 22, padding: "0 7px", borderRadius: 5,
+                      border: `1px solid ${ativo ? T.accent : T.border}`,
+                      background: ativo ? `${T.accent}22` : "transparent",
+                      color: ativo ? T.accent : T.muted,
+                      fontSize: 10, fontWeight: ativo ? 700 : 500,
+                      cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
+                      display: "flex", alignItems: "center", gap: 4,
+                    }}>
+                      <span>{NOME_TIPO[tipo] ?? tipo}</span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: ativo ? T.accent : T.dim }}>{count}</span>
+                    </button>
+                  );
+                })}
+                {filtroTipos.size > 0 && (
+                  <button onClick={() => setFiltroTipos(new Set())} style={{
+                    height: 22, padding: "0 8px", borderRadius: 5,
+                    border: `1px solid ${T.border}`, background: "transparent",
+                    color: T.dim, fontSize: 11, cursor: "pointer",
+                  }}>✕</button>
+                )}
               </div>
             );
           })()}
@@ -1071,6 +1107,25 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                         {a.local}
                       </p>
                     )}
+                    {(() => {
+                      const prog = progressoPorPlaca.get(a.placa);
+                      if (!prog || prog.total === 0) return null;
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                          <span style={{ fontSize: 9, color: T.dim, fontFamily: FONT_MONO, flexShrink: 0 }}>
+                            {prog.feitos}/{prog.total} entr.
+                          </span>
+                          <div style={{ flex: 1, height: 2, background: `${T.border}`, borderRadius: 1, overflow: "hidden" }}>
+                            <div style={{
+                              height: "100%",
+                              width: `${prog.total > 0 ? Math.round((prog.feitos / prog.total) * 100) : 0}%`,
+                              background: prog.feitos === prog.total ? T.green : T.accent,
+                              borderRadius: 1, transition: "width .3s",
+                            }} />
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <div style={{ display: "flex", gap: 4 }}>
                       <button onMouseDown={e => { e.stopPropagation(); selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined); }}
                         className="v2-btn-tiny" style={tinyBtn(T.accent)}>
