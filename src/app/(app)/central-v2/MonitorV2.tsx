@@ -137,6 +137,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const [alvos, setAlvos] = useState<PontoEntrega[]>([]);
   // Pontos de entrega de TODA a frota — exibidos quando nenhum veículo está selecionado
   const [alvosGlobais, setAlvosGlobais] = useState<PontoEntrega[]>([]);
+  const [mostrarEntregas, setMostrarEntregas] = useState(false);
   const [horas, setHoras] = useState<(typeof PERIODOS)[number]>(24);
   const [mostrarRastro, setMostrarRastro] = useState(false);
   const [mostrarParadas, setMostrarParadas] = useState(false);
@@ -776,8 +777,14 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
           ))}
         </div>
 
-        {/* ── Coluna DIREITA: SAT + settings + apito ── */}
+        {/* ── Coluna DIREITA: ENTR + SAT + settings + apito ── */}
         <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 8 }}>
+          <button
+            onClick={() => setMostrarEntregas(v => !v)}
+            title={mostrarEntregas ? "Ocultar pontos de entrega" : `Ver todos os pontos de entrega (${alvosGlobais.length > 0 ? alvosGlobais.length : "carregando..."})`}
+            style={outlineBtn(mostrarEntregas, T.accent)}>
+            ENTR
+          </button>
           <button onClick={() => setSateliteComPersistencia(!satelite)} title={satelite ? "Mapa padrao" : "Vista satelite"}
             style={outlineBtn(satelite, T.accent)}>
             SAT
@@ -1109,7 +1116,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             mostrarParadas={mostrarParadas}
             rastro={rastro}
             paradas={paradas}
-            alvos={cvSelecionado ? alvos : alvosGlobais}
+            alvos={cvSelecionado ? alvos : (mostrarEntregas ? alvosGlobais : [])}
             favelas={camFavelas ? favelas : null}
             tiroteios={camTiroteios ? tiroteios : []}
             rouboCarga={camRouboCarga ? rouboCarga : null}
@@ -1140,11 +1147,8 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             <span style={{ fontWeight: 700 }}>{vmFiltrado.length}</span>
             <span style={{ color: T.dim }}> veículos</span>
             {filtroComm != null && <span style={{ color: T.accent }}> &lt;{filtroComm}min</span>}
-            {!cvSelecionado && alvosGlobais.length > 0 && (
-              <span style={{ color: T.accent, marginLeft: 8 }}>· {alvosGlobais.length} entregas</span>
-            )}
-            {!cvSelecionado && alvosGlobais.length === 0 && veiculosBase.length > 0 && (
-              <span style={{ color: T.dim, marginLeft: 8 }}>· carregando entregas...</span>
+            {!cvSelecionado && mostrarEntregas && alvosGlobais.length > 0 && (
+              <span style={{ color: T.accent, marginLeft: 8 }}>· {Math.min(alvosGlobais.filter(a => a.lat !== 0 || a.lng !== 0).length, 200)} de {alvosGlobais.length} entregas</span>
             )}
           </div>
 

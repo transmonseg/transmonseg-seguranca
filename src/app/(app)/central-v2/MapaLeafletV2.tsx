@@ -561,12 +561,12 @@ export default function MapaLeafletV2({
 
       {/* linha pontilhada gerenciada imperativamente via useEffect + routeLinesRef */}
 
-      {/* ── Ícones dos alvos (círculos numerados) ── */}
-      {alvos.filter(a => a.lat !== 0 || a.lng !== 0).map((alvo, i) => {
+      {/* ── Ícones dos alvos (círculos numerados) — limitado a 200 para não travar ── */}
+      {alvos.filter(a => a.lat !== 0 || a.lng !== 0).slice(0, 200).map((alvo, i) => {
         const proximo = i === primeiroPendente;
         return (
           <Marker
-            key={`alvo-pin-${alvo.placa ?? ""}${alvo.ordem}`}
+            key={`alvo-pin-${alvo.placa ?? "x"}${alvo.ordem}`}
             position={{ lat: alvo.lat, lng: alvo.lng }}
             icon={criarIconeAlvo(alvo.ordem + 1, alvo.feito, proximo)}
             title={alvo.nome || `Entrega ${alvo.ordem + 1}`}
