@@ -696,7 +696,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
         {/* ── Coluna CENTRAL: zoom + busca + COMM — tudo centralizado ── */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "center",
-          gap: 5,
+          gap: 5, minWidth: 0, overflowX: "auto", scrollbarWidth: "none",
         }}>
           {ZOOM_LABELS.map(([label, z]) => (
             <button key={label} onClick={() => cmdZoom(z)}
