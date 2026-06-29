@@ -92,6 +92,7 @@ export interface Props {
   tema: "dark" | "light";
   satelite: boolean;
   onZoomChange?: (zoom: number) => void;
+  onEtaChange?: (eta: number | null) => void;
 }
 
 const CENTER_DEFAULT = { lat: -22.9, lng: -43.2 };
@@ -173,15 +174,26 @@ function formatarHoraParada(iso: string): string {
   } catch { return iso; }
 }
 
+function encodeForSvg(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // Cópia exata do iconeStatus do V1 (MapaMonitor.tsx) adaptada para SVG data URL
-function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens): google.maps.Icon {
+function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showLabel: boolean): google.maps.Icon {
   const cor = corVeiculo(vm, tok);
   const semComm = vm.atraso_min > 60;
   const temSeta = vm.velocidade > 5 && vm.rumo != null;
 
   if (selecionado) {
     // V1: círculo 44×44 com fundo escuro e borda colorida
-    const svg = `<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
+    const height = showLabel ? 60 : 44;
+    let labelSvg = "";
+    if (showLabel) {
+      labelSvg =
+        `<rect x="2" y="46" width="40" height="13" rx="4" fill="rgba(0,0,0,0.85)"/>` +
+        `<text x="22" y="55.5" text-anchor="middle" font-family="'Courier New',Courier,monospace" font-size="9" font-weight="700" fill="white" letter-spacing="0.8">${encodeForSvg(vm.placa)}</text>`;
+    }
+    const svg = `<svg width="44" height="${height}" viewBox="0 0 44 ${height}" xmlns="http://www.w3.org/2000/svg">
       <circle cx="22" cy="22" r="22" fill="${cor}" opacity="0.15"/>
       <circle cx="22" cy="22" r="19" fill="rgba(4,4,8,0.96)" stroke="${cor}" stroke-width="3"/>
       <g transform="translate(10,10)" fill="none" stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -190,16 +202,47 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens): goog
         <circle cx="5.5" cy="18.5" r="2.5"/>
         <circle cx="18.5" cy="18.5" r="2.5"/>
       </g>
+      ${labelSvg}
     </svg>`;
     return {
       url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-      scaledSize: new window.google.maps.Size(44, 44),
+      scaledSize: new window.google.maps.Size(44, height),
       anchor: new window.google.maps.Point(22, 22),
     };
   }
 
   // V1: teardrop 30×38, caminho exato, truck translate(4,4) scale(0.85) stroke-width=3, stroke branco
   const alpha = semComm ? "0.5" : "1";
+
+  if (showLabel) {
+    // Canvas 50×52: teardrop centrado em x=25
+    let setaSvgLabel = "";
+    if (temSeta && vm.rumo != null) {
+      const rumoRad = (vm.rumo * Math.PI) / 180;
+      const x2 = (25 + Math.sin(rumoRad) * 9).toFixed(1);
+      const y2 = (15 - Math.cos(rumoRad) * 9).toFixed(1);
+      setaSvgLabel =
+        `<line x1="25" y1="15" x2="${x2}" y2="${y2}" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.95"/>` +
+        `<circle cx="${x2}" cy="${y2}" r="2" fill="white" opacity="0.95"/>`;
+    }
+    const svgLabel = `<svg width="50" height="52" viewBox="0 0 50 52" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
+      <path d="M25 2 C17 2 12 8 12 15 C12 22 18 30 25 36 C32 30 38 22 38 15 C38 8 33 2 25 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
+      <g transform="translate(14,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1" y="3" width="15" height="13"/>
+        <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+        <circle cx="5.5" cy="18.5" r="2.5"/>
+        <circle cx="18.5" cy="18.5" r="2.5"/>
+      </g>
+      ${setaSvgLabel}
+      <rect x="2" y="38" width="46" height="13" rx="4" fill="rgba(0,0,0,0.82)"/>
+      <text x="25" y="47.5" text-anchor="middle" font-family="'Courier New',Courier,monospace" font-size="9" font-weight="700" fill="white" letter-spacing="0.5">${encodeForSvg(vm.placa)}</text>
+    </svg>`;
+    return {
+      url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svgLabel)}`,
+      scaledSize: new window.google.maps.Size(50, 52),
+      anchor: new window.google.maps.Point(25, 36),
+    };
+  }
 
   // V1: seta de heading — cx=15, cy=15, len=9 no viewBox 30×38
   let setaSvg = "";
@@ -272,7 +315,7 @@ export default function MapaLeafletV2({
   rastro, paradas, alvos, alvosGlobais, favelas, tiroteios, rouboCarga,
   seguir, gatilhoFrota, flyPara, zoomCmd,
   onVeiculoClick, onMapaVazioClick, onAlvoClick,
-  mapTokens, tema, satelite, onZoomChange,
+  mapTokens, tema, satelite, onZoomChange, onEtaChange,
 }: Props) {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "",
@@ -282,6 +325,10 @@ export default function MapaLeafletV2({
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [paradaSelecionada, setParadaSelecionada] = useState<Parada | null>(null);
   const [alvoSelecionado, setAlvoSelecionado] = useState<PontoEntrega | null>(null);
+  const [zoomLocal, setZoomLocal] = useState(11);
+  const showLabel = zoomLocal >= 14;
+  const [etaMinutos, setEtaMinutos] = useState<number | null>(null);
+  const lastEtaCallRef = useRef<{ at: number; key: string }>({ at: 0, key: "" });
   const prevFlyG   = useRef(-1);
   const prevZoomG  = useRef(0);
   const prevFrotaG = useRef(-1);
@@ -389,27 +436,58 @@ export default function MapaLeafletV2({
     ];
   })();
 
-  // Linha pontilhada de rota — imperativa pelo mesmo bug do Polyline declarativo no React 18.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Linha pontilhada de rota com ETA via Directions API — imperativa pelo mesmo bug do Polyline declarativo no React 18.
   useEffect(() => {
     routeLinesRef.current.forEach(p => p.setMap(null));
     routeLinesRef.current = [];
-    if (!map || !routeWaypoints || routeWaypoints.length < 2) return;
-    const dashIcon: google.maps.Symbol = { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 4 };
-    const outer = new google.maps.Polyline({
-      map, path: routeWaypoints, strokeColor: "#000000", strokeWeight: 4,
-      strokeOpacity: 0, geodesic: true, zIndex: 10,
-      icons: [{ icon: { ...dashIcon, strokeColor: "#000000", strokeOpacity: 0.55 }, offset: "0", repeat: "14px" }],
-    });
-    const inner = new google.maps.Polyline({
-      map, path: routeWaypoints, strokeColor: "#f97316", strokeWeight: 2,
-      strokeOpacity: 0, geodesic: true, zIndex: 11,
-      icons: [{ icon: { ...dashIcon, strokeColor: "#f97316", strokeOpacity: 0.9 }, offset: "0", repeat: "14px" }],
-    });
-    routeLinesRef.current = [outer, inner];
+    if (!map || !routeWaypoints || routeWaypoints.length < 2) {
+      setEtaMinutos(null);
+      onEtaChange?.(null);
+      return;
+    }
+
+    // Desenha linha reta imediatamente (feedback visual instantâneo)
+    const drawLines = (path: google.maps.LatLngLiteral[]) => {
+      routeLinesRef.current.forEach(p => p.setMap(null));
+      routeLinesRef.current = [];
+      const dashIcon: google.maps.Symbol = { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 4 };
+      const outer = new google.maps.Polyline({
+        map, path, strokeColor: "#000000", strokeWeight: 4, strokeOpacity: 0, geodesic: true, zIndex: 10,
+        icons: [{ icon: { ...dashIcon, strokeColor: "#000000", strokeOpacity: 0.55 }, offset: "0", repeat: "14px" }],
+      });
+      const inner = new google.maps.Polyline({
+        map, path, strokeColor: "#f97316", strokeWeight: 2, strokeOpacity: 0, geodesic: true, zIndex: 11,
+        icons: [{ icon: { ...dashIcon, strokeColor: "#f97316", strokeOpacity: 0.9 }, offset: "0", repeat: "14px" }],
+      });
+      routeLinesRef.current = [outer, inner];
+    };
+
+    drawLines(routeWaypoints);
+
+    // Throttle: não chamar Directions API mais de 1x por minuto para o mesmo par origin+dest
+    const callKey = `${routeWaypoints[0].lat.toFixed(3)},${routeWaypoints[0].lng.toFixed(3)}->${routeWaypoints[1].lat.toFixed(3)},${routeWaypoints[1].lng.toFixed(3)}`;
+    const now = Date.now();
+    const last = lastEtaCallRef.current;
+    if (last.key === callKey && now - last.at < 60_000) return;
+    lastEtaCallRef.current = { at: now, key: callKey };
+
+    const ds = new google.maps.DirectionsService();
+    ds.route(
+      { origin: routeWaypoints[0], destination: routeWaypoints[1], travelMode: google.maps.TravelMode.DRIVING },
+      (result, status) => {
+        if (status !== "OK" || !result?.routes[0]) return;
+        const leg = result.routes[0].legs[0];
+        const durSec = (leg.duration_in_traffic ?? leg.duration)?.value ?? 0;
+        const eta = Math.ceil(durSec / 60);
+        setEtaMinutos(eta);
+        onEtaChange?.(eta);
+        const roadPath = result.routes[0].overview_path.map(p => ({ lat: p.lat(), lng: p.lng() }));
+        drawLines(roadPath);
+      }
+    );
+
     return () => {
-      outer.setMap(null);
-      inner.setMap(null);
+      routeLinesRef.current.forEach(p => p.setMap(null));
       routeLinesRef.current = [];
     };
   }, [map, routeWaypoints]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -497,7 +575,7 @@ export default function MapaLeafletV2({
       onLoad={onLoad}
       onUnmount={onUnmount}
       onClick={() => { setParadaSelecionada(null); setAlvoSelecionado(null); onMapaVazioClick(); }}
-      onZoomChanged={() => { if (map) onZoomChange?.(map.getZoom() ?? 11); }}
+      onZoomChanged={() => { if (map) { const z = map.getZoom() ?? 11; setZoomLocal(z); onZoomChange?.(z); } }}
       options={{
         mapTypeId: satelite ? "hybrid" : "roadmap",
         disableDefaultUI: true,
@@ -761,7 +839,7 @@ export default function MapaLeafletV2({
           <Marker
             key={vm.cv}
             position={{ lat: vm.lat!, lng: vm.lng! }}
-            icon={criarIcone(vm, selecionado, mapTokens)}
+            icon={criarIcone(vm, selecionado, mapTokens, showLabel)}
             opacity={dimmed ? 0.3 : 1}
             zIndex={selecionado ? 999 : vm.nivel === "vermelho" ? 100 : 50}
             title={`${vm.placa} · ${vm.velocidade}km/h${vm.tipo ? ` · ${vm.tipo}` : ""}`}

@@ -186,6 +186,9 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   // Alerta ativo (último card clicado na sidebar)
   const [alertaAtivoId, setAlertaAtivoId] = useState<string | null>(null);
 
+  // ETA da próxima entrega (minutos, calculado pelo mapa via Directions API)
+  const [etaProxima, setEtaProxima] = useState<number | null>(null);
+
   // Panico overlay
   const [panicoAlerta, setPanicoAlerta] = useState<AlertaEnriquecido | null>(null);
   const panicoVistosRef = useRef<Set<string>>(new Set());
@@ -497,6 +500,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     setRastro([]);
     setParadas([]);
     setAlvos([]);
+    setEtaProxima(null);
     setCmdSirene("idle");
     setCmdBloqueio("idle");
     setFallbackUrl(null);
@@ -1184,6 +1188,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             tema={tema}
             satelite={satelite}
             onZoomChange={setZoomAtual}
+            onEtaChange={setEtaProxima}
           />
 
           {/* Vehicle count badge */}
@@ -1407,6 +1412,12 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                               }}>
                                 {p.nome || `Ponto ${p.ordem}`}{p.documento && <span style={{ color: T.dim, fontWeight: 400 }}> · {p.documento}</span>}
                               </span>
+                              {isProximo && etaProxima != null && (
+                                <span style={{
+                                  flexShrink: 0, fontSize: 9, fontFamily: FONT_MONO,
+                                  color: "#f97316", fontWeight: 700, marginLeft: 4,
+                                }}>~{etaProxima}min</span>
+                              )}
                               {p.dist != null && (
                                 <span style={{ flexShrink: 0, fontSize: 9, color: isProximo ? "#f97316" : T.dim, fontFamily: FONT_MONO }}>
                                   {formatarDist(p.dist)}
