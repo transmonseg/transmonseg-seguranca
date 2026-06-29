@@ -77,6 +77,7 @@ export interface Props {
   rastro: [number, number][];
   paradas: Parada[];
   alvos: PontoEntrega[];
+  alvosGlobais?: PontoEntrega[];
   favelas: GeoJsonCollection | null;
   tiroteios: Tiroteio[];
   rouboCarga: GeoJsonCollection | null;
@@ -247,7 +248,7 @@ function criarIconeAlvo(feito: boolean, proximo: boolean): google.maps.Icon {
 
 export default function MapaLeafletV2({
   veiculosMapa, cvSelecionado, mostrarRastro, mostrarParadas,
-  rastro, paradas, alvos, favelas, tiroteios, rouboCarga,
+  rastro, paradas, alvos, alvosGlobais, favelas, tiroteios, rouboCarga,
   seguir, gatilhoFrota, flyPara, zoomCmd,
   onVeiculoClick, onMapaVazioClick, onAlvoClick,
   mapTokens, tema, satelite, onZoomChange,
@@ -266,6 +267,7 @@ export default function MapaLeafletV2({
   const lastPanKey = useRef("");
   const rastroLinesRef = useRef<google.maps.Polyline[]>([]);
   const routeLinesRef  = useRef<google.maps.Polyline[]>([]);
+  const alvosGlobaisMarkersRef = useRef<google.maps.Marker[]>([]);
 
   // Controla o rastro de forma imperativa para garantir limpeza quando cvSelecionado vai a null.
   // @react-google-maps/api tem bug no React 18: Polyline declarativo não chama setMap(null) ao desmontar.
@@ -388,6 +390,47 @@ export default function MapaLeafletV2({
       routeLinesRef.current = [];
     };
   }, [map, routeWaypoints]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Marcadores globais de entregas — imperativos para não travar React com 300+ markers
+  useEffect(() => {
+    alvosGlobaisMarkersRef.current.forEach(m => m.setMap(null));
+    alvosGlobaisMarkersRef.current = [];
+    const lista = alvosGlobais ?? [];
+    if (!map || cvSelecionado || lista.length === 0) return;
+    const markers = lista
+      .filter(a => !(a.lat === 0 && a.lng === 0))
+      .map(alvo => {
+        const feito = alvo.feito;
+        const cor = feito ? "#6b7280" : "#f97316";
+        const size = feito ? 10 : 14;
+        const op = feito ? 0.6 : 1;
+        const r = size / 2 - 1.5;
+        const half = size / 2;
+        const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="${r}" fill="${cor}" stroke="white" stroke-width="1.5" opacity="${op}"/></svg>`;
+        const m = new google.maps.Marker({
+          position: { lat: alvo.lat, lng: alvo.lng },
+          map,
+          icon: {
+            url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+            scaledSize: new google.maps.Size(size, size),
+            anchor: new google.maps.Point(half, half),
+          },
+          title: alvo.nome || (feito ? "Entregue" : "Pendente"),
+          zIndex: feito ? 10 : 13,
+          clickable: true,
+        });
+        m.addListener("click", () => {
+          setAlvoSelecionado(alvo);
+          setParadaSelecionada(null);
+        });
+        return m;
+      });
+    alvosGlobaisMarkersRef.current = markers;
+    return () => {
+      markers.forEach(m => m.setMap(null));
+      alvosGlobaisMarkersRef.current = [];
+    };
+  }, [map, cvSelecionado, alvosGlobais]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rastro waypoint dots every 15 positions (capped for performance)
   const rastroWaypoints = mostrarRastro

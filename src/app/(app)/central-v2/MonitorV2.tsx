@@ -135,6 +135,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const [rastro, setRastro] = useState<[number, number][]>([]);
   const [paradas, setParadas] = useState<Parada[]>([]);
   const [alvos, setAlvos] = useState<PontoEntrega[]>([]);
+  const [alvosGlobais, setAlvosGlobais] = useState<PontoEntrega[]>([]);
   // Pontos de entrega de TODA a frota — exibidos quando nenhum veículo está selecionado
   const [horas, setHoras] = useState<(typeof PERIODOS)[number]>(24);
   const [mostrarRastro, setMostrarRastro] = useState(false);
@@ -401,6 +402,28 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     return () => clearInterval(t);
   }, []);
 
+  // Pontos de entrega globais — busca em segundo plano, lotes de 50
+  useEffect(() => {
+    if (veiculosBase.length === 0) return;
+    const lotes: { cv: string }[][] = [];
+    for (let i = 0; i < veiculosBase.length; i += 50)
+      lotes.push(veiculosBase.slice(i, i + 50));
+    const buscar = async () => {
+      try {
+        const results = await Promise.all(
+          lotes.map(lote => {
+            const qs = lote.map(v => `cv=${encodeURIComponent(v.cv)}`).join("&");
+            return fetch(`/api/alvos?${qs}`).then(r => r.ok ? r.json() : { pontos: [] });
+          })
+        );
+        const todos = results.flatMap((d: { pontos?: PontoEntrega[] }) => d.pontos ?? []);
+        setAlvosGlobais(todos);
+      } catch {/* silencioso */}
+    };
+    buscar();
+    const t = setInterval(buscar, 5 * 60_000);
+    return () => clearInterval(t);
+  }, [veiculosBase]);
 
   // ── Vehicle data loader ──────────────────────────────────────────────
   const carregarVeiculo = useCallback(async (cv: string, h: number) => {
@@ -1082,6 +1105,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             rastro={rastro}
             paradas={paradas}
             alvos={alvos}
+            alvosGlobais={alvosGlobais}
             favelas={camFavelas ? favelas : null}
             tiroteios={camTiroteios ? tiroteios : []}
             rouboCarga={camRouboCarga ? rouboCarga : null}
