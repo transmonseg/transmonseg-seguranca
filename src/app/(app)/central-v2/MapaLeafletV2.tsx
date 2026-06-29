@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, useJsApiLoader } from "@react-google-maps/api";
 import { type MapTokens } from "./tokens";
 
@@ -424,8 +424,9 @@ export default function MapaLeafletV2({
   const primeiroPendente = alvos.findIndex(a => !a.feito);
   const alvosPendentes = alvos.filter(a => !a.feito && (a.lat !== 0 || a.lng !== 0)).sort((a, b) => a.ordem - b.ordem);
 
-  // Linha pontilhada apenas veículo → próxima entrega (primeiro pendente com coordenada)
-  const routeWaypoints: google.maps.LatLngLiteral[] | null = (() => {
+  // Memoizado pelos valores reais de lat/lng — evita recriar o array a cada render
+  // e disparo infinito do useEffect de rota.
+  const routeWaypoints = useMemo<google.maps.LatLngLiteral[] | null>(() => {
     if (!vmSelecionado?.lat || !vmSelecionado?.lng) return null;
     const next = alvosPendentes[0];
     if (!next || (next.lat === 0 && next.lng === 0)) return null;
@@ -433,7 +434,8 @@ export default function MapaLeafletV2({
       { lat: vmSelecionado.lat, lng: vmSelecionado.lng },
       { lat: next.lat, lng: next.lng },
     ];
-  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vmSelecionado?.lat, vmSelecionado?.lng, alvosPendentes[0]?.lat, alvosPendentes[0]?.lng]);
 
   // Linha pontilhada de rota com ETA via Directions API — imperativa pelo mesmo bug do Polyline declarativo no React 18.
   useEffect(() => {
