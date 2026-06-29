@@ -135,6 +135,8 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const [rastro, setRastro] = useState<[number, number][]>([]);
   const [paradas, setParadas] = useState<Parada[]>([]);
   const [alvos, setAlvos] = useState<PontoEntrega[]>([]);
+  // Pontos de entrega de TODA a frota — exibidos quando nenhum veículo está selecionado
+  const [alvosGlobais, setAlvosGlobais] = useState<PontoEntrega[]>([]);
   const [horas, setHoras] = useState<(typeof PERIODOS)[number]>(24);
   const [mostrarRastro, setMostrarRastro] = useState(false);
   const [mostrarParadas, setMostrarParadas] = useState(false);
@@ -399,6 +401,21 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     const t = setInterval(buscarTiroteios, 30 * 60_000);
     return () => clearInterval(t);
   }, []);
+
+  // Pontos de entrega globais (todos os veículos). Atualiza a cada 5 minutos.
+  useEffect(() => {
+    if (veiculosBase.length === 0) return;
+    const qs = veiculosBase.map((v: { cv: string }) => `cv=${encodeURIComponent(v.cv)}`).join("&");
+    const buscar = () => {
+      fetch(`/api/alvos?${qs}`)
+        .then(r => r.ok ? r.json() : null)
+        .then((d: { pontos?: PontoEntrega[] } | null) => { if (d?.pontos) setAlvosGlobais(d.pontos); })
+        .catch(() => {});
+    };
+    buscar();
+    const t = setInterval(buscar, 5 * 60_000);
+    return () => clearInterval(t);
+  }, [veiculosBase]);
 
   // ── Vehicle data loader ──────────────────────────────────────────────
   const carregarVeiculo = useCallback(async (cv: string, h: number) => {
@@ -1079,7 +1096,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             mostrarParadas={mostrarParadas}
             rastro={rastro}
             paradas={paradas}
-            alvos={alvos}
+            alvos={cvSelecionado ? alvos : alvosGlobais}
             favelas={camFavelas ? favelas : null}
             tiroteios={camTiroteios ? tiroteios : []}
             rouboCarga={camRouboCarga ? rouboCarga : null}

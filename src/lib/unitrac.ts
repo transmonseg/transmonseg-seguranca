@@ -89,6 +89,7 @@ export type PontoEntrega = {
   dataRealizado: string | null;
   observacoes: string | null;
   rota: string | null;
+  placa?: string;
 };
 
 // Busca alvos (paradas/entregas) de uma lista de CVs.
@@ -142,6 +143,7 @@ export function agruparPontosPorPlaca(alvos: AlvoUnitrac[]): Map<string, PontoEn
       ordem: Number(a.alvoordem) || 0,
       nome: String(a.pontonome ?? ""),
       feito: a.alvosituacaoservico === 1,
+      placa: a.placa,
       documento: a.alvodocumento ? String(a.alvodocumento) : null,
       identificador: a.pontoidentificador ? String(a.pontoidentificador) : null,
       dataInicio:

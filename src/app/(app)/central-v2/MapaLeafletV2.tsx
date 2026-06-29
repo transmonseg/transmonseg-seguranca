@@ -39,6 +39,7 @@ export interface PontoEntrega {
   dataRealizado: string | null;
   observacoes: string | null;
   rota: string | null;
+  placa?: string;
 }
 
 export interface Tiroteio {
@@ -227,21 +228,21 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens): goog
   };
 }
 
-// Circular alvo icon matching V1 exactly
-function criarIconeAlvo(ordem: number, feito: boolean, proximo: boolean): google.maps.Icon {
+// Circular alvo icon. displayNum é 1-indexed para o usuário.
+function criarIconeAlvo(displayNum: number, feito: boolean, proximo: boolean): google.maps.Icon {
   const cor        = feito ? "#6b7280" : proximo ? "#f97316" : "#fb923c";
-  const size       = feito ? 18 : proximo ? 24 : 20;
+  const size       = feito ? 20 : proximo ? 26 : 22;
   const fontSize   = feito ? 9  : proximo ? 12 : 10;
-  const borderCol  = feito ? "rgba(255,255,255,0.4)" : "white";
+  const borderCol  = feito ? "rgba(255,255,255,0.5)" : "white";
   const borderW    = feito ? 1.5 : 2;
-  const opacity    = feito ? 0.55 : 1;
+  const opacity    = feito ? 0.7 : 1;
   const r          = size / 2 - 1;
   const half       = size / 2;
 
   const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
     <circle cx="${half}" cy="${half}" r="${r}" fill="${cor}" stroke="${borderCol}" stroke-width="${borderW}" opacity="${opacity}"/>
     <text x="${half}" y="${half + 0.5}" text-anchor="middle" dominant-baseline="middle"
-      font-family="monospace" font-size="${fontSize}" font-weight="800" fill="white" opacity="${opacity}">${ordem}</text>
+      font-family="monospace" font-size="${fontSize}" font-weight="800" fill="white" opacity="${opacity}">${displayNum}</text>
   </svg>`;
   return {
     url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
@@ -279,8 +280,21 @@ export default function MapaLeafletV2({
     rastroLinesRef.current = [];
     if (!map || !cvSelecionado || !mostrarRastro || rastro.length <= 1) return;
     const path = rastro.map(([lat, lng]) => ({ lat, lng }));
+    // Seta de direção a cada ~80px ao longo do rastro
+    const arrowIcon: google.maps.Symbol = {
+      path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+      scale: 2.5,
+      fillColor: "#00e5ff",
+      fillOpacity: 1,
+      strokeColor: "#000",
+      strokeWeight: 0.8,
+      strokeOpacity: 0.7,
+    };
     const outer = new google.maps.Polyline({ map, path, strokeColor: "#000000", strokeWeight: 7, strokeOpacity: 0.7, geodesic: true, zIndex: 4 });
-    const inner = new google.maps.Polyline({ map, path, strokeColor: "#00e5ff", strokeWeight: 3.5, strokeOpacity: 1, geodesic: true, zIndex: 5 });
+    const inner = new google.maps.Polyline({
+      map, path, strokeColor: "#00e5ff", strokeWeight: 3.5, strokeOpacity: 1, geodesic: true, zIndex: 5,
+      icons: [{ icon: arrowIcon, offset: "20px", repeat: "80px" }],
+    });
     rastroLinesRef.current = [outer, inner];
     return () => {
       outer.setMap(null);
@@ -547,15 +561,15 @@ export default function MapaLeafletV2({
 
       {/* linha pontilhada gerenciada imperativamente via useEffect + routeLinesRef */}
 
-      {/* ── Ícones dos alvos (círculos numerados, igual ao V1) ── */}
-      {cvSelecionado && alvos.filter(a => a.lat !== 0 || a.lng !== 0).map((alvo, i) => {
+      {/* ── Ícones dos alvos (círculos numerados) ── */}
+      {alvos.filter(a => a.lat !== 0 || a.lng !== 0).map((alvo, i) => {
         const proximo = i === primeiroPendente;
         return (
           <Marker
-            key={`alvo-pin-${i}`}
+            key={`alvo-pin-${alvo.placa ?? ""}${alvo.ordem}`}
             position={{ lat: alvo.lat, lng: alvo.lng }}
-            icon={criarIconeAlvo(alvo.ordem, alvo.feito, proximo)}
-            title={alvo.nome || `Entrega ${alvo.ordem}`}
+            icon={criarIconeAlvo(alvo.ordem + 1, alvo.feito, proximo)}
+            title={alvo.nome || `Entrega ${alvo.ordem + 1}`}
             zIndex={proximo ? 15 : 12}
             clickable={true}
             onClick={() => { setAlvoSelecionado(alvo); setParadaSelecionada(null); }}
@@ -600,7 +614,7 @@ export default function MapaLeafletV2({
       )}
 
       {/* ── Popup do ponto de entrega clicado ── */}
-      {cvSelecionado && alvoSelecionado && (
+      {alvoSelecionado && (
         <InfoWindow
           position={{ lat: alvoSelecionado.lat, lng: alvoSelecionado.lng }}
           onCloseClick={() => setAlvoSelecionado(null)}
@@ -609,19 +623,51 @@ export default function MapaLeafletV2({
           <div style={{
             fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
             background: "#111", color: "#e5e5e5",
-            padding: "10px 14px 10px 12px", minWidth: 160, maxWidth: 240, lineHeight: 1.5,
+            padding: "10px 14px 10px 12px", minWidth: 180, maxWidth: 260, lineHeight: 1.5,
             borderRadius: 6,
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
               <span style={{ fontWeight: 700, fontSize: 13, color: alvoSelecionado.feito ? "#22c55e" : "#f97316" }}>
-                {alvoSelecionado.feito ? "✓ Entregue" : `Pendente #${alvoSelecionado.ordem}`}
+                {alvoSelecionado.feito ? "Entregue" : `Pendente #${alvoSelecionado.ordem + 1}`}
               </span>
               <button onClick={() => setAlvoSelecionado(null)}
                 style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 0 0 8px", lineHeight: 1 }}>×</button>
             </div>
-            <div style={{ fontSize: 12, color: "#f3f4f6", fontWeight: 600, marginBottom: alvoSelecionado.nome ? 2 : 0 }}>
-              {alvoSelecionado.nome || `Ponto ${alvoSelecionado.ordem}`}
-            </div>
+            {alvoSelecionado.placa && (
+              <div style={{ fontSize: 10, color: "#9ca3af", letterSpacing: ".07em", marginBottom: 4 }}>
+                {alvoSelecionado.placa}
+              </div>
+            )}
+            {alvoSelecionado.nome && (
+              <div style={{ fontSize: 12, color: "#f3f4f6", fontWeight: 600, marginBottom: 4 }}>
+                {alvoSelecionado.nome}
+              </div>
+            )}
+            {alvoSelecionado.rota && (
+              <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2 }}>
+                Rota: {alvoSelecionado.rota}
+              </div>
+            )}
+            {alvoSelecionado.documento && (
+              <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2 }}>
+                Doc: {alvoSelecionado.documento}
+              </div>
+            )}
+            {alvoSelecionado.dataRealizado && (
+              <div style={{ fontSize: 10, color: "#22c55e", marginTop: 4 }}>
+                Feito: {formatarHoraParada(alvoSelecionado.dataRealizado)}
+              </div>
+            )}
+            {alvoSelecionado.dataInicio && !alvoSelecionado.feito && (
+              <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
+                Previsto: {formatarHoraParada(alvoSelecionado.dataInicio)}
+              </div>
+            )}
+            {alvoSelecionado.observacoes && (
+              <div style={{ fontSize: 10, color: "#d1d5db", marginTop: 4, fontStyle: "italic" }}>
+                {alvoSelecionado.observacoes}
+              </div>
+            )}
           </div>
         </InfoWindow>
       )}
