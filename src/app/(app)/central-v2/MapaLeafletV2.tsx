@@ -215,32 +215,32 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
   const alpha = semComm ? "0.5" : "1";
 
   if (showLabel) {
-    // Canvas 50×52: teardrop centrado em x=25
+    // Canvas 64×52: teardrop centrado em x=32, pill larga o suficiente para placa Mercosul
     let setaSvgLabel = "";
     if (temSeta && vm.rumo != null) {
       const rumoRad = (vm.rumo * Math.PI) / 180;
-      const x2 = (25 + Math.sin(rumoRad) * 9).toFixed(1);
+      const x2 = (32 + Math.sin(rumoRad) * 9).toFixed(1);
       const y2 = (15 - Math.cos(rumoRad) * 9).toFixed(1);
       setaSvgLabel =
-        `<line x1="25" y1="15" x2="${x2}" y2="${y2}" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.95"/>` +
+        `<line x1="32" y1="15" x2="${x2}" y2="${y2}" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.95"/>` +
         `<circle cx="${x2}" cy="${y2}" r="2" fill="white" opacity="0.95"/>`;
     }
-    const svgLabel = `<svg width="50" height="52" viewBox="0 0 50 52" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
-      <path d="M25 2 C17 2 12 8 12 15 C12 22 18 30 25 36 C32 30 38 22 38 15 C38 8 33 2 25 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
-      <g transform="translate(14,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    const svgLabel = `<svg width="64" height="52" viewBox="0 0 64 52" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
+      <path d="M32 2 C24 2 19 8 19 15 C19 22 25 30 32 36 C39 30 45 22 45 15 C45 8 40 2 32 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
+      <g transform="translate(21,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
         <rect x="1" y="3" width="15" height="13"/>
         <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
         <circle cx="5.5" cy="18.5" r="2.5"/>
         <circle cx="18.5" cy="18.5" r="2.5"/>
       </g>
       ${setaSvgLabel}
-      <rect x="2" y="38" width="46" height="13" rx="4" fill="rgba(0,0,0,0.82)"/>
-      <text x="25" y="47.5" text-anchor="middle" font-family="'Courier New',Courier,monospace" font-size="9" font-weight="700" fill="white" letter-spacing="0.5">${encodeForSvg(vm.placa)}</text>
+      <rect x="1" y="38" width="62" height="13" rx="4" fill="rgba(0,0,0,0.82)"/>
+      <text x="32" y="47.5" text-anchor="middle" font-family="'Courier New',Courier,monospace" font-size="9" font-weight="700" fill="white" letter-spacing="0.8">${encodeForSvg(vm.placa)}</text>
     </svg>`;
     return {
       url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svgLabel)}`,
-      scaledSize: new window.google.maps.Size(50, 52),
-      anchor: new window.google.maps.Point(25, 36),
+      scaledSize: new window.google.maps.Size(64, 52),
+      anchor: new window.google.maps.Point(32, 36),
     };
   }
 
@@ -328,7 +328,6 @@ export default function MapaLeafletV2({
   const [zoomLocal, setZoomLocal] = useState(11);
   const showLabel = zoomLocal >= 14;
   const [etaMinutos, setEtaMinutos] = useState<number | null>(null);
-  const lastEtaCallRef = useRef<{ at: number; key: string }>({ at: 0, key: "" });
   const prevFlyG   = useRef(-1);
   const prevZoomG  = useRef(0);
   const prevFrotaG = useRef(-1);
@@ -464,27 +463,18 @@ export default function MapaLeafletV2({
 
     drawLines(routeWaypoints);
 
-    // Throttle: não chamar Directions API mais de 1x por minuto para o mesmo par origin+dest
-    const callKey = `${routeWaypoints[0].lat.toFixed(3)},${routeWaypoints[0].lng.toFixed(3)}->${routeWaypoints[1].lat.toFixed(3)},${routeWaypoints[1].lng.toFixed(3)}`;
-    const now = Date.now();
-    const last = lastEtaCallRef.current;
-    if (last.key === callKey && now - last.at < 60_000) return;
-    lastEtaCallRef.current = { at: now, key: callKey };
-
-    const ds = new google.maps.DirectionsService();
-    ds.route(
-      { origin: routeWaypoints[0], destination: routeWaypoints[1], travelMode: google.maps.TravelMode.DRIVING },
-      (result, status) => {
-        if (status !== "OK" || !result?.routes[0]) return;
-        const leg = result.routes[0].legs[0];
-        const durSec = (leg.duration_in_traffic ?? leg.duration)?.value ?? 0;
-        const eta = Math.ceil(durSec / 60);
-        setEtaMinutos(eta);
-        onEtaChange?.(eta);
-        const roadPath = result.routes[0].overview_path.map(p => ({ lat: p.lat(), lng: p.lng() }));
-        drawLines(roadPath);
-      }
-    );
+    // ETA por haversine ÷ 25 km/h (velocidade média urbana) — sem API externa
+    const o = routeWaypoints[0];
+    const d = routeWaypoints[1];
+    const R = 6_371_000;
+    const toR = (deg: number) => (deg * Math.PI) / 180;
+    const dLat = toR(d.lat - o.lat);
+    const dLng = toR(d.lng - o.lng);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toR(o.lat)) * Math.cos(toR(d.lat)) * Math.sin(dLng / 2) ** 2;
+    const distM = 2 * R * Math.asin(Math.sqrt(a));
+    const eta = Math.ceil(distM / (25_000 / 3600) / 60);
+    setEtaMinutos(eta);
+    onEtaChange?.(eta);
 
     return () => {
       routeLinesRef.current.forEach(p => p.setMap(null));
