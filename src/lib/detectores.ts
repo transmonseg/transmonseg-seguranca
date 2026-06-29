@@ -183,10 +183,10 @@ export function detectarParadaCliente(ctx: {
 }): Alerta | null {
   if (ctx.noCliente && ctx.emOperacao && ctx.paradoMin >= 90) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "parada_cliente",
-      motivo: `Parado no cliente ha ${formataDuracao(ctx.paradoMin)}, confirmar o que esta acontecendo`,
-      score: 52,
+      motivo: `Parado no cliente ha ${formataDuracao(ctx.paradoMin)} — acionar motorista imediatamente`,
+      score: 72,
     };
   }
   return null;

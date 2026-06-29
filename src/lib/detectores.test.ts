@@ -175,7 +175,7 @@ describe("detectarParadaLonga", () => {
 });
 
 describe("detectarParadaCliente", () => {
-  it("Benassi no cliente 95min em operacao retorna parada_cliente atencao score 52", () => {
+  it("no cliente 95min em operacao retorna parada_cliente critico score 72", () => {
     const alerta = detectarParadaCliente({
       paradoMin: 95,
       emOperacao: true,
@@ -183,11 +183,11 @@ describe("detectarParadaCliente", () => {
       ehBenassi: true,
     });
     expect(alerta).not.toBeNull();
-    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("parada_cliente");
-    expect(alerta?.score).toBe(52);
+    expect(alerta?.score).toBe(72);
     expect(alerta?.motivo).toContain("1h35min");
-    expect(alerta?.motivo).toContain("confirmar o que esta acontecendo");
+    expect(alerta?.motivo).toContain("acionar motorista");
   });
   it("Benassi no cliente exatamente 90min aciona (limite >=90)", () => {
     expect(
