@@ -4,7 +4,6 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
-  buscarAlvos,
   agruparAlvosPorPlaca,
   agruparPontosPorPlaca,
   distAlvoPendenteMaisProximoM,
@@ -15,7 +14,16 @@ import {
   normalizar,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
-import { avaliar, detectarJammer, foraDeRota, emHorarioOperacao } from "@/lib/detectores";
+import {
+  avaliar,
+  detectarJammer,
+  foraDeRota,
+  emHorarioOperacao,
+  detectarRetornoTardio,
+  detectarParadaNoturnaIgnicaoAtiva,
+  detectarAceleracaoBrusca,
+  type Alerta,
+} from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
 import {
   hashAlvos, buscarRotaOSRM, distanciaAoCorredorM, centroideGeo, RAIO_CORREDOR_M,
@@ -91,6 +99,8 @@ async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
 // ─── buscarAlvos com timeout ───────────────────────────────────────────────
 // Retorna entregas (contagem feito/total) E os pontos de entrega por placa
 // (a rota planejada), usados pelo detector de desvio.
+// Fetch inline com AbortSignal — buscarAlvos() nao aceita signal, por isso
+// reescrevemos a chamada diretamente (mesmo padrao de buscarPosicoesComTimeout).
 async function buscarAlvosComTimeout(cvs: string[]): Promise<{
   entregas: Map<string, EntregasPlaca>;
   pontos: Map<string, PontoEntrega[]>;
@@ -98,8 +108,17 @@ async function buscarAlvosComTimeout(cvs: string[]): Promise<{
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_UNITRAC_MS);
   try {
-    const alvos = await buscarAlvos(cvs);
+    const BASE_URL_ALVOS = "https://datalayer.portalunitrac.com";
+    const res = await fetch(`${BASE_URL_ALVOS}/mapa_servicos/alvos`, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(cvs),
+      signal: controller.signal,
+    });
     clearTimeout(timer);
+    if (!res.ok) throw new Error(`buscarAlvos HTTP ${res.status}`);
+    const data = (await res.json()) as { alvos?: Parameters<typeof agruparAlvosPorPlaca>[0] };
+    const alvos = data.alvos ?? [];
     return { entregas: agruparAlvosPorPlaca(alvos), pontos: agruparPontosPorPlaca(alvos) };
   } catch (err) {
     clearTimeout(timer);
@@ -337,6 +356,12 @@ export async function POST(request: Request) {
     // de alerta favela quando o proprio destino esta dentro da comunidade.
     const veiculoIdToAlvos = new Map<string, PontoEntrega[]>();
 
+    // Clientes que processaram posicoes com sucesso neste ciclo.
+    // Usado para filtrar a resolucao de alertas de favela: nao resolver alertas
+    // de clientes cujo fetch falhou (evita resolver alerta de veiculo parado em
+    // comunidade por culpa de timeout pontual da API Unitrac).
+    const clientesComSucesso = new Set<string>();
+
     // Cache de rotas OSRM por veiculo (validade 4h). Carregado em lote antes
     // do loop para evitar N queries individuais.
     const mapaRotasCache = new Map<string, { alvos_hash: string; pontos_rota: [number, number][] }>();
@@ -393,6 +418,9 @@ export async function POST(request: Request) {
         erros.push(msg);
         continue;
       }
+
+      // Cliente processou posicoes com sucesso — marcar para filtro de favela.
+      clientesComSucesso.add(cliente.id);
 
       // 4b. Buscar alvos (entregas + pontos da rota) deste cliente
       let entregasPorPlaca = new Map<string, EntregasPlaca>();
@@ -653,19 +681,31 @@ export async function POST(request: Request) {
             Math.round(anterior.lat * 10000) === Math.round(pos.lat * 10000) &&
             Math.round(anterior.lng * 10000) === Math.round(pos.lng * 10000);
 
+          // horaSP compartilhado por parada_anomala e parada_noturna_ignicao
+          const horaSP = parseInt(
+            new Intl.DateTimeFormat("pt-BR", {
+              timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false,
+            }).format(agora),
+            10
+          );
+
           if (candidatoParadaAnomala) {
             estavEmMovimento = anterior != null && (anterior.velocidade ?? 0) >= 30;
-            const horaSP = parseInt(
-              new Intl.DateTimeFormat("pt-BR", {
-                timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false,
-              }).format(agora),
-              10
-            );
             esMadrugada = horaSP >= 0 && horaSP < 5;
           }
           // POI consultado para parada anomala E saida nao autorizada parada.
           if (candidatoParadaAnomala || candidatoSaidaParado) {
-            temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
+            try {
+              temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
+            } catch {
+              // Overpass indisponivel: assumir POI presente (beneficio da duvida).
+              // Prefere nao disparar falso positivo a criar ruido em massa durante
+              // instabilidade da API (afeta todos os veiculos parados do ciclo).
+              temPOI = true;
+              if (!erros.some((e) => e.includes("Overpass"))) {
+                erros.push("Aviso: Overpass indisponivel neste ciclo, POI assumido presente");
+              }
+            }
           }
 
           // Congestionamento: quantos OUTROS veiculos da frota estao parados num
@@ -679,7 +719,7 @@ export async function POST(request: Request) {
             vizinhosParados = Math.max(0, dentro - 1); // exclui o proprio veiculo
           }
 
-          const alerta = alertaJammer
+          let alerta: Alerta | null = alertaJammer
             ? alertaJammer
             : pos.fresco
               ? avaliar(pos, {
@@ -708,6 +748,24 @@ export async function POST(request: Request) {
                   distBaseM,
                 })
               : null;
+
+          // Novos detectores: retorno_tardio, parada_noturna_ignicao, aceleracao_brusca.
+          // Calculados separadamente e sobrepõem alerta principal se mais severos.
+          const extras: Alerta[] = [
+            detectarRetornoTardio({ entregas_feitas, entregas_total, foraDaBase, paradoMin, emOperacao }),
+            detectarParadaNoturnaIgnicaoAtiva(pos, { foraDaBase, noCliente, horaSP }),
+            detectarAceleracaoBrusca(pos, {
+              velocidadeAnterior: anterior?.velocidade ?? null,
+              foraDaBase,
+            }),
+          ].filter((a): a is Alerta => a !== null);
+
+          for (const extra of extras) {
+            if (!alerta) { alerta = extra; continue; }
+            if (alerta.nivel === "critico" && extra.nivel !== "critico") continue;
+            if (extra.nivel === "critico" && alerta.nivel !== "critico") { alerta = extra; continue; }
+            if (extra.score > alerta.score) alerta = extra;
+          }
 
           // Determinar nivel da posicao atual
           let nivel: string;
@@ -893,6 +951,31 @@ export async function POST(request: Request) {
       }
     }
 
+    // Auto-resolução de alertas de rotina para veículos sem comunicação.
+    // Quando o veículo para (ignição desligada, atraso > 120min), o loop principal
+    // faz `continue` antes de gerenciar alertas — eles ficam presos indefinidamente.
+    // Esta query resolve esses alertas para que na próxima operação o beep dispare
+    // com UUIDs frescos (e não fique silenciado por IDs antigos).
+    {
+      const pgSemComm = await pool.connect();
+      try {
+        await pgSemComm.query(`
+          UPDATE alertas a
+          SET status = 'resolvido', resolvido_em = now()
+          FROM posicoes_atuais p
+          WHERE a.veiculo_id = p.veiculo_id
+            AND a.status = 'ativo'
+            AND a.tipo NOT IN ('favela', 'jammer', 'panico')
+            AND p.atraso_min > 120
+            AND p.ignicao = false
+        `);
+      } catch (errSemComm) {
+        console.warn("Auto-resolução sem_comunicação falhou:", errSemComm);
+      } finally {
+        pgSemComm.release();
+      }
+    }
+
     // Upsert das rotas OSRM calculadas neste ciclo
     if (rotasParaUpsert.length > 0) {
       const pgRotasUp = await pool.connect();
@@ -927,6 +1010,8 @@ export async function POST(request: Request) {
           cliente_id: string;
           lat: number;
           lng: number;
+          velocidade: number;
+          panico: boolean;
           nome_favela: string;
           geofence_geojson: GeoJSONGeom;
         }>(
@@ -935,6 +1020,8 @@ export async function POST(request: Request) {
              v.cliente_id,
              p.lat,
              p.lng,
+             COALESCE(p.velocidade, 0) AS velocidade,
+             COALESCE(p.panico, false) AS panico,
              g.nome AS nome_favela,
              ST_AsGeoJSON(g.geom::geometry)::json AS geofence_geojson
            FROM posicoes_atuais p
@@ -949,16 +1036,30 @@ export async function POST(request: Request) {
           try {
             // Suprimir alerta se o proprio ponto de entrega pendente esta dentro
             // da mesma comunidade — o caminhao esta la para entregar, nao e suspeito.
+            // Panico ativo nunca e suprimido por entrega pendente.
             const alvosVeiculo = veiculoIdToAlvos.get(vf.veiculo_id) ?? [];
             const temEntregaNaFavela = alvosVeiculo
               .filter((a) => !a.feito)
               .some((a) => pontoEmGeo(a.lng, a.lat, vf.geofence_geojson));
-            if (temEntregaNaFavela) continue;
+            if (temEntregaNaFavela && !vf.panico) continue;
 
-            // Atualizar nivel para vermelho
+            // Graduar: em transito (velocidade > 0, sem panico) = atencao/amarelo;
+            // parado ou panico = critico/vermelho.
+            const emMovimento = vf.velocidade > 0 && !vf.panico;
+            const nivelAlerta: "critico" | "atencao" = emMovimento ? "atencao" : "critico";
+            const nivelDb = emMovimento ? "amarelo" : "vermelho";
+            const scoreFavela = emMovimento ? 60 : 95;
+            const motivoFavela = emMovimento
+              ? `Em transito pela comunidade: ${vf.nome_favela}`
+              : `Parado na comunidade: ${vf.nome_favela}`;
+
+            // Nao rebaixar nivel vermelho ja existente (outro detector pode ter setado).
             await pgClient.query(
-              `UPDATE posicoes_atuais SET nivel = 'vermelho' WHERE veiculo_id = $1`,
-              [vf.veiculo_id]
+              `UPDATE posicoes_atuais SET nivel = CASE
+                 WHEN nivel = 'vermelho' THEN 'vermelho'
+                 ELSE $2 END
+               WHERE veiculo_id = $1`,
+              [vf.veiculo_id, nivelDb]
             );
 
             // Idempotente: so inserir alerta favela se nao houver um ativo
@@ -974,10 +1075,10 @@ export async function POST(request: Request) {
               await supabase.from("alertas").insert({
                 cliente_id: vf.cliente_id,
                 veiculo_id: vf.veiculo_id,
-                nivel: "critico",
+                nivel: nivelAlerta,
                 tipo: "favela",
-                motivo: `Dentro da favela: ${vf.nome_favela}`,
-                score: 95,
+                motivo: motivoFavela,
+                score: scoreFavela,
                 status: "ativo",
                 lat: vf.lat,
                 lng: vf.lng,
@@ -991,17 +1092,18 @@ export async function POST(request: Request) {
           }
         }
 
-        // Resolver alertas favela de veiculos que saíram da area de risco
-        // (so veiculos que TINHAM alerta ativo de favela mas nao estao mais nela)
-        if (veiculosEmFavela.length >= 0) {
+        // Resolver alertas favela de veiculos que saíram da area de risco.
+        // Filtra por clientesComSucesso: nao resolve alertas de clientes cujo
+        // fetch falhou neste ciclo (evita resolver alertas reais por timeout pontual).
+        if (clientesComSucesso.size > 0) {
           const idsEmFavela = veiculosEmFavela.map((vf) => vf.veiculo_id);
 
-          // Buscar alertas favela ativos
           const { data: alertasFavelaAtivos } = await supabase
             .from("alertas")
             .select("id, veiculo_id")
             .eq("tipo", "favela")
-            .eq("status", "ativo");
+            .eq("status", "ativo")
+            .in("cliente_id", [...clientesComSucesso]);
 
           const parasResolver = (alertasFavelaAtivos ?? []).filter(
             (a) => !idsEmFavela.includes(a.veiculo_id)
@@ -1032,10 +1134,29 @@ export async function POST(request: Request) {
 
     totalAlertasAtivos = qtdAlertasAtivos ?? 0;
 
-    // Limpeza periódica — 1x/hora para manter banco dentro da cota free (500MB).
-    if (agora.getMinutes() === 0) {
+    // Limpeza periódica — janela de 5 min para tolerar variacao de cold-start do Vercel.
+    // A query de fim de expediente ja e idempotente, entao rodar em :00-:05 nao causa dano.
+    if (agora.getMinutes() <= 5) {
       const pgClean = await pool.connect();
       try {
+        // Fim de expediente (20h SP): resolve alertas de rotina que ficaram
+        // abertos durante o dia. Garante que na abertura do turno seguinte
+        // o beep dispara com IDs frescos.
+        const horaSP_cleanup = parseInt(
+          new Intl.DateTimeFormat("pt-BR", {
+            timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false,
+          }).format(agora), 10
+        );
+        if (horaSP_cleanup === 20) {
+          await pgClean.query(`
+            UPDATE alertas SET status='resolvido', resolvido_em=now()
+            WHERE status='ativo'
+              AND tipo IN ('saida_nao_autorizada','parada_longa','parada_anomala',
+                           'parada_cliente','excesso','desvio')
+              AND created_at < now() - interval '30 minutes'
+          `);
+        }
+
         // Campos pesados (geom, lat, lng, contexto) — zeramos logo que resolve;
         // o motor pode ter resolvido sem limpar, então varremos aqui também.
         await pgClean.query(

@@ -45,23 +45,48 @@ export function detectarPanico(p: PosicaoNormalizada): Alerta | null {
   return { nivel: "critico", tipo: "panico", motivo: "PANICO acionado", score: 100 };
 }
 
-export function detectarBau(p: PosicaoNormalizada): Alerta | null {
+export function detectarBau(
+  p: PosicaoNormalizada,
+  ctx?: { noCliente?: boolean }
+): Alerta | null {
   if (!p.bau) return null;
-  return { nivel: "critico", tipo: "bau", motivo: "Bau aberto fora de ponto", score: 90 };
-}
-
-export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
-  // 30 min antes de classificar como jammer — evita falso critico por GPS em
-  // predio/tunel/garagem (perda curta de sinal e comum no ambiente urbano do RJ).
-  if (p.ignicao && p.atraso >= 30 && p.atraso <= 720) {
+  // Descarga no cliente: operacao normal, nao e alerta.
+  if (ctx?.noCliente) return null;
+  // Bau aberto em movimento e mais grave: perda de carga em transito.
+  if (p.velocidade > 0) {
     return {
       nivel: "critico",
-      tipo: "jammer",
-      motivo: `Sinal perdido ha ${p.atraso}min com ignicao ligada (possivel bloqueador)`,
-      score: 80,
+      tipo: "bau",
+      motivo: `Bau aberto em movimento a ${p.velocidade} km/h — risco de perda de carga`,
+      score: 95,
     };
   }
-  return null;
+  return { nivel: "critico", tipo: "bau", motivo: "Bau aberto fora do ponto de entrega", score: 90 };
+}
+
+// 30-59 min: pode ser tunel/garagem — atencao. 60-180 min: critico.
+// Acima de 180 min: defeito de rastreador ou veiculo recolhido, nao jammer real.
+const JAMMER_ATENCAO_MIN = 30;
+const JAMMER_CRITICO_MIN = 60;
+const JAMMER_TETO_MIN = 180;
+
+export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
+  if (!p.ignicao) return null;
+  if (p.atraso < JAMMER_ATENCAO_MIN || p.atraso > JAMMER_TETO_MIN) return null;
+  if (p.atraso < JAMMER_CRITICO_MIN) {
+    return {
+      nivel: "atencao",
+      tipo: "jammer",
+      motivo: `Sinal ausente ha ${p.atraso}min com ignicao ligada (monitorar)`,
+      score: 55,
+    };
+  }
+  return {
+    nivel: "critico",
+    tipo: "jammer",
+    motivo: `Sinal perdido ha ${p.atraso}min com ignicao ligada (possivel bloqueador GPS)`,
+    score: 80,
+  };
 }
 
 // Veiculo fora da base, motor ligado e SEM rota/entrega programada no dia.
@@ -224,10 +249,19 @@ export function detectarParadaAnomala(ctx: {
   if (ctx.esMadrugada) score += 15;
   if (ctx.emZonaRisco) score += 10;
 
+  // Madrugada + zona de risco juntos: combinacao classica de roubo — escala para critico.
+  const nivel: "critico" | "atencao" = (ctx.esMadrugada && ctx.emZonaRisco) ? "critico" : "atencao";
+
   const duracao = formataDuracao(ctx.paradoMin);
-  const sufixo = ctx.esMadrugada ? " (madrugada)" : ctx.emZonaRisco ? " (area de risco)" : "";
+  const sufixo = (ctx.esMadrugada && ctx.emZonaRisco)
+    ? " (MADRUGADA + AREA DE RISCO)"
+    : ctx.esMadrugada
+      ? " (madrugada)"
+      : ctx.emZonaRisco
+        ? " (area de risco)"
+        : "";
   return {
-    nivel: "atencao",
+    nivel,
     tipo: "parada_anomala",
     motivo: `Parada suspeita de ${duracao} fora de rota sem ponto de entrega${sufixo}`,
     score,
@@ -366,6 +400,11 @@ function fmtIdade(min: number | null): string {
   return `há ${Math.floor(min / 60)}h`;
 }
 
+// Fogo Cruzado mantém eventos por ate 3h. Filtrar por idade evita tratar
+// tiroteio encerrado ha 2h como risco ativo.
+const TIROTEIO_CRITICO_MAX_MIN = 60;  // acima disso: maximo atencao, mesmo perto
+const TIROTEIO_SUPRIME_MIN = 120;     // acima disso: evento provavelmente encerrado
+
 // Detector de TIROTEIO PRÓXIMO (operação/violência acontecendo agora na região).
 // Cruza a posição do veículo com os tiroteios ATIVOS (últimas ~3h, Fogo Cruzado).
 // Perigo imediato à carga: se há tiro perto, a central tem que saber JÁ.
@@ -374,18 +413,24 @@ export function detectarTiroteioProximo(
   ctx: { distTiroteioM: number | null; tiroteioIdadeMin: number | null }
 ): Alerta | null {
   if (ctx.distTiroteioM === null) return null;
-  if (!p.fresco) return null; // sem posição confiável, não dá pra cruzar
+  if (!p.fresco) return null;
+  const idadeMin = ctx.tiroteioIdadeMin ?? 0;
+  if (idadeMin >= TIROTEIO_SUPRIME_MIN) return null;
   const quando = fmtIdade(ctx.tiroteioIdadeMin);
-  // Critico so dentro de 600m — risco REAL para o veiculo.
-  // 600m-2km vira atencao: o fogo esta proximo mas nao imediato.
-  // Acima de 2km suprimido: no RJ com Fogo Cruzado constante, 3km disparava
-  // alertas criticos para praticamente toda a frota ao mesmo tempo (falso positivo).
   if (ctx.distTiroteioM <= 600) {
+    if (idadeMin < TIROTEIO_CRITICO_MAX_MIN) {
+      return {
+        nivel: "critico",
+        tipo: "tiroteio",
+        motivo: `Tiroteio RECENTE a ${fmtDist(ctx.distTiroteioM)} (${quando}) — area de risco`,
+        score: 88,
+      };
+    }
     return {
-      nivel: "critico",
+      nivel: "atencao",
       tipo: "tiroteio",
-      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) na regiao do veiculo`,
-      score: 88,
+      motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) — monitorar situacao`,
+      score: 60,
     };
   }
   if (ctx.distTiroteioM <= 2000) {
@@ -393,10 +438,143 @@ export function detectarTiroteioProximo(
       nivel: "atencao",
       tipo: "tiroteio",
       motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) proximo a rota`,
-      score: 60,
+      score: 50,
     };
   }
   return null;
+}
+
+// Retorna o veiculo como suspeito se concluiu todas as entregas mas nao retornou
+// a nenhuma base em mais de 60 min apos a ultima entrega.
+export function detectarRetornoTardio(ctx: {
+  entregas_feitas: number;
+  entregas_total: number;
+  foraDaBase: boolean;
+  paradoMin: number;
+  emOperacao: boolean;
+}): Alerta | null {
+  if (!ctx.emOperacao) return null;
+  if (ctx.entregas_total === 0) return null;
+  if (ctx.entregas_feitas < ctx.entregas_total) return null;
+  if (!ctx.foraDaBase) return null;
+  if (ctx.paradoMin < 60) return null;
+  return {
+    nivel: "atencao",
+    tipo: "retorno_tardio",
+    motivo: `Rota concluida ha ${formataDuracao(ctx.paradoMin)} sem retorno a base`,
+    score: 58,
+  };
+}
+
+// Veiculo parado com motor ligado durante a madrugada fora da base.
+// Cobre o gap em que emHorarioOperacao=false desativa os detectores principais.
+export function detectarParadaNoturnaIgnicaoAtiva(
+  p: PosicaoNormalizada,
+  ctx: { foraDaBase: boolean; noCliente?: boolean; horaSP: number }
+): Alerta | null {
+  if (!p.fresco) return null;
+  if (!p.ignicao || p.velocidade !== 0) return null;
+  if (!ctx.foraDaBase) return null;
+  if (ctx.noCliente) return null;
+  // Madrugada: 22h-05h (hora SP)
+  const ehMadrugada = ctx.horaSP >= 22 || ctx.horaSP < 5;
+  if (!ehMadrugada) return null;
+  return {
+    nivel: "critico",
+    tipo: "parada_noturna_ignicao",
+    motivo: `Parado com ignicao ligada as ${ctx.horaSP}h fora da base`,
+    score: 75,
+  };
+}
+
+// Saida brusca de 0 para >=80 km/h em 1 ciclo: padrao de fuga pos-abordagem.
+// Caminhao pesado nao acelera 0->80 km/h em 1 min em condicoes normais.
+export function detectarAceleracaoBrusca(
+  p: PosicaoNormalizada,
+  ctx: { velocidadeAnterior: number | null; foraDaBase: boolean }
+): Alerta | null {
+  if (!p.fresco) return null;
+  if (!ctx.foraDaBase) return null;
+  if (ctx.velocidadeAnterior === null || ctx.velocidadeAnterior !== 0) return null;
+  if (p.velocidade < 80) return null;
+  return {
+    nivel: "critico",
+    tipo: "aceleracao_brusca",
+    motivo: `Aceleracao brusca: 0 para ${p.velocidade} km/h em 1 ciclo — verificar`,
+    score: 70,
+  };
+}
+
+// Avalia todos os detectores e retorna TODOS os alertas ativos, ordenados por severidade.
+// Use quando precisar de multiplos alertas simultaneos por veiculo (ex: panico + desvio).
+export function avaliarTodos(
+  p: PosicaoNormalizada,
+  ctx: Parameters<typeof avaliar>[1]
+): Alerta[] {
+  const candidatos: Alerta[] = [
+    detectarPanico(p),
+    detectarBau(p, { noCliente: ctx.noCliente }),
+    detectarJammer(p),
+    detectarSaidaNaoAutorizada(p, {
+      foraDaBase: ctx.foraDaBase,
+      temPendentes: ctx.temPendentes ?? false,
+      entregasTotal: ctx.entregasTotal,
+      rumoMovimento: ctx.rumoMovimento ?? null,
+      rumoBase: ctx.rumoBase ?? null,
+      distBaseM: ctx.distBaseM ?? null,
+      temPOIProximo: ctx.temPOIProximo ?? false,
+    }),
+    detectarExcessoVelocidade(p),
+    detectarParadaCliente({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      noCliente: ctx.noCliente,
+      ehBenassi: ctx.ehBenassi,
+    }),
+    detectarParadaLonga({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      foraDaBase: ctx.foraDaBase,
+      noCliente: ctx.noCliente,
+      ehBenassi: ctx.ehBenassi,
+    }),
+    ctx.estavEmMovimento !== undefined
+      ? detectarParadaAnomala({
+          paradoMin: ctx.paradoMin,
+          emOperacao: ctx.emOperacao,
+          foraDaBase: ctx.foraDaBase,
+          noCliente: ctx.noCliente ?? false,
+          estavEmMovimento: ctx.estavEmMovimento,
+          esMadrugada: ctx.esMadrugada ?? false,
+          emZonaRisco: ctx.emZonaRisco ?? false,
+          temPOIProximo: ctx.temPOIProximo ?? false,
+          jaParedoNoCicloAnterior: ctx.jaParedoNoCicloAnterior ?? false,
+          vizinhosParados: ctx.vizinhosParados ?? 0,
+        })
+      : null,
+    detectarTiroteioProximo(p, {
+      distTiroteioM: ctx.distTiroteioM ?? null,
+      tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
+    }),
+    ctx.distAlvoM !== undefined || ctx.distCorredorM !== undefined
+      ? detectarDesvio(p, {
+          distAlvoM: ctx.distAlvoM ?? null,
+          distAlvoAnteriorM: ctx.distAlvoAnteriorM ?? null,
+          temPendentes: ctx.temPendentes ?? false,
+          emOperacao: ctx.emOperacao,
+          foraDaBase: ctx.foraDaBase,
+          rumoMovimento: ctx.rumoMovimento ?? null,
+          rumoAlvo: ctx.rumoAlvo ?? null,
+          distCorredorM: ctx.distCorredorM ?? null,
+          jaForaCorretor: ctx.jaForaCorretor ?? false,
+        })
+      : null,
+  ].filter((a): a is Alerta => a !== null);
+
+  return candidatos.sort((a, b) => {
+    if (a.nivel === b.nivel) return b.score - a.score;
+    return a.nivel === "critico" ? -1 : 1;
+  });
 }
 
 // Avalia todos os detectores e retorna o alerta de maior severidade.
@@ -432,7 +610,7 @@ export function avaliar(
 ): Alerta | null {
   const candidatos: Alerta[] = [
     detectarPanico(p),
-    detectarBau(p),
+    detectarBau(p, { noCliente: ctx.noCliente }),
     detectarJammer(p),
     detectarSaidaNaoAutorizada(p, {
       foraDaBase: ctx.foraDaBase,
