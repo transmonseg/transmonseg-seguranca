@@ -55,12 +55,23 @@ const PERIODOS = [1, 2, 6, 12, 24, 48] as const;
 const ZOOM_LABELS: [string, number][] = [["RUA", 17], ["QUADRA", 15], ["BAIRRO", 13], ["CIDADE", 11]];
 
 const NOME_TIPO: Record<string, string> = {
-  panico: "Panico", bau: "Bau aberto", favela: "Favela/risco",
-  tiroteio: "Tiroteio", jammer: "Jammer/sinal", saida_nao_autorizada: "Saida n.aut.",
-  parada_anomala: "Par. anomala", parada_longa: "Par. longa", parada_cliente: "Par. cliente",
-  ignicao_noturna: "Ign. noturna", desvio: "Desvio rota", excesso: "Excesso vel.",
+  panico: "Pânico", bau: "Baú aberto", favela: "Favela/risco",
+  tiroteio: "Tiroteio", jammer: "Jammer/sinal", saida_nao_autorizada: "Saída n.aut.",
+  parada_anomala: "Par. anômala", parada_longa: "Par. longa", parada_cliente: "Par. cliente",
+  ignicao_noturna: "Ign. noturna", desvio: "Desvio de rota", excesso: "Excesso vel.",
+  retorno_tardio: "Retorno tardio", aceleracao: "Acel. brusca", sem_comunicacao: "Sem comunicação",
 };
 function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
+
+// Prioridade por tipo (maior = mais urgente)
+const TIPO_PRIORITY: Record<string, number> = {
+  panico: 12, desvio: 11, saida_nao_autorizada: 10, jammer: 9,
+  bau: 8, tiroteio: 7, parada_anomala: 6, ignicao_noturna: 5,
+  retorno_tardio: 4, aceleracao: 3, favela: 2, parada_longa: 1, parada_cliente: 0,
+};
+function prioAlerta(a: { nivel: string; tipo: string }): number {
+  return (a.nivel === "critico" ? 100 : 0) + (TIPO_PRIORITY[a.tipo] ?? 0);
+}
 
 function tempoAtras(desde: string): string {
   const diff = Math.floor((Date.now() - new Date(desde).getTime()) / 60000);
@@ -157,9 +168,12 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const [confirmarResolver, setConfirmarResolver] = useState(false);
   const [resolvendoTodos, startResolver] = useTransition();
 
-  // Theme + satellite
+  // Filtro por tipo de alerta (sidebar)
+  const [filtroTipo, setFiltroTipo] = useState<string | null>(null);
+
+  // Theme + satellite (satélite padrão = true)
   const [tema, setTema] = useState<"dark" | "light">("dark");
-  const [satelite, setSatelite] = useState(false);
+  const [satelite, setSatelite] = useState(true);
   const [settingsAberto, setSettingsAberto] = useState(false);
 
   // Visibilidade das camadas de risco
@@ -175,18 +189,48 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const panicoVistosRef = useRef<Set<string>>(new Set());
   const audioCtxRef = useRef<AudioContext | null>(null);
 
+  // Carrega TODAS as configurações salvas no localStorage (roda uma vez na montagem)
   useEffect(() => {
-    const saved = localStorage.getItem("transmonseg-tema") as "dark" | "light" | null;
-    if (saved === "light") {
-      document.documentElement.setAttribute("data-theme", "light");
-      setTema("light");
-    }
+    const tema = localStorage.getItem("transmonseg-tema") as "dark" | "light" | null;
+    if (tema === "light") { document.documentElement.setAttribute("data-theme", "light"); setTema("light"); }
+    // Satélite: padrão true — só desativa se usuário salvou "false" explicitamente
+    if (localStorage.getItem("transmonseg-sat") === "false") setSatelite(false);
+    if (localStorage.getItem("transmonseg-favelas") === "false") setCamFavelas(false);
+    if (localStorage.getItem("transmonseg-tiroteios") === "false") setCamTiroteios(false);
+    if (localStorage.getItem("transmonseg-roubo") === "false") setCamRouboCarga(false);
+    const vistaS = localStorage.getItem("transmonseg-vista") as "tudo" | "critico" | "atencao" | null;
+    if (vistaS) setVista(vistaS);
   }, []);
 
   const setTemaComPersistencia = useCallback((novo: "dark" | "light") => {
     localStorage.setItem("transmonseg-tema", novo);
     document.documentElement.setAttribute("data-theme", novo === "light" ? "light" : "");
     setTema(novo);
+  }, []);
+
+  const setSateliteComPersistencia = useCallback((v: boolean) => {
+    localStorage.setItem("transmonseg-sat", String(v));
+    setSatelite(v);
+  }, []);
+
+  const setCamFavelasComPersistencia = useCallback((v: boolean) => {
+    localStorage.setItem("transmonseg-favelas", String(v));
+    setCamFavelas(v);
+  }, []);
+
+  const setCamTiroteiosComPersistencia = useCallback((v: boolean) => {
+    localStorage.setItem("transmonseg-tiroteios", String(v));
+    setCamTiroteios(v);
+  }, []);
+
+  const setCamRouboCargaComPersistencia = useCallback((v: boolean) => {
+    localStorage.setItem("transmonseg-roubo", String(v));
+    setCamRouboCarga(v);
+  }, []);
+
+  const setVistaComPersistencia = useCallback((v: "tudo" | "critico" | "atencao") => {
+    localStorage.setItem("transmonseg-vista", v);
+    setVista(v);
   }, []);
 
   const tocarPanico = useCallback(() => {
@@ -541,16 +585,17 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const alertasFiltrados = alertas.filter(a => {
     if (vista === "critico") return a.nivel === "critico";
     if (vista === "atencao") return a.nivel === "atencao";
+    if (filtroTipo && a.tipo !== filtroTipo) return false;
     return true;
   });
 
-  // Alertas do veículo selecionado sobem ao topo da sidebar
-  const alertasOrdenados = cvSelecionado
-    ? [
-        ...alertasFiltrados.filter(a => a.cv === cvSelecionado),
-        ...alertasFiltrados.filter(a => a.cv !== cvSelecionado),
-      ]
-    : alertasFiltrados;
+  // Veículo selecionado topo → dentro de cada grupo ordena por prioAlerta desc
+  const alertasOrdenados = [...alertasFiltrados].sort((a, b) => {
+    const aSel = a.cv === cvSelecionado ? 1 : 0;
+    const bSel = b.cv === cvSelecionado ? 1 : 0;
+    if (aSel !== bSel) return bSel - aSel;
+    return prioAlerta(b) - prioAlerta(a);
+  });
 
   const veiculosBusca = busca.length >= 2
     ? veiculosBase.filter(v => v.placa.toLowerCase().includes(busca.toLowerCase())).slice(0, 8)
@@ -636,7 +681,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
           ))}
           <button onClick={() => setGatilhoFrota(g => g + 1)}
             style={outlineBtn(false, T.accent)}>
-            VEICULOS
+            VEÍCULOS
           </button>
 
           <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px", flexShrink: 0 }} />
@@ -703,7 +748,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
 
         {/* ── Coluna DIREITA: SAT + settings + apito ── */}
         <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 8 }}>
-          <button onClick={() => setSatelite(v => !v)} title={satelite ? "Mapa padrao" : "Vista satelite"}
+          <button onClick={() => setSateliteComPersistencia(!satelite)} title={satelite ? "Mapa padrao" : "Vista satelite"}
             style={outlineBtn(satelite, T.accent)}>
             SAT
           </button>
@@ -776,11 +821,11 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                     CAMADAS
                   </div>
                   {([
-                    { label: "Favelas", val: camFavelas, set: setCamFavelas, cor: "#ff2d2d" },
-                    { label: "Tiroteios (24h)", val: camTiroteios, set: setCamTiroteios, cor: "#f97316" },
-                    { label: "Roubo de carga", val: camRouboCarga, set: setCamRouboCarga, cor: "#fbbf24" },
-                  ] as { label: string; val: boolean; set: React.Dispatch<React.SetStateAction<boolean>>; cor: string }[]).map(({ label, val, set, cor }) => (
-                    <button key={label} onClick={() => set(v => !v)}
+                    { label: "Favelas", val: camFavelas, set: setCamFavelasComPersistencia, cor: "#ff2d2d" },
+                    { label: "Tiroteios (24h)", val: camTiroteios, set: setCamTiroteiosComPersistencia, cor: "#f97316" },
+                    { label: "Roubo de carga", val: camRouboCarga, set: setCamRouboCargaComPersistencia, cor: "#fbbf24" },
+                  ] as { label: string; val: boolean; set: (v: boolean) => void; cor: string }[]).map(({ label, val, set, cor }) => (
+                    <button key={label} onClick={() => set(!val)}
                       style={{
                         display: "flex", alignItems: "center", gap: 9,
                         width: "100%", padding: "7px 10px", borderRadius: 7,
@@ -833,19 +878,19 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
               <div style={{ fontSize: 18, fontWeight: 800, color: nCriticos > 0 ? T.red : T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
                 {nCriticos}
               </div>
-              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>CRITICO</div>
+              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>CRÍTICO</div>
             </div>
             <div style={{ flex: 1, padding: "9px 12px", borderRight: `1px solid ${T.border}` }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: nAtencao > 0 ? T.yellow : T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
                 {nAtencao}
               </div>
-              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>ATENCAO</div>
+              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>ATENÇÃO</div>
             </div>
             <div style={{ flex: 1, padding: "9px 12px" }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
                 {veiculosMapa.length}
               </div>
-              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>VEIC.</div>
+              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>VEÍC.</div>
             </div>
           </div>
 
@@ -854,18 +899,51 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             {(["tudo", "critico", "atencao"] as const).map(v => {
               const color = v === "tudo" ? T.accent : v === "critico" ? T.red : T.yellow;
               return (
-                <button key={v} onClick={() => setVista(v)} style={{
+                <button key={v} onClick={() => setVistaComPersistencia(v)} style={{
                   flex: 1, height: 27, borderRadius: 6, border: "none", cursor: "pointer",
                   background: vista === v ? `${color}18` : "transparent",
                   color: vista === v ? color : T.muted,
                   fontSize: 10, fontWeight: 700, letterSpacing: ".06em",
                   fontFamily: FONT_SANS, transition: "all .12s",
                 }}>
-                  {v === "tudo" ? "TUDO" : v === "critico" ? "CRIT." : "ATEN."}
+                  {v === "tudo" ? "TUDO" : v === "critico" ? "CRÍTICO" : "ATENÇÃO"}
                 </button>
               );
             })}
           </div>
+
+          {/* Chips de tipo — filtro rápido por categoria */}
+          {(() => {
+            const tiposAtivos = [...new Set(alertasFiltrados.map(a => a.tipo))].sort(
+              (a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0)
+            );
+            if (tiposAtivos.length === 0) return null;
+            return (
+              <div style={{
+                display: "flex", gap: 4, padding: "4px 6px",
+                overflowX: "auto", flexShrink: 0, borderBottom: `1px solid ${T.border}`,
+                scrollbarWidth: "none",
+              }}>
+                <button onClick={() => setFiltroTipo(null)} style={{
+                  flexShrink: 0, height: 20, padding: "0 8px", borderRadius: 10,
+                  border: `1px solid ${filtroTipo === null ? T.accent : T.border}`,
+                  background: filtroTipo === null ? `${T.accent}22` : "transparent",
+                  color: filtroTipo === null ? T.accent : T.muted,
+                  fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: FONT_SANS,
+                }}>TODOS</button>
+                {tiposAtivos.map(tipo => (
+                  <button key={tipo} onClick={() => setFiltroTipo(filtroTipo === tipo ? null : tipo)} style={{
+                    flexShrink: 0, height: 20, padding: "0 8px", borderRadius: 10,
+                    border: `1px solid ${filtroTipo === tipo ? T.accent : T.border}`,
+                    background: filtroTipo === tipo ? `${T.accent}22` : "transparent",
+                    color: filtroTipo === tipo ? T.accent : T.muted,
+                    fontSize: 9, fontWeight: 600, cursor: "pointer", fontFamily: FONT_SANS,
+                    whiteSpace: "nowrap",
+                  }}>{NOME_TIPO[tipo] ?? tipo}</button>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Resolver todos */}
           {nCriticos > 0 && (
@@ -893,7 +971,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                   background: "transparent", border: `1px solid ${T.border}`,
                   color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
                 }}>
-                  Resolver todos ({nCriticos})
+                  Resolver críticos ({nCriticos})
                 </button>
               )}
             </div>
@@ -1154,12 +1232,12 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                   color: vmAtual && vmAtual.velocidade > 80 ? T.yellow : undefined,
                 },
                 {
-                  label: "IGNICAO",
+                  label: "IGNIÇÃO",
                   value: vmAtual ? (vmAtual.ignicao ? "Ligada" : "Desligada") : "—",
                   color: vmAtual ? (vmAtual.ignicao ? T.green : T.muted) : undefined,
                 },
                 {
-                  label: "COMUNICACAO",
+                  label: "COMUNICAÇÃO",
                   value: vmAtual ? (vmAtual.atraso_min > 0 ? `${Math.round(vmAtual.atraso_min)}min` : "ao vivo") : "—",
                   color: vmAtual && vmAtual.atraso_min > 30 ? T.yellow : undefined,
                 },
@@ -1378,7 +1456,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             </div>
 
             <div style={{ fontSize: 11, letterSpacing: ".2em", color: "#ef4444", fontWeight: 700, marginBottom: 12 }}>
-              BOTAO DE PANICO ACIONADO
+              BOTÃO DE PÂNICO ACIONADO
             </div>
 
             <div style={{
