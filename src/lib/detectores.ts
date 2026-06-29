@@ -181,7 +181,7 @@ export function detectarParadaCliente(ctx: {
   noCliente?: boolean;
   ehBenassi?: boolean;
 }): Alerta | null {
-  if (ctx.ehBenassi && ctx.noCliente && ctx.emOperacao && ctx.paradoMin >= 90) {
+  if (ctx.noCliente && ctx.emOperacao && ctx.paradoMin >= 90) {
     return {
       nivel: "atencao",
       tipo: "parada_cliente",
@@ -199,8 +199,8 @@ export function detectarParadaLonga(ctx: {
   noCliente?: boolean;
   ehBenassi?: boolean;
 }): Alerta | null {
-  // Benassi parado no cliente: coberto por detectarParadaCliente, evita duplicata.
-  if (ctx.ehBenassi && ctx.noCliente) return null;
+  // Parado no cliente: coberto por detectarParadaCliente, evita duplicata.
+  if (ctx.noCliente) return null;
   if (ctx.paradoMin >= 90 && ctx.emOperacao && ctx.foraDaBase) {
     return {
       nivel: "atencao",

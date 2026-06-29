@@ -65,9 +65,9 @@ function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 
 // Prioridade por tipo (maior = mais urgente)
 const TIPO_PRIORITY: Record<string, number> = {
-  panico: 12, desvio: 11, saida_nao_autorizada: 10, jammer: 9,
-  bau: 8, tiroteio: 7, parada_anomala: 6, ignicao_noturna: 5,
-  retorno_tardio: 4, aceleracao: 3, favela: 2, parada_longa: 1, parada_cliente: 0,
+  desvio: 15, panico: 12, saida_nao_autorizada: 10, jammer: 9,
+  bau: 8, parada_cliente: 8, tiroteio: 7, parada_anomala: 6, ignicao_noturna: 5,
+  retorno_tardio: 4, aceleracao: 3, favela: 2, parada_longa: 1,
 };
 function prioAlerta(a: { nivel: string; tipo: string }): number {
   return (a.nivel === "critico" ? 100 : 0) + (TIPO_PRIORITY[a.tipo] ?? 0);
@@ -118,7 +118,7 @@ function tinyBtn(color: string): React.CSSProperties {
 const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, settings: 900 } as const;
 
 // ── Main Component ────────────────────────────────────────────────────
-export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, alertasIniciais }: Props) {
+export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais }: Props) {
   const [alertas, setAlertas] = useState<AlertaEnriquecido[]>(alertasIniciais);
   const alertasRef = useRef<AlertaEnriquecido[]>(alertasIniciais);
   const [veiculosMapa, setVeiculosMapa] = useState<VeiculoMapa[]>([]);
@@ -142,10 +142,11 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const [mostrarParadas, setMostrarParadas] = useState(false);
   const [carregando, setCarregando] = useState(false);
 
-  // Camadas de risco (favelas, tiroteios, roubo de carga)
+  // Camadas de risco (favelas, tiroteios, roubo de carga) + perímetros das bases
   const [favelas, setFavelas] = useState<GeoJsonCollection | null>(null);
   const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
   const [rouboCarga, setRouboCarga] = useState<GeoJsonCollection | null>(null);
+  const [bases, setBases] = useState<GeoJsonCollection | null>(null);
 
   // Sirene / bloqueio
   const [cmdSirene, setCmdSirene] = useState<"idle" | "loading" | "ok" | "fallback">("idle");
@@ -391,6 +392,14 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     const t = setTimeout(() => setToasts(ts => ts.slice(1)), 6_000);
     return () => clearTimeout(t);
   }, [toasts]);
+
+  // Bases do cliente (perímetros geográficos) — fetcha uma vez por montagem
+  useEffect(() => {
+    fetch(`/api/bases?clienteId=${encodeURIComponent(clienteAtivoId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then((d: GeoJsonCollection | null) => { if (d) setBases(d); })
+      .catch(() => {});
+  }, [clienteAtivoId]);
 
   // Camadas de risco: favelas (estática), roubo-carga (diária), tiroteios (30min)
   useEffect(() => {
@@ -1175,6 +1184,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             paradas={paradas}
             alvos={alvosEfetivos}
             alvosGlobais={alvosGlobais}
+            bases={bases}
             favelas={camFavelas ? favelas : null}
             tiroteios={camTiroteios ? tiroteios : []}
             rouboCarga={camRouboCarga ? rouboCarga : null}

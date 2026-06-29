@@ -78,6 +78,7 @@ export interface Props {
   paradas: Parada[];
   alvos: PontoEntrega[];
   alvosGlobais?: PontoEntrega[];
+  bases?: GeoJsonCollection | null;
   favelas: GeoJsonCollection | null;
   tiroteios: Tiroteio[];
   rouboCarga: GeoJsonCollection | null;
@@ -312,7 +313,7 @@ function criarIconeAlvo(feito: boolean, proximo: boolean): google.maps.Icon {
 
 export default function MapaLeafletV2({
   veiculosMapa, cvSelecionado, mostrarRastro, mostrarParadas,
-  rastro, paradas, alvos, alvosGlobais, favelas, tiroteios, rouboCarga,
+  rastro, paradas, alvos, alvosGlobais, bases, favelas, tiroteios, rouboCarga,
   seguir, gatilhoFrota, flyPara, zoomCmd,
   onVeiculoClick, onMapaVazioClick, onAlvoClick,
   mapTokens, tema, satelite, onZoomChange, onEtaChange,
@@ -610,6 +611,25 @@ export default function MapaLeafletV2({
               strokeOpacity: 0.4,
               clickable: false,
               zIndex: 1,
+            }}
+          />
+        ));
+      })}
+
+      {/* ── Perímetros das bases (garagem/hub da frota) ── */}
+      {bases?.features.flatMap((f, fi) => {
+        if (!f.geometry) return [];
+        return geoToPaths(f.geometry).map((paths, pi) => (
+          <Polygon
+            key={`base-${fi}-${pi}`}
+            paths={paths}
+            options={{
+              fillColor: "#3b82f6",
+              fillOpacity: 0.10,
+              strokeColor: "#3b82f6",
+              strokeOpacity: 0.75,
+              strokeWeight: 2,
+              zIndex: 5,
             }}
           />
         ));

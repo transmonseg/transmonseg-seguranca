@@ -62,6 +62,7 @@ export default async function CentralV2Page({
 
   return (
     <MonitorV2
+      key={clienteAtivo.id}
       cliente={clienteAtivo.cod_user_unitrac}
       clientes={clientes.map(c => ({ id: c.id, nome: c.nome, cod: c.cod_user_unitrac }))}
       clienteAtivoId={clienteAtivo.id}
