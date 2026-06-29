@@ -231,14 +231,35 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens): goog
 
 // Ponto de entrega — círculo colorido simples, sem número
 function criarIconeAlvo(feito: boolean, proximo: boolean): google.maps.Icon {
-  const cor  = feito ? "#6b7280" : proximo ? "#f97316" : "#fb923c";
-  const size = feito ? 12 : proximo ? 18 : 14;
-  const op   = feito ? 0.65 : 1;
-  const r    = size / 2 - 1.5;
+  let svg: string;
+  let size: number;
+
+  if (feito) {
+    // Feito: círculo médio cinza-claro com checkmark interno
+    size = 18;
+    const half = size / 2;
+    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="${half}" cy="${half}" r="7.5" fill="#9ca3af" stroke="white" stroke-width="1.5" opacity="0.85"/>
+      <polyline points="5.5,9 8,11.5 12.5,6.5" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+    </svg>`;
+  } else if (proximo) {
+    // Próximo: anel externo + ponto central laranja para destacar no mapa
+    size = 28;
+    const half = size / 2;
+    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="${half}" cy="${half}" r="13" fill="#f97316" fill-opacity="0.18" stroke="#f97316" stroke-width="1.5"/>
+      <circle cx="${half}" cy="${half}" r="7" fill="#f97316" stroke="white" stroke-width="2"/>
+    </svg>`;
+  } else {
+    // Pendente normal: círculo laranja mais visível
+    size = 18;
+    const half = size / 2;
+    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="${half}" cy="${half}" r="7.5" fill="#fb923c" stroke="white" stroke-width="1.5"/>
+    </svg>`;
+  }
+
   const half = size / 2;
-  const svg  = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="${half}" cy="${half}" r="${r}" fill="${cor}" stroke="white" stroke-width="1.5" opacity="${op}"/>
-  </svg>`;
   return {
     url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
     scaledSize: new window.google.maps.Size(size, size),
@@ -403,12 +424,11 @@ export default function MapaLeafletV2({
       .filter(a => !(a.lat === 0 && a.lng === 0))
       .map(alvo => {
         const feito = alvo.feito;
-        const cor = feito ? "#6b7280" : "#f97316";
-        const size = feito ? 10 : 14;
-        const op = feito ? 0.6 : 1;
-        const r = size / 2 - 1.5;
+        const size = feito ? 16 : 16;
         const half = size / 2;
-        const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="${r}" fill="${cor}" stroke="white" stroke-width="1.5" opacity="${op}"/></svg>`;
+        const svg = feito
+          ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="#9ca3af" stroke="white" stroke-width="1.5" opacity="0.85"/><polyline points="4.5,8 7,10.5 11.5,5.5" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/></svg>`
+          : `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="#fb923c" stroke="white" stroke-width="1.5"/></svg>`;
         const m = new google.maps.Marker({
           position: { lat: alvo.lat, lng: alvo.lng },
           map,
