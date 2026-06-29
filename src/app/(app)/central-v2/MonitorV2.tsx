@@ -167,6 +167,9 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const [camTiroteios, setCamTiroteios] = useState(true);
   const [camRouboCarga, setCamRouboCarga] = useState(true);
 
+  // Alerta ativo (último card clicado na sidebar)
+  const [alertaAtivoId, setAlertaAtivoId] = useState<string | null>(null);
+
   // Panico overlay
   const [panicoAlerta, setPanicoAlerta] = useState<AlertaEnriquecido | null>(null);
   const panicoVistosRef = useRef<Set<string>>(new Set());
@@ -432,6 +435,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     fetchAbortRef.current?.abort();
     fetchAbortRef.current = null;
     setCvSelecionado(null);
+    setAlertaAtivoId(null);
     setRastro([]);
     setParadas([]);
     setAlvos([]);
@@ -510,9 +514,21 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   }, [cvSelecionado, veiculosMapa]);
 
   // ── Derived ──────────────────────────────────────────────────────────
-  const vmFiltrado: VeiculoMapa[] = filtroComm
-    ? veiculosMapa.filter(v => v.atraso_min <= filtroComm)
-    : veiculosMapa;
+  const vmFiltrado: VeiculoMapa[] = useMemo(() => {
+    const base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
+    if (!cvSelecionado || base.some(v => v.cv === cvSelecionado)) return base;
+    // Veículo selecionado via alerta mas fora do feed ao vivo — injeta posição do alerta
+    const al = alertas.find(a => a.cv === cvSelecionado && a.lat && a.lng);
+    if (!al) return base;
+    const sintetico: VeiculoMapa = {
+      placa: al.placa, cv: al.cv,
+      nivel: al.nivel === "critico" ? "vermelho" : "amarelo",
+      velocidade: al.velocidade ?? 0, ignicao: al.ignicao ?? false,
+      atraso_min: al.atraso_min ?? 999, tipo: al.tipo,
+      lat: al.lat, lng: al.lng, local: al.local, rumo: null,
+    };
+    return [...base, sintetico];
+  }, [veiculosMapa, filtroComm, cvSelecionado, alertas]);
 
   const vmAtual = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
 
@@ -898,20 +914,26 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             )}
             {alertasOrdenados.map(a => {
               const cor = a.nivel === "critico" ? T.red : T.yellow;
-              const ativo = cvSelecionado === a.cv;
+              const ativo = alertaAtivoId === a.id;
+              const doCarro = cvSelecionado === a.cv;
               return (
                 <div key={a.id}
-                  onClick={() => selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined)}
+                  onClick={() => {
+                    setAlertaAtivoId(a.id);
+                    selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
+                  }}
                   className="v2-alert-card"
                   style={{
                     marginBottom: 4, borderRadius: 8,
-                    border: `1px solid ${ativo ? cor + "66" : cor + "22"}`,
+                    border: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
                     borderLeft: `3px solid ${cor}`,
                     background: ativo
-                      ? (tema === "dark" ? `${cor}16` : `${cor}10`)
-                      : (tema === "dark" ? `${cor}07` : `${cor}05`),
+                      ? (tema === "dark" ? `${cor}22` : `${cor}14`)
+                      : doCarro
+                        ? (tema === "dark" ? `${cor}12` : `${cor}08`)
+                        : (tema === "dark" ? `${cor}07` : `${cor}05`),
                     cursor: "pointer",
-                    outline: ativo ? `1px solid ${cor}33` : "none",
+                    boxShadow: ativo ? `0 0 0 1px ${cor}44` : "none",
                   }}>
                   <div style={{ padding: "8px 10px 7px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
