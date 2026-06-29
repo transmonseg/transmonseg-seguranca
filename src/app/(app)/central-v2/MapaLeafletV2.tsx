@@ -463,7 +463,7 @@ export default function MapaLeafletV2({
 
     drawLines(routeWaypoints);
 
-    // ETA por haversine ÷ 25 km/h (velocidade média urbana) — sem API externa
+    // ETA inicial por haversine ÷ 25 km/h enquanto OSRM carrega
     const o = routeWaypoints[0];
     const d = routeWaypoints[1];
     const R = 6_371_000;
@@ -472,11 +472,27 @@ export default function MapaLeafletV2({
     const dLng = toR(d.lng - o.lng);
     const a = Math.sin(dLat / 2) ** 2 + Math.cos(toR(o.lat)) * Math.cos(toR(d.lat)) * Math.sin(dLng / 2) ** 2;
     const distM = 2 * R * Math.asin(Math.sqrt(a));
-    const eta = Math.ceil(distM / (25_000 / 3600) / 60);
-    setEtaMinutos(eta);
-    onEtaChange?.(eta);
+    setEtaMinutos(Math.ceil(distM / (25_000 / 3600) / 60));
+    onEtaChange?.(Math.ceil(distM / (25_000 / 3600) / 60));
+
+    // Rota pelas ruas via OSRM (gratuito, sem chave)
+    const ctrl = new AbortController();
+    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${o.lng},${o.lat};${d.lng},${d.lat}?overview=full&geometries=geojson`;
+    fetch(osrmUrl, { signal: ctrl.signal })
+      .then(r => r.json())
+      .then((data: { routes?: Array<{ geometry: { coordinates: [number, number][] }; duration: number }> }) => {
+        const route = data?.routes?.[0];
+        if (!route) return;
+        const roadPath = route.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }));
+        drawLines(roadPath);
+        const etaReal = Math.ceil(route.duration / 60);
+        setEtaMinutos(etaReal);
+        onEtaChange?.(etaReal);
+      })
+      .catch(() => { /* mantém linha reta + ETA haversine em caso de falha */ });
 
     return () => {
+      ctrl.abort();
       routeLinesRef.current.forEach(p => p.setMap(null));
       routeLinesRef.current = [];
     };
