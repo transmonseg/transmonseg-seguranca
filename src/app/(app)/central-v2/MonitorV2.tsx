@@ -405,12 +405,25 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   // Pontos de entrega globais (todos os veículos). Atualiza a cada 5 minutos.
   useEffect(() => {
     if (veiculosBase.length === 0) return;
-    const qs = veiculosBase.map((v: { cv: string }) => `cv=${encodeURIComponent(v.cv)}`).join("&");
-    const buscar = () => {
-      fetch(`/api/alvos?${qs}`)
-        .then(r => r.ok ? r.json() : null)
-        .then((d: { pontos?: PontoEntrega[] } | null) => { if (d?.pontos) setAlvosGlobais(d.pontos); })
-        .catch(() => {});
+    // CVs em lotes de 50 para evitar URL muito longa
+    const lotes: string[][] = [];
+    for (let i = 0; i < veiculosBase.length; i += 50)
+      lotes.push(veiculosBase.slice(i, i + 50).map((v: { cv: string }) => v.cv));
+
+    const buscar = async () => {
+      try {
+        const resultados = await Promise.all(
+          lotes.map(cvs => {
+            const qs = cvs.map(cv => `cv=${encodeURIComponent(cv)}`).join("&");
+            return fetch(`/api/alvos?${qs}`).then(r => r.ok ? r.json() : { pontos: [] });
+          })
+        );
+        const todos: PontoEntrega[] = resultados.flatMap((d: { pontos?: PontoEntrega[] }) => d.pontos ?? []);
+        console.log(`[alvos globais] ${todos.length} pontos carregados de ${veiculosBase.length} veículos`);
+        setAlvosGlobais(todos);
+      } catch (err) {
+        console.error("[alvos globais] erro ao buscar:", err);
+      }
     };
     buscar();
     const t = setInterval(buscar, 5 * 60_000);
@@ -1125,8 +1138,14 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             fontFamily: FONT_MONO, letterSpacing: ".03em",
           }}>
             <span style={{ fontWeight: 700 }}>{vmFiltrado.length}</span>
-            <span style={{ color: T.dim }}> veiculos</span>
+            <span style={{ color: T.dim }}> veículos</span>
             {filtroComm != null && <span style={{ color: T.accent }}> &lt;{filtroComm}min</span>}
+            {!cvSelecionado && alvosGlobais.length > 0 && (
+              <span style={{ color: T.accent, marginLeft: 8 }}>· {alvosGlobais.length} entregas</span>
+            )}
+            {!cvSelecionado && alvosGlobais.length === 0 && veiculosBase.length > 0 && (
+              <span style={{ color: T.dim, marginLeft: 8 }}>· carregando entregas...</span>
+            )}
           </div>
 
           {/* Toast notifications */}
