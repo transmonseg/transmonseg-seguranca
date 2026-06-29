@@ -228,21 +228,15 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens): goog
   };
 }
 
-// Circular alvo icon. displayNum é 1-indexed para o usuário.
-function criarIconeAlvo(displayNum: number, feito: boolean, proximo: boolean): google.maps.Icon {
-  const cor        = feito ? "#6b7280" : proximo ? "#f97316" : "#fb923c";
-  const size       = feito ? 20 : proximo ? 26 : 22;
-  const fontSize   = feito ? 9  : proximo ? 12 : 10;
-  const borderCol  = feito ? "rgba(255,255,255,0.5)" : "white";
-  const borderW    = feito ? 1.5 : 2;
-  const opacity    = feito ? 0.7 : 1;
-  const r          = size / 2 - 1;
-  const half       = size / 2;
-
-  const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="${half}" cy="${half}" r="${r}" fill="${cor}" stroke="${borderCol}" stroke-width="${borderW}" opacity="${opacity}"/>
-    <text x="${half}" y="${half + 0.5}" text-anchor="middle" dominant-baseline="middle"
-      font-family="monospace" font-size="${fontSize}" font-weight="800" fill="white" opacity="${opacity}">${displayNum}</text>
+// Ponto de entrega — círculo colorido simples, sem número
+function criarIconeAlvo(feito: boolean, proximo: boolean): google.maps.Icon {
+  const cor  = feito ? "#6b7280" : proximo ? "#f97316" : "#fb923c";
+  const size = feito ? 12 : proximo ? 18 : 14;
+  const op   = feito ? 0.65 : 1;
+  const r    = size / 2 - 1.5;
+  const half = size / 2;
+  const svg  = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="${half}" cy="${half}" r="${r}" fill="${cor}" stroke="white" stroke-width="1.5" opacity="${op}"/>
   </svg>`;
   return {
     url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
@@ -561,15 +555,16 @@ export default function MapaLeafletV2({
 
       {/* linha pontilhada gerenciada imperativamente via useEffect + routeLinesRef */}
 
-      {/* ── Ícones dos alvos (círculos numerados) — limitado a 200 para não travar ── */}
-      {alvos.filter(a => a.lat !== 0 || a.lng !== 0).slice(0, 200).map((alvo, i) => {
+      {/* ── Pontos de entrega (só quando há veículo selecionado) ── */}
+      {cvSelecionado && alvos.map((alvo, i) => {
+        if (alvo.lat === 0 && alvo.lng === 0) return null;
         const proximo = i === primeiroPendente;
         return (
           <Marker
-            key={`alvo-pin-${alvo.placa ?? "x"}${alvo.ordem}`}
+            key={`alvo-${i}`}
             position={{ lat: alvo.lat, lng: alvo.lng }}
-            icon={criarIconeAlvo(alvo.ordem + 1, alvo.feito, proximo)}
-            title={alvo.nome || `Entrega ${alvo.ordem + 1}`}
+            icon={criarIconeAlvo(alvo.feito, proximo)}
+            title={alvo.nome || (alvo.feito ? "Entregue" : "Pendente")}
             zIndex={proximo ? 15 : 12}
             clickable={true}
             onClick={() => { setAlvoSelecionado(alvo); setParadaSelecionada(null); }}
