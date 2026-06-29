@@ -925,7 +925,9 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                   className="v2-alert-card"
                   style={{
                     marginBottom: 4, borderRadius: 8,
-                    border: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
+                    borderTop: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
+                    borderRight: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
+                    borderBottom: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
                     borderLeft: `3px solid ${cor}`,
                     background: ativo
                       ? (tema === "dark" ? `${cor}22` : `${cor}14`)
