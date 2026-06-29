@@ -206,6 +206,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (localStorage.getItem("transmonseg-roubo") === "false") setCamRouboCarga(false);
     const vistaS = localStorage.getItem("transmonseg-vista") as "tudo" | "critico" | "atencao" | null;
     if (vistaS) setVista(vistaS);
+    const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
+    if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
   }, []);
 
   const setTemaComPersistencia = useCallback((novo: "dark" | "light") => {
@@ -243,6 +245,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setFiltroTipos(prev => {
       const next = new Set(prev);
       if (next.has(tipo)) next.delete(tipo); else next.add(tipo);
+      localStorage.setItem("transmonseg-filtro-tipos", JSON.stringify([...next]));
       return next;
     });
   }, []);
@@ -1014,7 +1017,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   );
                 })}
                 {filtroTipos.size > 0 && (
-                  <button onClick={() => setFiltroTipos(new Set())} style={{
+                  <button onClick={() => { setFiltroTipos(new Set()); localStorage.removeItem("transmonseg-filtro-tipos"); }} style={{
                     height: 22, padding: "0 8px", borderRadius: 5,
                     border: `1px solid ${T.border}`, background: "transparent",
                     color: T.dim, fontSize: 11, cursor: "pointer",
