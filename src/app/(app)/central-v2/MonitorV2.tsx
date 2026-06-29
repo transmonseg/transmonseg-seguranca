@@ -640,13 +640,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     return true;
   });
 
-  // Veículo selecionado topo → dentro de cada grupo ordena por prioAlerta desc
-  const alertasOrdenados = [...alertasFiltrados].sort((a, b) => {
-    const aSel = a.cv === cvSelecionado ? 1 : 0;
-    const bSel = b.cv === cvSelecionado ? 1 : 0;
-    if (aSel !== bSel) return bSel - aSel;
-    return prioAlerta(b) - prioAlerta(a);
-  });
+  // Ordena só por prioridade — seleção não move o card, só brilha no lugar
+  const alertasOrdenados = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
 
   const veiculosBusca = busca.length >= 2
     ? veiculosBase.filter(v => v.placa.toLowerCase().includes(busca.toLowerCase())).slice(0, 8)
