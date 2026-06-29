@@ -1,0 +1,668 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, useJsApiLoader } from "@react-google-maps/api";
+import { type MapTokens } from "./tokens";
+
+export interface VeiculoMapa {
+  placa: string;
+  cv: string;
+  nivel: string | null;
+  velocidade: number;
+  ignicao: boolean;
+  atraso_min: number;
+  tipo: string | null;
+  lat: number | null;
+  lng: number | null;
+  local: string | null;
+  rumo?: number | null;
+}
+
+export interface Parada {
+  data: string;
+  local: string;
+  tempoMin: number;
+  lat: number;
+  lng: number;
+}
+
+export interface PontoEntrega {
+  lat: number;
+  lng: number;
+  raio: number;
+  ordem: number;
+  nome: string;
+  feito: boolean;
+  documento: string | null;
+  identificador: string | null;
+  dataInicio: string | null;
+  dataRealizado: string | null;
+  observacoes: string | null;
+  rota: string | null;
+}
+
+export interface Tiroteio {
+  lat: number;
+  lng: number;
+  date: string;
+  bairro: string;
+  cidade: string;
+  motivo: string | null;
+  vitimas: number;
+  acaoPolicial: boolean;
+  idadeMin: number;
+  recente: boolean;
+}
+
+interface GeoJsonGeom {
+  type: string;
+  coordinates: unknown;
+}
+
+export interface GeoJsonCollection {
+  type: "FeatureCollection";
+  features: Array<{
+    type: "Feature";
+    geometry: GeoJsonGeom | null;
+    properties: Record<string, unknown> | null;
+  }>;
+}
+
+export interface Props {
+  veiculosMapa: VeiculoMapa[];
+  cvSelecionado: string | null;
+  mostrarRastro: boolean;
+  mostrarParadas: boolean;
+  rastro: [number, number][];
+  paradas: Parada[];
+  alvos: PontoEntrega[];
+  favelas: GeoJsonCollection | null;
+  tiroteios: Tiroteio[];
+  rouboCarga: GeoJsonCollection | null;
+  seguir: boolean;
+  gatilhoFrota: number;
+  flyPara: { lat: number; lng: number; gatilho: number } | null;
+  zoomCmd: { zoom: number; g: number } | null;
+  onVeiculoClick: (vm: VeiculoMapa) => void;
+  onMapaVazioClick: () => void;
+  onAlvoClick?: (alvo: PontoEntrega) => void;
+  mapTokens: MapTokens;
+  tema: "dark" | "light";
+  satelite: boolean;
+  onZoomChange?: (zoom: number) => void;
+}
+
+const CENTER_DEFAULT = { lat: -22.9, lng: -43.2 };
+
+const DARK_STYLES: google.maps.MapTypeStyle[] = [
+  { elementType: "geometry", stylers: [{ color: "#1a1a1a" }] },
+  { elementType: "labels.icon", stylers: [{ visibility: "off" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#6b7280" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#1a1a1a" }] },
+  { featureType: "administrative", elementType: "geometry", stylers: [{ color: "#2d2d2d" }] },
+  { featureType: "administrative.country", elementType: "labels.text.fill", stylers: [{ color: "#9ca3af" }] },
+  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#d1d5db" }] },
+  { featureType: "poi", stylers: [{ visibility: "off" }] },
+  { featureType: "road", elementType: "geometry.fill", stylers: [{ color: "#2c2c2c" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#8a8a8a" }] },
+  { featureType: "road.arterial", elementType: "geometry", stylers: [{ color: "#313131" }] },
+  { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#3c3c3c" }] },
+  { featureType: "road.highway", elementType: "labels.text.fill", stylers: [{ color: "#a8a29e" }] },
+  { featureType: "transit", stylers: [{ visibility: "off" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0a0f1a" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#2d3748" }] },
+];
+
+function corVeiculo(v: VeiculoMapa, tok: MapTokens): string {
+  if (v.nivel === "vermelho" || (v.tipo !== null && v.tipo !== "")) return tok.red;
+  if (v.nivel === "amarelo") return tok.yellow;
+  if (v.ignicao && v.velocidade > 0) return tok.green;
+  if (v.ignicao && v.velocidade === 0) return tok.accent;
+  return tok.dim;
+}
+
+function corRoubo(n: number): string {
+  if (n >= 1000) return "#ef4444";
+  if (n >= 300) return "#f87171";
+  if (n >= 100) return "#fb923c";
+  if (n >= 30)  return "#fbbf24";
+  if (n >= 10)  return "#fde047";
+  if (n >= 1)   return "#fef9c3";
+  return "transparent";
+}
+
+// GeoJSON geometry → array of Google Maps polygon shapes (outer ring + holes)
+function geoToPaths(geom: GeoJsonGeom): google.maps.LatLngLiteral[][][] {
+  if (geom.type === "Polygon") {
+    const coords = geom.coordinates as number[][][];
+    return [coords.map(ring => ring.map(([lng, lat]) => ({ lat, lng })))];
+  }
+  if (geom.type === "MultiPolygon") {
+    const coords = geom.coordinates as number[][][][];
+    return coords.map(poly => poly.map(ring => ring.map(([lng, lat]) => ({ lat, lng }))));
+  }
+  return [];
+}
+
+// Waypoint dot SVG for rastro (constant pixel size)
+function dotSvg(fill: string, stroke: string): string {
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+    `<svg width="10" height="10" viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="5" cy="5" r="4" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>
+    </svg>`
+  )}`;
+}
+
+const DOT_RASTRO = dotSvg("#00e5ff", "#000");
+const DOT_START  = dotSvg("#22c55e", "#064e1a");
+
+function formatarDuracaoParada(min: number): string {
+  if (min < 60) return `${min}min`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `${h}h ${m}min` : `${h}h`;
+}
+
+function formatarHoraParada(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  } catch { return iso; }
+}
+
+// Cópia exata do iconeStatus do V1 (MapaMonitor.tsx) adaptada para SVG data URL
+function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens): google.maps.Icon {
+  const cor = corVeiculo(vm, tok);
+  const semComm = vm.atraso_min > 60;
+  const temSeta = vm.velocidade > 5 && vm.rumo != null;
+
+  if (selecionado) {
+    // V1: círculo 44×44 com fundo escuro e borda colorida
+    const svg = `<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="22" cy="22" r="22" fill="${cor}" opacity="0.15"/>
+      <circle cx="22" cy="22" r="19" fill="rgba(4,4,8,0.96)" stroke="${cor}" stroke-width="3"/>
+      <g transform="translate(10,10)" fill="none" stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1" y="3" width="15" height="13"/>
+        <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+        <circle cx="5.5" cy="18.5" r="2.5"/>
+        <circle cx="18.5" cy="18.5" r="2.5"/>
+      </g>
+    </svg>`;
+    return {
+      url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+      scaledSize: new window.google.maps.Size(44, 44),
+      anchor: new window.google.maps.Point(22, 22),
+    };
+  }
+
+  // V1: teardrop 30×38, caminho exato, truck translate(4,4) scale(0.85) stroke-width=3, stroke branco
+  const alpha = semComm ? "0.5" : "1";
+
+  // V1: seta de heading — cx=15, cy=15, len=9 no viewBox 30×38
+  let setaSvg = "";
+  if (temSeta && vm.rumo != null) {
+    const rumoRad = (vm.rumo * Math.PI) / 180;
+    const x2 = (15 + Math.sin(rumoRad) * 9).toFixed(1);
+    const y2 = (15 - Math.cos(rumoRad) * 9).toFixed(1);
+    setaSvg =
+      `<line x1="15" y1="15" x2="${x2}" y2="${y2}" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.95"/>` +
+      `<circle cx="${x2}" cy="${y2}" r="2" fill="white" opacity="0.95"/>`;
+  }
+
+  const svg = `<svg width="30" height="38" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
+    <path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
+    <g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="1" y="3" width="15" height="13"/>
+      <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+      <circle cx="5.5" cy="18.5" r="2.5"/>
+      <circle cx="18.5" cy="18.5" r="2.5"/>
+    </g>
+    ${setaSvg}
+  </svg>`;
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new window.google.maps.Size(30, 38),
+    anchor: new window.google.maps.Point(15, 36),
+  };
+}
+
+// Circular alvo icon matching V1 exactly
+function criarIconeAlvo(ordem: number, feito: boolean, proximo: boolean): google.maps.Icon {
+  const cor        = feito ? "#6b7280" : proximo ? "#f97316" : "#fb923c";
+  const size       = feito ? 18 : proximo ? 24 : 20;
+  const fontSize   = feito ? 9  : proximo ? 12 : 10;
+  const borderCol  = feito ? "rgba(255,255,255,0.4)" : "white";
+  const borderW    = feito ? 1.5 : 2;
+  const opacity    = feito ? 0.55 : 1;
+  const r          = size / 2 - 1;
+  const half       = size / 2;
+
+  const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="${half}" cy="${half}" r="${r}" fill="${cor}" stroke="${borderCol}" stroke-width="${borderW}" opacity="${opacity}"/>
+    <text x="${half}" y="${half + 0.5}" text-anchor="middle" dominant-baseline="middle"
+      font-family="monospace" font-size="${fontSize}" font-weight="800" fill="white" opacity="${opacity}">${ordem}</text>
+  </svg>`;
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new window.google.maps.Size(size, size),
+    anchor: new window.google.maps.Point(half, half),
+  };
+}
+
+export default function MapaLeafletV2({
+  veiculosMapa, cvSelecionado, mostrarRastro, mostrarParadas,
+  rastro, paradas, alvos, favelas, tiroteios, rouboCarga,
+  seguir, gatilhoFrota, flyPara, zoomCmd,
+  onVeiculoClick, onMapaVazioClick, onAlvoClick,
+  mapTokens, tema, satelite, onZoomChange,
+}: Props) {
+  const { isLoaded } = useJsApiLoader({
+    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "",
+    id: "transmonseg-google-maps",
+  });
+
+  const [map, setMap] = useState<google.maps.Map | null>(null);
+  const [paradaSelecionada, setParadaSelecionada] = useState<Parada | null>(null);
+  const [alvoSelecionado, setAlvoSelecionado] = useState<PontoEntrega | null>(null);
+  const prevFlyG   = useRef(-1);
+  const prevZoomG  = useRef(0);
+  const prevFrotaG = useRef(-1);
+  const lastPanKey = useRef("");
+  const rastroLinesRef = useRef<google.maps.Polyline[]>([]);
+  const routeLinesRef  = useRef<google.maps.Polyline[]>([]);
+
+  // Controla o rastro de forma imperativa para garantir limpeza quando cvSelecionado vai a null.
+  // @react-google-maps/api tem bug no React 18: Polyline declarativo não chama setMap(null) ao desmontar.
+  useEffect(() => {
+    rastroLinesRef.current.forEach(p => p.setMap(null));
+    rastroLinesRef.current = [];
+    if (!map || !cvSelecionado || !mostrarRastro || rastro.length <= 1) return;
+    const path = rastro.map(([lat, lng]) => ({ lat, lng }));
+    const outer = new google.maps.Polyline({ map, path, strokeColor: "#000000", strokeWeight: 7, strokeOpacity: 0.7, geodesic: true, zIndex: 4 });
+    const inner = new google.maps.Polyline({ map, path, strokeColor: "#00e5ff", strokeWeight: 3.5, strokeOpacity: 1, geodesic: true, zIndex: 5 });
+    rastroLinesRef.current = [outer, inner];
+    return () => {
+      outer.setMap(null);
+      inner.setMap(null);
+      rastroLinesRef.current = [];
+    };
+  }, [map, cvSelecionado, mostrarRastro, rastro]);
+
+  const onLoad = useCallback((m: google.maps.Map) => {
+    setMap(m);
+    // Injeta CSS para sobrescrever o fundo branco nativo do InfoWindow do Google Maps
+    if (!document.getElementById("tmsg-iw-dark")) {
+      const s = document.createElement("style");
+      s.id = "tmsg-iw-dark";
+      s.textContent = [
+        ".gm-style .gm-style-iw-c{background:#111!important;border:1px solid #2a2a2a!important;border-radius:8px!important;padding:0!important;box-shadow:0 2px 14px rgba(0,0,0,.85)!important}",
+        ".gm-style .gm-style-iw-d{overflow:hidden!important}",
+        ".gm-style .gm-style-iw-tc::after{background:#111!important}",
+        ".gm-style .gm-ui-hover-effect{display:none!important}",
+        ".gm-style .gm-style-iw-chr{display:none!important}",
+      ].join("");
+      document.head.appendChild(s);
+    }
+  }, []);
+  const onUnmount = useCallback(() => setMap(null), []);
+
+  useEffect(() => {
+    if (!map || !flyPara || flyPara.gatilho === prevFlyG.current) return;
+    prevFlyG.current = flyPara.gatilho;
+    map.panTo({ lat: flyPara.lat, lng: flyPara.lng });
+    map.setZoom(16);
+    const t = setTimeout(() => { if (map) map.panBy(0, 90); }, 320);
+    return () => clearTimeout(t);
+  }, [map, flyPara]);
+
+  useEffect(() => {
+    if (!map || !zoomCmd || zoomCmd.g === prevZoomG.current) return;
+    prevZoomG.current = zoomCmd.g;
+    map.setZoom(zoomCmd.zoom);
+  }, [map, zoomCmd]);
+
+  useEffect(() => {
+    if (!map || gatilhoFrota === prevFrotaG.current) return;
+    prevFrotaG.current = gatilhoFrota;
+    const pts = veiculosMapa.filter(v => v.lat != null && v.lng != null);
+    if (pts.length === 0) return;
+    const bounds = new window.google.maps.LatLngBounds();
+    pts.forEach(v => bounds.extend({ lat: v.lat!, lng: v.lng! }));
+    map.fitBounds(bounds, 48);
+  }, [map, gatilhoFrota, veiculosMapa]);
+
+  const vmSelecionado = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
+  useEffect(() => {
+    if (!map || !seguir || !vmSelecionado?.lat || !vmSelecionado?.lng) return;
+    const k = `${vmSelecionado.lat.toFixed(5)},${vmSelecionado.lng.toFixed(5)}`;
+    if (k === lastPanKey.current) return;
+    lastPanKey.current = k;
+    map.panTo({ lat: vmSelecionado.lat, lng: vmSelecionado.lng });
+  }, [map, seguir, vmSelecionado]);
+
+  const veiculosComPos = veiculosMapa.filter(v => v.lat != null && v.lng != null);
+
+  // Precompute alvo data
+  const primeiroPendente = alvos.findIndex(a => !a.feito);
+  const alvosPendentes = alvos.filter(a => !a.feito && (a.lat !== 0 || a.lng !== 0)).sort((a, b) => a.ordem - b.ordem);
+
+  // Dashed route waypoints: vehicle → pending delivery points
+  const routeWaypoints: google.maps.LatLngLiteral[] | null = (() => {
+    if (!vmSelecionado?.lat || !vmSelecionado?.lng || alvosPendentes.length === 0) return null;
+    return [
+      { lat: vmSelecionado.lat, lng: vmSelecionado.lng },
+      ...alvosPendentes.map(a => ({ lat: a.lat, lng: a.lng })),
+    ];
+  })();
+
+  // Linha pontilhada de rota — imperativa pelo mesmo bug do Polyline declarativo no React 18.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    routeLinesRef.current.forEach(p => p.setMap(null));
+    routeLinesRef.current = [];
+    if (!map || !routeWaypoints || routeWaypoints.length < 2) return;
+    const dashIcon: google.maps.Symbol = { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 4 };
+    const outer = new google.maps.Polyline({
+      map, path: routeWaypoints, strokeColor: "#000000", strokeWeight: 4,
+      strokeOpacity: 0, geodesic: true, zIndex: 10,
+      icons: [{ icon: { ...dashIcon, strokeColor: "#000000", strokeOpacity: 0.55 }, offset: "0", repeat: "14px" }],
+    });
+    const inner = new google.maps.Polyline({
+      map, path: routeWaypoints, strokeColor: "#f97316", strokeWeight: 2,
+      strokeOpacity: 0, geodesic: true, zIndex: 11,
+      icons: [{ icon: { ...dashIcon, strokeColor: "#f97316", strokeOpacity: 0.9 }, offset: "0", repeat: "14px" }],
+    });
+    routeLinesRef.current = [outer, inner];
+    return () => {
+      outer.setMap(null);
+      inner.setMap(null);
+      routeLinesRef.current = [];
+    };
+  }, [map, routeWaypoints]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Rastro waypoint dots every 15 positions (capped for performance)
+  const rastroWaypoints = mostrarRastro
+    ? rastro.filter((_, i) => i % 15 === 0 && i > 0).slice(0, 60)
+    : [];
+
+  if (!isLoaded) {
+    return (
+      <div style={{
+        width: "100%", height: "100%",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: mapTokens.bg,
+      }}>
+        <span style={{ color: mapTokens.muted, fontSize: 13 }}>Carregando mapa...</span>
+      </div>
+    );
+  }
+
+  const dotIcon = {
+    url: DOT_RASTRO,
+    scaledSize: new window.google.maps.Size(10, 10),
+    anchor: new window.google.maps.Point(5, 5),
+  };
+  const startIcon = {
+    url: DOT_START,
+    scaledSize: new window.google.maps.Size(10, 10),
+    anchor: new window.google.maps.Point(5, 5),
+  };
+
+  // Dashed line icon sequence for route
+  const dashSeq = [{
+    icon: { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 4 } as google.maps.Symbol,
+    offset: "0",
+    repeat: "14px",
+  }];
+
+  return (
+    <GoogleMap
+      mapContainerStyle={{ width: "100%", height: "100%" }}
+      center={CENTER_DEFAULT}
+      zoom={11}
+      onLoad={onLoad}
+      onUnmount={onUnmount}
+      onClick={() => { setParadaSelecionada(null); setAlvoSelecionado(null); onMapaVazioClick(); }}
+      onZoomChanged={() => { if (map) onZoomChange?.(map.getZoom() ?? 11); }}
+      options={{
+        mapTypeId: satelite ? "hybrid" : "roadmap",
+        disableDefaultUI: true,
+        clickableIcons: false,
+        gestureHandling: "greedy",
+        styles: (!satelite && tema === "dark") ? DARK_STYLES : [],
+      }}
+    >
+      {/* ── Roubo de carga (coroplético por município) ── */}
+      {rouboCarga?.features.flatMap((f, fi) => {
+        if (!f.geometry) return [];
+        const n = Number(f.properties?.roubo_carga ?? 0);
+        if (n === 0) return [];
+        const cor = corRoubo(n);
+        return geoToPaths(f.geometry).map((paths, pi) => (
+          <Polygon
+            key={`rc-${fi}-${pi}`}
+            paths={paths}
+            options={{
+              fillColor: cor,
+              fillOpacity: 0.22,
+              strokeColor: "#b91c1c",
+              strokeWeight: 0.4,
+              strokeOpacity: 0.4,
+              clickable: false,
+              zIndex: 1,
+            }}
+          />
+        ));
+      })}
+
+      {/* ── Favelas (perímetro de risco) ── */}
+      {favelas?.features.flatMap((f, fi) => {
+        if (!f.geometry) return [];
+        return geoToPaths(f.geometry).map((paths, pi) => (
+          <Polygon
+            key={`fav-${fi}-${pi}`}
+            paths={paths}
+            options={{
+              fillColor: "#ff2d2d",
+              fillOpacity: 0.18,
+              strokeColor: "#ff2d2d",
+              strokeWeight: 1,
+              strokeOpacity: 0.65,
+              clickable: false,
+              zIndex: 2,
+            }}
+          />
+        ));
+      })}
+
+      {/* ── Tiroteios (Fogo Cruzado, 24h) ── */}
+      {tiroteios.map((t, i) => (
+        <Circle
+          key={`tiro-${i}`}
+          center={{ lat: t.lat, lng: t.lng }}
+          radius={t.recente ? 55 : 35}
+          options={{
+            fillColor:    t.recente ? "#ff6a00" : "#d97706",
+            fillOpacity:  1,
+            strokeColor:  t.recente ? "#ffffff" : "#fde68a",
+            strokeWeight: t.recente ? 2 : 1,
+            strokeOpacity: 1,
+            clickable: false,
+            zIndex: 3,
+          }}
+        />
+      ))}
+
+      {/* rastro gerenciado imperativamente via useEffect + rastroLinesRef */}
+
+      {/* ── Waypoints do rastro (dot a cada 15 posições) ── */}
+      {cvSelecionado && rastroWaypoints.map(([lat, lng], i) => (
+        <Marker
+          key={`wp-${i}`}
+          position={{ lat, lng }}
+          icon={dotIcon}
+          clickable={false}
+          zIndex={6}
+        />
+      ))}
+
+      {/* ── Início do rastro ── */}
+      {cvSelecionado && mostrarRastro && rastro.length > 0 && (
+        <Marker
+          position={{ lat: rastro[0][0], lng: rastro[0][1] }}
+          icon={startIcon}
+          title="Início do rastro"
+          clickable={false}
+          zIndex={7}
+        />
+      )}
+
+      {/* ── Paradas (SVG dot pixel-size, igual ao CircleMarker do V1) ── */}
+      {cvSelecionado && mostrarParadas && paradas.map(p => {
+        const grande = p.tempoMin >= 30;
+        const cor    = grande ? "#f59e0b" : "#fbbf24";
+        const fill   = grande ? "#f59e0b" : "#fde68a";
+        const size   = grande ? 18 : 12;
+        const r      = size / 2;
+        const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="${r}" cy="${r}" r="${r - 1}" fill="${fill}" stroke="${cor}" stroke-width="2" opacity="0.85"/>
+        </svg>`;
+        return (
+          <Marker
+            key={`${p.lat.toFixed(5)},${p.lng.toFixed(5)},${p.data}`}
+            position={{ lat: p.lat, lng: p.lng }}
+            icon={{
+              url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+              scaledSize: new window.google.maps.Size(size, size),
+              anchor: new window.google.maps.Point(r, r),
+            }}
+            title={`Parada: ${formatarDuracaoParada(p.tempoMin)}`}
+            clickable={true}
+            zIndex={8}
+            onClick={() => setParadaSelecionada(p)}
+          />
+        );
+      })}
+
+      {/* linha pontilhada gerenciada imperativamente via useEffect + routeLinesRef */}
+
+      {/* ── Ícones dos alvos (círculos numerados, igual ao V1) ── */}
+      {cvSelecionado && alvos.filter(a => a.lat !== 0 || a.lng !== 0).map((alvo, i) => {
+        const proximo = i === primeiroPendente;
+        return (
+          <Marker
+            key={`alvo-pin-${i}`}
+            position={{ lat: alvo.lat, lng: alvo.lng }}
+            icon={criarIconeAlvo(alvo.ordem, alvo.feito, proximo)}
+            title={alvo.nome || `Entrega ${alvo.ordem}`}
+            zIndex={proximo ? 15 : 12}
+            clickable={true}
+            onClick={() => { setAlvoSelecionado(alvo); setParadaSelecionada(null); }}
+          />
+        );
+      })}
+
+      {/* ── Popup de informação da parada selecionada ── */}
+      {cvSelecionado && paradaSelecionada && (
+        <InfoWindow
+          position={{ lat: paradaSelecionada.lat, lng: paradaSelecionada.lng }}
+          onCloseClick={() => setParadaSelecionada(null)}
+          options={{ pixelOffset: new window.google.maps.Size(0, -14), disableAutoPan: true }}
+        >
+          <div style={{
+            fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+            background: "#111", color: "#e5e5e5",
+            padding: "10px 14px 10px 12px", minWidth: 160, maxWidth: 230, lineHeight: 1.5,
+            borderRadius: 6,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <span style={{ fontWeight: 700, fontSize: 13, color: "#f59e0b" }}>
+                {formatarDuracaoParada(paradaSelecionada.tempoMin)}
+              </span>
+              <button
+                onClick={() => setParadaSelecionada(null)}
+                style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 0 0 8px", lineHeight: 1 }}
+              >×</button>
+            </div>
+            {paradaSelecionada.data && (
+              <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: paradaSelecionada.local ? 4 : 0 }}>
+                {formatarHoraParada(paradaSelecionada.data)}
+              </div>
+            )}
+            {paradaSelecionada.local && (
+              <div style={{ fontSize: 11, color: "#d1d5db", lineHeight: 1.4 }}>
+                {paradaSelecionada.local}
+              </div>
+            )}
+          </div>
+        </InfoWindow>
+      )}
+
+      {/* ── Popup do ponto de entrega clicado ── */}
+      {cvSelecionado && alvoSelecionado && (
+        <InfoWindow
+          position={{ lat: alvoSelecionado.lat, lng: alvoSelecionado.lng }}
+          onCloseClick={() => setAlvoSelecionado(null)}
+          options={{ pixelOffset: new window.google.maps.Size(0, -14), disableAutoPan: true }}
+        >
+          <div style={{
+            fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+            background: "#111", color: "#e5e5e5",
+            padding: "10px 14px 10px 12px", minWidth: 160, maxWidth: 240, lineHeight: 1.5,
+            borderRadius: 6,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <span style={{ fontWeight: 700, fontSize: 13, color: alvoSelecionado.feito ? "#22c55e" : "#f97316" }}>
+                {alvoSelecionado.feito ? "✓ Entregue" : `Pendente #${alvoSelecionado.ordem}`}
+              </span>
+              <button onClick={() => setAlvoSelecionado(null)}
+                style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 0 0 8px", lineHeight: 1 }}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: "#f3f4f6", fontWeight: 600, marginBottom: alvoSelecionado.nome ? 2 : 0 }}>
+              {alvoSelecionado.nome || `Ponto ${alvoSelecionado.ordem}`}
+            </div>
+          </div>
+        </InfoWindow>
+      )}
+
+      {/* ── Ring de alerta crítico ao redor de veículos em nível vermelho ── */}
+      {veiculosComPos
+        .filter(vm => (vm.nivel === "vermelho" || (vm.tipo !== null && vm.tipo !== "")) && vm.cv !== cvSelecionado)
+        .map(vm => (
+          <Circle
+            key={`ring-${vm.cv}`}
+            center={{ lat: vm.lat!, lng: vm.lng! }}
+            radius={28}
+            options={{
+              fillColor: "#ef4444",
+              fillOpacity: 0.12,
+              strokeColor: "#ef4444",
+              strokeWeight: 1.5,
+              strokeOpacity: 0.55,
+              clickable: false,
+              zIndex: 49,
+            }}
+          />
+        ))
+      }
+
+      {/* ── Veículos ── */}
+      {veiculosComPos.map(vm => {
+        const selecionado = vm.cv === cvSelecionado;
+        const dimmed = cvSelecionado !== null && !selecionado;
+        return (
+          <Marker
+            key={vm.cv}
+            position={{ lat: vm.lat!, lng: vm.lng! }}
+            icon={criarIcone(vm, selecionado, mapTokens)}
+            opacity={dimmed ? 0.3 : 1}
+            zIndex={selecionado ? 999 : vm.nivel === "vermelho" ? 100 : 50}
+            title={`${vm.placa} · ${vm.velocidade}km/h${vm.tipo ? ` · ${vm.tipo}` : ""}`}
+            onClick={() => onVeiculoClick(vm)}
+          />
+        );
+      })}
+    </GoogleMap>
+  );
+}

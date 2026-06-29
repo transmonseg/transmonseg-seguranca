@@ -26,6 +26,28 @@
   --verde:       #22c55e;
 }
 
+/* =========================================================
+   Tokens light mode
+   ========================================================= */
+[data-theme="light"] {
+  --bg:             #f4f4f3;
+  --card:           #ffffff;
+  --card-hover:     #ebebea;
+  --border:         #e2e2e0;
+  --border-subtle:  #ebebea;
+
+  --text:           #111110;
+  --text-muted:     #6b7280;
+  --text-dim:       #9ca3af;
+
+  --accent:         #4b6f9a;
+  --accent-dim:     #dce7f3;
+
+  --vermelho:       #dc2626;
+  --amarelo:        #d97706;
+  --verde:          #16a34a;
+}
+
 @theme inline {
   --color-bg:           var(--bg);
   --color-card:         var(--card);
@@ -99,7 +121,7 @@ html, body {
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: #2e2e2e; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
 /* =========================================================
    Componentes reutilizaveis

@@ -1,0 +1,1429 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
+import AlertaSonoro from "../components/AlertaSonoro";
+import { resolverAlerta, marcarFalsoPositivo, resolverVarios } from "../acoes-alertas";
+import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
+import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
+import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
+
+const MapaLeafletV2 = dynamic(() => import("./MapaLeafletV2"), { ssr: false });
+
+// ── Types ──────────────────────────────────────────────────────────────
+interface AlertaEnriquecido {
+  id: string;
+  veiculo_id: string;
+  cv: string;
+  placa: string;
+  nivel: "critico" | "atencao";
+  tipo: string;
+  motivo: string | null;
+  desde: string;
+  status: string;
+  score: number | null;
+  lat: number | null;
+  lng: number | null;
+  velocidade: number | null;
+  ignicao: boolean | null;
+  atraso_min: number | null;
+  local: string | null;
+}
+
+interface ClienteInfo { id: string; nome: string; cod: string; }
+
+interface Props {
+  cliente: string;
+  clientes: ClienteInfo[];
+  clienteAtivoId: string;
+  veiculos: { placa: string; cv: string }[];
+  alertasIniciais: AlertaEnriquecido[];
+}
+
+interface Toast {
+  id: string;
+  placa: string;
+  tipo: string;
+  motivo: string | null;
+  local: string | null;
+  ts: number;
+}
+
+// ── Constants ──────────────────────────────────────────────────────────
+const PERIODOS = [1, 2, 6, 12, 24, 48] as const;
+const ZOOM_LABELS: [string, number][] = [["RUA", 17], ["QUADRA", 15], ["BAIRRO", 13], ["CIDADE", 11]];
+
+const NOME_TIPO: Record<string, string> = {
+  panico: "Panico", bau: "Bau aberto", favela: "Favela/risco",
+  tiroteio: "Tiroteio", jammer: "Jammer/sinal", saida_nao_autorizada: "Saida n.aut.",
+  parada_anomala: "Par. anomala", parada_longa: "Par. longa", parada_cliente: "Par. cliente",
+  ignicao_noturna: "Ign. noturna", desvio: "Desvio rota", excesso: "Excesso vel.",
+};
+function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
+
+function tempoAtras(desde: string): string {
+  const diff = Math.floor((Date.now() - new Date(desde).getTime()) / 60000);
+  if (diff < 60) return `${diff}min`;
+  if (diff < 1440) return `${Math.floor(diff / 60)}h`;
+  return `${Math.floor(diff / 1440)}d`;
+}
+
+function formatarDist(m: number): string {
+  if (m < 1000) return `${Math.round(m)}m`;
+  return `${(m / 1000).toFixed(1)}km`;
+}
+
+function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371000;
+  const toR = (d: number) => (d * Math.PI) / 180;
+  const dLat = toR(bLat - aLat);
+  const dLng = toR(bLng - aLng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// ── Font helpers ───────────────────────────────────────────────────────
+const FONT_SANS = "var(--font-geist), system-ui, sans-serif";
+const FONT_MONO = "var(--font-geist-mono), ui-monospace, 'Cascadia Code', monospace";
+
+// ── Static style helpers ───────────────────────────────────────────────
+const BASE_BTN: React.CSSProperties = {
+  background: "transparent", border: "none", borderRadius: 6,
+  cursor: "pointer", color: "inherit",
+  display: "flex", alignItems: "center", justifyContent: "center",
+  fontFamily: FONT_SANS,
+};
+
+function tinyBtn(color: string): React.CSSProperties {
+  return {
+    height: 22, padding: "0 8px", borderRadius: 5,
+    border: `1px solid ${color}28`, background: `${color}10`,
+    cursor: "pointer", fontSize: 10, fontWeight: 700, color,
+    fontFamily: FONT_SANS,
+  };
+}
+
+const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, settings: 900 } as const;
+
+// ── Main Component ────────────────────────────────────────────────────
+export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, alertasIniciais }: Props) {
+  const [alertas, setAlertas] = useState<AlertaEnriquecido[]>(alertasIniciais);
+  const alertasRef = useRef<AlertaEnriquecido[]>(alertasIniciais);
+  const [veiculosMapa, setVeiculosMapa] = useState<VeiculoMapa[]>([]);
+
+  // Vehicle selection
+  const [cvSelecionado, setCvSelecionado] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  // Guard: ignore map click within 500ms of a marker click (prevents disappear bug)
+  const lastMarkerClickRef = useRef(0);
+  // Abort controller for vehicle data fetches (cancels stale requests on vehicle switch)
+  const fetchAbortRef = useRef<AbortController | null>(null);
+
+  // Track/stops/alvos
+  const [rastro, setRastro] = useState<[number, number][]>([]);
+  const [paradas, setParadas] = useState<Parada[]>([]);
+  const [alvos, setAlvos] = useState<PontoEntrega[]>([]);
+  const [horas, setHoras] = useState<(typeof PERIODOS)[number]>(24);
+  const [mostrarRastro, setMostrarRastro] = useState(false);
+  const [mostrarParadas, setMostrarParadas] = useState(false);
+  const [carregando, setCarregando] = useState(false);
+
+  // Camadas de risco (favelas, tiroteios, roubo de carga)
+  const [favelas, setFavelas] = useState<GeoJsonCollection | null>(null);
+  const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
+  const [rouboCarga, setRouboCarga] = useState<GeoJsonCollection | null>(null);
+
+  // Sirene / bloqueio
+  const [cmdSirene, setCmdSirene] = useState<"idle" | "loading" | "ok" | "fallback">("idle");
+  const [cmdBloqueio, setCmdBloqueio] = useState<"idle" | "loading" | "ok" | "fallback">("idle");
+  const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
+
+  // Map controls
+  const [seguir, setSeguir] = useState(false);
+  const [flyPara, setFlyPara] = useState<{ lat: number; lng: number; gatilho: number } | null>(null);
+  const [zoomCmd, setZoomCmd] = useState<{ zoom: number; g: number } | null>(null);
+  const [gatilhoFrota, setGatilhoFrota] = useState(0);
+  const [zoomAtual, setZoomAtual] = useState(11);
+  const gatilhoRef = useRef(0);
+
+  // UI
+  const [vista, setVista] = useState<"tudo" | "critico" | "atencao">("tudo");
+  const [filtroComm, setFiltroComm] = useState<number | null>(null);
+  const [busca, setBusca] = useState("");
+  const [comboAberto, setComboAberto] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [novosIdsArr, setNovosIdsArr] = useState<string[]>([]);
+  const [confirmarResolver, setConfirmarResolver] = useState(false);
+  const [resolvendoTodos, startResolver] = useTransition();
+
+  // Theme + satellite
+  const [tema, setTema] = useState<"dark" | "light">("dark");
+  const [satelite, setSatelite] = useState(false);
+  const [settingsAberto, setSettingsAberto] = useState(false);
+
+  // Visibilidade das camadas de risco
+  const [camFavelas, setCamFavelas] = useState(true);
+  const [camTiroteios, setCamTiroteios] = useState(true);
+  const [camRouboCarga, setCamRouboCarga] = useState(true);
+
+  // Panico overlay
+  const [panicoAlerta, setPanicoAlerta] = useState<AlertaEnriquecido | null>(null);
+  const panicoVistosRef = useRef<Set<string>>(new Set());
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("transmonseg-tema") as "dark" | "light" | null;
+    if (saved === "light") {
+      document.documentElement.setAttribute("data-theme", "light");
+      setTema("light");
+    }
+  }, []);
+
+  const setTemaComPersistencia = useCallback((novo: "dark" | "light") => {
+    localStorage.setItem("transmonseg-tema", novo);
+    document.documentElement.setAttribute("data-theme", novo === "light" ? "light" : "");
+    setTema(novo);
+  }, []);
+
+  const tocarPanico = useCallback(() => {
+    try {
+      const ctx = audioCtxRef.current ?? new AudioContext();
+      audioCtxRef.current = ctx;
+      ctx.resume();
+      const tocar = (t0: number, freq: number, dur: number) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = "sawtooth";
+        o.frequency.setValueAtTime(freq, t0);
+        o.frequency.linearRampToValueAtTime(freq * 0.6, t0 + dur);
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.linearRampToValueAtTime(0.5, t0 + 0.05);
+        g.gain.linearRampToValueAtTime(0.5, t0 + dur - 0.05);
+        g.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+        o.start(t0); o.stop(t0 + dur);
+      };
+      const n = ctx.currentTime;
+      for (let i = 0; i < 3; i++) tocar(n + i * 0.55, 1200, 0.45);
+    } catch { /* sem audio */ }
+  }, []);
+
+  // ── Theme tokens ──────────────────────────────────────────────────────
+  const T = useMemo(() => tema === "dark" ? {
+    bg: "#0a0a0a",
+    card: "#131313",
+    cardHover: "#181818",
+    border: "#242424",
+    borderSubtle: "#1c1c1c",
+    text: "#fafaf9",
+    muted: "#a8a29e",
+    dim: "#57534e",
+    accent: "#9fb3ce",
+    accentDim: "#1e2a38",
+    red: "#ef4444",
+    yellow: "#f59e0b",
+    green: "#22c55e",
+    drawerBg: "rgba(10,10,10,0.98)",
+    toastBg: "rgba(14,6,6,0.97)",
+    sidebarBg: "#0d0d0d",
+    toolbarBg: "rgba(10,10,10,0.96)",
+  } : {
+    bg: "#f5f2ec",
+    card: "#ffffff",
+    cardHover: "#f0ede7",
+    border: "#ddd9d0",
+    borderSubtle: "#e8e4dc",
+    text: "#1a1714",
+    muted: "#6b6359",
+    dim: "#9c9288",
+    accent: "#2b5ea7",
+    accentDim: "#dce8f5",
+    red: "#c0202a",
+    yellow: "#a05a00",
+    green: "#1a7a3a",
+    drawerBg: "rgba(252,250,246,0.98)",
+    toastBg: "rgba(255,247,247,0.98)",
+    sidebarBg: "#ede9e1",
+    toolbarBg: "rgba(241,238,230,0.97)",
+  }, [tema]);
+
+  const baseTokens = tema === "dark" ? DARK_TOKENS : LIGHT_TOKENS;
+  const mapTokens = satelite
+    ? { ...baseTokens, tileUrl: SAT_TILE_URL, tileSubdomains: SAT_TILE_SUBDOMAINS }
+    : baseTokens;
+
+  function outlineBtn(active: boolean, color: string): React.CSSProperties {
+    return {
+      height: 28, padding: "0 10px", borderRadius: 6, cursor: "pointer",
+      background: active ? `${color}18` : "transparent",
+      border: `1px solid ${active ? color + "55" : T.border}`,
+      color: active ? color : T.muted,
+      fontSize: 10, fontWeight: 700, letterSpacing: ".05em",
+      fontFamily: FONT_SANS,
+      transition: "all .12s",
+    };
+  }
+
+  function drawerOpBtn(active: boolean, color = T.accent): React.CSSProperties {
+    return {
+      height: 32, padding: "0 12px", borderRadius: 7, cursor: "pointer",
+      background: active ? `${color}18` : "transparent",
+      border: `1px solid ${active ? color + "44" : T.border}`,
+      color: active ? color : T.muted,
+      fontSize: 11, fontWeight: 600, letterSpacing: ".02em",
+      transition: "all .12s",
+      fontFamily: FONT_SANS,
+    };
+  }
+
+  // ── Polls ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/alertas?cliente=${encodeURIComponent(cliente)}`);
+        if (!res.ok) return;
+        const data: { alertas?: AlertaEnriquecido[] } = await res.json();
+        const novos = data.alertas ?? [];
+        const idsAntes = new Set(alertasRef.current
+          .filter(a => a.nivel === "critico" && a.status === "ativo").map(a => a.id));
+        const novosCriticos = novos.filter(a => a.nivel === "critico" && a.status === "ativo" && !idsAntes.has(a.id));
+        if (novosCriticos.length > 0) {
+          const now = Date.now();
+          const novosToasts = novosCriticos.map(a => ({
+            id: a.id, placa: a.placa, tipo: a.tipo, motivo: a.motivo, local: a.local, ts: now,
+          }));
+          setToasts(ts => [...ts, ...novosToasts].slice(-2));
+          setNovosIdsArr(arr => [...arr, ...novosCriticos.map(a => a.id)]);
+
+          const panicos = novosCriticos.filter(a => a.tipo === "panico" && !panicoVistosRef.current.has(a.id));
+          if (panicos.length > 0) {
+            panicos.forEach(a => panicoVistosRef.current.add(a.id));
+            setPanicoAlerta(panicos[0]);
+            tocarPanico();
+          }
+        }
+        alertasRef.current = novos;
+        setAlertas(novos);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const t = setInterval(poll, 15_000);
+    return () => clearInterval(t);
+  }, [cliente]);
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/mapa?cliente=${encodeURIComponent(cliente)}`);
+        if (!res.ok) return;
+        const data: { veiculos?: VeiculoMapa[] } = await res.json();
+        setVeiculosMapa(data.veiculos ?? []);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const t = setInterval(poll, 10_000);
+    return () => clearInterval(t);
+  }, [cliente]);
+
+  useEffect(() => {
+    if (toasts.length === 0) return;
+    const t = setTimeout(() => setToasts(ts => ts.slice(1)), 6_000);
+    return () => clearTimeout(t);
+  }, [toasts]);
+
+  // Camadas de risco: favelas (estática), roubo-carga (diária), tiroteios (30min)
+  useEffect(() => {
+    fetch("/api/favelas")
+      .then(r => r.ok ? r.json() : null)
+      .then((d: GeoJsonCollection | null) => { if (d) setFavelas(d); })
+      .catch(() => {});
+    fetch("/api/roubo-carga")
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { geojson?: GeoJsonCollection } | null) => { if (d?.geojson) setRouboCarga(d.geojson); })
+      .catch(() => {});
+    const buscarTiroteios = () => {
+      fetch("/api/tiroteios")
+        .then(r => r.ok ? r.json() : null)
+        .then((d: { tiroteios?: Tiroteio[] } | null) => { if (d?.tiroteios) setTiroteios(d.tiroteios); })
+        .catch(() => {});
+    };
+    buscarTiroteios();
+    const t = setInterval(buscarTiroteios, 30 * 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // ── Vehicle data loader ──────────────────────────────────────────────
+  const carregarVeiculo = useCallback(async (cv: string, h: number) => {
+    // Cancela qualquer fetch anterior em voo (rastro do veículo antigo não pode vazar)
+    fetchAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    fetchAbortRef.current = ctrl;
+    const { signal } = ctrl;
+
+    setCarregando(true);
+    try {
+      const [rRes, sRes, aRes] = await Promise.all([
+        fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal }),
+        fetch(`/api/stops?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal }),
+        fetch(`/api/alvos?cv=${encodeURIComponent(cv)}`, { signal }),
+      ]);
+      if (rRes.ok) {
+        const rd: { pontos?: { lat: number; lng: number }[] } = await rRes.json();
+        if (signal.aborted) return;
+        const tuples = (rd.pontos ?? []).map(p => [p.lat, p.lng] as [number, number]);
+        setRastro(tuples);
+        // Voa para o ponto mais recente do rastro (garante que o mapa centra no veículo
+        // mesmo quando ele não está em posicoes_atuais, ex: buscado via pesquisa de placa)
+        if (tuples.length > 0) {
+          const [lat, lng] = tuples[tuples.length - 1];
+          gatilhoRef.current += 1;
+          setFlyPara({ lat, lng, gatilho: gatilhoRef.current });
+        }
+      }
+      if (signal.aborted) return;
+      if (sRes.ok) {
+        const sd: { paradas?: Parada[] } = await sRes.json();
+        if (signal.aborted) return;
+        setParadas(sd.paradas ?? []);
+      }
+      if (signal.aborted) return;
+      if (aRes.ok) {
+        const ad: { pontos?: PontoEntrega[] } = await aRes.json();
+        if (signal.aborted) return;
+        setAlvos(ad.pontos ?? []);
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+    }
+    setCarregando(false);
+  }, []);
+
+  // ── Vehicle selection ────────────────────────────────────────────────
+  const selecionarVeiculo = useCallback((cv: string, coords?: { lat: number; lng: number }) => {
+    setCvSelecionado(cv);
+    // Incrementar reloadKey força o useEffect a disparar mesmo se cvSelecionado não mudou
+    // (re-seleção do mesmo veículo). Garante que carregarVeiculo é chamado exatamente UMA vez.
+    setReloadKey(k => k + 1);
+    setSeguir(false);
+    setMostrarRastro(true);
+    setMostrarParadas(true);
+    setRastro([]);
+    setParadas([]);
+    setAlvos([]);
+    setCmdSirene("idle");
+    setCmdBloqueio("idle");
+    setFallbackUrl(null);
+    const vm = veiculosMapa.find(v => v.cv === cv);
+    const pos = (vm?.lat && vm?.lng) ? { lat: vm.lat, lng: vm.lng } : coords;
+    if (pos) {
+      gatilhoRef.current += 1;
+      setFlyPara({ lat: pos.lat, lng: pos.lng, gatilho: gatilhoRef.current });
+    }
+  }, [veiculosMapa]);
+
+  const limparSelecao = useCallback(() => {
+    fetchAbortRef.current?.abort();
+    fetchAbortRef.current = null;
+    setCvSelecionado(null);
+    setRastro([]);
+    setParadas([]);
+    setAlvos([]);
+    setSeguir(false);
+    setMostrarRastro(false);
+    setMostrarParadas(false);
+    setCarregando(false);
+    setCmdSirene("idle");
+    setCmdBloqueio("idle");
+    setFallbackUrl(null);
+    setBusca("");
+  }, []);
+
+  const handleVeiculoClick = useCallback((vm: VeiculoMapa) => {
+    lastMarkerClickRef.current = Date.now();
+    selecionarVeiculo(vm.cv);
+  }, [selecionarVeiculo]);
+
+  // Click no mapa vazio: apenas fecha popups, nao deseleciona veiculo
+  const stableHandleMapaVazio = useCallback(() => {}, []);
+
+  useEffect(() => {
+    if (cvSelecionado) carregarVeiculo(cvSelecionado, horas);
+    // reloadKey garante re-disparo ao re-selecionar o mesmo veículo
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cvSelecionado, horas, carregarVeiculo, reloadKey]);
+
+  // ── Sirene / Bloqueio ────────────────────────────────────────────────
+  const acionar = useCallback(async (tipo: "sirene" | "bloqueio") => {
+    if (!cvSelecionado) return;
+    const setter = tipo === "sirene" ? setCmdSirene : setCmdBloqueio;
+    setter("loading");
+    const resultado = await enviarComandoVeiculo(cvSelecionado, tipo);
+    if (resultado.ok) {
+      setter("ok");
+      setTimeout(() => setter("idle"), 3000);
+    } else {
+      setter("fallback");
+      if (resultado.portalUrl) setFallbackUrl(resultado.portalUrl);
+    }
+  }, [cvSelecionado]);
+
+  // ── Alert actions ────────────────────────────────────────────────────
+  const handleResolver = useCallback(async (id: string) => {
+    setAlertas(a => a.filter(x => x.id !== id));
+    await resolverAlerta(id);
+  }, []);
+
+  const handleFalso = useCallback(async (id: string) => {
+    setAlertas(a => a.filter(x => x.id !== id));
+    await marcarFalsoPositivo(id);
+  }, []);
+
+  const handleResolverTodos = useCallback(() => {
+    const criticos = alertas.filter(a => a.nivel === "critico");
+    if (criticos.length === 0) return;
+    startResolver(async () => {
+      setAlertas(a => a.filter(x => x.nivel !== "critico"));
+      await resolverVarios(criticos.map(a => a.id));
+      setConfirmarResolver(false);
+    });
+  }, [alertas]);
+
+  // ── Map controls ─────────────────────────────────────────────────────
+  const cmdZoom = useCallback((z: number) => {
+    gatilhoRef.current += 1;
+    setZoomCmd({ zoom: z, g: gatilhoRef.current });
+  }, []);
+
+  const centralizar = useCallback(() => {
+    const vm = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
+    if (vm?.lat && vm?.lng) {
+      gatilhoRef.current += 1;
+      setFlyPara({ lat: vm.lat, lng: vm.lng, gatilho: gatilhoRef.current });
+    }
+  }, [cvSelecionado, veiculosMapa]);
+
+  // ── Derived ──────────────────────────────────────────────────────────
+  const vmFiltrado: VeiculoMapa[] = filtroComm
+    ? veiculosMapa.filter(v => v.atraso_min <= filtroComm)
+    : veiculosMapa;
+
+  const vmAtual = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
+
+  const placaSelecionada = cvSelecionado
+    ? (veiculosBase.find(v => v.cv === cvSelecionado)?.placa
+      ?? veiculosMapa.find(v => v.cv === cvSelecionado)?.placa
+      ?? cvSelecionado)
+    : null;
+
+  const alertasFiltrados = alertas.filter(a => {
+    if (vista === "critico") return a.nivel === "critico";
+    if (vista === "atencao") return a.nivel === "atencao";
+    return true;
+  });
+
+  const veiculosBusca = busca.length >= 2
+    ? veiculosBase.filter(v => v.placa.toLowerCase().includes(busca.toLowerCase())).slice(0, 8)
+    : [];
+
+  const nCriticos = alertas.filter(a => a.nivel === "critico").length;
+  const nAtencao = alertas.filter(a => a.nivel === "atencao").length;
+
+  const alvosFeitos = alvos.filter(p => p.feito).length;
+  const alvosTotal = alvos.length;
+  const alvosOrdenados = [...alvos].sort((a, b) => a.ordem - b.ordem).map(p => ({
+    ...p,
+    dist: (!p.feito && vmAtual?.lat && vmAtual?.lng && (p.lat !== 0 || p.lng !== 0))
+      ? haversineM(vmAtual.lat, vmAtual.lng, p.lat, p.lng)
+      : null,
+  }));
+  const alvosPendentes = alvosOrdenados.filter(p => !p.feito);
+  const proximoCliente = alvosPendentes[0] ?? null;
+
+  // Cor de status do veiculo selecionado
+  const placaColor = vmAtual
+    ? (vmAtual.ignicao && vmAtual.velocidade > 0 ? T.green : vmAtual.ignicao ? T.accent : T.muted)
+    : T.text;
+
+  // ── Render ────────────────────────────────────────────────────────────
+  return (
+    <div style={{
+      display: "flex", flexDirection: "column", height: "100%",
+      background: T.bg, color: T.text, overflow: "hidden",
+      fontFamily: FONT_SANS,
+    }}>
+
+      {/* ================================================================
+          TOOLBAR — 3 colunas: [clients] [controls centrados] [ações]
+      ================================================================ */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "auto 1fr auto",
+        alignItems: "center",
+        gap: 0,
+        height: 46,
+        borderBottom: `1px solid ${T.border}`,
+        background: T.toolbarBg,
+        flexShrink: 0,
+        position: "relative",
+        zIndex: 50,
+        paddingLeft: 8,
+        paddingRight: 8,
+      }}>
+
+        {/* ── Coluna ESQUERDA: cliente switchers ── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingRight: 8 }}>
+          {clientes.map(c => {
+            const active = c.cod === cliente;
+            return (
+              <Link key={c.cod} href={`/central-v2?cliente=${encodeURIComponent(c.cod)}`}
+                style={{
+                  padding: "4px 12px", borderRadius: 20,
+                  fontSize: 11, fontWeight: 700, letterSpacing: ".06em",
+                  background: active ? `${T.accent}18` : "transparent",
+                  color: active ? T.accent : T.muted,
+                  border: `1px solid ${active ? T.accent + "44" : "transparent"}`,
+                  textDecoration: "none", whiteSpace: "nowrap",
+                  transition: "all .12s",
+                  fontFamily: FONT_SANS,
+                }}>
+                {c.nome.split(" ")[0].toUpperCase()}
+              </Link>
+            );
+          })}
+        </div>
+
+        {/* ── Coluna CENTRAL: zoom + busca + COMM — tudo centralizado ── */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center",
+          gap: 5,
+        }}>
+          {ZOOM_LABELS.map(([label, z]) => (
+            <button key={label} onClick={() => cmdZoom(z)}
+              style={outlineBtn(zoomAtual === z, T.accent)}>
+              {label}
+            </button>
+          ))}
+          <button onClick={() => setGatilhoFrota(g => g + 1)}
+            style={outlineBtn(false, T.accent)}>
+            VEICULOS
+          </button>
+
+          <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px", flexShrink: 0 }} />
+
+          {/* Busca placa */}
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <input
+              value={busca}
+              onChange={e => { setBusca(e.target.value); setComboAberto(true); }}
+              onFocus={() => setComboAberto(true)}
+              onBlur={() => setTimeout(() => setComboAberto(false), 200)}
+              placeholder="Buscar placa..."
+              style={{
+                background: cvSelecionado ? `${T.accent}12` : tema === "dark" ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)",
+                border: `1px solid ${cvSelecionado ? T.accent + "66" : T.border}`,
+                borderRadius: 6, color: cvSelecionado ? T.accent : T.text, padding: "0 10px", height: 28,
+                width: 130, fontSize: 12, fontFamily: FONT_MONO, outline: "none",
+                letterSpacing: ".04em", fontWeight: cvSelecionado ? 700 : 400,
+              }}
+            />
+            {comboAberto && veiculosBusca.length > 0 && (
+              <div style={{
+                position: "absolute", top: 33, left: "50%", transform: "translateX(-50%)",
+                width: 210,
+                background: T.card, border: `1px solid ${T.border}`, borderRadius: 8,
+                zIndex: Z.combo, boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+              }}>
+                {veiculosBusca.map(v => {
+                  const al = alertas.find(a => a.placa === v.placa);
+                  return (
+                    <button key={v.cv}
+                      onMouseDown={() => { selecionarVeiculo(v.cv); setBusca(v.placa); setComboAberto(false); }}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        width: "100%", padding: "7px 12px", background: "transparent", border: "none",
+                        borderBottom: `1px solid ${T.border}`, color: T.text,
+                        fontSize: 12, fontFamily: FONT_MONO, cursor: "pointer",
+                      }}>
+                      <span style={{ fontWeight: 700 }}>{v.placa}</span>
+                      {al && (
+                        <span style={{ fontSize: 10, color: al.nivel === "critico" ? T.red : T.yellow }}>
+                          {nomeT(al.tipo)}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px", flexShrink: 0 }} />
+
+          <span style={{ fontSize: 10, color: T.dim, letterSpacing: ".07em", whiteSpace: "nowrap", flexShrink: 0 }}>
+            COMM
+          </span>
+          {[10, 30, 60].map(m => (
+            <button key={m} onClick={() => setFiltroComm(filtroComm === m ? null : m)}
+              style={outlineBtn(filtroComm === m, T.accent)}>
+              {m}min
+            </button>
+          ))}
+        </div>
+
+        {/* ── Coluna DIREITA: SAT + settings + apito ── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 8 }}>
+          <button onClick={() => setSatelite(v => !v)} title={satelite ? "Mapa padrao" : "Vista satelite"}
+            style={outlineBtn(satelite, T.accent)}>
+            SAT
+          </button>
+
+          {/* Settings gear */}
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setSettingsAberto(v => !v)}
+              title="Configuracoes"
+              style={{
+                ...BASE_BTN, width: 32, height: 32, borderRadius: "50%",
+                color: settingsAberto ? T.accent : T.muted,
+                border: `1px solid ${settingsAberto ? T.accent + "55" : T.border}`,
+                background: settingsAberto ? `${T.accent}10` : "transparent",
+              }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </button>
+
+            {settingsAberto && (
+              <div style={{
+                position: "absolute", top: 38, right: 0,
+                width: 196, zIndex: Z.settings,
+                background: T.card, border: `1px solid ${T.border}`,
+                borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                overflow: "hidden",
+              }}
+                onMouseLeave={() => setSettingsAberto(false)}>
+                <div style={{ padding: "10px 14px 6px", fontSize: 9, color: T.dim, letterSpacing: ".1em", fontWeight: 700 }}>
+                  CONFIGURACOES
+                </div>
+                <div style={{ padding: "4px 8px 8px" }}>
+                  <div style={{ fontSize: 10, color: T.muted, padding: "2px 6px 6px", fontWeight: 600, letterSpacing: ".05em" }}>
+                    TEMA
+                  </div>
+                  {(["dark", "light"] as const).map(t => (
+                    <button key={t} onClick={() => { setTemaComPersistencia(t); setSettingsAberto(false); }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        width: "100%", padding: "8px 10px", borderRadius: 7,
+                        background: tema === t ? `${T.accent}12` : "transparent",
+                        border: `1px solid ${tema === t ? T.accent + "44" : "transparent"}`,
+                        color: tema === t ? T.accent : T.text,
+                        fontSize: 12, cursor: "pointer", fontWeight: tema === t ? 700 : 400,
+                        marginBottom: 2, fontFamily: FONT_SANS,
+                      }}>
+                      {t === "dark" ? (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                        </svg>
+                      ) : (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/>
+                          <line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/>
+                          <line x1="21" y1="12" x2="23" y2="12"/>
+                        </svg>
+                      )}
+                      {t === "dark" ? "Modo escuro" : "Modo claro"}
+                      {tema === t && <span style={{ marginLeft: "auto", fontSize: 9, color: T.accent }}>●</span>}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Camadas de risco */}
+                <div style={{ borderTop: `1px solid ${T.border}`, padding: "6px 8px 8px" }}>
+                  <div style={{ fontSize: 10, color: T.muted, padding: "4px 6px 4px", fontWeight: 600, letterSpacing: ".05em" }}>
+                    CAMADAS
+                  </div>
+                  {([
+                    { label: "Favelas", val: camFavelas, set: setCamFavelas, cor: "#ff2d2d" },
+                    { label: "Tiroteios (24h)", val: camTiroteios, set: setCamTiroteios, cor: "#f97316" },
+                    { label: "Roubo de carga", val: camRouboCarga, set: setCamRouboCarga, cor: "#fbbf24" },
+                  ] as { label: string; val: boolean; set: React.Dispatch<React.SetStateAction<boolean>>; cor: string }[]).map(({ label, val, set, cor }) => (
+                    <button key={label} onClick={() => set(v => !v)}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 9,
+                        width: "100%", padding: "7px 10px", borderRadius: 7,
+                        background: val ? `${cor}12` : "transparent",
+                        border: `1px solid ${val ? cor + "33" : "transparent"}`,
+                        color: val ? T.text : T.dim,
+                        fontSize: 12, cursor: "pointer",
+                        marginBottom: 2, fontFamily: FONT_SANS,
+                        transition: "all .1s",
+                      }}>
+                      <div style={{
+                        width: 12, height: 12, borderRadius: 3, flexShrink: 0,
+                        background: val ? cor : "transparent",
+                        border: `1.5px solid ${val ? cor : T.dim}`,
+                        transition: "all .1s",
+                      }} />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <AlertaSonoro idsParaApitar={novosIdsArr} />
+        </div>
+      </div>
+
+      {/* ================================================================
+          MAIN BODY
+      ================================================================ */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+
+        {/* ============================================================
+            LEFT SIDEBAR
+        ============================================================ */}
+        <div style={{
+          width: "clamp(220px, 18vw, 280px)",
+          flexShrink: 0, display: "flex", flexDirection: "column",
+          borderRight: `1px solid ${T.border}`,
+          background: T.sidebarBg,
+          overflow: "hidden",
+        }}>
+          {/* Count strip */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 0,
+            borderBottom: `1px solid ${T.border}`, flexShrink: 0,
+          }}>
+            <div style={{ flex: 1, padding: "9px 12px", borderRight: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: nCriticos > 0 ? T.red : T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
+                {nCriticos}
+              </div>
+              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>CRITICO</div>
+            </div>
+            <div style={{ flex: 1, padding: "9px 12px", borderRight: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: nAtencao > 0 ? T.yellow : T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
+                {nAtencao}
+              </div>
+              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>ATENCAO</div>
+            </div>
+            <div style={{ flex: 1, padding: "9px 12px" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
+                {veiculosMapa.length}
+              </div>
+              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>VEIC.</div>
+            </div>
+          </div>
+
+          {/* Filter tabs */}
+          <div style={{ display: "flex", padding: "5px 6px", gap: 3, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+            {(["tudo", "critico", "atencao"] as const).map(v => {
+              const color = v === "tudo" ? T.accent : v === "critico" ? T.red : T.yellow;
+              return (
+                <button key={v} onClick={() => setVista(v)} style={{
+                  flex: 1, height: 27, borderRadius: 6, border: "none", cursor: "pointer",
+                  background: vista === v ? `${color}18` : "transparent",
+                  color: vista === v ? color : T.muted,
+                  fontSize: 10, fontWeight: 700, letterSpacing: ".06em",
+                  fontFamily: FONT_SANS, transition: "all .12s",
+                }}>
+                  {v === "tudo" ? "TUDO" : v === "critico" ? "CRIT." : "ATEN."}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Resolver todos */}
+          {nCriticos > 0 && (
+            <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+              {confirmarResolver ? (
+                <div style={{ display: "flex", gap: 5 }}>
+                  <button onClick={handleResolverTodos} disabled={resolvendoTodos} style={{
+                    flex: 1, height: 26, borderRadius: 6,
+                    background: `${T.red}18`, border: `1px solid ${T.red}44`, color: T.red,
+                    fontSize: 10, cursor: "pointer", fontWeight: 700, fontFamily: FONT_SANS,
+                  }}>
+                    {resolvendoTodos ? "..." : "CONFIRMAR"}
+                  </button>
+                  <button onClick={() => setConfirmarResolver(false)} style={{
+                    flex: 1, height: 26, borderRadius: 6,
+                    background: "transparent", border: `1px solid ${T.border}`,
+                    color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
+                  }}>
+                    Cancelar
+                  </button>
+                </div>
+              ) : (
+                <button onClick={() => setConfirmarResolver(true)} style={{
+                  width: "100%", height: 26, borderRadius: 6,
+                  background: "transparent", border: `1px solid ${T.border}`,
+                  color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
+                }}>
+                  Resolver todos ({nCriticos})
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Alert list */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "4px 6px 8px" }}>
+            {alertasFiltrados.length === 0 && (
+              <div style={{ padding: "28px 16px", textAlign: "center", color: T.dim, fontSize: 12 }}>
+                <div style={{ marginBottom: 6, opacity: 0.6 }}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ display: "inline-block" }}>
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                    <polyline points="22 4 12 14.01 9 11.01"/>
+                  </svg>
+                </div>
+                Nenhum alerta ativo
+              </div>
+            )}
+            {alertasFiltrados.map(a => {
+              const cor = a.nivel === "critico" ? T.red : T.yellow;
+              return (
+                <div key={a.id}
+                  onClick={() => selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined)}
+                  className="v2-alert-card"
+                  style={{
+                    marginBottom: 4, borderRadius: 8,
+                    border: `1px solid ${cor}22`, borderLeft: `3px solid ${cor}`,
+                    background: tema === "dark" ? `${cor}07` : `${cor}05`,
+                    cursor: "pointer",
+                  }}>
+                  <div style={{ padding: "8px 10px 7px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                      <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 13, letterSpacing: ".04em" }}>
+                        {a.placa}
+                      </span>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4,
+                        background: `${cor}18`, color: cor, letterSpacing: ".04em",
+                      }}>
+                        {nomeT(a.tipo)}
+                      </span>
+                      <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, marginLeft: "auto", fontFamily: FONT_MONO }}>
+                        {tempoAtras(a.desde)}
+                      </span>
+                    </div>
+                    {a.motivo && (
+                      <p style={{
+                        margin: "0 0 2px", fontSize: 11, color: T.muted, lineHeight: 1.35,
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                      }}>
+                        {a.motivo}
+                      </p>
+                    )}
+                    {a.local && (
+                      <p style={{
+                        margin: "0 0 6px", fontSize: 10, color: T.dim, lineHeight: 1.3,
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                      }}>
+                        {a.local}
+                      </p>
+                    )}
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onMouseDown={e => { e.stopPropagation(); selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined); }}
+                        className="v2-btn-tiny" style={tinyBtn(T.accent)}>
+                        Focar
+                      </button>
+                      <button onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
+                        className="v2-btn-tiny" style={tinyBtn(T.green)}>
+                        Resolver
+                      </button>
+                      <button onMouseDown={e => { e.stopPropagation(); handleFalso(a.id); }}
+                        className="v2-btn-tiny" style={tinyBtn(T.muted)}>
+                        Falso
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ============================================================
+            MAP AREA
+        ============================================================ */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden", minWidth: 0 }}>
+
+          <MapaLeafletV2
+            veiculosMapa={vmFiltrado}
+            cvSelecionado={cvSelecionado}
+            mostrarRastro={mostrarRastro}
+            mostrarParadas={mostrarParadas}
+            rastro={rastro}
+            paradas={paradas}
+            alvos={alvos}
+            favelas={camFavelas ? favelas : null}
+            tiroteios={camTiroteios ? tiroteios : []}
+            rouboCarga={camRouboCarga ? rouboCarga : null}
+            seguir={seguir}
+            gatilhoFrota={gatilhoFrota}
+            flyPara={flyPara}
+            zoomCmd={zoomCmd}
+            onVeiculoClick={handleVeiculoClick}
+            onMapaVazioClick={stableHandleMapaVazio}
+            mapTokens={mapTokens}
+            tema={tema}
+            satelite={satelite}
+            onZoomChange={setZoomAtual}
+          />
+
+          {/* Vehicle count badge */}
+          <div style={{
+            position: "absolute",
+            bottom: cvSelecionado ? 224 : 12,
+            left: 12, zIndex: Z.badge,
+            transition: "bottom .25s cubic-bezier(.4,0,.2,1)",
+            background: tema === "dark" ? "rgba(0,0,0,0.68)" : "rgba(255,255,255,0.88)",
+            backdropFilter: "blur(6px)",
+            border: `1px solid ${T.border}`, borderRadius: 8,
+            padding: "5px 11px", fontSize: 11, color: T.muted, pointerEvents: "none",
+            fontFamily: FONT_MONO, letterSpacing: ".03em",
+          }}>
+            <span style={{ fontWeight: 700 }}>{vmFiltrado.length}</span>
+            <span style={{ color: T.dim }}> veiculos</span>
+            {filtroComm != null && <span style={{ color: T.accent }}> &lt;{filtroComm}min</span>}
+          </div>
+
+          {/* Toast notifications */}
+          <div style={{
+            position: "absolute", top: 12, right: 12,
+            display: "flex", flexDirection: "column", gap: 6,
+            maxWidth: 292, zIndex: Z.toasts, pointerEvents: "none",
+          }}>
+            {toasts.map(toast => (
+              <div key={toast.id} style={{
+                background: T.toastBg, backdropFilter: "blur(10px)",
+                border: `1px solid ${T.red}40`, borderLeft: `3px solid ${T.red}`,
+                borderRadius: 9, padding: "9px 13px",
+                boxShadow: `0 4px 20px rgba(0,0,0,0.22), 0 0 14px ${T.red}14`,
+                animation: "slideInToast .18s ease-out",
+                pointerEvents: "all",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 14, color: T.red, letterSpacing: ".06em" }}>
+                    {toast.placa}
+                  </span>
+                  <span style={{ fontSize: 10, color: T.red, fontWeight: 700, letterSpacing: ".05em" }}>
+                    {nomeT(toast.tipo)}
+                  </span>
+                  <button onClick={() => setToasts(ts => ts.filter(x => x.id !== toast.id))}
+                    style={{ marginLeft: "auto", background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 0 }}>
+                    &times;
+                  </button>
+                </div>
+                {toast.motivo && (
+                  <p style={{ margin: "3px 0 0", fontSize: 11, color: T.muted, lineHeight: 1.35 }}>
+                    {toast.motivo.length > 65 ? toast.motivo.slice(0, 65) + "..." : toast.motivo}
+                  </p>
+                )}
+                {toast.local && (
+                  <p style={{ margin: "2px 0 0", fontSize: 10, color: T.dim, lineHeight: 1.3 }}>
+                    {toast.local.length > 50 ? toast.local.slice(0, 50) + "..." : toast.local}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* ================================================================
+              BOTTOM DRAWER
+          ================================================================ */}
+          <div style={{
+            position: "absolute", bottom: 0, left: 0, right: 0, zIndex: Z.drawer,
+            transform: cvSelecionado ? "translateY(0)" : "translateY(108%)",
+            transition: "transform .22s cubic-bezier(.4,0,.2,1)",
+            background: T.drawerBg, backdropFilter: "blur(16px)",
+            borderTop: `2px solid ${T.accent}22`,
+            boxShadow: tema === "dark" ? "0 -10px 40px rgba(0,0,0,0.65)" : "0 -8px 32px rgba(0,0,0,0.10)",
+          }}>
+
+            {/* Header */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 16px 8px",
+              borderBottom: `1px solid ${T.border}`,
+            }}>
+              {/* Placa + status */}
+              <span style={{
+                fontFamily: FONT_MONO, fontWeight: 900,
+                fontSize: "clamp(15px, 1.4vw, 20px)",
+                letterSpacing: ".07em", color: placaColor,
+              }}>
+                {placaSelecionada ?? "—"}
+              </span>
+
+              {vmAtual && (
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+                  background: vmAtual.ignicao ? `${T.green}15` : `${T.border}66`,
+                  border: `1px solid ${vmAtual.ignicao ? T.green + "44" : T.border}`,
+                  color: vmAtual.ignicao ? T.green : T.muted,
+                  letterSpacing: ".05em",
+                }}>
+                  {vmAtual.ignicao ? "IGN ON" : "IGN OFF"}
+                </span>
+              )}
+
+              {carregando && (
+                <span style={{ fontSize: 10, color: T.accent, letterSpacing: ".04em" }}>
+                  carregando...
+                </span>
+              )}
+
+              <div style={{ flex: 1 }} />
+
+              {/* Period selector */}
+              <div style={{ display: "flex", gap: 1 }}>
+                {PERIODOS.map(h => (
+                  <button key={h} onClick={() => setHoras(h)} style={{
+                    height: 24, padding: "0 7px", borderRadius: 5, border: "none", cursor: "pointer",
+                    background: horas === h ? `${T.accent}20` : "transparent",
+                    color: horas === h ? T.accent : T.dim,
+                    fontSize: 10, fontWeight: 700, fontFamily: FONT_MONO,
+                    transition: "all .1s",
+                  }}>
+                    {h}h
+                  </button>
+                ))}
+              </div>
+
+              <button onClick={limparSelecao}
+                style={{
+                  ...BASE_BTN, width: 28, height: 28, borderRadius: "50%",
+                  fontSize: 16, color: T.dim, border: `1px solid ${T.border}`,
+                }}>
+                &times;
+              </button>
+            </div>
+
+            {/* Metrics row */}
+            <div style={{ display: "flex", borderBottom: `1px solid ${T.border}` }}>
+              {[
+                {
+                  label: "VELOCIDADE",
+                  value: vmAtual ? `${vmAtual.velocidade} km/h` : "—",
+                  color: vmAtual && vmAtual.velocidade > 80 ? T.yellow : undefined,
+                },
+                {
+                  label: "IGNICAO",
+                  value: vmAtual ? (vmAtual.ignicao ? "Ligada" : "Desligada") : "—",
+                  color: vmAtual ? (vmAtual.ignicao ? T.green : T.muted) : undefined,
+                },
+                {
+                  label: "COMUNICACAO",
+                  value: vmAtual ? (vmAtual.atraso_min > 0 ? `${Math.round(vmAtual.atraso_min)}min` : "ao vivo") : "—",
+                  color: vmAtual && vmAtual.atraso_min > 30 ? T.yellow : undefined,
+                },
+                { label: "LOCAL", value: vmAtual?.local || "—", wide: true },
+              ].map((item, i, arr) => (
+                <div key={i} style={{
+                  flex: item.wide ? 2 : 1, padding: "8px 14px",
+                  borderRight: i < arr.length - 1 ? `1px solid ${T.border}` : "none",
+                  minWidth: 0,
+                }}>
+                  <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginBottom: 3 }}>
+                    {item.label}
+                  </div>
+                  <div style={{
+                    fontSize: "clamp(12px, 1.1vw, 14px)", fontWeight: 700,
+                    fontFamily: FONT_MONO, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    color: item.color ?? T.text,
+                  }}>
+                    {item.value}
+                  </div>
+                </div>
+              ))}
+
+              {/* Rota do dia */}
+              {cvSelecionado && (
+                <div style={{ flex: 2, padding: "8px 14px", minWidth: 0, borderLeft: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginBottom: 4 }}>
+                    ROTA DO DIA
+                  </div>
+                  {carregando && alvosTotal === 0 ? (
+                    <div style={{ fontSize: 11, color: T.dim }}>...</div>
+                  ) : alvosTotal === 0 ? (
+                    <div style={{ fontSize: 11, color: T.dim }}>Sem rota hoje</div>
+                  ) : (
+                    <>
+                      {/* progresso */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: FONT_MONO, color: T.text }}>
+                          {alvosFeitos}/{alvosTotal}
+                        </span>
+                        <div style={{ flex: 1, height: 3, background: `${T.border}88`, borderRadius: 2, overflow: "hidden" }}>
+                          <div style={{
+                            height: "100%",
+                            width: `${alvosTotal > 0 ? Math.round((alvosFeitos / alvosTotal) * 100) : 0}%`,
+                            background: T.green, borderRadius: 2, transition: "width .4s",
+                          }} />
+                        </div>
+                      </div>
+                      {/* lista completa: feitos + pendentes */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 96, overflowY: "auto", overflowX: "hidden" }}>
+                        {alvosOrdenados.map((p, i) => {
+                          const isPendente = !p.feito;
+                          const isProximo = isPendente && p.ordem === alvosPendentes[0]?.ordem;
+                          return (
+                            <div key={`alvo-row-${i}`} style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+                              {p.feito ? (
+                                <span style={{
+                                  flexShrink: 0, width: 15, height: 15, borderRadius: "50%",
+                                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                  fontSize: 9, background: T.green + "33", color: T.green,
+                                }}>✓</span>
+                              ) : (
+                                <span style={{
+                                  flexShrink: 0, width: 15, height: 15, borderRadius: "50%",
+                                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                  fontSize: 8, fontWeight: 800, fontFamily: FONT_MONO, lineHeight: 1,
+                                  background: isProximo ? "#f97316" : T.border,
+                                  color: isProximo ? "#0a0a0a" : T.muted,
+                                }}>{p.ordem}</span>
+                              )}
+                              <span style={{
+                                flex: 1, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                fontWeight: isProximo ? 600 : 400,
+                                color: p.feito ? T.dim : isProximo ? T.text : T.muted,
+                                textDecoration: p.feito ? "line-through" : "none",
+                              }}>
+                                {p.nome || `Ponto ${p.ordem}`}{p.documento && <span style={{ color: T.dim, fontWeight: 400 }}> · {p.documento}</span>}
+                              </span>
+                              {p.dist != null && (
+                                <span style={{ flexShrink: 0, fontSize: 9, color: isProximo ? "#f97316" : T.dim, fontFamily: FONT_MONO }}>
+                                  {formatarDist(p.dist)}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Ops + sirene/bloqueio */}
+            <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 14px", flexWrap: "wrap" }}>
+              <button onClick={() => setMostrarRastro(v => !v)} style={drawerOpBtn(mostrarRastro)}>
+                Rastro{mostrarRastro ? " ✓" : ""}
+              </button>
+              <button onClick={() => setMostrarParadas(v => !v)} style={drawerOpBtn(mostrarParadas)}>
+                Paradas{mostrarParadas ? " ✓" : ""}
+              </button>
+              <button onClick={() => setSeguir(v => !v)} style={drawerOpBtn(seguir, T.green)}>
+                Seguir{seguir ? " ✓" : ""}
+              </button>
+              <button onClick={centralizar} style={drawerOpBtn(false)}>
+                Centralizar
+              </button>
+              {cvSelecionado && vmAtual?.lat && vmAtual?.lng && (
+                <a
+                  href={`https://www.google.com/maps?q=${vmAtual.lat},${vmAtual.lng}`}
+                  target="_blank" rel="noreferrer"
+                  style={{ ...drawerOpBtn(false), display: "inline-flex", alignItems: "center", textDecoration: "none", gap: 4 }}>
+                  Maps
+                </a>
+              )}
+              {cvSelecionado && (
+                <button onClick={() => carregarVeiculo(cvSelecionado, horas)} disabled={carregando}
+                  style={drawerOpBtn(false)}>
+                  Atualizar
+                </button>
+              )}
+
+              <div style={{ flex: 1 }} />
+
+              {/* Sirene */}
+              <button
+                onClick={() => acionar("sirene")}
+                disabled={cmdSirene === "loading"}
+                style={{
+                  height: 34, padding: "0 16px", borderRadius: 8,
+                  cursor: cmdSirene === "loading" ? "wait" : "pointer",
+                  border: `1px solid ${
+                    cmdSirene === "ok" ? T.green + "44" :
+                    cmdSirene === "fallback" ? T.yellow + "44" : T.accent + "44"
+                  }`,
+                  background: cmdSirene === "ok" ? `${T.green}14` :
+                    cmdSirene === "fallback" ? `${T.yellow}14` : `${T.accent}0e`,
+                  color: cmdSirene === "ok" ? T.green :
+                    cmdSirene === "fallback" ? T.yellow : T.accent,
+                  fontSize: 12, fontWeight: 700, fontFamily: FONT_SANS,
+                  transition: "all .15s",
+                }}>
+                {cmdSirene === "loading" ? "Acionando..." :
+                  cmdSirene === "ok" ? "Sirene acionada" :
+                  cmdSirene === "fallback" ? "Ver portal" : "Sirene"}
+              </button>
+
+              {/* Bloquear motor */}
+              <button
+                onClick={() => acionar("bloqueio")}
+                disabled={cmdBloqueio === "loading"}
+                style={{
+                  height: 34, padding: "0 16px", borderRadius: 8,
+                  cursor: cmdBloqueio === "loading" ? "wait" : "pointer",
+                  border: `1px solid ${
+                    cmdBloqueio === "ok" ? T.green + "44" :
+                    cmdBloqueio === "fallback" ? T.yellow + "44" : T.red + "44"
+                  }`,
+                  background: cmdBloqueio === "ok" ? `${T.green}14` :
+                    cmdBloqueio === "fallback" ? `${T.yellow}14` : `${T.red}10`,
+                  color: cmdBloqueio === "ok" ? T.green :
+                    cmdBloqueio === "fallback" ? T.yellow : T.red,
+                  fontSize: 12, fontWeight: 700, fontFamily: FONT_SANS,
+                  transition: "all .15s",
+                }}>
+                {cmdBloqueio === "loading" ? "Bloqueando..." :
+                  cmdBloqueio === "ok" ? "Motor bloqueado" :
+                  cmdBloqueio === "fallback" ? "Ver portal" : "Bloquear motor"}
+              </button>
+            </div>
+
+            {/* Fallback portal link */}
+            {(cmdSirene === "fallback" || cmdBloqueio === "fallback") && fallbackUrl && (
+              <div style={{ padding: "2px 16px 9px", fontSize: 11, color: T.muted }}>
+                Acao nao confirmada automaticamente.{" "}
+                <a href={fallbackUrl} target="_blank" rel="noreferrer" style={{ color: T.accent }}>
+                  Abrir portal Unitrac
+                </a>
+              </div>
+            )}
+          </div>
+
+        </div>{/* MAP AREA end */}
+      </div>{/* MAIN BODY end */}
+
+      {/* ================================================================
+          PANICO OVERLAY
+      ================================================================ */}
+      {panicoAlerta && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: Z.panico,
+          background: "rgba(100,0,0,0.15)", backdropFilter: "blur(3px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          animation: "fadeInPanico .18s ease-out",
+        }}
+          onClick={e => { if (e.target === e.currentTarget) setPanicoAlerta(null); }}>
+          <div style={{
+            background: "#0e0000", border: "2px solid #ef4444",
+            borderRadius: 16, padding: "40px 56px 36px",
+            textAlign: "center", maxWidth: 480, width: "90%",
+            boxShadow: "0 0 0 1px #ef444416, 0 0 80px #ef444440",
+            animation: "scalePanico .2s cubic-bezier(.34,1.56,.64,1)",
+            fontFamily: FONT_SANS,
+          }}>
+            <div style={{
+              width: 56, height: 56, borderRadius: "50%",
+              background: "#ef444418", border: "2px solid #ef4444",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              margin: "0 auto 20px",
+              animation: "pulsarPanico 1.2s ease-in-out infinite",
+            }}>
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/>
+                <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+            </div>
+
+            <div style={{ fontSize: 11, letterSpacing: ".2em", color: "#ef4444", fontWeight: 700, marginBottom: 12 }}>
+              BOTAO DE PANICO ACIONADO
+            </div>
+
+            <div style={{
+              fontFamily: FONT_MONO, fontSize: 42, fontWeight: 900,
+              color: "#ffffff", letterSpacing: ".1em", marginBottom: 16,
+            }}>
+              {panicoAlerta.placa}
+            </div>
+
+            {panicoAlerta.local && (
+              <div style={{ fontSize: 13, color: "#a8a29e", marginBottom: 8, lineHeight: 1.4 }}>
+                {panicoAlerta.local}
+              </div>
+            )}
+            {panicoAlerta.motivo && (
+              <div style={{ fontSize: 12, color: "#78716c", marginBottom: 8 }}>
+                {panicoAlerta.motivo}
+              </div>
+            )}
+            {panicoAlerta.velocidade != null && (
+              <div style={{ fontSize: 12, color: "#78716c", marginBottom: 20, fontFamily: FONT_MONO }}>
+                {panicoAlerta.velocidade} km/h &nbsp;·&nbsp; <span suppressHydrationWarning>{tempoAtras(panicoAlerta.desde)}</span> atras
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+              {panicoAlerta.lat && panicoAlerta.lng && (
+                <button
+                  onClick={() => {
+                    selecionarVeiculo(panicoAlerta!.cv, { lat: panicoAlerta!.lat!, lng: panicoAlerta!.lng! });
+                    setPanicoAlerta(null);
+                  }}
+                  style={{
+                    height: 40, padding: "0 20px", borderRadius: 8,
+                    background: "#ef444414", border: "1px solid #ef444450",
+                    color: "#ef4444", fontSize: 13, fontWeight: 700, cursor: "pointer",
+                    fontFamily: FONT_SANS,
+                  }}>
+                  Ir para o veiculo
+                </button>
+              )}
+              <button
+                onClick={() => setPanicoAlerta(null)}
+                style={{
+                  height: 40, padding: "0 20px", borderRadius: 8,
+                  background: "#ffffff10", border: "1px solid #ffffff20",
+                  color: "#a8a29e", fontSize: 13, cursor: "pointer",
+                  fontFamily: FONT_SANS,
+                }}>
+                Reconhecer
+              </button>
+              <button
+                onClick={tocarPanico}
+                title="Repetir som"
+                style={{
+                  height: 40, width: 40, borderRadius: 8,
+                  background: "transparent", border: "1px solid #ffffff14",
+                  color: "#78716c", fontSize: 16, cursor: "pointer",
+                }}>
+                ♪
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideInToast {
+          from { opacity: 0; transform: translateX(20px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes fadeInPanico {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        @keyframes scalePanico {
+          from { transform: scale(.88); opacity: 0; }
+          to   { transform: scale(1); opacity: 1; }
+        }
+        @keyframes pulsarPanico {
+          0%, 100% { box-shadow: 0 0 0 0 #ef444438; }
+          50%       { box-shadow: 0 0 0 12px #ef444406; }
+        }
+        .v2-btn:hover { opacity: 0.72; }
+        .v2-btn-tiny:hover { filter: brightness(1.18); }
+        .v2-drawer-btn:hover { filter: brightness(1.12); }
+        .v2-alert-card:hover { filter: brightness(1.05); }
+      `}</style>
+    </div>
+  );
+}

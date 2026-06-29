@@ -23,7 +23,7 @@ export default async function AppLayout({
           <div className="flex items-center gap-4">
             <div
               className="flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0"
-              style={{ backgroundColor: "var(--accent-dim)", border: "1px solid #2a3a50" }}
+              style={{ backgroundColor: "var(--accent-dim)", border: "1px solid var(--border)" }}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)"
                 strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -90,7 +90,7 @@ export default async function AppLayout({
               <div className="flex items-center gap-2">
                 <div
                   className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold"
-                  style={{ backgroundColor: "var(--accent-dim)", color: "var(--accent)", border: "1px solid #2a3a50" }}
+                  style={{ backgroundColor: "var(--accent-dim)", color: "var(--accent)", border: "1px solid var(--border)" }}
                   aria-hidden="true"
                 >
                   {inicial}

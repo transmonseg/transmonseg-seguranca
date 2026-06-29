@@ -132,7 +132,8 @@ export function agruparPontosPorPlaca(alvos: AlvoUnitrac[]): Map<string, PontoEn
   for (const a of alvos) {
     const lat = typeof a.pontolatitude === "number" ? a.pontolatitude : parseFloat(String(a.pontolatitude));
     const lng = typeof a.pontolongitude === "number" ? a.pontolongitude : parseFloat(String(a.pontolongitude));
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) continue;
+    // Mantém pontos sem coordenada (lat/lng 0) para exibir na lista — só filtra NaN/Infinity
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
     const lista = mapa.get(a.placa) ?? [];
     lista.push({
       lat,
