@@ -595,7 +595,8 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     let base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
     if (filtroTipos.size > 0) {
       const cvsComTipo = new Set(alertas.filter(a => filtroTipos.has(a.tipo)).map(a => a.cv));
-      base = base.filter(v => cvsComTipo.has(v.cv));
+      // Veículo selecionado sempre permanece visível no mapa, mesmo sem o tipo filtrado
+      base = base.filter(v => cvsComTipo.has(v.cv) || v.cv === cvSelecionado);
     }
     if (!cvSelecionado || base.some(v => v.cv === cvSelecionado)) return base;
     // Veículo selecionado via alerta mas fora do feed ao vivo — injeta posição do alerta
@@ -641,9 +642,18 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
   const nCriticos = alertas.filter(a => a.nivel === "critico").length;
   const nAtencao = alertas.filter(a => a.nivel === "atencao").length;
 
-  const alvosFeitos = alvos.filter(p => p.feito).length;
-  const alvosTotal = alvos.length;
-  const alvosOrdenados = [...alvos].sort((a, b) => a.ordem - b.ordem).map(p => ({
+  // Fallback: se o fetch individual retornou vazio mas alvosGlobais tem dados da placa, usa o global
+  const alvosEfetivos = useMemo(() => {
+    if (alvos.length > 0) return alvos;
+    if (!cvSelecionado || !placaSelecionada) return [];
+    const placa = veiculosBase.find(v => v.cv === cvSelecionado)?.placa ?? vmAtual?.placa;
+    if (!placa) return [];
+    return alvosGlobais.filter(a => a.placa === placa);
+  }, [alvos, cvSelecionado, placaSelecionada, veiculosBase, vmAtual, alvosGlobais]);
+
+  const alvosFeitos = alvosEfetivos.filter(p => p.feito).length;
+  const alvosTotal = alvosEfetivos.length;
+  const alvosOrdenados = [...alvosEfetivos].sort((a, b) => a.ordem - b.ordem).map(p => ({
     ...p,
     dist: (!p.feito && vmAtual?.lat && vmAtual?.lng && (p.lat !== 0 || p.lng !== 0))
       ? haversineM(vmAtual.lat, vmAtual.lng, p.lat, p.lng)
@@ -1159,7 +1169,7 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
             mostrarParadas={mostrarParadas}
             rastro={rastro}
             paradas={paradas}
-            alvos={alvos}
+            alvos={alvosEfetivos}
             alvosGlobais={alvosGlobais}
             favelas={camFavelas ? favelas : null}
             tiroteios={camTiroteios ? tiroteios : []}
