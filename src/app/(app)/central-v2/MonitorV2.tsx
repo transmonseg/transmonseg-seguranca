@@ -401,6 +401,12 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
 
   // ── Vehicle selection ────────────────────────────────────────────────
   const selecionarVeiculo = useCallback((cv: string, coords?: { lat: number; lng: number }) => {
+    // Abortar fetch IMEDIATAMENTE — antes do próximo render+useEffect. Sem isso, uma
+    // resposta que chega entre o setState e o useEffect pode chamar setRastro(A_data)
+    // depois do setRastro([]) daqui, deixando o rastro do veículo antigo visível.
+    fetchAbortRef.current?.abort();
+    fetchAbortRef.current = null;
+
     setCvSelecionado(cv);
     // Incrementar reloadKey força o useEffect a disparar mesmo se cvSelecionado não mudou
     // (re-seleção do mesmo veículo). Garante que carregarVeiculo é chamado exatamente UMA vez.
@@ -521,6 +527,14 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
     if (vista === "atencao") return a.nivel === "atencao";
     return true;
   });
+
+  // Alertas do veículo selecionado sobem ao topo da sidebar
+  const alertasOrdenados = cvSelecionado
+    ? [
+        ...alertasFiltrados.filter(a => a.cv === cvSelecionado),
+        ...alertasFiltrados.filter(a => a.cv !== cvSelecionado),
+      ]
+    : alertasFiltrados;
 
   const veiculosBusca = busca.length >= 2
     ? veiculosBase.filter(v => v.placa.toLowerCase().includes(busca.toLowerCase())).slice(0, 8)
@@ -882,17 +896,22 @@ export default function MonitorV2({ cliente, clientes, veiculos: veiculosBase, a
                 Nenhum alerta ativo
               </div>
             )}
-            {alertasFiltrados.map(a => {
+            {alertasOrdenados.map(a => {
               const cor = a.nivel === "critico" ? T.red : T.yellow;
+              const ativo = cvSelecionado === a.cv;
               return (
                 <div key={a.id}
                   onClick={() => selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined)}
                   className="v2-alert-card"
                   style={{
                     marginBottom: 4, borderRadius: 8,
-                    border: `1px solid ${cor}22`, borderLeft: `3px solid ${cor}`,
-                    background: tema === "dark" ? `${cor}07` : `${cor}05`,
+                    border: `1px solid ${ativo ? cor + "66" : cor + "22"}`,
+                    borderLeft: `3px solid ${cor}`,
+                    background: ativo
+                      ? (tema === "dark" ? `${cor}16` : `${cor}10`)
+                      : (tema === "dark" ? `${cor}07` : `${cor}05`),
                     cursor: "pointer",
+                    outline: ativo ? `1px solid ${cor}33` : "none",
                   }}>
                   <div style={{ padding: "8px 10px 7px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
