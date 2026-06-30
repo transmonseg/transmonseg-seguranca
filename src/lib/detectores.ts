@@ -288,6 +288,8 @@ export type CtxDesvio = {
   // Anti-falso-positivo: true se o veículo já estava fora do corredor no ciclo anterior.
   // Obrigatório para disparar no modo OSRM — exige 2 ciclos consecutivos fora.
   jaForaCorretor?: boolean;
+  // Entregas já feitas: 0 = veículo ainda indo para a rota → não é desvio.
+  entregasFeitas?: number;
 };
 
 // O veículo está FORA DE ROTA agora? Condição FROUXA, usada para MANTER um
@@ -315,6 +317,8 @@ export function foraDeRota(
 export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
   if (!ctx.temPendentes || !ctx.emOperacao || !ctx.foraDaBase) return null;
   if (p.velocidade <= 0) return null;
+  // Veículo ainda indo para a rota (nenhuma entrega feita) → nunca é desvio.
+  if ((ctx.entregasFeitas ?? 1) === 0) return null;
 
   // ── MODO CORREDOR (OSRM): mais preciso, sem falsos positivos por via tortuosa ──
   if (ctx.distCorredorM != null) {
@@ -567,6 +571,7 @@ export function avaliarTodos(
           rumoAlvo: ctx.rumoAlvo ?? null,
           distCorredorM: ctx.distCorredorM ?? null,
           jaForaCorretor: ctx.jaForaCorretor ?? false,
+          entregasFeitas: ctx.entregasFeitas,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
@@ -591,6 +596,7 @@ export function avaliar(
     distAlvoAnteriorM?: number | null;
     temPendentes?: boolean;
     entregasTotal?: number;
+    entregasFeitas?: number;
     rumoMovimento?: number | null;
     rumoAlvo?: number | null;
     distCorredorM?: number | null;
@@ -664,6 +670,7 @@ export function avaliar(
           rumoAlvo: ctx.rumoAlvo ?? null,
           distCorredorM: ctx.distCorredorM ?? null,
           jaForaCorretor: ctx.jaForaCorretor ?? false,
+          entregasFeitas: ctx.entregasFeitas,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);

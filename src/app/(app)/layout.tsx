@@ -18,7 +18,7 @@ export default async function AppLayout({
           HEADER DE COMANDO
           ============================================================ */}
       <header className="sticky top-0 z-50 border-b" style={{ borderColor: "var(--border)", backgroundColor: "var(--bg)" }}>
-        <div className="flex items-center justify-between px-6 py-3">
+        <div className="flex items-center justify-between px-6 py-2">
           {/* Lado esquerdo: logo + identidade */}
           <div className="flex items-center gap-4">
             <div
@@ -129,11 +129,6 @@ export default async function AppLayout({
         {children}
       </main>
 
-      {/* Rodapé */}
-      <footer className="px-6 py-3 flex items-center justify-between border-t" style={{ borderColor: "var(--border)", color: "var(--text-dim)" }}>
-        <span className="text-xs">Transmonseg Central &copy; {new Date().getFullYear()}</span>
-        <span className="text-xs">Monitoramento autônomo de frotas</span>
-      </footer>
     </div>
   );
 }

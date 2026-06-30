@@ -287,19 +287,19 @@ function criarIconeAlvo(feito: boolean, proximo: boolean): google.maps.Icon {
       <polyline points="5.5,9 8,11.5 12.5,6.5" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
     </svg>`;
   } else if (proximo) {
-    // Próximo: anel externo + ponto central laranja para destacar no mapa
+    // Próximo: anel externo + ponto central azul para destacar no mapa
     size = 28;
     const half = size / 2;
     svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="13" fill="#f97316" fill-opacity="0.18" stroke="#f97316" stroke-width="1.5"/>
-      <circle cx="${half}" cy="${half}" r="7" fill="#f97316" stroke="white" stroke-width="2"/>
+      <circle cx="${half}" cy="${half}" r="13" fill="#3b82f6" fill-opacity="0.18" stroke="#3b82f6" stroke-width="1.5"/>
+      <circle cx="${half}" cy="${half}" r="7" fill="#3b82f6" stroke="white" stroke-width="2"/>
     </svg>`;
   } else {
-    // Pendente normal: círculo laranja mais visível
+    // Pendente normal: círculo azul
     size = 18;
     const half = size / 2;
     svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="7.5" fill="#fb923c" stroke="white" stroke-width="1.5"/>
+      <circle cx="${half}" cy="${half}" r="7.5" fill="#60a5fa" stroke="white" stroke-width="1.5"/>
     </svg>`;
   }
 
@@ -515,7 +515,7 @@ export default function MapaLeafletV2({
         const half = size / 2;
         const svg = feito
           ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="#9ca3af" stroke="white" stroke-width="1.5" opacity="0.85"/><polyline points="4.5,8 7,10.5 11.5,5.5" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/></svg>`
-          : `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="#fb923c" stroke="white" stroke-width="1.5"/></svg>`;
+          : `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="#60a5fa" stroke="white" stroke-width="1.5"/></svg>`;
         const m = new google.maps.Marker({
           position: { lat: alvo.lat, lng: alvo.lng },
           map,
@@ -700,8 +700,8 @@ export default function MapaLeafletV2({
       {/* ── Paradas (SVG dot pixel-size, igual ao CircleMarker do V1) ── */}
       {cvSelecionado && mostrarParadas && paradas.map(p => {
         const grande = p.tempoMin >= 30;
-        const cor    = grande ? "#f59e0b" : "#fbbf24";
-        const fill   = grande ? "#f59e0b" : "#fde68a";
+        const cor    = grande ? "#a855f7" : "#c084fc";
+        const fill   = grande ? "#a855f7" : "#e9d5ff";
         const size   = grande ? 18 : 12;
         const r      = size / 2;
         const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
