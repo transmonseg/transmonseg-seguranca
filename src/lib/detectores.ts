@@ -179,7 +179,6 @@ export function detectarParadaCliente(ctx: {
   paradoMin: number;
   emOperacao: boolean;
   noCliente?: boolean;
-  ehBenassi?: boolean;
 }): Alerta | null {
   if (ctx.noCliente && ctx.emOperacao && ctx.paradoMin >= 90) {
     return {
@@ -197,10 +196,16 @@ export function detectarParadaLonga(ctx: {
   emOperacao: boolean;
   foraDaBase: boolean;
   noCliente?: boolean;
-  ehBenassi?: boolean;
+  temPOIProximo?: boolean;
+  entregasFeitas?: number;
+  entregasTotal?: number;
 }): Alerta | null {
   // Parado no cliente: coberto por detectarParadaCliente, evita duplicata.
   if (ctx.noCliente) return null;
+  // Parado em posto/POI legítimo: não é suspeito.
+  if (ctx.temPOIProximo) return null;
+  // Rota concluída: coberto por retorno_tardio, evita duplicata.
+  if (ctx.entregasTotal && ctx.entregasTotal > 0 && ctx.entregasFeitas !== undefined && ctx.entregasFeitas >= ctx.entregasTotal) return null;
   if (ctx.paradoMin >= 90 && ctx.emOperacao && ctx.foraDaBase) {
     return {
       nivel: "atencao",
@@ -303,7 +308,7 @@ export function foraDeRota(
 ): boolean {
   if (!ctx.temPendentes || !ctx.emOperacao || !ctx.foraDaBase) return false;
   if (ctx.distAlvoM === null) return false;
-  return ctx.distAlvoM >= 2000;
+  return ctx.distAlvoM >= DESVIO_MIN_M;
 }
 
 // Detector de DESVIO DE ROTA (GATILHO de criação — estrito).
@@ -485,7 +490,7 @@ export function detectarParadaNoturnaIgnicaoAtiva(
   if (!ehMadrugada) return null;
   return {
     nivel: "critico",
-    tipo: "parada_noturna_ignicao",
+    tipo: "ignicao_noturna",
     motivo: `Parado com ignicao ligada as ${ctx.horaSP}h fora da base`,
     score: 75,
   };
@@ -499,11 +504,11 @@ export function detectarAceleracaoBrusca(
 ): Alerta | null {
   if (!p.fresco) return null;
   if (!ctx.foraDaBase) return null;
-  if (ctx.velocidadeAnterior === null || ctx.velocidadeAnterior !== 0) return null;
+  if (ctx.velocidadeAnterior === null || ctx.velocidadeAnterior > 5) return null;
   if (p.velocidade < 80) return null;
   return {
     nivel: "critico",
-    tipo: "aceleracao_brusca",
+    tipo: "aceleracao",
     motivo: `Aceleracao brusca: 0 para ${p.velocidade} km/h em 1 ciclo — verificar`,
     score: 70,
   };
@@ -533,14 +538,15 @@ export function avaliarTodos(
       paradoMin: ctx.paradoMin,
       emOperacao: ctx.emOperacao,
       noCliente: ctx.noCliente,
-      ehBenassi: ctx.ehBenassi,
     }),
     detectarParadaLonga({
       paradoMin: ctx.paradoMin,
       emOperacao: ctx.emOperacao,
       foraDaBase: ctx.foraDaBase,
       noCliente: ctx.noCliente,
-      ehBenassi: ctx.ehBenassi,
+      temPOIProximo: ctx.temPOIProximo,
+      entregasFeitas: ctx.entregasFeitas,
+      entregasTotal: ctx.entregasTotal,
     }),
     ctx.estavEmMovimento !== undefined
       ? detectarParadaAnomala({
@@ -591,7 +597,6 @@ export function avaliar(
     emOperacao: boolean;
     foraDaBase: boolean;
     noCliente?: boolean;
-    ehBenassi?: boolean;
     distAlvoM?: number | null;
     distAlvoAnteriorM?: number | null;
     temPendentes?: boolean;
@@ -632,14 +637,15 @@ export function avaliar(
       paradoMin: ctx.paradoMin,
       emOperacao: ctx.emOperacao,
       noCliente: ctx.noCliente,
-      ehBenassi: ctx.ehBenassi,
     }),
     detectarParadaLonga({
       paradoMin: ctx.paradoMin,
       emOperacao: ctx.emOperacao,
       foraDaBase: ctx.foraDaBase,
       noCliente: ctx.noCliente,
-      ehBenassi: ctx.ehBenassi,
+      temPOIProximo: ctx.temPOIProximo,
+      entregasFeitas: ctx.entregasFeitas,
+      entregasTotal: ctx.entregasTotal,
     }),
     ctx.estavEmMovimento !== undefined
       ? detectarParadaAnomala({

@@ -727,7 +727,6 @@ export async function POST(request: Request) {
                   emOperacao,
                   foraDaBase,
                   noCliente,
-                  ehBenassi,
                   distAlvoM,
                   distAlvoAnteriorM,
                   temPendentes,

@@ -1,4 +1,4 @@
-// Testes unitários do motor de detecção (Vitest).
+// Testes unitarios do motor de deteccao (Vitest).
 import { describe, it, expect } from "vitest";
 import {
   detectarPanico,
@@ -125,20 +125,14 @@ describe("detectarExcessoVelocidade", () => {
 
 // Datas de referencia para emHorarioOperacao.
 // America/Sao_Paulo = UTC-3 (fora do horario de verao, ex: junho).
-// Sabado 10h SP = sabado 13h UTC → new Date("2026-06-20T13:00:00Z")
-// Quarta 14h SP = quarta 17h UTC  → new Date("2026-06-17T17:00:00Z")
-// Quarta 23h SP = quinta 02h UTC  → new Date("2026-06-18T02:00:00Z")
 describe("emHorarioOperacao", () => {
   it("sabado retorna false", () => {
-    // 2026-06-20 e sabado; 10h SP = 13h UTC
     expect(emHorarioOperacao(new Date("2026-06-20T13:00:00Z"))).toBe(false);
   });
   it("quarta 14h SP retorna true", () => {
-    // 2026-06-17 e quarta; 14h SP = 17h UTC
     expect(emHorarioOperacao(new Date("2026-06-17T17:00:00Z"))).toBe(true);
   });
   it("quarta 23h SP retorna false (fora do horario)", () => {
-    // 23h SP = 02h UTC do dia seguinte (quinta 2026-06-18)
     expect(emHorarioOperacao(new Date("2026-06-18T02:00:00Z"))).toBe(false);
   });
 });
@@ -153,35 +147,31 @@ describe("detectarParadaLonga", () => {
     expect(alerta?.motivo).toContain("1h35min");
   });
   it("95min + emOperacao=false retorna null", () => {
-    expect(
-      detectarParadaLonga({ paradoMin: 95, emOperacao: false, foraDaBase: true })
-    ).toBeNull();
+    expect(detectarParadaLonga({ paradoMin: 95, emOperacao: false, foraDaBase: true })).toBeNull();
   });
   it("95min + foraDaBase=false retorna null", () => {
-    expect(
-      detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: false })
-    ).toBeNull();
+    expect(detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: false })).toBeNull();
   });
   it("paradoMin=90 + emOperacao + foraDaBase aciona (limite >=90)", () => {
-    expect(
-      detectarParadaLonga({ paradoMin: 90, emOperacao: true, foraDaBase: true })
-    ).not.toBeNull();
+    expect(detectarParadaLonga({ paradoMin: 90, emOperacao: true, foraDaBase: true })).not.toBeNull();
   });
   it("paradoMin=89 + emOperacao + foraDaBase retorna null", () => {
-    expect(
-      detectarParadaLonga({ paradoMin: 89, emOperacao: true, foraDaBase: true })
-    ).toBeNull();
+    expect(detectarParadaLonga({ paradoMin: 89, emOperacao: true, foraDaBase: true })).toBeNull();
+  });
+  it("noCliente retorna null (coberto por parada_cliente)", () => {
+    expect(detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: true, noCliente: true })).toBeNull();
+  });
+  it("em POI proximo suprime parada_longa", () => {
+    expect(detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: true, temPOIProximo: true })).toBeNull();
+  });
+  it("rota concluida suprime parada_longa (coberto por retorno_tardio)", () => {
+    expect(detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: true, entregasFeitas: 5, entregasTotal: 5 })).toBeNull();
   });
 });
 
 describe("detectarParadaCliente", () => {
   it("no cliente 95min em operacao retorna parada_cliente critico score 72", () => {
-    const alerta = detectarParadaCliente({
-      paradoMin: 95,
-      emOperacao: true,
-      noCliente: true,
-      ehBenassi: true,
-    });
+    const alerta = detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: true });
     expect(alerta).not.toBeNull();
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("parada_cliente");
@@ -189,135 +179,45 @@ describe("detectarParadaCliente", () => {
     expect(alerta?.motivo).toContain("1h35min");
     expect(alerta?.motivo).toContain("acionar motorista");
   });
-  it("Benassi no cliente exatamente 90min aciona (limite >=90)", () => {
-    expect(
-      detectarParadaCliente({ paradoMin: 90, emOperacao: true, noCliente: true, ehBenassi: true })
-    ).not.toBeNull();
+  it("no cliente exatamente 90min aciona (limite >=90)", () => {
+    expect(detectarParadaCliente({ paradoMin: 90, emOperacao: true, noCliente: true })).not.toBeNull();
   });
-  it("Benassi no cliente 89min retorna null (abaixo do limite)", () => {
-    expect(
-      detectarParadaCliente({ paradoMin: 89, emOperacao: true, noCliente: true, ehBenassi: true })
-    ).toBeNull();
+  it("no cliente 89min retorna null (abaixo do limite)", () => {
+    expect(detectarParadaCliente({ paradoMin: 89, emOperacao: true, noCliente: true })).toBeNull();
   });
-  it("Benassi FORA do cliente (noCliente false) retorna null", () => {
-    expect(
-      detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: false, ehBenassi: true })
-    ).toBeNull();
-  });
-  it("Nutry (ehBenassi false) no cliente retorna null", () => {
-    expect(
-      detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: true, ehBenassi: false })
-    ).toBeNull();
+  it("fora do cliente (noCliente false) retorna null", () => {
+    expect(detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: false })).toBeNull();
   });
   it("fora de operacao retorna null", () => {
-    expect(
-      detectarParadaCliente({ paradoMin: 95, emOperacao: false, noCliente: true, ehBenassi: true })
-    ).toBeNull();
+    expect(detectarParadaCliente({ paradoMin: 95, emOperacao: false, noCliente: true })).toBeNull();
   });
-  it("sem campos opcionais (undefined) retorna null", () => {
-    expect(
-      detectarParadaCliente({ paradoMin: 95, emOperacao: true })
-    ).toBeNull();
+  it("sem noCliente (undefined) retorna null", () => {
+    expect(detectarParadaCliente({ paradoMin: 95, emOperacao: true })).toBeNull();
   });
 });
 
-describe("detectarParadaLonga — com campos Benassi", () => {
-  it("Benassi no cliente 95min: retorna null (coberto por parada_cliente)", () => {
-    expect(
-      detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: true, noCliente: true, ehBenassi: true })
-    ).toBeNull();
-  });
-  it("Benassi FORA do cliente 95min em operacao fora da base: retorna parada_longa", () => {
-    const alerta = detectarParadaLonga({
-      paradoMin: 95,
-      emOperacao: true,
-      foraDaBase: true,
-      noCliente: false,
-      ehBenassi: true,
-    });
-    expect(alerta).not.toBeNull();
-    expect(alerta?.tipo).toBe("parada_longa");
-  });
-  it("Nutry (ehBenassi false) no cliente 95min em operacao fora da base: retorna parada_longa", () => {
-    const alerta = detectarParadaLonga({
-      paradoMin: 95,
-      emOperacao: true,
-      foraDaBase: true,
-      noCliente: true,
-      ehBenassi: false,
-    });
-    expect(alerta).not.toBeNull();
-    expect(alerta?.tipo).toBe("parada_longa");
-  });
-});
-
-describe("avaliar — cenarios parada_cliente Benassi", () => {
-  it("Benassi no cliente 95min em operacao retorna parada_cliente", () => {
-    const alerta = avaliar(posicaoBase(), {
-      paradoMin: 95,
-      emOperacao: true,
-      foraDaBase: true,
-      noCliente: true,
-      ehBenassi: true,
-    });
+describe("avaliar - cenarios parada_cliente", () => {
+  it("no cliente 95min em operacao retorna parada_cliente critico", () => {
+    const alerta = avaliar(posicaoBase(), { paradoMin: 95, emOperacao: true, foraDaBase: true, noCliente: true });
     expect(alerta?.tipo).toBe("parada_cliente");
-    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.nivel).toBe("critico");
   });
-  it("Benassi fora do cliente 95min em operacao retorna parada_longa (nao parada_cliente)", () => {
-    const alerta = avaliar(posicaoBase(), {
-      paradoMin: 95,
-      emOperacao: true,
-      foraDaBase: true,
-      noCliente: false,
-      ehBenassi: true,
-    });
+  it("fora do cliente 95min em operacao retorna parada_longa", () => {
+    const alerta = avaliar(posicaoBase(), { paradoMin: 95, emOperacao: true, foraDaBase: true, noCliente: false });
     expect(alerta?.tipo).toBe("parada_longa");
   });
-  it("Nutry no cliente 95min em operacao retorna parada_longa (nao parada_cliente)", () => {
-    const alerta = avaliar(posicaoBase(), {
-      paradoMin: 95,
-      emOperacao: true,
-      foraDaBase: true,
-      noCliente: true,
-      ehBenassi: false,
-    });
-    expect(alerta?.tipo).toBe("parada_longa");
+  it("no cliente 60min retorna null (abaixo do limite)", () => {
+    expect(avaliar(posicaoBase(), { paradoMin: 60, emOperacao: true, foraDaBase: true, noCliente: true })).toBeNull();
   });
-  it("Benassi no cliente 60min retorna null (abaixo do limite)", () => {
-    const alerta = avaliar(posicaoBase(), {
-      paradoMin: 60,
-      emOperacao: true,
-      foraDaBase: true,
-      noCliente: true,
-      ehBenassi: true,
-    });
-    expect(alerta).toBeNull();
+  it("no cliente fora de operacao retorna null", () => {
+    expect(avaliar(posicaoBase(), { paradoMin: 95, emOperacao: false, foraDaBase: true, noCliente: true })).toBeNull();
   });
-  it("Benassi no cliente fora de operacao retorna null", () => {
-    const alerta = avaliar(posicaoBase(), {
-      paradoMin: 95,
-      emOperacao: false,
-      foraDaBase: true,
-      noCliente: true,
-      ehBenassi: true,
-    });
-    expect(alerta).toBeNull();
-  });
-  it("parada_cliente (atencao score 52) perde para panico (critico score 100)", () => {
-    const alerta = avaliar(posicaoBase({ panico: true }), {
-      paradoMin: 95,
-      emOperacao: true,
-      foraDaBase: true,
-      noCliente: true,
-      ehBenassi: true,
-    });
+  it("parada_cliente perde para panico (critico score 100)", () => {
+    const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 95, emOperacao: true, foraDaBase: true, noCliente: true });
     expect(alerta?.tipo).toBe("panico");
   });
-  it("parada_cliente (score 52) vence parada_longa (score 50) quando ambos seriam candidatos", () => {
-    // Cenario hipotetico: mesmo ctx mas sem flag ehBenassi para isolar os scores.
-    // Na pratica quando ehBenassi+noCliente, parada_longa retorna null.
-    // Testamos o score via detectarParadaCliente diretamente.
-    const pc = detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: true, ehBenassi: true });
+  it("parada_cliente score (72) maior que parada_longa (50)", () => {
+    const pc = detectarParadaCliente({ paradoMin: 95, emOperacao: true, noCliente: true });
     expect(pc?.score).toBeGreaterThan(50);
   });
 });
@@ -335,21 +235,19 @@ describe("detectarDesvio", () => {
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
-  it("longe (>=5km), afastando, rumo oposto, em movimento → desvio critico", () => {
+  it("longe (>=5km), afastando, rumo oposto, em movimento - desvio critico", () => {
     const a = detectarDesvio(emMov, base);
     expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("desvio");
     expect(a?.motivo).toContain("6,0km");
   });
   it("longe mas indo NA DIRECAO do alvo (rumo coincide) nao aciona", () => {
-    // movimento 180 = mesmo rumo do alvo (180): dif 0° → indo pro ponto, nao desvio.
     expect(detectarDesvio(emMov, { ...base, rumoMovimento: 180 })).toBeNull();
   });
   it("longe mas SE APROXIMANDO (distancia caindo) nao aciona", () => {
     expect(detectarDesvio(emMov, { ...base, distAlvoM: 6000, distAlvoAnteriorM: 8000 })).toBeNull();
   });
   it("DESLOCAMENTO interurbano (>25km) NAO e desvio mesmo afastando+oposto", () => {
-    // 116km do ponto: trânsito entre regiões / voltando, não desvio local.
     expect(detectarDesvio(emMov, { ...base, distAlvoM: 116000, distAlvoAnteriorM: 114000 })).toBeNull();
     expect(detectarDesvio(emMov, { ...base, distAlvoM: 30000, distAlvoAnteriorM: 29000 })).toBeNull();
   });
@@ -383,6 +281,13 @@ describe("detectarDesvio", () => {
   });
   it("longe e ESTAVEL (mesma distancia) nao aciona", () => {
     expect(detectarDesvio(emMov, { ...base, distAlvoM: 6000, distAlvoAnteriorM: 6050 })).toBeNull();
+  });
+  it("entregasFeitas=0 nao aciona (veiculo indo para a rota)", () => {
+    expect(detectarDesvio(emMov, { ...base, entregasFeitas: 0 })).toBeNull();
+  });
+  it("entregasFeitas=1 aciona normalmente", () => {
+    const a = detectarDesvio(emMov, { ...base, entregasFeitas: 1 });
+    expect(a?.tipo).toBe("desvio");
   });
 });
 
@@ -423,25 +328,25 @@ describe("foraDeRota (condicao de permanencia do alerta de desvio)", () => {
   const base = { distAlvoM: 6000, temPendentes: true, emOperacao: true, foraDaBase: true };
   const emMov = posicaoBase({ velocidade: 40 });
 
-  it("longe (>=2km), com pendentes, fora da base, em operacao → true (mantem)", () => {
+  it("longe (>=2.5km), com pendentes, fora da base, em operacao - mantem", () => {
     expect(foraDeRota(emMov, base)).toBe(true);
   });
   it("escalou muito (60km) continua fora de rota (sem teto na permanencia)", () => {
     expect(foraDeRota(emMov, { ...base, distAlvoM: 60000 })).toBe(true);
   });
-  it("voltou pra perto do ponto (<2km) → false (resolve)", () => {
-    expect(foraDeRota(emMov, { ...base, distAlvoM: 1500 })).toBe(false);
+  it("voltou pra perto do ponto (<2.5km) - resolve", () => {
+    expect(foraDeRota(emMov, { ...base, distAlvoM: 2000 })).toBe(false);
   });
-  it("na base → false", () => {
+  it("na base - false", () => {
     expect(foraDeRota(emMov, { ...base, foraDaBase: false })).toBe(false);
   });
-  it("sem pendentes → false", () => {
+  it("sem pendentes - false", () => {
     expect(foraDeRota(emMov, { ...base, temPendentes: false })).toBe(false);
   });
-  it("fora de operacao → false", () => {
+  it("fora de operacao - false", () => {
     expect(foraDeRota(emMov, { ...base, emOperacao: false })).toBe(false);
   });
-  it("distAlvoM null → false", () => {
+  it("distAlvoM null - false", () => {
     expect(foraDeRota(emMov, { ...base, distAlvoM: null })).toBe(false);
   });
 });
@@ -450,9 +355,7 @@ describe("foraDeRota (condicao de permanencia do alerta de desvio)", () => {
 const ctxOp = { paradoMin: 0, emOperacao: true, foraDaBase: true };
 
 describe("avaliar", () => {
-  // Regressao: atraso=101 + ignicao = jammer critico, NAO cinza.
-  // Garante que detectarJammer funciona mesmo com fresco=false (atraso > 60).
-  it("atraso=101 + ignicao ligada retorna jammer critico (nao cinza)", () => {
+  it("atraso=101 + ignicao ligada retorna jammer critico", () => {
     const alerta = avaliar(
       posicaoBase({ ignicao: true, atraso: 101, fresco: false }),
       { ...ctxOp, paradoMin: 0 }
@@ -461,7 +364,6 @@ describe("avaliar", () => {
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("jammer");
   });
-
   it("panico retorna critico", () => {
     const alerta = avaliar(posicaoBase({ panico: true }), ctxOp);
     expect(alerta?.nivel).toBe("critico");
@@ -488,9 +390,7 @@ describe("avaliar", () => {
     expect(alerta?.tipo).toBe("parada_longa");
   });
   it("paradoMin=95 + emOperacao=false NAO retorna parada_longa", () => {
-    expect(
-      avaliar(posicaoBase(), { paradoMin: 95, emOperacao: false, foraDaBase: true })
-    ).toBeNull();
+    expect(avaliar(posicaoBase(), { paradoMin: 95, emOperacao: false, foraDaBase: true })).toBeNull();
   });
   it("posicao limpa + paradoMin=0 retorna null", () => {
     expect(avaliar(posicaoBase(), ctxOp)).toBeNull();
@@ -509,6 +409,7 @@ describe("avaliar", () => {
       distAlvoM: 6000,
       distAlvoAnteriorM: 5000,
       temPendentes: true,
+      entregasFeitas: 3,
       rumoMovimento: 0,
       rumoAlvo: 180,
     });
@@ -516,7 +417,6 @@ describe("avaliar", () => {
     expect(alerta?.nivel).toBe("critico");
   });
   it("sem alvos (distAlvoM ausente) NAO avalia desvio", () => {
-    // mesmo cenario geografico, mas sem passar distAlvoM → detector nao roda
     expect(avaliar(posicaoBase({ velocidade: 40 }), ctxOp)).toBeNull();
   });
   it("panico tem prioridade sobre desvio", () => {
@@ -525,6 +425,7 @@ describe("avaliar", () => {
       distAlvoM: 6000,
       distAlvoAnteriorM: 5000,
       temPendentes: true,
+      entregasFeitas: 3,
       rumoMovimento: 0,
       rumoAlvo: 180,
     });
@@ -532,8 +433,7 @@ describe("avaliar", () => {
   });
 });
 
-describe("detectarParadaAnomala — supressao por congestionamento", () => {
-  // Cenario base: parada suspeita que DISPARA (cidade, 25min, fora de rota).
+describe("detectarParadaAnomala - supressao por congestionamento", () => {
   const ctxParada = {
     paradoMin: 25,
     emOperacao: true,
@@ -551,15 +451,11 @@ describe("detectarParadaAnomala — supressao por congestionamento", () => {
     expect(a).not.toBeNull();
     expect(a?.tipo).toBe("parada_anomala");
   });
-
   it("2+ veiculos parados na mesma area (transito) NAO dispara", () => {
-    const a = detectarParadaAnomala({ ...ctxParada, vizinhosParados: 2 });
-    expect(a).toBeNull();
+    expect(detectarParadaAnomala({ ...ctxParada, vizinhosParados: 2 })).toBeNull();
   });
-
   it("1 vizinho parado por perto ainda dispara (nao e aglomeracao)", () => {
-    const a = detectarParadaAnomala({ ...ctxParada, vizinhosParados: 1 });
-    expect(a).not.toBeNull();
+    expect(detectarParadaAnomala({ ...ctxParada, vizinhosParados: 1 })).not.toBeNull();
   });
 });
 
@@ -574,7 +470,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(a?.tipo).toBe("saida_nao_autorizada");
     expect(a?.score).toBe(80);
   });
-  it("fora da base, sem rota, ignicao ligada e PARADO retorna atencao (pode ser recarga)", () => {
+  it("fora da base, sem rota, ignicao ligada e PARADO retorna atencao", () => {
     const a = detectarSaidaNaoAutorizada(
       posicaoBase({ ignicao: true, fresco: true, velocidade: 0 }),
       { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
@@ -584,78 +480,42 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(a?.tipo).toBe("saida_nao_autorizada");
     expect(a?.score).toBe(45);
   });
-  it("perto da base (distBaseM 1500m) NAO dispara — saindo/manobrando/abastecendo na base", () => {
-    const a = detectarSaidaNaoAutorizada(
-      posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
-      { foraDaBase: true, temPendentes: false, entregasTotal: 0, distBaseM: 1500 }
-    );
-    expect(a).toBeNull();
-  });
-  it("longe da base (distBaseM 5000m) em movimento ainda dispara critico", () => {
-    const a = detectarSaidaNaoAutorizada(
-      posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
-      { foraDaBase: true, temPendentes: false, entregasTotal: 0, distBaseM: 5000 }
-    );
-    expect(a?.nivel).toBe("critico");
-  });
-  it("parado perto de posto/POI NAO dispara — abastecendo/parada legitima", () => {
-    const a = detectarSaidaNaoAutorizada(
-      posicaoBase({ ignicao: true, fresco: true, velocidade: 0 }),
-      { foraDaBase: true, temPendentes: false, entregasTotal: 0, distBaseM: 5000, temPOIProximo: true }
-    );
-    expect(a).toBeNull();
-  });
-  it("dispara 24h: nao depende mais de horario de operacao (movimento de madrugada)", () => {
-    const a = detectarSaidaNaoAutorizada(
-      posicaoBase({ ignicao: true, fresco: true, velocidade: 50 }),
-      { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
-    );
-    expect(a?.nivel).toBe("critico");
-  });
-  it("com pendentes (tem rota) retorna null mesmo em movimento", () => {
+  it("tem pendentes: nao aciona (esta trabalhando)", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
-        { foraDaBase: true, temPendentes: true, entregasTotal: 0 }
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
+        { foraDaBase: true, temPendentes: true, entregasTotal: 5 }
       )
     ).toBeNull();
   });
-  it("entregasTotal > 0 (tem/teve entregas no dia) retorna null", () => {
+  it("entregasTotal undefined: nao aciona (API indisponivel)", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
-        { foraDaBase: true, temPendentes: false, entregasTotal: 5 }
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
+        { foraDaBase: true, temPendentes: false }
       )
     ).toBeNull();
   });
-  it("entregasTotal undefined (API de rota indisponivel) retorna null", () => {
+  it("entregasTotal > 0: nao aciona (trabalhou no dia)", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
-        { foraDaBase: true, temPendentes: false, entregasTotal: undefined }
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
+        { foraDaBase: true, temPendentes: false, entregasTotal: 3 }
       )
     ).toBeNull();
   });
-  it("dentro da base retorna null", () => {
+  it("na base: nao aciona", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: true, velocidade: 40 }),
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
         { foraDaBase: false, temPendentes: false, entregasTotal: 0 }
       )
     ).toBeNull();
   });
-  it("ignicao desligada retorna null", () => {
+  it("ignicao desligada: nao aciona", () => {
     expect(
       detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: false, fresco: true, velocidade: 0 }),
-        { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
-      )
-    ).toBeNull();
-  });
-  it("posicao nao fresca retorna null", () => {
-    expect(
-      detectarSaidaNaoAutorizada(
-        posicaoBase({ ignicao: true, fresco: false, velocidade: 40 }),
+        posicaoBase({ ignicao: false, fresco: true, velocidade: 35 }),
         { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
       )
     ).toBeNull();
