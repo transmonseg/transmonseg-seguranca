@@ -174,6 +174,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Filtro por tipo de alerta (sidebar) — multi-select
   const [filtroTipos, setFiltroTipos] = useState<Set<string>>(new Set());
 
+  // Grupos de frota Unitrac (gvc/gvn) — ex.: "H LOG SERVIÇOS", "PALETEIRAS", "COZINHA"
+  const [grupos, setGrupos] = useState<{ gvc: number; gvn: string; veiculos: { placa: string; cv: string }[] }[]>([]);
+  const [gruposOcultos, setGruposOcultos] = useState<Set<number>>(new Set());
+
   // Theme + satellite (satélite padrão = true)
   const [tema, setTema] = useState<"dark" | "light">("dark");
   const [satelite, setSatelite] = useState(true);
@@ -208,6 +212,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (vistaS) setVista(vistaS);
     const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
     if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
+    const gruposOcultosS = localStorage.getItem("transmonseg-grupos-ocultos");
+    if (gruposOcultosS) { try { setGruposOcultos(new Set(JSON.parse(gruposOcultosS))); } catch { /* ignore */ } }
   }, []);
 
   const setTemaComPersistencia = useCallback((novo: "dark" | "light") => {
@@ -246,6 +252,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       const next = new Set(prev);
       if (next.has(tipo)) next.delete(tipo); else next.add(tipo);
       localStorage.setItem("transmonseg-filtro-tipos", JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
+
+  const toggleGrupoOculto = useCallback((gvc: number) => {
+    setGruposOcultos(prev => {
+      const next = new Set(prev);
+      if (next.has(gvc)) next.delete(gvc); else next.add(gvc);
+      localStorage.setItem("transmonseg-grupos-ocultos", JSON.stringify([...next]));
       return next;
     });
   }, []);
@@ -395,6 +410,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const t = setTimeout(() => setToasts(ts => ts.slice(1)), 6_000);
     return () => clearTimeout(t);
   }, [toasts]);
+
+  // Grupos de frota Unitrac (gvc/gvn) — fetcha uma vez por cliente
+  useEffect(() => {
+    if (!cliente) return;
+    fetch(`/api/grupos?cliente=${encodeURIComponent(cliente)}`)
+      .then(r => r.ok ? r.json() : { grupos: [] })
+      .then((d: { grupos?: typeof grupos }) => setGrupos(d.grupos ?? []))
+      .catch(() => setGrupos([]));
+  }, [cliente]);
 
   // Bases do cliente (perímetros geográficos) — fetcha uma vez por montagem
   useEffect(() => {
@@ -607,8 +631,21 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   }, [cvSelecionado, veiculosMapa]);
 
   // ── Derived ──────────────────────────────────────────────────────────
+  const cvParaGrupo = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const g of grupos) for (const v of g.veiculos) m.set(v.cv, g.gvc);
+    return m;
+  }, [grupos]);
+
   const vmFiltrado: VeiculoMapa[] = useMemo(() => {
     let base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
+    if (gruposOcultos.size > 0) {
+      // Veículo selecionado sempre permanece visível no mapa, mesmo se o grupo dele estiver oculto
+      base = base.filter(v => {
+        const g = cvParaGrupo.get(v.cv);
+        return g === undefined || !gruposOcultos.has(g) || v.cv === cvSelecionado;
+      });
+    }
     if (filtroTipos.size > 0) {
       const cvsComTipo = new Set(alertas.filter(a => filtroTipos.has(a.tipo)).map(a => a.cv));
       // Veículo selecionado sempre permanece visível no mapa, mesmo sem o tipo filtrado
@@ -626,7 +663,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       lat: al.lat, lng: al.lng, local: al.local, rumo: null,
     };
     return [...base, sintetico];
-  }, [veiculosMapa, filtroComm, filtroTipos, cvSelecionado, alertas]);
+  }, [veiculosMapa, filtroComm, filtroTipos, gruposOcultos, cvParaGrupo, cvSelecionado, alertas]);
 
   const vmAtual = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
 
@@ -640,6 +677,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (vista === "critico" && a.nivel !== "critico") return false;
     if (vista === "atencao" && a.nivel !== "atencao") return false;
     if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
+    if (gruposOcultos.size > 0) {
+      const g = cvParaGrupo.get(a.cv);
+      if (g !== undefined && gruposOcultos.has(g)) return false;
+    }
     return true;
   });
 
@@ -982,6 +1023,41 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               );
             })}
           </div>
+
+          {/* Chips de grupo de frota (gvc/gvn) — clique oculta/mostra o grupo */}
+          {grupos.length > 1 && (
+            <div style={{
+              display: "flex", gap: 3, padding: "5px 6px",
+              flexWrap: "wrap", borderBottom: `1px solid ${T.border}`,
+              flexShrink: 0,
+            }}>
+              {grupos.map(g => {
+                const oculto = gruposOcultos.has(g.gvc);
+                return (
+                  <button key={g.gvc} onClick={() => toggleGrupoOculto(g.gvc)} title={oculto ? "Grupo oculto — clique pra mostrar" : "Clique pra ocultar este grupo"} style={{
+                    height: 22, padding: "0 7px", borderRadius: 5,
+                    border: `1px solid ${oculto ? T.border : T.accent}`,
+                    background: oculto ? "transparent" : `${T.accent}18`,
+                    color: oculto ? T.dim : T.accent,
+                    fontSize: 10, fontWeight: oculto ? 500 : 700,
+                    cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
+                    display: "flex", alignItems: "center", gap: 4,
+                    textDecoration: oculto ? "line-through" : "none",
+                  }}>
+                    <span>{g.gvn.trim()}</span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 9 }}>{g.veiculos.length}</span>
+                  </button>
+                );
+              })}
+              {gruposOcultos.size > 0 && (
+                <button onClick={() => { setGruposOcultos(new Set()); localStorage.removeItem("transmonseg-grupos-ocultos"); }} style={{
+                  height: 22, padding: "0 8px", borderRadius: 5,
+                  border: `1px solid ${T.border}`, background: "transparent",
+                  color: T.dim, fontSize: 11, cursor: "pointer",
+                }}>✕</button>
+              )}
+            </div>
+          )}
 
           {/* Chips de tipo — multi-select, filtra sidebar + mapa */}
           {(() => {

@@ -77,27 +77,30 @@ describe("detectarBau", () => {
 });
 
 describe("detectarJammer", () => {
-  it("ignicao ligada e atraso=30 retorna jammer critico", () => {
-    const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 30 }));
+  it("ignicao ligada e atraso=60 retorna jammer critico", () => {
+    const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 60 }));
     expect(alerta).not.toBeNull();
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("jammer");
     expect(alerta?.score).toBe(80);
   });
-  it("atraso no limite inferior (30) aciona jammer", () => {
-    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 30 }))).not.toBeNull();
+  it("atraso no limite inferior (30) aciona jammer em nivel atencao", () => {
+    const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 30 }));
+    expect(alerta).not.toBeNull();
+    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.score).toBe(55);
   });
   it("atraso abaixo da janela (15) nao aciona jammer", () => {
     expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 15 }))).toBeNull();
   });
-  it("atraso no limite superior (720) aciona jammer", () => {
-    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 720 }))).not.toBeNull();
+  it("atraso no limite superior (180) aciona jammer", () => {
+    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 180 }))).not.toBeNull();
+  });
+  it("atraso acima do teto (181) nao aciona jammer (sinal perdido ha tempo demais)", () => {
+    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 181 }))).toBeNull();
   });
   it("ignicao desligada nao aciona jammer", () => {
     expect(detectarJammer(posicaoBase({ ignicao: false, atraso: 30 }))).toBeNull();
-  });
-  it("atraso fora da janela (721) nao aciona jammer", () => {
-    expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 721 }))).toBeNull();
   });
   it("atraso=0 nao aciona jammer", () => {
     expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 0 }))).toBeNull();
@@ -310,7 +313,7 @@ describe("detectarTiroteioProximo", () => {
   it("tiroteio a 2km retorna atencao", () => {
     const a = detectarTiroteioProximo(fresco, { distTiroteioM: 2000, tiroteioIdadeMin: 10 });
     expect(a?.nivel).toBe("atencao");
-    expect(a?.score).toBe(60);
+    expect(a?.score).toBe(50);
     expect(a?.motivo).toContain("2,0km");
   });
   it("tiroteio a 4km nao aciona (longe)", () => {
@@ -374,8 +377,8 @@ describe("avaliar", () => {
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("bau");
   });
-  it("jammer (ignicao+atraso=30) retorna critico", () => {
-    const alerta = avaliar(posicaoBase({ ignicao: true, atraso: 30 }), ctxOp);
+  it("jammer (ignicao+atraso=60) retorna critico", () => {
+    const alerta = avaliar(posicaoBase({ ignicao: true, atraso: 60 }), ctxOp);
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("jammer");
   });

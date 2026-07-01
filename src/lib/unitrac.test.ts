@@ -44,7 +44,24 @@ describe("agruparPontosPorPlaca", () => {
     ];
     const p = agruparPontosPorPlaca(alvos).get("XYZ9K88")![0];
     expect(p.feito).toBe(true);
+    expect(p.situacao).toBe(1);
     expect(p.dataRealizado).toBe("2026-06-26T08:15:00");
     expect(p.documento).toBeNull();
+  });
+
+  it("situacao 98 (encerrado por outra via) conta como feito, nao como pendente", () => {
+    const alvos: AlvoUnitrac[] = [
+      {
+        placa: "LSN6I72",
+        alvosituacaoservico: 98,
+        pontolatitude: -22.95,
+        pontolongitude: -43.18,
+        alvoordem: 0,
+        alvodatarealizado: "2026-06-30T11:04:25",
+      },
+    ];
+    const p = agruparPontosPorPlaca(alvos).get("LSN6I72")![0];
+    expect(p.feito).toBe(true);
+    expect(p.situacao).toBe(98);
   });
 });

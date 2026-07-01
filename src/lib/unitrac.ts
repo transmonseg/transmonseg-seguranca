@@ -54,7 +54,8 @@ export async function buscarPosicoes(cvs: string[]): Promise<unknown[]> {
 // ordem na rota e situação (feito/pendente).
 export type AlvoUnitrac = {
   placa: string;
-  alvosituacaoservico: number; // 1 = feito, 0 = pendente
+  alvosituacaoservico: number; // 0=pendente, 1=feito, 98=outro (visto em producao, significado exato nao confirmado)
+  alvocodigo?: number; // id estavel da entrega, unico por linha (NF)
   pontolatitude?: number;
   pontolongitude?: number;
   pontoraio?: number; // raio do ponto em metros (ex.: 50)
@@ -82,7 +83,9 @@ export type PontoEntrega = {
   raio: number; // metros
   ordem: number;
   nome: string;
-  feito: boolean;
+  feito: boolean; // true quando situacao !== 0 (encerrado, seja confirmado ou nao)
+  situacao: number; // codigo bruto da Unitrac: 0=pendente, 1=feito, 98=outro (significado exato nao confirmado com a Unitrac)
+  codigo: number | null; // alvocodigo da Unitrac — id estavel pra usar como key de lista
   documento: string | null;
   identificador: string | null;
   dataInicio: string | null;
@@ -118,7 +121,8 @@ export function agruparAlvosPorPlaca(alvos: AlvoUnitrac[]): Map<string, Entregas
     const placa = alvo.placa;
     const entrada = mapa.get(placa) ?? { feitos: 0, total: 0 };
     entrada.total += 1;
-    if (alvo.alvosituacaoservico === 1) {
+    // situacao 0 = pendente; qualquer outro valor (1=feito, 98=outro) significa que ja foi encerrado.
+    if (alvo.alvosituacaoservico !== 0) {
       entrada.feitos += 1;
     }
     mapa.set(placa, entrada);
@@ -142,7 +146,9 @@ export function agruparPontosPorPlaca(alvos: AlvoUnitrac[]): Map<string, PontoEn
       raio: Number(a.pontoraio) || 50,
       ordem: Number(a.alvoordem) || 0,
       nome: String(a.pontonome ?? ""),
-      feito: a.alvosituacaoservico === 1,
+      feito: a.alvosituacaoservico !== 0,
+      situacao: Number(a.alvosituacaoservico) || 0,
+      codigo: typeof a.alvocodigo === "number" ? a.alvocodigo : null,
       placa: a.placa,
       documento: a.alvodocumento ? String(a.alvodocumento) : null,
       identificador: a.pontoidentificador ? String(a.pontoidentificador) : null,

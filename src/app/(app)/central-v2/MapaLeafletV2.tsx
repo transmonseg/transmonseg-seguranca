@@ -33,6 +33,8 @@ export interface PontoEntrega {
   ordem: number;
   nome: string;
   feito: boolean;
+  situacao: number; // 0=pendente, 1=feito, 98=outro (encerrado por outra via)
+  codigo: number | null; // alvocodigo da Unitrac — id estavel pra usar como key de lista
   documento: string | null;
   identificador: string | null;
   dataInicio: string | null;
@@ -161,10 +163,12 @@ const DOT_RASTRO = dotSvg("#00e5ff", "#000");
 const DOT_START  = dotSvg("#22c55e", "#064e1a");
 
 // Cores de status de entrega — pedido do cliente: pendente bem visível (azul escuro forte),
-// entregue bem visível (verde forte). Não existe estado "cancelado" nos dados da API hoje
-// (alvosituacaoservico só tem 0=pendente, 1=feito).
+// entregue bem visível (verde forte). A Unitrac tem um 3º código (alvosituacaoservico=98,
+// achado em varredura na API) que fecha a entrega sem ser o "feito" padrão — tratamos como
+// "outro" (cinza) até confirmar o significado exato com o suporte Unitrac.
 const COR_PENDENTE = "#1d4ed8";
 const COR_ENTREGUE = "#16a34a";
+const COR_OUTRO = "#9ca3af";
 
 function formatarDuracaoParada(min: number): string {
   if (min < 60) return `${min}min`;
@@ -280,17 +284,27 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
 }
 
 // Ponto de entrega — círculo colorido simples, sem número
-function criarIconeAlvo(feito: boolean, proximo: boolean): google.maps.Icon {
+function criarIconeAlvo(situacao: number, proximo: boolean): google.maps.Icon {
   let svg: string;
   let size: number;
+  const confirmado = situacao === 1;
+  const outro = situacao !== 0 && situacao !== 1;
 
-  if (feito) {
-    // Feito: círculo verde forte com checkmark interno
+  if (confirmado) {
+    // Feito (confirmado pela Unitrac): círculo verde forte com checkmark interno
     size = 18;
     const half = size / 2;
     svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
       <circle cx="${half}" cy="${half}" r="7.5" fill="${COR_ENTREGUE}" stroke="white" stroke-width="1.5"/>
       <polyline points="5.5,9 8,11.5 12.5,6.5" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+    </svg>`;
+  } else if (outro) {
+    // Encerrado por outra via (situacao=98 etc.) — cinza, distinto de feito/pendente
+    size = 18;
+    const half = size / 2;
+    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="${half}" cy="${half}" r="7.5" fill="${COR_OUTRO}" stroke="white" stroke-width="1.5"/>
+      <line x1="5.5" y1="${half}" x2="12.5" y2="${half}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
     </svg>`;
   } else if (proximo) {
     // Próximo: anel externo + ponto central azul escuro forte para destacar no mapa
@@ -516,11 +530,14 @@ export default function MapaLeafletV2({
     const markers = lista
       .filter(a => !(a.lat === 0 && a.lng === 0))
       .map(alvo => {
-        const feito = alvo.feito;
-        const size = feito ? 16 : 16;
+        const confirmado = alvo.situacao === 1;
+        const outro = alvo.situacao !== 0 && alvo.situacao !== 1;
+        const size = 16;
         const half = size / 2;
-        const svg = feito
+        const svg = confirmado
           ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_ENTREGUE}" stroke="white" stroke-width="1.5"/><polyline points="4.5,8 7,10.5 11.5,5.5" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/></svg>`
+          : outro
+          ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_OUTRO}" stroke="white" stroke-width="1.5"/><line x1="4.5" y1="${half}" x2="11.5" y2="${half}" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>`
           : `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_PENDENTE}" stroke="white" stroke-width="1.5"/></svg>`;
         const m = new google.maps.Marker({
           position: { lat: alvo.lat, lng: alvo.lng },
@@ -530,8 +547,8 @@ export default function MapaLeafletV2({
             scaledSize: new google.maps.Size(size, size),
             anchor: new google.maps.Point(half, half),
           },
-          title: alvo.nome || (feito ? "Entregue" : "Pendente"),
-          zIndex: feito ? 10 : 13,
+          title: alvo.nome || (confirmado ? "Entregue" : outro ? "Encerrado" : "Pendente"),
+          zIndex: confirmado || outro ? 10 : 13,
           clickable: true,
         });
         m.addListener("click", () => {
@@ -738,9 +755,9 @@ export default function MapaLeafletV2({
         const proximo = i === primeiroPendente;
         return (
           <Marker
-            key={`alvo-${i}`}
+            key={alvo.codigo ?? `alvo-${i}`}
             position={{ lat: alvo.lat, lng: alvo.lng }}
-            icon={criarIconeAlvo(alvo.feito, proximo)}
+            icon={criarIconeAlvo(alvo.situacao, proximo)}
             title={alvo.nome || (alvo.feito ? "Entregue" : "Pendente")}
             zIndex={proximo ? 15 : 12}
             clickable={true}
@@ -799,8 +816,15 @@ export default function MapaLeafletV2({
             borderRadius: 6,
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-              <span style={{ fontWeight: 700, fontSize: 13, color: alvoSelecionado.feito ? COR_ENTREGUE : COR_PENDENTE }}>
-                {alvoSelecionado.feito ? "Entregue" : `Pendente #${alvoSelecionado.ordem + 1}`}
+              <span style={{
+                fontWeight: 700, fontSize: 13,
+                color: alvoSelecionado.situacao === 1 ? COR_ENTREGUE
+                  : alvoSelecionado.situacao !== 0 ? COR_OUTRO
+                  : COR_PENDENTE,
+              }}>
+                {alvoSelecionado.situacao === 1 ? "Entregue"
+                  : alvoSelecionado.situacao !== 0 ? `Encerrado (cod. ${alvoSelecionado.situacao})`
+                  : `Pendente #${alvoSelecionado.ordem + 1}`}
               </span>
               <button onClick={() => setAlvoSelecionado(null)}
                 style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 0 0 8px", lineHeight: 1 }}>×</button>
@@ -826,8 +850,8 @@ export default function MapaLeafletV2({
               </div>
             )}
             {alvoSelecionado.dataRealizado && (
-              <div style={{ fontSize: 10, color: COR_ENTREGUE, marginTop: 4 }}>
-                Feito: {formatarHoraParada(alvoSelecionado.dataRealizado)}
+              <div style={{ fontSize: 10, color: alvoSelecionado.situacao === 1 ? COR_ENTREGUE : COR_OUTRO, marginTop: 4 }}>
+                {alvoSelecionado.situacao === 1 ? "Feito" : "Encerrado"}: {formatarHoraParada(alvoSelecionado.dataRealizado)}
               </div>
             )}
             {alvoSelecionado.dataInicio && !alvoSelecionado.feito && (
