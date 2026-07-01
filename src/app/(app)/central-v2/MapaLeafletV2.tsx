@@ -35,6 +35,7 @@ export interface PontoEntrega {
   feito: boolean;
   situacao: number; // 0=pendente, 1=feito, 98=outro (encerrado por outra via)
   codigo: number | null; // alvocodigo da Unitrac — id estavel pra usar como key de lista
+  pontoCodigo: number | null; // pontocodigo da Unitrac — varios alvos (NFs) podem compartilhar o mesmo ponto/endereco
   documento: string | null;
   identificador: string | null;
   dataInicio: string | null;
@@ -283,52 +284,87 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
   };
 }
 
-// Ponto de entrega — círculo colorido simples, sem número
-function criarIconeAlvo(situacao: number, proximo: boolean): google.maps.Icon {
-  let svg: string;
-  let size: number;
+// Ponto de entrega — círculo colorido simples. Quando qtd > 1 (varias NFs no
+// mesmo ponto/endereco — comum em cliente tipo supermercado), desenha um
+// badge com a contagem em vez de empilhar N marcadores exatamente um sobre o outro.
+function criarIconeAlvo(situacao: number, proximo: boolean, qtd: number = 1): google.maps.Icon {
   const confirmado = situacao === 1;
   const outro = situacao !== 0 && situacao !== 1;
+  const core = proximo && !confirmado && !outro ? 28 : 18;
+  const half = core / 2;
+  const extra = qtd > 1 ? 11 : 0;
+  const w = core + extra;
+  const h = core + extra;
+  const cx = half;
+  const cy = half;
 
+  let corpo: string;
   if (confirmado) {
     // Feito (confirmado pela Unitrac): círculo verde forte com checkmark interno
-    size = 18;
-    const half = size / 2;
-    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="7.5" fill="${COR_ENTREGUE}" stroke="white" stroke-width="1.5"/>
-      <polyline points="5.5,9 8,11.5 12.5,6.5" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
-    </svg>`;
+    corpo = `<circle cx="${cx}" cy="${cy}" r="7.5" fill="${COR_ENTREGUE}" stroke="white" stroke-width="1.5"/>
+      <polyline points="${cx - 3.5},${cy} ${cx - 1},${cy + 2.5} ${cx + 3.5},${cy - 2.5}" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>`;
   } else if (outro) {
     // Encerrado por outra via (situacao=98 etc.) — cinza, distinto de feito/pendente
-    size = 18;
-    const half = size / 2;
-    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="7.5" fill="${COR_OUTRO}" stroke="white" stroke-width="1.5"/>
-      <line x1="5.5" y1="${half}" x2="12.5" y2="${half}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-    </svg>`;
+    corpo = `<circle cx="${cx}" cy="${cy}" r="7.5" fill="${COR_OUTRO}" stroke="white" stroke-width="1.5"/>
+      <line x1="${cx - 3.5}" y1="${cy}" x2="${cx + 3.5}" y2="${cy}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>`;
   } else if (proximo) {
     // Próximo: anel externo + ponto central azul escuro forte para destacar no mapa
-    size = 28;
-    const half = size / 2;
-    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="13" fill="${COR_PENDENTE}" fill-opacity="0.22" stroke="${COR_PENDENTE}" stroke-width="1.5"/>
-      <circle cx="${half}" cy="${half}" r="7" fill="${COR_PENDENTE}" stroke="white" stroke-width="2"/>
-    </svg>`;
+    corpo = `<circle cx="${cx}" cy="${cy}" r="13" fill="${COR_PENDENTE}" fill-opacity="0.22" stroke="${COR_PENDENTE}" stroke-width="1.5"/>
+      <circle cx="${cx}" cy="${cy}" r="7" fill="${COR_PENDENTE}" stroke="white" stroke-width="2"/>`;
   } else {
     // Pendente normal: círculo azul escuro forte
-    size = 18;
-    const half = size / 2;
-    svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="7.5" fill="${COR_PENDENTE}" stroke="white" stroke-width="1.5"/>
-    </svg>`;
+    corpo = `<circle cx="${cx}" cy="${cy}" r="7.5" fill="${COR_PENDENTE}" stroke="white" stroke-width="1.5"/>`;
   }
 
-  const half = size / 2;
+  let badge = "";
+  if (qtd > 1) {
+    const bx = w - 7;
+    const by = 7;
+    const label = qtd > 9 ? "9+" : String(qtd);
+    badge = `<circle cx="${bx}" cy="${by}" r="6.5" fill="#111827" stroke="white" stroke-width="1.2"/>
+      <text x="${bx}" y="${by + 3}" text-anchor="middle" font-family="Arial,sans-serif" font-size="8.5" font-weight="700" fill="white">${label}</text>`;
+  }
+
+  const svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">${corpo}${badge}</svg>`;
   return {
     url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-    scaledSize: new window.google.maps.Size(size, size),
-    anchor: new window.google.maps.Point(half, half),
+    scaledSize: new window.google.maps.Size(w, h),
+    anchor: new window.google.maps.Point(cx, cy),
   };
+}
+
+// Chave de agrupamento — mesmo ponto/endereco (varias NFs entregues juntas).
+function chaveDoPonto(a: PontoEntrega): string {
+  return a.pontoCodigo != null ? `pc:${a.pontoCodigo}` : `xy:${a.lat.toFixed(5)},${a.lng.toFixed(5)}`;
+}
+
+interface GrupoAlvo {
+  chave: string;
+  representante: PontoEntrega;
+  situacaoEfetiva: number; // 0 se algum pendente; 98 se algum "outro" sem pendente; 1 se todos confirmados
+  qtd: number;
+  itens: PontoEntrega[];
+}
+
+// Agrupa alvos que caem no mesmo ponto (mesmo pontocodigo/coordenada) — evita
+// empilhar N marcadores idênticos quando o cliente recebe varias NFs na mesma parada.
+function agruparAlvosPorPonto(alvos: PontoEntrega[]): GrupoAlvo[] {
+  const porChave = new Map<string, PontoEntrega[]>();
+  for (const a of alvos) {
+    const chave = chaveDoPonto(a);
+    const lista = porChave.get(chave) ?? [];
+    lista.push(a);
+    porChave.set(chave, lista);
+  }
+  const grupos: GrupoAlvo[] = [];
+  for (const [chave, itens] of porChave.entries()) {
+    const representante = [...itens].sort((x, y) => x.ordem - y.ordem)[0];
+    const temPendente = itens.some(i => i.situacao === 0);
+    const temOutro = itens.some(i => i.situacao !== 0 && i.situacao !== 1);
+    const situacaoEfetiva = temPendente ? 0 : temOutro ? 98 : 1;
+    grupos.push({ chave, representante, situacaoEfetiva, qtd: itens.length, itens });
+  }
+  return grupos;
 }
 
 export default function MapaLeafletV2({
@@ -346,6 +382,8 @@ export default function MapaLeafletV2({
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [paradaSelecionada, setParadaSelecionada] = useState<Parada | null>(null);
   const [alvoSelecionado, setAlvoSelecionado] = useState<PontoEntrega | null>(null);
+  // Quando o ponto clicado agrupa varias NFs (mesmo pontocodigo), guarda os demais itens pro popup listar todos.
+  const [itensAlvoSelecionado, setItensAlvoSelecionado] = useState<PontoEntrega[]>([]);
   const [zoomLocal, setZoomLocal] = useState(11);
   const showLabel = zoomLocal >= 14;
   const [etaMinutos, setEtaMinutos] = useState<number | null>(null);
@@ -442,8 +480,15 @@ export default function MapaLeafletV2({
   const veiculosComPos = veiculosMapa.filter(v => v.lat != null && v.lng != null);
 
   // Precompute alvo data
-  const primeiroPendente = alvos.findIndex(a => !a.feito);
   const alvosPendentes = alvos.filter(a => !a.feito && (a.lat !== 0 || a.lng !== 0)).sort((a, b) => a.ordem - b.ordem);
+
+  // Agrupa por ponto (mesmo pontocodigo) pra nao empilhar N marcadores identicos —
+  // comum em cliente tipo supermercado que recebe varias NFs na mesma parada.
+  const gruposAlvos = useMemo(
+    () => agruparAlvosPorPonto(alvos.filter(a => !(a.lat === 0 && a.lng === 0))),
+    [alvos]
+  );
+  const chaveProximoPendente = alvosPendentes[0] ? chaveDoPonto(alvosPendentes[0]) : null;
 
   // Memoizado pelos valores reais de lat/lng — evita recriar o array a cada render
   // e disparo infinito do useEffect de rota.
@@ -521,42 +566,32 @@ export default function MapaLeafletV2({
     };
   }, [map, routeWaypoints]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Marcadores globais de entregas — imperativos para não travar React com 300+ markers
+  // Marcadores globais de entregas — imperativos para não travar React com 300+ markers.
+  // Agrupados por ponto (mesmo pontocodigo) pra nao empilhar N marcadores identicos.
   useEffect(() => {
     alvosGlobaisMarkersRef.current.forEach(m => m.setMap(null));
     alvosGlobaisMarkersRef.current = [];
     const lista = alvosGlobais ?? [];
     if (!map || cvSelecionado || lista.length === 0) return;
-    const markers = lista
-      .filter(a => !(a.lat === 0 && a.lng === 0))
-      .map(alvo => {
-        const confirmado = alvo.situacao === 1;
-        const outro = alvo.situacao !== 0 && alvo.situacao !== 1;
-        const size = 16;
-        const half = size / 2;
-        const svg = confirmado
-          ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_ENTREGUE}" stroke="white" stroke-width="1.5"/><polyline points="4.5,8 7,10.5 11.5,5.5" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/></svg>`
-          : outro
-          ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_OUTRO}" stroke="white" stroke-width="1.5"/><line x1="4.5" y1="${half}" x2="11.5" y2="${half}" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>`
-          : `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_PENDENTE}" stroke="white" stroke-width="1.5"/></svg>`;
-        const m = new google.maps.Marker({
-          position: { lat: alvo.lat, lng: alvo.lng },
-          map,
-          icon: {
-            url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-            scaledSize: new google.maps.Size(size, size),
-            anchor: new google.maps.Point(half, half),
-          },
-          title: alvo.nome || (confirmado ? "Entregue" : outro ? "Encerrado" : "Pendente"),
-          zIndex: confirmado || outro ? 10 : 13,
-          clickable: true,
-        });
-        m.addListener("click", () => {
-          setAlvoSelecionado(alvo);
-          setParadaSelecionada(null);
-        });
-        return m;
+    const grupos = agruparAlvosPorPonto(lista.filter(a => !(a.lat === 0 && a.lng === 0)));
+    const markers = grupos.map(g => {
+      const m = new google.maps.Marker({
+        position: { lat: g.representante.lat, lng: g.representante.lng },
+        map,
+        icon: criarIconeAlvo(g.situacaoEfetiva, false, g.qtd),
+        title:
+          (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Encerrado")) +
+          (g.qtd > 1 ? ` (${g.qtd} entregas)` : ""),
+        zIndex: g.situacaoEfetiva !== 0 ? 10 : 13,
+        clickable: true,
       });
+      m.addListener("click", () => {
+        setAlvoSelecionado(g.representante);
+        setItensAlvoSelecionado(g.itens);
+        setParadaSelecionada(null);
+      });
+      return m;
+    });
     alvosGlobaisMarkersRef.current = markers;
     return () => {
       markers.forEach(m => m.setMap(null));
@@ -606,7 +641,7 @@ export default function MapaLeafletV2({
       zoom={11}
       onLoad={onLoad}
       onUnmount={onUnmount}
-      onClick={() => { setParadaSelecionada(null); setAlvoSelecionado(null); onMapaVazioClick(); }}
+      onClick={() => { setParadaSelecionada(null); setAlvoSelecionado(null); setItensAlvoSelecionado([]); onMapaVazioClick(); }}
       onZoomChanged={() => { if (map) { const z = map.getZoom() ?? 11; setZoomLocal(z); onZoomChange?.(z); } }}
       options={{
         mapTypeId: satelite ? "hybrid" : "roadmap",
@@ -749,19 +784,21 @@ export default function MapaLeafletV2({
 
       {/* linha pontilhada gerenciada imperativamente via useEffect + routeLinesRef */}
 
-      {/* ── Pontos de entrega (só quando há veículo selecionado) ── */}
-      {cvSelecionado && alvos.map((alvo, i) => {
-        if (alvo.lat === 0 && alvo.lng === 0) return null;
-        const proximo = i === primeiroPendente;
+      {/* ── Pontos de entrega (só quando há veículo selecionado) — agrupados por ponto ── */}
+      {cvSelecionado && gruposAlvos.map(g => {
+        const proximo = g.chave === chaveProximoPendente;
         return (
           <Marker
-            key={alvo.codigo ?? `alvo-${i}`}
-            position={{ lat: alvo.lat, lng: alvo.lng }}
-            icon={criarIconeAlvo(alvo.situacao, proximo)}
-            title={alvo.nome || (alvo.feito ? "Entregue" : "Pendente")}
+            key={g.chave}
+            position={{ lat: g.representante.lat, lng: g.representante.lng }}
+            icon={criarIconeAlvo(g.situacaoEfetiva, proximo, g.qtd)}
+            title={
+              (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Encerrado")) +
+              (g.qtd > 1 ? ` (${g.qtd} entregas)` : "")
+            }
             zIndex={proximo ? 15 : 12}
             clickable={true}
-            onClick={() => { setAlvoSelecionado(alvo); setParadaSelecionada(null); }}
+            onClick={() => { setAlvoSelecionado(g.representante); setItensAlvoSelecionado(g.itens); setParadaSelecionada(null); }}
           />
         );
       })}
@@ -802,71 +839,100 @@ export default function MapaLeafletV2({
         </InfoWindow>
       )}
 
-      {/* ── Popup do ponto de entrega clicado ── */}
-      {alvoSelecionado && (
-        <InfoWindow
-          position={{ lat: alvoSelecionado.lat, lng: alvoSelecionado.lng }}
-          onCloseClick={() => setAlvoSelecionado(null)}
-          options={{ pixelOffset: new window.google.maps.Size(0, -14), disableAutoPan: true }}
-        >
-          <div style={{
-            fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-            background: "#111", color: "#e5e5e5",
-            padding: "10px 14px 10px 12px", minWidth: 180, maxWidth: 260, lineHeight: 1.5,
-            borderRadius: 6,
-          }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-              <span style={{
-                fontWeight: 700, fontSize: 13,
-                color: alvoSelecionado.situacao === 1 ? COR_ENTREGUE
-                  : alvoSelecionado.situacao !== 0 ? COR_OUTRO
-                  : COR_PENDENTE,
-              }}>
-                {alvoSelecionado.situacao === 1 ? "Entregue"
-                  : alvoSelecionado.situacao !== 0 ? `Encerrado (cod. ${alvoSelecionado.situacao})`
-                  : `Pendente #${alvoSelecionado.ordem + 1}`}
-              </span>
-              <button onClick={() => setAlvoSelecionado(null)}
-                style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 0 0 8px", lineHeight: 1 }}>×</button>
+      {/* ── Popup do ponto de entrega clicado (agrupa varias NFs do mesmo ponto) ── */}
+      {alvoSelecionado && (() => {
+        const itens = itensAlvoSelecionado.length > 0 ? itensAlvoSelecionado : [alvoSelecionado];
+        const agrupado = itens.length > 1;
+        const temPendente = itens.some(i => i.situacao === 0);
+        const temOutro = itens.some(i => i.situacao !== 0 && i.situacao !== 1);
+        const situacaoGrupo = temPendente ? 0 : temOutro ? 98 : 1;
+        const corGrupo = situacaoGrupo === 1 ? COR_ENTREGUE : situacaoGrupo === 0 ? COR_PENDENTE : COR_OUTRO;
+        const fechar = () => { setAlvoSelecionado(null); setItensAlvoSelecionado([]); };
+        return (
+          <InfoWindow
+            position={{ lat: alvoSelecionado.lat, lng: alvoSelecionado.lng }}
+            onCloseClick={fechar}
+            options={{ pixelOffset: new window.google.maps.Size(0, -14), disableAutoPan: true }}
+          >
+            <div style={{
+              fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+              background: "#111", color: "#e5e5e5",
+              padding: "10px 14px 10px 12px", minWidth: 180, maxWidth: 280, lineHeight: 1.5,
+              borderRadius: 6,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: corGrupo }}>
+                  {agrupado
+                    ? `${itens.length} entregas neste ponto`
+                    : situacaoGrupo === 1 ? "Entregue"
+                    : situacaoGrupo !== 0 ? `Encerrado (cod. ${alvoSelecionado.situacao})`
+                    : `Pendente #${alvoSelecionado.ordem + 1}`}
+                </span>
+                <button onClick={fechar}
+                  style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 0 0 8px", lineHeight: 1 }}>×</button>
+              </div>
+              {alvoSelecionado.nome && (
+                <div style={{ fontSize: 12, color: "#f3f4f6", fontWeight: 600, marginBottom: 4 }}>
+                  {alvoSelecionado.nome}
+                </div>
+              )}
+              {alvoSelecionado.rota && (
+                <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2 }}>
+                  Rota: {alvoSelecionado.rota}
+                </div>
+              )}
+              {agrupado ? (
+                <div style={{ maxHeight: 160, overflowY: "auto", marginTop: 4 }}>
+                  {itens.map((it, idx) => {
+                    const cor = it.situacao === 1 ? COR_ENTREGUE : it.situacao === 0 ? COR_PENDENTE : COR_OUTRO;
+                    return (
+                      <div key={it.codigo ?? idx} style={{
+                        display: "flex", alignItems: "center", gap: 6,
+                        fontSize: 10, color: "#d1d5db", padding: "2px 0",
+                        borderTop: idx > 0 ? "1px solid #262626" : "none",
+                      }}>
+                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: cor, flexShrink: 0 }} />
+                        <span>{it.documento ?? "sem NF"}</span>
+                        {it.placa && it.placa !== alvoSelecionado.placa && (
+                          <span style={{ color: "#6b7280" }}>· {it.placa}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <>
+                  {alvoSelecionado.placa && (
+                    <div style={{ fontSize: 10, color: "#9ca3af", letterSpacing: ".07em", marginBottom: 4 }}>
+                      {alvoSelecionado.placa}
+                    </div>
+                  )}
+                  {alvoSelecionado.documento && (
+                    <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2 }}>
+                      Doc: {alvoSelecionado.documento}
+                    </div>
+                  )}
+                </>
+              )}
+              {alvoSelecionado.dataRealizado && (
+                <div style={{ fontSize: 10, color: situacaoGrupo === 1 ? COR_ENTREGUE : COR_OUTRO, marginTop: 4 }}>
+                  {situacaoGrupo === 1 ? "Feito" : "Encerrado"}: {formatarHoraParada(alvoSelecionado.dataRealizado)}
+                </div>
+              )}
+              {alvoSelecionado.dataInicio && !alvoSelecionado.feito && (
+                <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
+                  Previsto: {formatarHoraParada(alvoSelecionado.dataInicio)}
+                </div>
+              )}
+              {alvoSelecionado.observacoes && (
+                <div style={{ fontSize: 10, color: "#d1d5db", marginTop: 4, fontStyle: "italic" }}>
+                  {alvoSelecionado.observacoes}
+                </div>
+              )}
             </div>
-            {alvoSelecionado.placa && (
-              <div style={{ fontSize: 10, color: "#9ca3af", letterSpacing: ".07em", marginBottom: 4 }}>
-                {alvoSelecionado.placa}
-              </div>
-            )}
-            {alvoSelecionado.nome && (
-              <div style={{ fontSize: 12, color: "#f3f4f6", fontWeight: 600, marginBottom: 4 }}>
-                {alvoSelecionado.nome}
-              </div>
-            )}
-            {alvoSelecionado.rota && (
-              <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2 }}>
-                Rota: {alvoSelecionado.rota}
-              </div>
-            )}
-            {alvoSelecionado.documento && (
-              <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2 }}>
-                Doc: {alvoSelecionado.documento}
-              </div>
-            )}
-            {alvoSelecionado.dataRealizado && (
-              <div style={{ fontSize: 10, color: alvoSelecionado.situacao === 1 ? COR_ENTREGUE : COR_OUTRO, marginTop: 4 }}>
-                {alvoSelecionado.situacao === 1 ? "Feito" : "Encerrado"}: {formatarHoraParada(alvoSelecionado.dataRealizado)}
-              </div>
-            )}
-            {alvoSelecionado.dataInicio && !alvoSelecionado.feito && (
-              <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
-                Previsto: {formatarHoraParada(alvoSelecionado.dataInicio)}
-              </div>
-            )}
-            {alvoSelecionado.observacoes && (
-              <div style={{ fontSize: 10, color: "#d1d5db", marginTop: 4, fontStyle: "italic" }}>
-                {alvoSelecionado.observacoes}
-              </div>
-            )}
-          </div>
-        </InfoWindow>
-      )}
+          </InfoWindow>
+        );
+      })()}
 
       {/* ── Ring de alerta crítico ao redor de veículos em nível vermelho ── */}
       {veiculosComPos

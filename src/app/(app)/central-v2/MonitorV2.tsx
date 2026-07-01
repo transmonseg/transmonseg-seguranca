@@ -134,6 +134,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Track/stops/alvos
   const [rastro, setRastro] = useState<[number, number][]>([]);
   const [paradas, setParadas] = useState<Parada[]>([]);
+  // Linha do tempo de eventos nativos da Unitrac (tipevnome) do veiculo selecionado
+  const [eventos, setEventos] = useState<{ tipo: string; ts: string }[]>([]);
   const [alvos, setAlvos] = useState<PontoEntrega[]>([]);
   const [alvosGlobais, setAlvosGlobais] = useState<PontoEntrega[]>([]);
   // Pontos de entrega de TODA a frota — exibidos quando nenhum veículo está selecionado
@@ -482,10 +484,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
     setCarregando(true);
     try {
-      const [rRes, sRes, aRes] = await Promise.all([
+      const [rRes, sRes, aRes, eRes] = await Promise.all([
         fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal }),
         fetch(`/api/stops?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal }),
         fetch(`/api/alvos?cv=${encodeURIComponent(cv)}`, { signal }),
+        fetch(`/api/eventos?clienteId=${encodeURIComponent(clienteAtivoId)}&cv=${encodeURIComponent(cv)}`, { signal }),
       ]);
       if (rRes.ok) {
         const rd: { pontos?: { lat: number; lng: number }[] } = await rRes.json();
@@ -512,11 +515,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         if (signal.aborted) return;
         setAlvos(ad.pontos ?? []);
       }
+      if (signal.aborted) return;
+      if (eRes.ok) {
+        const ed: { eventos?: { tipo: string; ts: string }[] } = await eRes.json();
+        if (signal.aborted) return;
+        setEventos(ed.eventos ?? []);
+      }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
     }
     setCarregando(false);
-  }, []);
+  }, [clienteAtivoId]);
 
   // ── Vehicle selection ────────────────────────────────────────────────
   const selecionarVeiculo = useCallback((cv: string, coords?: { lat: number; lng: number }) => {
@@ -536,6 +545,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setRastro([]);
     setParadas([]);
     setAlvos([]);
+    setEventos([]);
     setEtaProxima(null);
     setCmdSirene("idle");
     setCmdBloqueio("idle");
@@ -556,6 +566,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setRastro([]);
     setParadas([]);
     setAlvos([]);
+    setEventos([]);
     setSeguir(false);
     setMostrarRastro(false);
     setMostrarParadas(false);
@@ -1581,6 +1592,28 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 <a href={fallbackUrl} target="_blank" rel="noreferrer" style={{ color: T.accent }}>
                   Abrir portal Unitrac
                 </a>
+              </div>
+            )}
+
+            {/* Linha do tempo de eventos nativos (tipevnome) — so aparece quando ha algo notavel registrado */}
+            {cvSelecionado && eventos.length > 0 && (
+              <div style={{ padding: "6px 14px 10px", borderTop: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginBottom: 5 }}>
+                  ÚLTIMOS EVENTOS
+                </div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {eventos.slice(0, 6).map((ev, i) => (
+                    <span key={i} style={{
+                      display: "inline-flex", alignItems: "center", gap: 5,
+                      padding: "3px 8px", borderRadius: 5,
+                      border: `1px solid ${T.border}`, background: `${T.card}66`,
+                      fontSize: 10, color: T.muted, fontFamily: FONT_SANS,
+                    }}>
+                      <span style={{ fontWeight: 600, color: T.text }}>{ev.tipo}</span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.dim }}>{tempoAtras(ev.ts)}</span>
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
           </div>

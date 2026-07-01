@@ -31,6 +31,7 @@ function posicaoBase(overrides: Partial<PosicaoNormalizada> = {}): PosicaoNormal
     bau: false,
     datagps: "2026-06-22T10:00:00Z",
     fresco: true,
+    evento: null,
     ...overrides,
   };
 }

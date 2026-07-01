@@ -262,12 +262,12 @@ export async function POST(request: Request) {
     }
 
     // Mapear cv -> { veiculo_id, cliente_id, placa }
-    const mapaCv = new Map<string, { veiculo_id: string; cliente_id: string }>();
+    const mapaCv = new Map<string, { veiculo_id: string; cliente_id: string; grupo: string | null }>();
 
     for (const cliente of clientes) {
       const { data: veiculos, error: erroVeiculos } = await supabase
         .from("veiculos")
-        .select("id, cv")
+        .select("id, cv, grupo")
         .eq("cliente_id", cliente.id)
         .eq("ativo", true);
 
@@ -279,9 +279,15 @@ export async function POST(request: Request) {
       }
 
       for (const v of veiculos ?? []) {
-        mapaCv.set(v.cv, { veiculo_id: v.id, cliente_id: cliente.id });
+        mapaCv.set(v.cv, { veiculo_id: v.id, cliente_id: cliente.id, grupo: v.grupo ?? null });
       }
     }
+
+    // Grupos de frota confirmados (varredura na API, 30/06/2026) que NUNCA reportam
+    // posicao GPS — sao equipamento de armazem (paleteiras), nao veiculo rastreado.
+    // Excluir da chamada de posicoes economiza payload sem perder nada (a Unitrac
+    // nunca retorna esses CVs de qualquer forma).
+    const GRUPOS_SEM_GPS = new Set(["PALETEIRAS"]);
 
     // 3a. Carregar bases de cada cliente (polígonos do perímetro real).
     // Estrutura: cliente_id -> lista de { nome, geom (GeoJSON) }
@@ -320,11 +326,11 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, fora_corredor");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, fora_corredor, ultimo_evento");
 
     const mapaPosAtual = new Map<
       string,
-      { lat: number | null; lng: number | null; velocidade: number | null; parado_desde: string | null; fora_corredor: boolean }
+      { lat: number | null; lng: number | null; velocidade: number | null; parado_desde: string | null; fora_corredor: boolean; ultimo_evento: string | null }
     >();
 
     for (const row of posatuaisRows ?? []) {
@@ -334,8 +340,15 @@ export async function POST(request: Request) {
         velocidade: row.velocidade,
         parado_desde: row.parado_desde,
         fora_corredor: row.fora_corredor ?? false,
+        ultimo_evento: row.ultimo_evento ?? null,
       });
     }
+
+    // Eventos nativos "rotineiros" da Unitrac — nao viram linha na tabela `eventos`
+    // (senao toda transmissao periodica de 220+ veiculos vira log, sem sinal nenhum).
+    const EVENTOS_ROTINEIROS = new Set(["TRANSMISSÃO TEMPORIZADA"]);
+    // Acumula eventos NOTAVEIS (mudaram de estado) pra inserir em lote no fim do ciclo.
+    const eventosNovos: { veiculo_id: string; tipo: string; payload: Record<string, unknown>; ts: string }[] = [];
 
     // 4. Buscar posicoes de TODOS os CVs de uma vez por cliente
     let totalProcessados = 0;
@@ -395,9 +408,6 @@ export async function POST(request: Request) {
     const OSRM_MAX_POR_CICLO = 5;
 
     for (const cliente of clientes) {
-      // Benassi: cliente cod_user_unitrac "4586" tem detector de parada no cliente.
-      const ehBenassi = cliente.cod_user_unitrac === "4586";
-
       // Obter CVs deste cliente
       const cvsCliente = [...mapaCv.entries()]
         .filter(([, v]) => v.cliente_id === cliente.id)
@@ -405,10 +415,15 @@ export async function POST(request: Request) {
 
       if (cvsCliente.length === 0) continue;
 
+      // Posicoes: exclui grupos que nunca reportam GPS (ver GRUPOS_SEM_GPS acima).
+      const cvsParaPosicoes = [...mapaCv.entries()]
+        .filter(([, v]) => v.cliente_id === cliente.id && !(v.grupo && GRUPOS_SEM_GPS.has(v.grupo)))
+        .map(([cv]) => cv);
+
       // 4a. Buscar posicoes do cliente
       let posicoesRaw: unknown[];
       try {
-        posicoesRaw = await buscarPosicoesComTimeout(cvsCliente);
+        posicoesRaw = await buscarPosicoesComTimeout(cvsParaPosicoes);
       } catch (err) {
         const isTimeout = err instanceof Error && err.name === "AbortError";
         const msg = isTimeout
@@ -494,6 +509,17 @@ export async function POST(request: Request) {
 
           // Posição anterior (para parado_desde e para o afastamento do desvio)
           const anterior = mapaPosAtual.get(veiculo_id);
+
+          // Linha do tempo de eventos nativos: so grava quando o tipevnome MUDOU
+          // pra algo notavel (nao "TRANSMISSÃO TEMPORIZADA", a transmissao de rotina).
+          if (pos.evento && !EVENTOS_ROTINEIROS.has(pos.evento) && pos.evento !== anterior?.ultimo_evento) {
+            eventosNovos.push({
+              veiculo_id,
+              tipo: pos.evento,
+              payload: { placa: pos.placa, velocidade: pos.velocidade, ignicao: pos.ignicao },
+              ts: parseDatagps(pos.datagps) ?? new Date().toISOString(),
+            });
+          }
 
           // Calcular parado_desde
           let parado_desde: string | null = null;
@@ -822,13 +848,14 @@ export async function POST(request: Request) {
               `INSERT INTO posicoes_atuais
                 (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
                  panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
-                 entregas_feitas, entregas_total, local, fora_corredor, rumo)
+                 entregas_feitas, entregas_total, local, fora_corredor, rumo,
+                 ultimo_evento, ultimo_evento_em)
                VALUES
                 ($1, $2, $3,
                  ST_SetSRID(ST_MakePoint($4, $2), 4326)::geography,
                  $5, $6, $7, $8, $9, $10, $11,
                  $12::timestamptz, $13::timestamptz, $14::timestamptz,
-                 $15, $16, $17, $18, $19)
+                 $15, $16, $17, $18, $19, $20, $14::timestamptz)
                ON CONFLICT (veiculo_id) DO UPDATE SET
                  lat              = EXCLUDED.lat,
                  lng              = EXCLUDED.lng,
@@ -847,7 +874,10 @@ export async function POST(request: Request) {
                  entregas_total   = EXCLUDED.entregas_total,
                  local            = COALESCE(EXCLUDED.local, posicoes_atuais.local),
                  fora_corredor    = EXCLUDED.fora_corredor,
-                 rumo             = EXCLUDED.rumo`,
+                 rumo             = EXCLUDED.rumo,
+                 ultimo_evento    = EXCLUDED.ultimo_evento,
+                 ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
+                                      THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END`,
               [
                 veiculo_id,
                 pos.lat,
@@ -868,6 +898,7 @@ export async function POST(request: Request) {
                 localVeiculo,
                 foraCorretor,
                 rumoMovimento !== null ? Math.round(rumoMovimento) : null,
+                pos.evento,
               ]
             );
           } finally {
@@ -997,6 +1028,16 @@ export async function POST(request: Request) {
         erros.push(msg);
       } finally {
         pgRotasUp.release();
+      }
+    }
+
+    // Linha do tempo: grava em lote os eventos nativos notaveis detectados neste ciclo.
+    if (eventosNovos.length > 0) {
+      const { error: erroEventos } = await supabase.from("eventos").insert(eventosNovos);
+      if (erroEventos) {
+        const msg = `Aviso: erro ao salvar eventos: ${erroEventos.message}`;
+        console.warn(msg);
+        erros.push(msg);
       }
     }
 

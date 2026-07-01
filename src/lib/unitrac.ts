@@ -16,6 +16,7 @@ export type PosicaoNormalizada = {
   bau: boolean;
   datagps: string;
   fresco: boolean;
+  evento: string | null; // tipevnome bruto da Unitrac (ex.: "IGNIÇÃO LIGADA", "BAÚ TRAVADO", "TRANSMISSÃO TEMPORIZADA")
 };
 
 // Retorna lista de veículos de um codUser Unitrac.
@@ -56,6 +57,7 @@ export type AlvoUnitrac = {
   placa: string;
   alvosituacaoservico: number; // 0=pendente, 1=feito, 98=outro (visto em producao, significado exato nao confirmado)
   alvocodigo?: number; // id estavel da entrega, unico por linha (NF)
+  pontocodigo?: number; // id estavel do PONTO/endereco — varias linhas (NFs) podem compartilhar o mesmo pontocodigo
   pontolatitude?: number;
   pontolongitude?: number;
   pontoraio?: number; // raio do ponto em metros (ex.: 50)
@@ -86,6 +88,7 @@ export type PontoEntrega = {
   feito: boolean; // true quando situacao !== 0 (encerrado, seja confirmado ou nao)
   situacao: number; // codigo bruto da Unitrac: 0=pendente, 1=feito, 98=outro (significado exato nao confirmado com a Unitrac)
   codigo: number | null; // alvocodigo da Unitrac — id estavel pra usar como key de lista
+  pontoCodigo: number | null; // pontocodigo da Unitrac — varios alvos (NFs) podem compartilhar o mesmo ponto/endereco
   documento: string | null;
   identificador: string | null;
   dataInicio: string | null;
@@ -149,6 +152,7 @@ export function agruparPontosPorPlaca(alvos: AlvoUnitrac[]): Map<string, PontoEn
       feito: a.alvosituacaoservico !== 0,
       situacao: Number(a.alvosituacaoservico) || 0,
       codigo: typeof a.alvocodigo === "number" ? a.alvocodigo : null,
+      pontoCodigo: typeof a.pontocodigo === "number" ? a.pontocodigo : null,
       placa: a.placa,
       documento: a.alvodocumento ? String(a.alvodocumento) : null,
       identificador: a.pontoidentificador ? String(a.pontoidentificador) : null,
@@ -350,5 +354,6 @@ export function normalizar(p: Record<string, any>): PosicaoNormalizada {
     bau: p.bauForaPonto === "1",
     datagps: p.datagps as string,
     fresco: atraso < 60,
+    evento: typeof p.tipevnome === "string" && p.tipevnome.trim() ? p.tipevnome.trim() : null,
   };
 }
