@@ -160,6 +160,12 @@ function dotSvg(fill: string, stroke: string): string {
 const DOT_RASTRO = dotSvg("#00e5ff", "#000");
 const DOT_START  = dotSvg("#22c55e", "#064e1a");
 
+// Cores de status de entrega — pedido do cliente: pendente bem visível (azul escuro forte),
+// entregue bem visível (verde forte). Não existe estado "cancelado" nos dados da API hoje
+// (alvosituacaoservico só tem 0=pendente, 1=feito).
+const COR_PENDENTE = "#1d4ed8";
+const COR_ENTREGUE = "#16a34a";
+
 function formatarDuracaoParada(min: number): string {
   if (min < 60) return `${min}min`;
   const h = Math.floor(min / 60);
@@ -279,27 +285,27 @@ function criarIconeAlvo(feito: boolean, proximo: boolean): google.maps.Icon {
   let size: number;
 
   if (feito) {
-    // Feito: círculo médio cinza-claro com checkmark interno
+    // Feito: círculo verde forte com checkmark interno
     size = 18;
     const half = size / 2;
     svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="7.5" fill="#9ca3af" stroke="white" stroke-width="1.5" opacity="0.85"/>
-      <polyline points="5.5,9 8,11.5 12.5,6.5" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+      <circle cx="${half}" cy="${half}" r="7.5" fill="${COR_ENTREGUE}" stroke="white" stroke-width="1.5"/>
+      <polyline points="5.5,9 8,11.5 12.5,6.5" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
     </svg>`;
   } else if (proximo) {
-    // Próximo: anel externo + ponto central azul para destacar no mapa
+    // Próximo: anel externo + ponto central azul escuro forte para destacar no mapa
     size = 28;
     const half = size / 2;
     svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="13" fill="#3b82f6" fill-opacity="0.18" stroke="#3b82f6" stroke-width="1.5"/>
-      <circle cx="${half}" cy="${half}" r="7" fill="#3b82f6" stroke="white" stroke-width="2"/>
+      <circle cx="${half}" cy="${half}" r="13" fill="${COR_PENDENTE}" fill-opacity="0.22" stroke="${COR_PENDENTE}" stroke-width="1.5"/>
+      <circle cx="${half}" cy="${half}" r="7" fill="${COR_PENDENTE}" stroke="white" stroke-width="2"/>
     </svg>`;
   } else {
-    // Pendente normal: círculo azul
+    // Pendente normal: círculo azul escuro forte
     size = 18;
     const half = size / 2;
     svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${half}" cy="${half}" r="7.5" fill="#60a5fa" stroke="white" stroke-width="1.5"/>
+      <circle cx="${half}" cy="${half}" r="7.5" fill="${COR_PENDENTE}" stroke="white" stroke-width="1.5"/>
     </svg>`;
   }
 
@@ -514,8 +520,8 @@ export default function MapaLeafletV2({
         const size = feito ? 16 : 16;
         const half = size / 2;
         const svg = feito
-          ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="#9ca3af" stroke="white" stroke-width="1.5" opacity="0.85"/><polyline points="4.5,8 7,10.5 11.5,5.5" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/></svg>`
-          : `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="#60a5fa" stroke="white" stroke-width="1.5"/></svg>`;
+          ? `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_ENTREGUE}" stroke="white" stroke-width="1.5"/><polyline points="4.5,8 7,10.5 11.5,5.5" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/></svg>`
+          : `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><circle cx="${half}" cy="${half}" r="6.5" fill="${COR_PENDENTE}" stroke="white" stroke-width="1.5"/></svg>`;
         const m = new google.maps.Marker({
           position: { lat: alvo.lat, lng: alvo.lng },
           map,
@@ -793,7 +799,7 @@ export default function MapaLeafletV2({
             borderRadius: 6,
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-              <span style={{ fontWeight: 700, fontSize: 13, color: alvoSelecionado.feito ? "#22c55e" : "#f97316" }}>
+              <span style={{ fontWeight: 700, fontSize: 13, color: alvoSelecionado.feito ? COR_ENTREGUE : COR_PENDENTE }}>
                 {alvoSelecionado.feito ? "Entregue" : `Pendente #${alvoSelecionado.ordem + 1}`}
               </span>
               <button onClick={() => setAlvoSelecionado(null)}
@@ -820,7 +826,7 @@ export default function MapaLeafletV2({
               </div>
             )}
             {alvoSelecionado.dataRealizado && (
-              <div style={{ fontSize: 10, color: "#22c55e", marginTop: 4 }}>
+              <div style={{ fontSize: 10, color: COR_ENTREGUE, marginTop: 4 }}>
                 Feito: {formatarHoraParada(alvoSelecionado.dataRealizado)}
               </div>
             )}
