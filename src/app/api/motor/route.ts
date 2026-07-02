@@ -46,6 +46,16 @@ const TIMEOUT_UNITRAC_MS = 20_000;
 const TEM_GOOGLE_GEOCODE = !!process.env.GOOGLE_MAPS_API_KEY;
 const LIMITE_GEOCODES_NOVOS = TEM_GOOGLE_GEOCODE ? 30 : 3;
 
+// ─── Cache em memória da frota por cliente (best-effort entre ciclos) ──────
+// A frota (quais veículos existem/estão ativos) muda raríssimo — não faz
+// sentido reler do banco toda vez que o motor roda (a cada 1 min, pra sempre).
+// Cache de módulo: sobrevive entre invocações enquanto a instância serverless
+// ficar "quente" (comum rodando a cada 1 min); se der cold start, só refaz a
+// consulta normalmente — sem risco de dado errado, só menos cache-hit.
+type VeiculoCache = { veiculos: { id: string; cv: string; grupo: string | null }[]; expiraEm: number };
+const CACHE_FROTA_MS = 3 * 60_000; // 3 min: renova rápido o bastante pra pegar veículo novo/desativado sem demora perceptível
+const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
+
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
   if (!raw) return null;
@@ -265,20 +275,29 @@ export async function POST(request: Request) {
     const mapaCv = new Map<string, { veiculo_id: string; cliente_id: string; grupo: string | null }>();
 
     for (const cliente of clientes) {
-      const { data: veiculos, error: erroVeiculos } = await supabase
-        .from("veiculos")
-        .select("id, cv, grupo")
-        .eq("cliente_id", cliente.id)
-        .eq("ativo", true);
+      const cache = cacheFrotaPorCliente.get(cliente.id);
+      let veiculos: { id: string; cv: string; grupo: string | null }[];
 
-      if (erroVeiculos) {
-        const msg = `Erro veiculos cliente ${cliente.id}: ${erroVeiculos.message}`;
-        console.error(msg);
-        erros.push(msg);
-        continue;
+      if (cache && cache.expiraEm > Date.now()) {
+        veiculos = cache.veiculos;
+      } else {
+        const { data, error: erroVeiculos } = await supabase
+          .from("veiculos")
+          .select("id, cv, grupo")
+          .eq("cliente_id", cliente.id)
+          .eq("ativo", true);
+
+        if (erroVeiculos) {
+          const msg = `Erro veiculos cliente ${cliente.id}: ${erroVeiculos.message}`;
+          console.error(msg);
+          erros.push(msg);
+          continue;
+        }
+        veiculos = data ?? [];
+        cacheFrotaPorCliente.set(cliente.id, { veiculos, expiraEm: Date.now() + CACHE_FROTA_MS });
       }
 
-      for (const v of veiculos ?? []) {
+      for (const v of veiculos) {
         mapaCv.set(v.cv, { veiculo_id: v.id, cliente_id: cliente.id, grupo: v.grupo ?? null });
       }
     }
