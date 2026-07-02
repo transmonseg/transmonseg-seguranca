@@ -25,26 +25,28 @@ export async function GET(request: Request) {
 
   const clienteId = clienteData.id;
 
-  const { data: veiculosRaw } = await supabase
-    .from("veiculos")
-    .select("id, cv, placa")
-    .eq("cliente_id", clienteId);
+  // Busca os alertas PRIMEIRO — só precisamos de veículo/posição dos que têm
+  // alerta ativo, não da frota inteira. Essa rota é pollada a cada 15s pelo
+  // painel; buscar todos os veículos (até centenas) e todas as posições a
+  // cada poll, quando só alguns têm alerta, foi o que estourou a cota de
+  // egress da Supabase em 11 dias (31GB). Mesmo dado, consulta muito menor.
+  const { data: alertasRaw } = await supabase
+    .from("alertas")
+    .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score")
+    .eq("cliente_id", clienteId)
+    .in("status", ["ativo", "reconhecido"]);
 
-  const veiculoIds = (veiculosRaw ?? []).map(
-    (v: { id: string }) => v.id
-  );
+  const veiculoIds = [...new Set((alertasRaw ?? []).map((a: { veiculo_id: string }) => a.veiculo_id))];
 
-  const [{ data: alertasRaw }, { data: posicoesRaw }] = await Promise.all([
-    supabase
-      .from("alertas")
-      .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score")
-      .eq("cliente_id", clienteId)
-      .in("status", ["ativo", "reconhecido"]),
-    supabase
-      .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local")
-      .in("veiculo_id", veiculoIds),
-  ]);
+  const [{ data: veiculosRaw }, { data: posicoesRaw }] = veiculoIds.length === 0
+    ? [{ data: [] }, { data: [] }]
+    : await Promise.all([
+        supabase.from("veiculos").select("id, cv, placa").in("id", veiculoIds),
+        supabase
+          .from("posicoes_atuais")
+          .select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local")
+          .in("veiculo_id", veiculoIds),
+      ]);
 
   const veiculoMap = new Map(
     (veiculosRaw ?? []).map(
