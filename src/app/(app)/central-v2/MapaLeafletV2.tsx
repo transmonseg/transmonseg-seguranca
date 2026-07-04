@@ -168,12 +168,13 @@ const DOT_START  = dotSvg("#22c55e", "#064e1a");
 // original, "= Pendente" na legenda deles) pra nao colidir com o azul do veiculo
 // parado/motor ligado. Entregue em verde forte. A Unitrac tem um 3º código
 // (alvosituacaoservico=98, achado em varredura na API) que fecha a entrega sem
-// ser o "feito" padrão — tratamos como "outro" (cinza) até confirmar o significado
-// exato com o suporte Unitrac (o portal deles tem um estado "Cancelado" em preto
-// que pode ser esse mesmo caso).
+// ser o "feito" padrão — tratamos como "outro"/preto até confirmar o significado
+// exato com o suporte Unitrac. Preto (nao cinza) de proposito: o portal deles tem
+// um estado "Cancelado" em preto que pode ser esse mesmo caso, e cinza ja e a cor
+// do veiculo com motor desligado — usar cinza aqui duplicaria o significado.
 export const COR_PENDENTE = "#eab308";
 export const COR_ENTREGUE = "#16a34a";
-export const COR_OUTRO = "#9ca3af";
+export const COR_OUTRO = "#27272a";
 
 function formatarDuracaoParada(min: number): string {
   if (min < 60) return `${min}min`;
