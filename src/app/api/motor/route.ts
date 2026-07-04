@@ -30,6 +30,7 @@ import {
 } from "@/lib/osrm";
 import { buscarTiroteiosRJ } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
+import { manterSessaoViva } from "@/lib/unitrac-comandos";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -256,6 +257,11 @@ export async function POST(request: Request) {
 
   // Contador de geocodes novos consumidos neste ciclo
   const contadorGeocodesNovos = { valor: 0 };
+
+  // Keep-alive da sessao do portal Unitrac (sirene/bloqueio) — pinga pra
+  // evitar expirar por inatividade. Nao-critico: falha aqui nunca derruba o
+  // ciclo do motor, so significa que a sessao guardada esta morta/ausente.
+  manterSessaoViva().catch(() => {});
 
   try {
     // 2. Carregar clientes ativos + veiculos ativos
