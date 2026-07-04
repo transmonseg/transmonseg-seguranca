@@ -189,6 +189,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [camFavelas, setCamFavelas] = useState(true);
   const [camTiroteios, setCamTiroteios] = useState(true);
   const [camRouboCarga, setCamRouboCarga] = useState(true);
+  const [camTrafego, setCamTrafego] = useState(false);
 
   // Alerta ativo (último card clicado na sidebar)
   const [alertaAtivoId, setAlertaAtivoId] = useState<string | null>(null);
@@ -210,6 +211,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (localStorage.getItem("transmonseg-favelas") === "false") setCamFavelas(false);
     if (localStorage.getItem("transmonseg-tiroteios") === "false") setCamTiroteios(false);
     if (localStorage.getItem("transmonseg-roubo") === "false") setCamRouboCarga(false);
+    if (localStorage.getItem("transmonseg-trafego") === "true") setCamTrafego(true);
     const vistaS = localStorage.getItem("transmonseg-vista") as "tudo" | "critico" | "atencao" | null;
     if (vistaS) setVista(vistaS);
     const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
@@ -242,6 +244,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const setCamRouboCargaComPersistencia = useCallback((v: boolean) => {
     localStorage.setItem("transmonseg-roubo", String(v));
     setCamRouboCarga(v);
+  }, []);
+
+  const setCamTrafegoComPersistencia = useCallback((v: boolean) => {
+    localStorage.setItem("transmonseg-trafego", String(v));
+    setCamTrafego(v);
   }, []);
 
   const setVistaComPersistencia = useCallback((v: "tudo" | "critico" | "atencao") => {
@@ -875,6 +882,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             style={outlineBtn(satelite, T.accent)}>
             SAT
           </button>
+          <button onClick={() => setCamTrafegoComPersistencia(!camTrafego)} title={camTrafego ? "Ocultar transito" : "Mostrar transito ao vivo"}
+            style={outlineBtn(camTrafego, T.accent)}>
+            TRÂNSITO
+          </button>
 
           {/* Settings gear */}
           <div style={{ position: "relative" }}>
@@ -1282,6 +1293,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             mapTokens={mapTokens}
             tema={tema}
             satelite={satelite}
+            trafego={camTrafego}
             onZoomChange={setZoomAtual}
             onEtaChange={setEtaProxima}
           />

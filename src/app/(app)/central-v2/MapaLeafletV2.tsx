@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, useJsApiLoader } from "@react-google-maps/api";
+import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, TrafficLayer, useJsApiLoader } from "@react-google-maps/api";
 import { type MapTokens } from "./tokens";
 
 export interface VeiculoMapa {
@@ -95,6 +95,7 @@ export interface Props {
   mapTokens: MapTokens;
   tema: "dark" | "light";
   satelite: boolean;
+  trafego?: boolean;
   onZoomChange?: (zoom: number) => void;
   onEtaChange?: (eta: number | null) => void;
 }
@@ -372,7 +373,7 @@ export default function MapaLeafletV2({
   rastro, paradas, alvos, alvosGlobais, bases, favelas, tiroteios, rouboCarga,
   seguir, gatilhoFrota, flyPara, zoomCmd,
   onVeiculoClick, onMapaVazioClick, onAlvoClick,
-  mapTokens, tema, satelite, onZoomChange, onEtaChange,
+  mapTokens, tema, satelite, trafego, onZoomChange, onEtaChange,
 }: Props) {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "",
@@ -651,6 +652,9 @@ export default function MapaLeafletV2({
         styles: (!satelite && tema === "dark") ? DARK_STYLES : [],
       }}
     >
+      {/* ── Tráfego ao vivo (nativo do Google Maps) ── */}
+      {trafego && <TrafficLayer />}
+
       {/* ── Roubo de carga (coroplético por município) ── */}
       {rouboCarga?.features.flatMap((f, fi) => {
         if (!f.geometry) return [];
