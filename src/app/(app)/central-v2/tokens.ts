@@ -11,6 +11,7 @@ export interface MapTokens {
   red: string;
   yellow: string;
   green: string;
+  parado: string; // motor ligado, parado (nao e alerta) — precisa ser forte, distinto do dim (desligado)
   dim: string;
   tileUrl: string;
   tileSubdomains: string;
@@ -29,6 +30,7 @@ export const DARK_TOKENS: MapTokens = {
   red:            "#ef4444",
   yellow:         "#f59e0b",
   green:          "#22c55e",
+  parado:         "#2563eb",
   dim:            "#57534e",
   tileUrl:        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
   tileSubdomains: "abcd",
@@ -44,6 +46,7 @@ export const LIGHT_TOKENS: MapTokens = {
   red:            "#dc2626",
   yellow:         "#d97706",
   green:          "#16a34a",
+  parado:         "#2563eb",
   dim:            "#9ca3af",
   tileUrl:        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
   tileSubdomains: "abcd",

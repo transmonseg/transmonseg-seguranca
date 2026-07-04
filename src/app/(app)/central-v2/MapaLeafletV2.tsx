@@ -125,7 +125,7 @@ function corVeiculo(v: VeiculoMapa, tok: MapTokens): string {
   if (v.nivel === "vermelho" || (v.tipo !== null && v.tipo !== "")) return tok.red;
   if (v.nivel === "amarelo") return tok.yellow;
   if (v.ignicao && v.velocidade > 0) return tok.green;
-  if (v.ignicao && v.velocidade === 0) return tok.accent;
+  if (v.ignicao && v.velocidade === 0) return tok.parado;
   return tok.dim;
 }
 

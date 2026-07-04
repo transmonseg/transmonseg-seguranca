@@ -190,6 +190,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [camTiroteios, setCamTiroteios] = useState(true);
   const [camRouboCarga, setCamRouboCarga] = useState(true);
   const [camTrafego, setCamTrafego] = useState(false);
+  const [legendaAberta, setLegendaAberta] = useState(false);
 
   // Alerta ativo (último card clicado na sidebar)
   const [alertaAtivoId, setAlertaAtivoId] = useState<string | null>(null);
@@ -212,6 +213,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (localStorage.getItem("transmonseg-tiroteios") === "false") setCamTiroteios(false);
     if (localStorage.getItem("transmonseg-roubo") === "false") setCamRouboCarga(false);
     if (localStorage.getItem("transmonseg-trafego") === "true") setCamTrafego(true);
+    if (localStorage.getItem("transmonseg-legenda") === "true") setLegendaAberta(true);
     const vistaS = localStorage.getItem("transmonseg-vista") as "tudo" | "critico" | "atencao" | null;
     if (vistaS) setVista(vistaS);
     const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
@@ -249,6 +251,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const setCamTrafegoComPersistencia = useCallback((v: boolean) => {
     localStorage.setItem("transmonseg-trafego", String(v));
     setCamTrafego(v);
+  }, []);
+
+  const toggleLegenda = useCallback(() => {
+    setLegendaAberta(v => {
+      const next = !v;
+      localStorage.setItem("transmonseg-legenda", String(next));
+      return next;
+    });
   }, []);
 
   const setVistaComPersistencia = useCallback((v: "tudo" | "critico" | "atencao") => {
@@ -1313,6 +1323,67 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             <span style={{ fontWeight: 700 }}>{vmFiltrado.length}</span>
             <span style={{ color: T.dim }}> veículos</span>
             {filtroComm != null && <span style={{ color: T.accent }}> &lt;{filtroComm}min</span>}
+          </div>
+
+          {/* Legenda dos símbolos do mapa — recolhida por padrão */}
+          <div style={{
+            position: "absolute",
+            bottom: cvSelecionado ? 224 : 12,
+            right: 12, zIndex: Z.badge,
+            transition: "bottom .25s cubic-bezier(.4,0,.2,1)",
+            display: "flex", flexDirection: "column-reverse", alignItems: "flex-end", gap: 6,
+          }}>
+            <button onClick={toggleLegenda} style={{
+              ...BASE_BTN,
+              background: tema === "dark" ? "rgba(0,0,0,0.68)" : "rgba(255,255,255,0.88)",
+              backdropFilter: "blur(6px)",
+              border: `1px solid ${T.border}`, borderRadius: 8,
+              padding: "5px 11px", fontSize: 11, color: T.muted,
+              letterSpacing: ".03em", gap: 5,
+            }}>
+              <span style={{ fontSize: 12 }}>{legendaAberta ? "▾" : "▴"}</span>
+              Legenda
+            </button>
+
+            {legendaAberta && (
+              <div style={{
+                background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.94)",
+                backdropFilter: "blur(6px)",
+                border: `1px solid ${T.border}`, borderRadius: 10,
+                padding: "10px 13px", minWidth: 190,
+                fontFamily: FONT_SANS,
+              }}>
+                <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", fontWeight: 700, marginBottom: 6 }}>
+                  VEÍCULO
+                </div>
+                {[
+                  { cor: T.red, label: "Alerta crítico" },
+                  { cor: T.yellow, label: "Alerta atenção" },
+                  { cor: T.green, label: "Em movimento" },
+                  { cor: mapTokens.parado, label: "Parado, motor ligado" },
+                  { cor: T.dim, label: "Motor desligado" },
+                ].map(({ cor, label }) => (
+                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
+                    <span style={{ fontSize: 11, color: T.text }}>{label}</span>
+                  </div>
+                ))}
+
+                <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", fontWeight: 700, margin: "8px 0 6px", borderTop: `1px solid ${T.border}`, paddingTop: 8 }}>
+                  PONTO DE ENTREGA
+                </div>
+                {[
+                  { cor: "#1d4ed8", label: "Pendente" },
+                  { cor: "#16a34a", label: "Entregue" },
+                  { cor: "#9ca3af", label: "Encerrado (outro)" },
+                ].map(({ cor, label }) => (
+                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
+                    <span style={{ fontSize: 11, color: T.text }}>{label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Toast notifications */}
