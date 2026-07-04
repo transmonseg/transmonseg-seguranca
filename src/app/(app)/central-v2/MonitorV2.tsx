@@ -715,6 +715,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Ordena só por prioridade — seleção não move o card, só brilha no lugar
   const alertasOrdenados = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
 
+  // Desvios de rota — faixa dedicada no topo do mapa, sempre visivel independente
+  // dos filtros da sidebar (vista/tipo). Ordenado do mais recente pro mais antigo.
+  const desviosAtivos = alertas
+    .filter(a => a.tipo === "desvio")
+    .filter(a => {
+      if (gruposOcultos.size === 0) return true;
+      const g = cvParaGrupo.get(a.cv);
+      return g === undefined || !gruposOcultos.has(g);
+    })
+    .sort((a, b) => new Date(b.desde).getTime() - new Date(a.desde).getTime());
+
   const veiculosBusca = busca.length >= 2
     ? veiculosBase.filter(v => v.placa.toLowerCase().includes(busca.toLowerCase())).slice(0, 8)
     : [];
@@ -1307,6 +1318,50 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             onZoomChange={setZoomAtual}
             onEtaChange={setEtaProxima}
           />
+
+          {/* Faixa de desvios de rota — topo central, clicavel, sempre visivel */}
+          {desviosAtivos.length > 0 && (
+            <div style={{
+              position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
+              zIndex: Z.toasts, display: "flex", gap: 6,
+              maxWidth: "calc(100% - 24px)", overflowX: "auto", padding: 2,
+            }}>
+              {desviosAtivos.map(a => {
+                const cor = a.nivel === "critico" ? T.red : T.yellow;
+                const ativo = alertaAtivoId === a.id;
+                return (
+                  <button key={a.id}
+                    onClick={() => {
+                      setAlertaAtivoId(a.id);
+                      selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
+                    }}
+                    style={{
+                      ...BASE_BTN, flexShrink: 0, gap: 8,
+                      padding: "7px 13px", borderRadius: 8,
+                      background: ativo
+                        ? (tema === "dark" ? `${cor}22` : `${cor}14`)
+                        : (tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)"),
+                      backdropFilter: "blur(6px)",
+                      border: `1px solid ${cor}55`, borderLeft: `3px solid ${cor}`,
+                      boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+                    }}
+                    title={`Desvio de rota — ${a.placa} — clique pra focar`}
+                  >
+                    <span className="animate-pulse-live" style={{ width: 7, height: 7, borderRadius: "50%", background: cor, flexShrink: 0 }} />
+                    <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 13, color: T.text, letterSpacing: ".04em" }}>
+                      {a.placa}
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: cor, letterSpacing: ".03em" }}>
+                      DESVIO DE ROTA
+                    </span>
+                    <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, fontFamily: FONT_MONO }}>
+                      {tempoAtras(a.desde)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Vehicle count badge */}
           <div style={{
