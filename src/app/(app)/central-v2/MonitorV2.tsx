@@ -7,6 +7,7 @@ import AlertaSonoro from "../components/AlertaSonoro";
 import { resolverAlerta, marcarFalsoPositivo, resolverVarios } from "../acoes-alertas";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
+import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
 
 const MapaLeafletV2 = dynamic(() => import("./MapaLeafletV2"), { ssr: false });
@@ -1428,9 +1429,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   PONTO DE ENTREGA
                 </div>
                 {[
-                  { cor: "#1d4ed8", label: "Pendente" },
-                  { cor: "#16a34a", label: "Entregue" },
-                  { cor: "#9ca3af", label: "Encerrado (outro)" },
+                  { cor: COR_PENDENTE, label: "Pendente" },
+                  { cor: COR_ENTREGUE, label: "Entregue" },
+                  { cor: COR_OUTRO, label: "Encerrado (outro)" },
                 ].map(({ cor, label }) => (
                   <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
                     <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
