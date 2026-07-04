@@ -164,16 +164,17 @@ function dotSvg(fill: string, stroke: string): string {
 const DOT_RASTRO = dotSvg("#00e5ff", "#000");
 const DOT_START  = dotSvg("#22c55e", "#064e1a");
 
-// Cores de status de entrega — pendente em amarelo forte (igual ao portal Unitrac
-// original, "= Pendente" na legenda deles) pra nao colidir com o azul do veiculo
-// parado/motor ligado. Entregue em verde forte. A Unitrac tem um 3º código
-// (alvosituacaoservico=98, achado em varredura na API) que fecha a entrega sem
-// ser o "feito" padrão — tratamos como "outro"/preto até confirmar o significado
-// exato com o suporte Unitrac. Preto (nao cinza) de proposito: o portal deles tem
-// um estado "Cancelado" em preto que pode ser esse mesmo caso, e cinza ja e a cor
-// do veiculo com motor desligado — usar cinza aqui duplicaria o significado.
+// Cores de status de entrega — nenhuma delas repete cor de veiculo (que ja usa
+// vermelho/amarelo/verde/azul/cinza pros seus 5 estados). Pendente em amarelo-ouro
+// (igual ao portal Unitrac original). Entregue em rosa/magenta forte — verde ficou
+// reservado pro veiculo "em movimento" (repetir gerava confusao entre os dois).
+// A Unitrac tem um 3º código (alvosituacaoservico=98, achado em varredura na API)
+// que fecha a entrega sem ser o "feito" padrão — tratamos como "outro"/preto até
+// confirmar o significado exato com o suporte Unitrac. Preto (nao cinza) de
+// proposito: o portal deles tem um estado "Cancelado" em preto que pode ser esse
+// mesmo caso, e cinza ja e a cor do veiculo com motor desligado.
 export const COR_PENDENTE = "#eab308";
-export const COR_ENTREGUE = "#16a34a";
+export const COR_ENTREGUE = "#ec4899";
 export const COR_OUTRO = "#27272a";
 
 function formatarDuracaoParada(min: number): string {
