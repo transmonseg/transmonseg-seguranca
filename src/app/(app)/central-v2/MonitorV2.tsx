@@ -155,6 +155,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [cmdSirene, setCmdSirene] = useState<"idle" | "loading" | "ok" | "fallback">("idle");
   const [cmdBloqueio, setCmdBloqueio] = useState<"idle" | "loading" | "ok" | "fallback">("idle");
   const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
+  // Alterna a cada acionamento bem-sucedido — o rele fisico do veiculo alterna
+  // (bloqueia/desbloqueia) a cada pulso do mesmo comando "bloqueio".
+  const [motorBloqueado, setMotorBloqueado] = useState(false);
 
   // Map controls
   const [seguir, setSeguir] = useState(false);
@@ -567,6 +570,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setEtaProxima(null);
     setCmdSirene("idle");
     setCmdBloqueio("idle");
+    setMotorBloqueado(false);
     setFallbackUrl(null);
     const vm = veiculosMapa.find(v => v.cv === cv);
     const pos = (vm?.lat && vm?.lng) ? { lat: vm.lat, lng: vm.lng } : coords;
@@ -591,6 +595,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setCarregando(false);
     setCmdSirene("idle");
     setCmdBloqueio("idle");
+    setMotorBloqueado(false);
     setFallbackUrl(null);
     setBusca("");
   }, []);
@@ -617,6 +622,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const resultado = await enviarComandoVeiculo(cvSelecionado, tipo);
     if (resultado.ok) {
       setter("ok");
+      if (tipo === "bloqueio") setMotorBloqueado(v => !v);
       setTimeout(() => setter("idle"), 3000);
     } else {
       setter("fallback");
@@ -1700,7 +1706,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   cmdSirene === "fallback" ? "Ver portal" : "Sirene"}
               </button>
 
-              {/* Bloquear motor */}
+              {/* Bloquear/desbloquear motor — alterna a cada acionamento */}
               <button
                 onClick={() => acionar("bloqueio")}
                 disabled={cmdBloqueio === "loading"}
@@ -1709,18 +1715,22 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   cursor: cmdBloqueio === "loading" ? "wait" : "pointer",
                   border: `1px solid ${
                     cmdBloqueio === "ok" ? T.green + "44" :
-                    cmdBloqueio === "fallback" ? T.yellow + "44" : T.red + "44"
+                    cmdBloqueio === "fallback" ? T.yellow + "44" :
+                    motorBloqueado ? T.green + "44" : T.red + "44"
                   }`,
                   background: cmdBloqueio === "ok" ? `${T.green}14` :
-                    cmdBloqueio === "fallback" ? `${T.yellow}14` : `${T.red}10`,
+                    cmdBloqueio === "fallback" ? `${T.yellow}14` :
+                    motorBloqueado ? `${T.green}10` : `${T.red}10`,
                   color: cmdBloqueio === "ok" ? T.green :
-                    cmdBloqueio === "fallback" ? T.yellow : T.red,
+                    cmdBloqueio === "fallback" ? T.yellow :
+                    motorBloqueado ? T.green : T.red,
                   fontSize: 12, fontWeight: 700, fontFamily: FONT_SANS,
                   transition: "all .15s",
                 }}>
-                {cmdBloqueio === "loading" ? "Bloqueando..." :
-                  cmdBloqueio === "ok" ? "Motor bloqueado" :
-                  cmdBloqueio === "fallback" ? "Ver portal" : "Bloquear motor"}
+                {cmdBloqueio === "loading" ? (motorBloqueado ? "Desbloqueando..." : "Bloqueando...") :
+                  cmdBloqueio === "ok" ? (motorBloqueado ? "Motor bloqueado" : "Motor desbloqueado") :
+                  cmdBloqueio === "fallback" ? "Ver portal" :
+                  motorBloqueado ? "Desbloquear motor" : "Bloquear motor"}
               </button>
             </div>
 
