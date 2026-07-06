@@ -1,6 +1,33 @@
 # Design: detecção de desvio sem rota planejada (v2)
 
-Data: 2026-07-06. Status: aprovado para implementação.
+Data: 2026-07-06. Status: implementado, corrigido para v3 após observação ao vivo.
+
+## Amendment v3 (mesmo dia, pós-implementação)
+
+Observando o sistema ao vivo na operação, o v2 falhou por dois motivos:
+
+1. **"Afastar de TODOS os destinos" é frágil demais.** Com várias entregas
+   pendentes espalhadas, quase sempre tem alguma pra qual o carro está
+   "chegando mais perto" por pura geometria de rua — mesmo estando desviado
+   de verdade. Isso reseta o streak com frequência e mascara o desvio real.
+2. **Piso de acumulado (1,5km/4 ciclos) para crítico é lento e alto demais.**
+   Um desvio de só 500m já pode ser um assalto em andamento; não dá pra
+   esperar acumular distância.
+
+**Correção (v3):** desvio = afastando-se do destino **mais próximo** (não de
+todos). Sem piso de distância acumulada — streak>=2 (~2min, o mínimo físico
+pra filtrar ruído de 1 leitura GPS) já dispara atenção. O **tapete histórico**
+deixa de ser só modulador e vira o sinal **primário** de precisão: calculado
+TODO ciclo (não mais só quando streak>=2) via um `Set<string>` cacheado em
+memória por cliente (`getTapeteCliente`, TTL 3min, busca única via `pool` sem
+o limite de linhas do PostgREST) — fora de via conhecida da frota = crítico
+direto no 2º ciclo. Isso também resolve o caso "passa reto sem parar porque
+não é hora de descarga": rua conhecida da frota não alarma mesmo sem parar no
+cliente; só alarma ao sair do que a frota realmente percorre.
+
+Ver `src/lib/detectores.ts` (`detectarDesvio`, `distanciaAumentou`) e
+`src/app/api/motor/route.ts` (bloco "Desvio v3") para a implementação atual.
+As seções abaixo descrevem o v2 original (contexto histórico da decisão).
 
 ## O problema
 
