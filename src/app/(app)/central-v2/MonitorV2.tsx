@@ -644,13 +644,33 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   }, [cvSelecionado]);
 
   // ── Alert actions ────────────────────────────────────────────────────
+  // Resolver/marcar falso positivo só tirava o card da sidebar — a cor do
+  // veiculo no mapa vem de posicoes_atuais.nivel, escrito só pelo motor
+  // (a cada 1min), então o marcador continuava vermelho até o próximo ciclo.
+  // Agora, se não sobrar OUTRO alerta ativo pro mesmo veículo, atualiza a
+  // cor na hora (otimista); se a condição real ainda existir, o motor
+  // recria o alerta no próximo ciclo e a cor volta — corretamente.
   const handleResolver = useCallback(async (id: string) => {
-    setAlertas(a => a.filter(x => x.id !== id));
+    setAlertas(a => {
+      const alvo = a.find(x => x.id === id);
+      const restante = a.filter(x => x.id !== id);
+      if (alvo && !restante.some(x => x.cv === alvo.cv)) {
+        setVeiculosMapa(vs => vs.map(v => v.cv === alvo.cv ? { ...v, nivel: null, tipo: null } : v));
+      }
+      return restante;
+    });
     await resolverAlerta(id);
   }, []);
 
   const handleFalso = useCallback(async (id: string) => {
-    setAlertas(a => a.filter(x => x.id !== id));
+    setAlertas(a => {
+      const alvo = a.find(x => x.id === id);
+      const restante = a.filter(x => x.id !== id);
+      if (alvo && !restante.some(x => x.cv === alvo.cv)) {
+        setVeiculosMapa(vs => vs.map(v => v.cv === alvo.cv ? { ...v, nivel: null, tipo: null } : v));
+      }
+      return restante;
+    });
     await marcarFalsoPositivo(id);
   }, []);
 
@@ -733,7 +753,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (alvos.length === 0) return;
     startResolver(async () => {
       const ids = new Set(alvos.map(a => a.id));
-      setAlertas(a => a.filter(x => !ids.has(x.id)));
+      const cvsResolvidos = new Set(alvos.map(a => a.cv));
+      setAlertas(a => {
+        const restante = a.filter(x => !ids.has(x.id));
+        const cvsAindaComAlerta = new Set(restante.map(x => x.cv));
+        setVeiculosMapa(vs => vs.map(v =>
+          cvsResolvidos.has(v.cv) && !cvsAindaComAlerta.has(v.cv) ? { ...v, nivel: null, tipo: null } : v
+        ));
+        return restante;
+      });
       await resolverVarios(alvos.map(a => a.id));
       setConfirmarResolver(false);
     });
