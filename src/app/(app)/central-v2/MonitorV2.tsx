@@ -182,6 +182,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Grupos de frota Unitrac (gvc/gvn) — ex.: "H LOG SERVIÇOS", "PALETEIRAS", "COZINHA"
   const [grupos, setGrupos] = useState<{ gvc: number; gvn: string; veiculos: { placa: string; cv: string }[] }[]>([]);
   const [gruposOcultos, setGruposOcultos] = useState<Set<number>>(new Set());
+  // Chips de grupo+tipo colapsados por padrão — clientes com muitos grupos/tipos
+  // (ex.: Benassi com 7 grupos + 8 tipos) enchiam a sidebar de pilulas antes
+  // mesmo de chegar na lista de alertas.
+  const [filtrosAbertos, setFiltrosAbertos] = useState(false);
 
   // "Ver apenas selecionados" — filtro manual por placa (Configurações), independente
   // dos grupos/tipos. modoSelecionados só entra em vigor quando o usuário confirma
@@ -295,9 +299,16 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     });
   }, []);
 
+  // Selecao vazia sempre desliga o filtro junto — evita o estado fantasma
+  // "FILTRO: 0 VEÍC." ativo sem nenhum veiculo escolhido (ex.: usuario clicou
+  // "Limpar" no seletor e fechou sem clicar "Mostrar todos").
   const salvarVeiculosSelecionados = useCallback((next: Set<string>) => {
     setVeiculosSelecionados(next);
     localStorage.setItem("transmonseg-veiculos-selecionados", JSON.stringify([...next]));
+    if (next.size === 0) {
+      localStorage.setItem("transmonseg-modo-selecionados", "false");
+      setModoSelecionados(false);
+    }
   }, []);
 
   const toggleVeiculoSelecionado = useCallback((cv: string) => {
@@ -305,6 +316,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       const next = new Set(prev);
       if (next.has(cv)) next.delete(cv); else next.add(cv);
       localStorage.setItem("transmonseg-veiculos-selecionados", JSON.stringify([...next]));
+      if (next.size === 0) {
+        localStorage.setItem("transmonseg-modo-selecionados", "false");
+        setModoSelecionados(false);
+      }
       return next;
     });
   }, []);
@@ -1176,8 +1191,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           </div>
 
-          {/* Filtro ativo de "ver apenas selecionados" — sempre visível pra não confundir o operador */}
-          {modoSelecionados && (
+          {/* Filtro ativo de "ver apenas selecionados" — sempre visível pra não confundir o operador.
+              Guarda size>0 pra nunca mostrar "FILTRO: 0 VEÍC." (estado fantasma). */}
+          {modoSelecionados && veiculosSelecionados.size > 0 && (
             <div style={{
               display: "flex", alignItems: "center", gap: 6, padding: "6px 8px",
               borderBottom: `1px solid ${T.border}`, flexShrink: 0,
@@ -1209,79 +1225,104 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             })}
           </div>
 
-          {/* Chips de grupo de frota (gvc/gvn) — clique oculta/mostra o grupo */}
-          {grupos.length > 1 && (
-            <div style={{
-              display: "flex", gap: 3, padding: "5px 6px",
-              flexWrap: "wrap", borderBottom: `1px solid ${T.border}`,
-              flexShrink: 0,
-            }}>
-              {grupos.map(g => {
-                const oculto = gruposOcultos.has(g.gvc);
-                return (
-                  <button key={g.gvc} onClick={() => toggleGrupoOculto(g.gvc)} title={oculto ? "Grupo oculto — clique pra mostrar" : "Clique pra ocultar este grupo"} style={{
-                    height: 22, padding: "0 7px", borderRadius: 5,
-                    border: `1px solid ${oculto ? T.border : T.accent}`,
-                    background: oculto ? "transparent" : `${T.accent}18`,
-                    color: oculto ? T.dim : T.accent,
-                    fontSize: 10, fontWeight: oculto ? 500 : 700,
-                    cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
-                    display: "flex", alignItems: "center", gap: 4,
-                    textDecoration: oculto ? "line-through" : "none",
-                  }}>
-                    <span>{g.gvn.trim()}</span>
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 9 }}>{g.veiculos.length}</span>
-                  </button>
-                );
-              })}
-              {gruposOcultos.size > 0 && (
-                <button onClick={() => { setGruposOcultos(new Set()); localStorage.removeItem("transmonseg-grupos-ocultos"); }} style={{
-                  height: 22, padding: "0 8px", borderRadius: 5,
-                  border: `1px solid ${T.border}`, background: "transparent",
-                  color: T.dim, fontSize: 11, cursor: "pointer",
-                }}>✕</button>
-              )}
-            </div>
-          )}
-
-          {/* Chips de tipo — multi-select, filtra sidebar + mapa */}
+          {/* Filtros de grupo de frota + tipo — colapsados por padrão, um único
+              cabeçalho compacto em vez de duas faixas de pílulas sempre abertas */}
           {(() => {
-            // Tipos disponíveis com base na vista (nível), mas SEM filtro de tipo para não sumir
             const tiposDisponiveis = [...new Set(alertas.filter(a => {
               if (vista === "critico" && a.nivel !== "critico") return false;
               return true;
             }).map(a => a.tipo))].sort((a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0));
-            if (tiposDisponiveis.length === 0) return null;
+            const temGrupos = grupos.length > 1;
+            const temTipos = tiposDisponiveis.length > 0;
+            if (!temGrupos && !temTipos) return null;
+            const filtrosAtivos = gruposOcultos.size + filtroTipos.size;
             return (
-              <div style={{
-                display: "flex", gap: 3, padding: "5px 6px",
-                flexWrap: "wrap", borderBottom: `1px solid ${T.border}`,
-                flexShrink: 0,
-              }}>
-                {tiposDisponiveis.map(tipo => {
-                  const ativo = filtroTipos.has(tipo);
-                  const count = alertas.filter(a => a.tipo === tipo).length;
-                  return (
-                    <button key={tipo} onClick={() => toggleFiltroTipo(tipo)} style={{
-                      height: 22, padding: "0 7px", borderRadius: 5,
-                      border: `1px solid ${ativo ? T.accent : T.border}`,
-                      background: ativo ? `${T.accent}22` : "transparent",
-                      color: ativo ? T.accent : T.muted,
-                      fontSize: 10, fontWeight: ativo ? 700 : 500,
-                      cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
-                      display: "flex", alignItems: "center", gap: 4,
+              <div style={{ borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+                <button onClick={() => setFiltrosAbertos(v => !v)} style={{
+                  display: "flex", alignItems: "center", gap: 6, width: "100%",
+                  padding: "6px 8px", background: "transparent", border: "none",
+                  cursor: "pointer", fontFamily: FONT_SANS,
+                }}>
+                  <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: ".06em" }}>
+                    FILTROS
+                  </span>
+                  {filtrosAtivos > 0 && (
+                    <span style={{
+                      fontSize: 9, fontFamily: FONT_MONO, color: T.accent,
+                      background: `${T.accent}18`, borderRadius: 4, padding: "1px 5px",
                     }}>
-                      <span>{NOME_TIPO[tipo] ?? tipo}</span>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: ativo ? T.accent : T.dim }}>{count}</span>
-                    </button>
-                  );
-                })}
-                {filtroTipos.size > 0 && (
-                  <button onClick={() => { setFiltroTipos(new Set()); localStorage.removeItem("transmonseg-filtro-tipos"); }} style={{
-                    height: 22, padding: "0 8px", borderRadius: 5,
-                    border: `1px solid ${T.border}`, background: "transparent",
-                    color: T.dim, fontSize: 11, cursor: "pointer",
-                  }}>✕</button>
+                      {filtrosAtivos}
+                    </span>
+                  )}
+                  <span style={{ marginLeft: "auto", fontSize: 9, color: T.dim }}>
+                    {filtrosAbertos ? "▾" : "▸"}
+                  </span>
+                </button>
+
+                {filtrosAbertos && (
+                  <div style={{ paddingBottom: 4 }}>
+                    {/* Chips de grupo de frota (gvc/gvn) — clique oculta/mostra o grupo */}
+                    {temGrupos && (
+                      <div style={{ display: "flex", gap: 3, padding: "2px 6px 5px", flexWrap: "wrap" }}>
+                        {grupos.map(g => {
+                          const oculto = gruposOcultos.has(g.gvc);
+                          return (
+                            <button key={g.gvc} onClick={() => toggleGrupoOculto(g.gvc)} title={oculto ? "Grupo oculto — clique pra mostrar" : "Clique pra ocultar este grupo"} style={{
+                              height: 22, padding: "0 7px", borderRadius: 5,
+                              border: `1px solid ${oculto ? T.border : T.accent}`,
+                              background: oculto ? "transparent" : `${T.accent}18`,
+                              color: oculto ? T.dim : T.accent,
+                              fontSize: 10, fontWeight: oculto ? 500 : 700,
+                              cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
+                              display: "flex", alignItems: "center", gap: 4,
+                              textDecoration: oculto ? "line-through" : "none",
+                            }}>
+                              <span>{g.gvn.trim()}</span>
+                              <span style={{ fontFamily: FONT_MONO, fontSize: 9 }}>{g.veiculos.length}</span>
+                            </button>
+                          );
+                        })}
+                        {gruposOcultos.size > 0 && (
+                          <button onClick={() => { setGruposOcultos(new Set()); localStorage.removeItem("transmonseg-grupos-ocultos"); }} style={{
+                            height: 22, padding: "0 8px", borderRadius: 5,
+                            border: `1px solid ${T.border}`, background: "transparent",
+                            color: T.dim, fontSize: 11, cursor: "pointer",
+                          }}>✕</button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Chips de tipo — multi-select, filtra sidebar + mapa */}
+                    {temTipos && (
+                      <div style={{ display: "flex", gap: 3, padding: "2px 6px 5px", flexWrap: "wrap" }}>
+                        {tiposDisponiveis.map(tipo => {
+                          const ativo = filtroTipos.has(tipo);
+                          const count = alertas.filter(a => a.tipo === tipo).length;
+                          return (
+                            <button key={tipo} onClick={() => toggleFiltroTipo(tipo)} style={{
+                              height: 22, padding: "0 7px", borderRadius: 5,
+                              border: `1px solid ${ativo ? T.accent : T.border}`,
+                              background: ativo ? `${T.accent}22` : "transparent",
+                              color: ativo ? T.accent : T.muted,
+                              fontSize: 10, fontWeight: ativo ? 700 : 500,
+                              cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
+                              display: "flex", alignItems: "center", gap: 4,
+                            }}>
+                              <span>{NOME_TIPO[tipo] ?? tipo}</span>
+                              <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: ativo ? T.accent : T.dim }}>{count}</span>
+                            </button>
+                          );
+                        })}
+                        {filtroTipos.size > 0 && (
+                          <button onClick={() => { setFiltroTipos(new Set()); localStorage.removeItem("transmonseg-filtro-tipos"); }} style={{
+                            height: 22, padding: "0 8px", borderRadius: 5,
+                            border: `1px solid ${T.border}`, background: "transparent",
+                            color: T.dim, fontSize: 11, cursor: "pointer",
+                          }}>✕</button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             );
