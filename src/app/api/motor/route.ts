@@ -1274,6 +1274,13 @@ export async function POST(request: Request) {
         await pgClean.query(
           `DELETE FROM eventos WHERE ts < now() - interval '7 days'`
         );
+        // geocode_cache nunca tinha limpeza — crescia pra sempre (achado em
+        // varredura de uso: 40k+ linhas em 14 dias). Endereço não fica
+        // desatualizado, mas a tabela precisa de teto; 90 dias é folgado o
+        // bastante pra não gerar re-geocode de local ainda em uso frequente.
+        await pgClean.query(
+          `DELETE FROM geocode_cache WHERE criado < now() - interval '90 days'`
+        );
         // Tapete: células sem visita há mais de 30 dias saem do corredor.
         await pgClean.query(
           `DELETE FROM corredor_celulas WHERE ultimo_visto < current_date - 30`
