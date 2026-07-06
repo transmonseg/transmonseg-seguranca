@@ -9,6 +9,7 @@ import {
   detectarParadaLonga,
   detectarParadaAnomala,
   detectarDesvio,
+  afastouDeTudo,
   detectarTiroteioProximo,
   detectarSaidaNaoAutorizada,
   foraDeRota,
@@ -226,72 +227,98 @@ describe("avaliar - cenarios parada_cliente", () => {
   });
 });
 
-describe("detectarDesvio", () => {
-  // base: 6km do alvo, se afastando, rumo OPOSTO (movimento 0=N, alvo 180=S).
+describe("detectarDesvio (v2: afastamento de todos os destinos)", () => {
+  // Destinos = alvos pendentes + bases. dist*: mesma ordem nos dois arrays.
   const base = {
-    distAlvoM: 6000,
-    distAlvoAnteriorM: 5000,
+    distDestinosM: [6000, 8000, 12000],
+    distDestinosAnteriorM: [5000, 7000, 11000],
     temPendentes: true,
     emOperacao: true,
     foraDaBase: true,
-    rumoMovimento: 0,
-    rumoAlvo: 180,
+    entregasFeitas: 2,
+    streak: 2,
+    afastamentoAcumuladoM: 900,
+    dentroTapete: null as boolean | null,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
-  it("longe (>=5km), afastando, rumo oposto, em movimento - desvio critico", () => {
-    const a = detectarDesvio(emMov, base);
-    expect(a?.nivel).toBe("critico");
-    expect(a?.tipo).toBe("desvio");
-    expect(a?.motivo).toContain("6,0km");
-  });
-  it("longe mas indo NA DIRECAO do alvo (rumo coincide) nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, rumoMovimento: 180 })).toBeNull();
-  });
-  it("longe mas SE APROXIMANDO (distancia caindo) nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, distAlvoM: 6000, distAlvoAnteriorM: 8000 })).toBeNull();
-  });
-  it("DESLOCAMENTO interurbano (>25km) NAO e desvio mesmo afastando+oposto", () => {
-    expect(detectarDesvio(emMov, { ...base, distAlvoM: 116000, distAlvoAnteriorM: 114000 })).toBeNull();
-    expect(detectarDesvio(emMov, { ...base, distAlvoM: 30000, distAlvoAnteriorM: 29000 })).toBeNull();
-  });
-  it("medio-longe (3km), afastando, rumo oposto retorna atencao", () => {
-    const a = detectarDesvio(emMov, { ...base, distAlvoM: 3000, distAlvoAnteriorM: 2000 });
+  it("streak 2 + acumulado 500m+ dentro de caminho conhecido: atencao", () => {
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: true });
     expect(a?.nivel).toBe("atencao");
+    expect(a?.tipo).toBe("desvio");
   });
-  it("perto do ponto (1km) nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, distAlvoM: 1000, distAlvoAnteriorM: 1500 })).toBeNull();
+
+  it("streak 2 fora do tapete: critico direto", () => {
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: false });
+    expect(a?.nivel).toBe("critico");
   });
-  it("parado nao aciona desvio (e parada_longa que cobre)", () => {
+
+  it("streak 4 + acumulado 1,5km+: critico mesmo dentro do tapete", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, streak: 4, afastamentoAcumuladoM: 1600, dentroTapete: true,
+    });
+    expect(a?.nivel).toBe("critico");
+  });
+
+  it("streak 1 nao dispara (persistencia minima 2 ciclos)", () => {
+    expect(detectarDesvio(emMov, { ...base, streak: 1 })).toBeNull();
+  });
+
+  it("acumulado abaixo de 500m nao dispara em tapete desconhecido/conhecido", () => {
+    expect(detectarDesvio(emMov, { ...base, afastamentoAcumuladoM: 300 })).toBeNull();
+  });
+
+  it("parado nao dispara", () => {
     expect(detectarDesvio(posicaoBase({ velocidade: 0 }), base)).toBeNull();
   });
-  it("sem rumo de movimento (sem ciclo anterior) nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, rumoMovimento: null })).toBeNull();
-  });
-  it("sem pendentes nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, temPendentes: false })).toBeNull();
-  });
-  it("na base nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, foraDaBase: false })).toBeNull();
-  });
-  it("fora de operacao nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, emOperacao: false })).toBeNull();
-  });
-  it("distAlvoM null (sem alvos com coordenada) nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, distAlvoM: null })).toBeNull();
-  });
-  it("primeiro ciclo (distAlvoAnteriorM null) nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, distAlvoM: 7000, distAlvoAnteriorM: null })).toBeNull();
-  });
-  it("longe e ESTAVEL (mesma distancia) nao aciona", () => {
-    expect(detectarDesvio(emMov, { ...base, distAlvoM: 6000, distAlvoAnteriorM: 6050 })).toBeNull();
-  });
-  it("entregasFeitas=0 nao aciona (veiculo indo para a rota)", () => {
+
+  it("indo para a primeira entrega (0 feitas com pendentes) nao dispara", () => {
     expect(detectarDesvio(emMov, { ...base, entregasFeitas: 0 })).toBeNull();
   });
-  it("entregasFeitas=1 aciona normalmente", () => {
-    const a = detectarDesvio(emMov, { ...base, entregasFeitas: 1 });
-    expect(a?.tipo).toBe("desvio");
+
+  it("fora da faixa local nao dispara (menor dist < 2,5km ou > 25km)", () => {
+    expect(detectarDesvio(emMov, {
+      ...base, distDestinosM: [2000, 8000], distDestinosAnteriorM: [1500, 7000],
+    })).toBeNull();
+    expect(detectarDesvio(emMov, {
+      ...base, distDestinosM: [30000, 40000], distDestinosAnteriorM: [29000, 39000],
+    })).toBeNull();
+  });
+
+  it("0 pendentes (fim de rota): afastando da base 3 ciclos + 2km = atencao", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, temPendentes: false, distDestinosM: [7000], distDestinosAnteriorM: [6000],
+      streak: 3, afastamentoAcumuladoM: 2100,
+    });
+    expect(a?.nivel).toBe("atencao");
+  });
+
+  it("0 pendentes com streak 2 nao dispara (limiar maior no fim de rota)", () => {
+    expect(detectarDesvio(emMov, {
+      ...base, temPendentes: false, distDestinosM: [7000], distDestinosAnteriorM: [6000],
+      streak: 2, afastamentoAcumuladoM: 2100,
+    })).toBeNull();
+  });
+
+  it("fora de operacao ou dentro da base nao dispara", () => {
+    expect(detectarDesvio(emMov, { ...base, emOperacao: false })).toBeNull();
+    expect(detectarDesvio(emMov, { ...base, foraDaBase: false })).toBeNull();
+  });
+});
+
+describe("afastouDeTudo", () => {
+  it("true quando TODAS as distancias cresceram alem da margem de 50m", () => {
+    expect(afastouDeTudo([6000, 8000], [5000, 7000])).toBe(true);
+  });
+  it("false quando aproxima de QUALQUER destino", () => {
+    expect(afastouDeTudo([6000, 6900], [5000, 7000])).toBe(false);
+  });
+  it("false quando o crescimento fica dentro da margem de ruido", () => {
+    expect(afastouDeTudo([5030, 7040], [5000, 7000])).toBe(false);
+  });
+  it("false sem destinos ou com arrays de tamanhos diferentes", () => {
+    expect(afastouDeTudo([], [])).toBe(false);
+    expect(afastouDeTudo([5000], [])).toBe(false);
   });
 });
 
@@ -328,30 +355,17 @@ describe("detectarTiroteioProximo", () => {
   });
 });
 
-describe("foraDeRota (condicao de permanencia do alerta de desvio)", () => {
-  const base = { distAlvoM: 6000, temPendentes: true, emOperacao: true, foraDaBase: true };
-  const emMov = posicaoBase({ velocidade: 40 });
-
-  it("longe (>=2.5km), com pendentes, fora da base, em operacao - mantem", () => {
-    expect(foraDeRota(emMov, base)).toBe(true);
+describe("foraDeRota (v2: menor distancia a qualquer destino)", () => {
+  const p = posicaoBase();
+  it("mantem alerta enquanto longe de todos os destinos", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 3000, emOperacao: true, foraDaBase: true })).toBe(true);
   });
-  it("escalou muito (60km) continua fora de rota (sem teto na permanencia)", () => {
-    expect(foraDeRota(emMov, { ...base, distAlvoM: 60000 })).toBe(true);
+  it("resolve quando volta a menos de 2,5km de algum destino", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 1000, emOperacao: true, foraDaBase: true })).toBe(false);
   });
-  it("voltou pra perto do ponto (<2.5km) - resolve", () => {
-    expect(foraDeRota(emMov, { ...base, distAlvoM: 2000 })).toBe(false);
-  });
-  it("na base - false", () => {
-    expect(foraDeRota(emMov, { ...base, foraDaBase: false })).toBe(false);
-  });
-  it("sem pendentes - false", () => {
-    expect(foraDeRota(emMov, { ...base, temPendentes: false })).toBe(false);
-  });
-  it("fora de operacao - false", () => {
-    expect(foraDeRota(emMov, { ...base, emOperacao: false })).toBe(false);
-  });
-  it("distAlvoM null - false", () => {
-    expect(foraDeRota(emMov, { ...base, distAlvoM: null })).toBe(false);
+  it("resolve dentro da base ou fora de operacao", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: true, foraDaBase: false })).toBe(false);
+    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: false, foraDaBase: true })).toBe(false);
   });
 });
 
@@ -407,31 +421,31 @@ describe("avaliar", () => {
     const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 120, emOperacao: true, foraDaBase: true });
     expect(alerta?.tipo).toBe("panico");
   });
-  it("desvio entra na avaliacao quando ha alvos (distAlvoM definido)", () => {
+  it("desvio entra na avaliacao quando ha destinos (distDestinosM definido)", () => {
     const alerta = avaliar(posicaoBase({ velocidade: 40 }), {
       ...ctxOp,
-      distAlvoM: 6000,
-      distAlvoAnteriorM: 5000,
+      distDestinosM: [6000, 9000],
+      distDestinosAnteriorM: [5000, 8000],
       temPendentes: true,
       entregasFeitas: 3,
-      rumoMovimento: 0,
-      rumoAlvo: 180,
+      desvioStreak: 4,
+      afastamentoAcumuladoM: 1600,
     });
     expect(alerta?.tipo).toBe("desvio");
     expect(alerta?.nivel).toBe("critico");
   });
-  it("sem alvos (distAlvoM ausente) NAO avalia desvio", () => {
+  it("sem destinos (distDestinosM ausente) NAO avalia desvio", () => {
     expect(avaliar(posicaoBase({ velocidade: 40 }), ctxOp)).toBeNull();
   });
   it("panico tem prioridade sobre desvio", () => {
     const alerta = avaliar(posicaoBase({ velocidade: 40, panico: true }), {
       ...ctxOp,
-      distAlvoM: 6000,
-      distAlvoAnteriorM: 5000,
+      distDestinosM: [6000, 9000],
+      distDestinosAnteriorM: [5000, 8000],
       temPendentes: true,
       entregasFeitas: 3,
-      rumoMovimento: 0,
-      rumoAlvo: 180,
+      desvioStreak: 4,
+      afastamentoAcumuladoM: 1600,
     });
     expect(alerta?.tipo).toBe("panico");
   });
