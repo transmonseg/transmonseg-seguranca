@@ -44,15 +44,6 @@ interface Props {
   alertasIniciais: AlertaEnriquecido[];
 }
 
-interface Toast {
-  id: string;
-  placa: string;
-  tipo: string;
-  motivo: string | null;
-  local: string | null;
-  ts: number;
-}
-
 // ── Constants ──────────────────────────────────────────────────────────
 const PERIODOS = [1, 2, 6, 12, 24, 48] as const;
 const ZOOM_LABELS: [string, number][] = [["RUA", 17], ["QUADRA", 15], ["BAIRRO", 13], ["CIDADE", 11]];
@@ -132,8 +123,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Track/stops/alvos
   const [rastro, setRastro] = useState<[number, number][]>([]);
   const [paradas, setParadas] = useState<Parada[]>([]);
-  // Linha do tempo de eventos nativos da Unitrac (tipevnome) do veiculo selecionado
-  const [eventos, setEventos] = useState<{ tipo: string; ts: string }[]>([]);
   const [alvos, setAlvos] = useState<PontoEntrega[]>([]);
   const [alvosGlobais, setAlvosGlobais] = useState<PontoEntrega[]>([]);
   // Pontos de entrega de TODA a frota — exibidos quando nenhum veículo está selecionado
@@ -169,7 +158,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [filtroComm, setFiltroComm] = useState<number | null>(null);
   const [busca, setBusca] = useState("");
   const [comboAberto, setComboAberto] = useState(false);
-  const [toasts, setToasts] = useState<Toast[]>([]);
   const [novosIdsArr, setNovosIdsArr] = useState<string[]>([]);
   const [confirmarResolver, setConfirmarResolver] = useState(false);
   const [resolvendoTodos, startResolver] = useTransition();
@@ -321,7 +309,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     yellow: "#f59e0b",
     green: "#22c55e",
     drawerBg: "rgba(10,10,10,0.98)",
-    toastBg: "rgba(14,6,6,0.97)",
     sidebarBg: "#0d0d0d",
     toolbarBg: "rgba(10,10,10,0.96)",
   } : {
@@ -339,7 +326,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     yellow: "#a05a00",
     green: "#1a7a3a",
     drawerBg: "rgba(252,250,246,0.98)",
-    toastBg: "rgba(255,247,247,0.98)",
     sidebarBg: "#ede9e1",
     toolbarBg: "rgba(241,238,230,0.97)",
   }, [tema]);
@@ -385,11 +371,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           .filter(a => a.nivel === "critico" && a.status === "ativo").map(a => a.id));
         const novosCriticos = novos.filter(a => a.nivel === "critico" && a.status === "ativo" && !idsAntes.has(a.id));
         if (novosCriticos.length > 0) {
-          const now = Date.now();
-          const novosToasts = novosCriticos.map(a => ({
-            id: a.id, placa: a.placa, tipo: a.tipo, motivo: a.motivo, local: a.local, ts: now,
-          }));
-          setToasts(ts => [...ts, ...novosToasts].slice(-2));
           setNovosIdsArr(arr => [...arr, ...novosCriticos.map(a => a.id)]);
 
           const panicos = novosCriticos.filter(a => a.tipo === "panico" && !panicoVistosRef.current.has(a.id));
@@ -441,12 +422,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const t = setInterval(poll, 10_000);
     return () => clearInterval(t);
   }, [cliente]);
-
-  useEffect(() => {
-    if (toasts.length === 0) return;
-    const t = setTimeout(() => setToasts(ts => ts.slice(1)), 6_000);
-    return () => clearTimeout(t);
-  }, [toasts]);
 
   // Grupos de frota Unitrac (gvc/gvn) — fetcha uma vez por cliente
   useEffect(() => {
@@ -510,7 +485,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   }, [veiculosBase]);
 
   // ── Vehicle data loader ──────────────────────────────────────────────
-  const carregarVeiculo = useCallback(async (cv: string, h: number) => {
+  const carregarVeiculo = useCallback(async (cv: string, h: number, temPosicaoAoVivo: boolean) => {
     // Cancela qualquer fetch anterior em voo (rastro do veículo antigo não pode vazar)
     fetchAbortRef.current?.abort();
     const ctrl = new AbortController();
@@ -519,48 +494,44 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
     setCarregando(true);
     try {
-      const [rRes, sRes, aRes, eRes] = await Promise.all([
-        fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal }),
-        fetch(`/api/stops?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal }),
-        fetch(`/api/alvos?cv=${encodeURIComponent(cv)}`, { signal }),
-        fetch(`/api/eventos?clienteId=${encodeURIComponent(clienteAtivoId)}&cv=${encodeURIComponent(cv)}`, { signal }),
-      ]);
-      if (rRes.ok) {
-        const rd: { pontos?: { lat: number; lng: number }[] } = await rRes.json();
-        if (signal.aborted) return;
-        const tuples = (rd.pontos ?? []).map(p => [p.lat, p.lng] as [number, number]);
-        setRastro(tuples);
-        // Voa para o ponto mais recente do rastro (garante que o mapa centra no veículo
-        // mesmo quando ele não está em posicoes_atuais, ex: buscado via pesquisa de placa)
-        if (tuples.length > 0) {
-          const [lat, lng] = tuples[tuples.length - 1];
-          gatilhoRef.current += 1;
-          setFlyPara({ lat, lng, gatilho: gatilhoRef.current });
-        }
-      }
-      if (signal.aborted) return;
-      if (sRes.ok) {
-        const sd: { paradas?: Parada[] } = await sRes.json();
-        if (signal.aborted) return;
-        setParadas(sd.paradas ?? []);
-      }
-      if (signal.aborted) return;
-      if (aRes.ok) {
-        const ad: { pontos?: PontoEntrega[] } = await aRes.json();
-        if (signal.aborted) return;
-        setAlvos(ad.pontos ?? []);
-      }
-      if (signal.aborted) return;
-      if (eRes.ok) {
-        const ed: { eventos?: { tipo: string; ts: string }[] } = await eRes.json();
-        if (signal.aborted) return;
-        setEventos(ed.eventos ?? []);
-      }
+      // Cada fetch processa assim que a SUA resposta chega — antes, um
+      // Promise.all fazia o rastro (rápido) esperar pelo mais lento dos 3
+      // (às vezes stops/alvos demoravam bem mais), parecendo "rastro lento".
+      const rastroP = fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal })
+        .then(r => r.ok ? r.json() : null)
+        .then((rd: { pontos?: { lat: number; lng: number }[] } | null) => {
+          if (signal.aborted || !rd) return;
+          const tuples = (rd.pontos ?? []).map(p => [p.lat, p.lng] as [number, number]);
+          setRastro(tuples);
+          // Voa para o último ponto do rastro só como FALLBACK, quando ainda
+          // não há posição ao vivo (ex.: veículo buscado por placa, fora de
+          // posicoes_atuais). Com posição ao vivo já conhecida, focar de novo
+          // no fim do rastro sobrescrevia com um ponto possivelmente mais
+          // antigo (rastro vem de outro endpoint, pode estar defasado).
+          if (!temPosicaoAoVivo && tuples.length > 0) {
+            const [lat, lng] = tuples[tuples.length - 1];
+            gatilhoRef.current += 1;
+            setFlyPara({ lat, lng, gatilho: gatilhoRef.current });
+          }
+        })
+        .catch(() => {});
+
+      const stopsP = fetch(`/api/stops?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal })
+        .then(r => r.ok ? r.json() : null)
+        .then((sd: { paradas?: Parada[] } | null) => { if (!signal.aborted && sd) setParadas(sd.paradas ?? []); })
+        .catch(() => {});
+
+      const alvosP = fetch(`/api/alvos?cv=${encodeURIComponent(cv)}`, { signal })
+        .then(r => r.ok ? r.json() : null)
+        .then((ad: { pontos?: PontoEntrega[] } | null) => { if (!signal.aborted && ad) setAlvos(ad.pontos ?? []); })
+        .catch(() => {});
+
+      await Promise.allSettled([rastroP, stopsP, alvosP]);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
     }
-    setCarregando(false);
-  }, [clienteAtivoId]);
+    if (!signal.aborted) setCarregando(false);
+  }, []);
 
   // ── Vehicle selection ────────────────────────────────────────────────
   const selecionarVeiculo = useCallback((cv: string, coords?: { lat: number; lng: number }) => {
@@ -580,7 +551,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setRastro([]);
     setParadas([]);
     setAlvos([]);
-    setEventos([]);
     setCmdSirene("idle");
     setCmdBloqueio("idle");
     setMotorBloqueado(false);
@@ -601,7 +571,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setRastro([]);
     setParadas([]);
     setAlvos([]);
-    setEventos([]);
     setSeguir(false);
     setMostrarRastro(false);
     setMostrarParadas(false);
@@ -622,7 +591,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const stableHandleMapaVazio = useCallback(() => {}, []);
 
   useEffect(() => {
-    if (cvSelecionado) carregarVeiculo(cvSelecionado, horas);
+    if (!cvSelecionado) return;
+    const vm = veiculosMapa.find(v => v.cv === cvSelecionado);
+    carregarVeiculo(cvSelecionado, horas, vm?.lat != null && vm?.lng != null);
     // reloadKey garante re-disparo ao re-selecionar o mesmo veículo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cvSelecionado, horas, carregarVeiculo, reloadKey]);
@@ -1380,8 +1351,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {desviosAtivos.length > 0 && (
             <div style={{
               position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
-              zIndex: Z.toasts, display: "flex", gap: 6,
-              maxWidth: "calc(100% - 24px)", overflowX: "auto", padding: 2,
+              zIndex: Z.toasts, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6,
+              maxWidth: "calc(100% - 24px)", maxHeight: 150, overflowY: "auto", padding: 2,
             }}>
               {desviosAtivos.map(a => {
                 const cor = a.nivel === "critico" ? T.red : T.yellow;
@@ -1498,46 +1469,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             )}
           </div>
 
-          {/* Toast notifications */}
-          <div style={{
-            position: "absolute", top: 12, right: 12,
-            display: "flex", flexDirection: "column", gap: 6,
-            maxWidth: 292, zIndex: Z.toasts, pointerEvents: "none",
-          }}>
-            {toasts.map(toast => (
-              <div key={toast.id} style={{
-                background: T.toastBg, backdropFilter: "blur(10px)",
-                border: `1px solid ${T.red}40`, borderLeft: `3px solid ${T.red}`,
-                borderRadius: 9, padding: "9px 13px",
-                boxShadow: `0 4px 20px rgba(0,0,0,0.22), 0 0 14px ${T.red}14`,
-                animation: "slideInToast .18s ease-out",
-                pointerEvents: "all",
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 14, color: T.red, letterSpacing: ".06em" }}>
-                    {toast.placa}
-                  </span>
-                  <span style={{ fontSize: 10, color: T.red, fontWeight: 700, letterSpacing: ".05em" }}>
-                    {nomeT(toast.tipo)}
-                  </span>
-                  <button onClick={() => setToasts(ts => ts.filter(x => x.id !== toast.id))}
-                    style={{ marginLeft: "auto", background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 0 }}>
-                    &times;
-                  </button>
-                </div>
-                {toast.motivo && (
-                  <p style={{ margin: "3px 0 0", fontSize: 11, color: T.muted, lineHeight: 1.35 }}>
-                    {toast.motivo.length > 65 ? toast.motivo.slice(0, 65) + "..." : toast.motivo}
-                  </p>
-                )}
-                {toast.local && (
-                  <p style={{ margin: "2px 0 0", fontSize: 10, color: T.dim, lineHeight: 1.3 }}>
-                    {toast.local.length > 50 ? toast.local.slice(0, 50) + "..." : toast.local}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
 
           {/* ================================================================
               BOTTOM DRAWER
@@ -1698,7 +1629,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 </a>
               )}
               {cvSelecionado && (
-                <button onClick={() => carregarVeiculo(cvSelecionado, horas)} disabled={carregando}
+                <button onClick={() => {
+                  const vm = veiculosMapa.find(v => v.cv === cvSelecionado);
+                  carregarVeiculo(cvSelecionado, horas, vm?.lat != null && vm?.lng != null);
+                }} disabled={carregando}
                   style={drawerOpBtn(false)}>
                   Atualizar
                 </button>
@@ -1767,27 +1701,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </div>
             )}
 
-            {/* Linha do tempo de eventos nativos (tipevnome) — so aparece quando ha algo notavel registrado */}
-            {cvSelecionado && eventos.length > 0 && (
-              <div style={{ padding: "6px 14px 10px", borderTop: `1px solid ${T.border}` }}>
-                <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginBottom: 5 }}>
-                  ÚLTIMOS EVENTOS
-                </div>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  {eventos.slice(0, 6).map((ev, i) => (
-                    <span key={i} style={{
-                      display: "inline-flex", alignItems: "center", gap: 5,
-                      padding: "3px 8px", borderRadius: 5,
-                      border: `1px solid ${T.border}`, background: `${T.card}66`,
-                      fontSize: 10, color: T.muted, fontFamily: FONT_SANS,
-                    }}>
-                      <span style={{ fontWeight: 600, color: T.text }}>{ev.tipo}</span>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.dim }}>{tempoAtras(ev.ts)}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
 
         </div>{/* MAP AREA end */}

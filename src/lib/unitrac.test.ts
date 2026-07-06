@@ -1,5 +1,48 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, type AlvoUnitrac } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, type AlvoUnitrac } from "./unitrac";
+
+describe("removerPicosRastro", () => {
+  it("remove um pico isolado (pula pra fora da rua e volta)", () => {
+    const pontos = [
+      { lat: -22.9000, lng: -43.2000 },
+      { lat: -22.9010, lng: -43.2000 },
+      { lat: -22.9300, lng: -43.2300 }, // pico: ~4km fora da linha
+      { lat: -22.9020, lng: -43.2000 },
+      { lat: -22.9030, lng: -43.2000 },
+    ];
+    const limpo = removerPicosRastro(pontos);
+    expect(limpo).toHaveLength(4);
+    expect(limpo).not.toContainEqual(pontos[2]);
+  });
+
+  it("mantem curva de rua real (desvio pequeno, nao e pico)", () => {
+    const pontos = [
+      { lat: -22.9000, lng: -43.2000 },
+      { lat: -22.9005, lng: -43.2003 },
+      { lat: -22.9010, lng: -43.2005 },
+      { lat: -22.9015, lng: -43.2003 },
+      { lat: -22.9020, lng: -43.2000 },
+    ];
+    expect(removerPicosRastro(pontos)).toHaveLength(5);
+  });
+
+  it("compara contra o ultimo ponto ACEITO, nao o bruto anterior", () => {
+    const pontos = [
+      { lat: -22.9000, lng: -43.2000 },
+      { lat: -22.9300, lng: -43.2300 }, // pico isolado
+      { lat: -22.9010, lng: -43.2000 }, // volta pra perto do ultimo aceito (pontos[0])
+      { lat: -22.9020, lng: -43.2000 },
+    ];
+    const limpo = removerPicosRastro(pontos);
+    expect(limpo.map(p => p.lat)).not.toContain(-22.9300);
+    expect(limpo).toHaveLength(3);
+  });
+
+  it("listas curtas (< 3 pontos) retornam sem alteracao", () => {
+    const pontos = [{ lat: -22.9, lng: -43.2 }, { lat: -22.91, lng: -43.21 }];
+    expect(removerPicosRastro(pontos)).toEqual(pontos);
+  });
+});
 
 describe("agruparPontosPorPlaca", () => {
   it("mapeia os campos completos e trata data 0001 como null", () => {

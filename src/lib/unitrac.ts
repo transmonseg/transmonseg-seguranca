@@ -273,6 +273,34 @@ export async function buscarRastro(
   }
 }
 
+// Remove picos de GPS do rastro: pontos isolados que "pulam" pra fora da rua
+// e voltam no ponto seguinte (multipath/ruido do receptor). Sem timestamp por
+// ponto (a API nao fornece), entao a deteccao e geometrica: compara ir direto
+// prev->prox com o desvio via o ponto suspeito. Um pico faz esse desvio ser
+// muito maior que uma curva de rua real (que se espalha por varios pontos).
+// Compara contra o ultimo ponto ACEITO (nao o bruto anterior) para nao
+// encadear erro quando ha 2+ picos seguidos.
+export function removerPicosRastro(
+  pontos: { lat: number; lng: number }[]
+): { lat: number; lng: number }[] {
+  if (pontos.length < 3) return pontos;
+  const limpo: { lat: number; lng: number }[] = [pontos[0]];
+  for (let i = 1; i < pontos.length - 1; i++) {
+    const prev = limpo[limpo.length - 1];
+    const atual = pontos[i];
+    const prox = pontos[i + 1];
+    const direto = haversineM(prev.lat, prev.lng, prox.lat, prox.lng);
+    const viaAtual =
+      haversineM(prev.lat, prev.lng, atual.lat, atual.lng) +
+      haversineM(atual.lat, atual.lng, prox.lat, prox.lng);
+    const desvio = viaAtual - direto;
+    const ehPico = desvio > 300 && viaAtual > direto * 2.5;
+    if (!ehPico) limpo.push(atual);
+  }
+  limpo.push(pontos[pontos.length - 1]);
+  return limpo;
+}
+
 // Busca as paradas (stops) de um veiculo nas ultimas N horas.
 // GET /mapa_servicos/stops/{cv}/{horas}
 // Resposta da API: { paradas: [{ _data, localparada, tempoparada, latitude, longitude }] }
