@@ -42,6 +42,36 @@ describe("removerPicosRastro", () => {
     const pontos = [{ lat: -22.9, lng: -43.2 }, { lat: -22.91, lng: -43.21 }];
     expect(removerPicosRastro(pontos)).toEqual(pontos);
   });
+
+  it("remove RAJADA de 2 picos seguidos (multipath sob viaduto/predio)", () => {
+    const pontos = [
+      { lat: -22.9000, lng: -43.2000 },
+      { lat: -22.9300, lng: -43.2300 }, // pico 1
+      { lat: -22.9310, lng: -43.2310 }, // pico 2, proximo do pico 1 (nao volta ainda)
+      { lat: -22.9010, lng: -43.2000 }, // volta pra perto do ultimo aceito (pontos[0])
+      { lat: -22.9020, lng: -43.2000 },
+    ];
+    const limpo = removerPicosRastro(pontos);
+    expect(limpo.map(p => p.lat)).not.toContain(-22.9300);
+    expect(limpo.map(p => p.lat)).not.toContain(-22.9310);
+    expect(limpo).toHaveLength(3);
+  });
+
+  it("remove RAJADA de 3 picos seguidos (limite do lookahead)", () => {
+    const pontos = [
+      { lat: -22.9000, lng: -43.2000 },
+      { lat: -22.9300, lng: -43.2300 }, // pico 1
+      { lat: -22.9305, lng: -43.2305 }, // pico 2
+      { lat: -22.9310, lng: -43.2310 }, // pico 3
+      { lat: -22.9010, lng: -43.2000 }, // volta pra perto do aceito
+      { lat: -22.9020, lng: -43.2000 },
+    ];
+    const limpo = removerPicosRastro(pontos);
+    expect(limpo).toHaveLength(3);
+    expect(limpo.map(p => p.lat)).not.toContain(-22.9300);
+    expect(limpo.map(p => p.lat)).not.toContain(-22.9305);
+    expect(limpo.map(p => p.lat)).not.toContain(-22.9310);
+  });
 });
 
 describe("agruparPontosPorPlaca", () => {

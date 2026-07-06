@@ -273,31 +273,61 @@ export async function buscarRastro(
   }
 }
 
-// Remove picos de GPS do rastro: pontos isolados que "pulam" pra fora da rua
-// e voltam no ponto seguinte (multipath/ruido do receptor). Sem timestamp por
-// ponto (a API nao fornece), entao a deteccao e geometrica: compara ir direto
-// prev->prox com o desvio via o ponto suspeito. Um pico faz esse desvio ser
-// muito maior que uma curva de rua real (que se espalha por varios pontos).
-// Compara contra o ultimo ponto ACEITO (nao o bruto anterior) para nao
-// encadear erro quando ha 2+ picos seguidos.
+// Acima disso (m) de distancia ao ultimo ponto ACEITO, o ponto vira
+// "suspeito" — pode ser deslocamento real (rodovia) ou inicio de uma rajada
+// de pico. So vira PICO de fato se, dentro do lookahead, o rastro "voltar"
+// pra perto do ultimo aceito (ver RETORNO_MAX_M) — deslocamento real
+// continua se afastando, nunca retorna.
+const SUSPEITO_MIN_M = 300;
+// Distancia (m) que conta como "voltou pra perto de onde estava" — assinatura
+// geometrica de ruido de GPS (multipath sob viaduto/predio), nao de viagem.
+const RETORNO_MAX_M = 200;
+// Quantos pontos seguidos o filtro aceita como rajada de uma vez (rajada de
+// multipath costuma durar poucas leituras, nao dezenas).
+const PICO_LOOKAHEAD_MAX = 3;
+
+// Remove picos de GPS do rastro: um ponto OU uma RAJADA de ate
+// PICO_LOOKAHEAD_MAX seguidos que se afastam do ultimo ponto aceito e depois
+// VOLTAM pra perto dele (multipath/ruido do receptor). Sem timestamp por
+// ponto (a API nao fornece), entao a deteccao e puramente geometrica: um
+// deslocamento real (ida pra rodovia, por ex.) se afasta e nao retorna nos
+// proximos pontos; um pico se afasta e volta, porque o carro na verdade nunca
+// saiu do lugar. Rajadas de 2+ picos na MESMA direcao nao dao pra pegar
+// comparando so com o proximo ponto (ele tambem esta errado, entao nao
+// parece desvio) — por isso a checagem e "ha algum ponto proximo, dentro do
+// lookahead, que volta perto de onde eu estava?", nao um teste par a par.
 export function removerPicosRastro(
   pontos: { lat: number; lng: number }[]
 ): { lat: number; lng: number }[] {
   if (pontos.length < 3) return pontos;
   const limpo: { lat: number; lng: number }[] = [pontos[0]];
-  for (let i = 1; i < pontos.length - 1; i++) {
+  let i = 1;
+  while (i < pontos.length) {
     const prev = limpo[limpo.length - 1];
-    const atual = pontos[i];
-    const prox = pontos[i + 1];
-    const direto = haversineM(prev.lat, prev.lng, prox.lat, prox.lng);
-    const viaAtual =
-      haversineM(prev.lat, prev.lng, atual.lat, atual.lng) +
-      haversineM(atual.lat, atual.lng, prox.lat, prox.lng);
-    const desvio = viaAtual - direto;
-    const ehPico = desvio > 300 && viaAtual > direto * 2.5;
-    if (!ehPico) limpo.push(atual);
+    if (i === pontos.length - 1 || haversineM(prev.lat, prev.lng, pontos[i].lat, pontos[i].lng) <= SUSPEITO_MIN_M) {
+      limpo.push(pontos[i]);
+      i++;
+      continue;
+    }
+    // Suspeito: procura um retorno pra perto de `prev` dentro do lookahead.
+    let indiceRetorno = -1;
+    const fim = Math.min(i + PICO_LOOKAHEAD_MAX, pontos.length - 1);
+    for (let j = i + 1; j <= fim; j++) {
+      if (haversineM(prev.lat, prev.lng, pontos[j].lat, pontos[j].lng) <= RETORNO_MAX_M) {
+        indiceRetorno = j;
+        break;
+      }
+    }
+    if (indiceRetorno !== -1) {
+      // pontos[i..indiceRetorno-1] sao a rajada de pico — descarta todos.
+      limpo.push(pontos[indiceRetorno]);
+      i = indiceRetorno + 1;
+    } else {
+      // Nao voltou: deslocamento real, aceita como esta.
+      limpo.push(pontos[i]);
+      i++;
+    }
   }
-  limpo.push(pontos[pontos.length - 1]);
   return limpo;
 }
 
