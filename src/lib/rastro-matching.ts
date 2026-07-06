@@ -22,16 +22,26 @@ const MAX_CHAMADAS = 40;
 // Quantas chamadas em voo ao mesmo tempo — rapido, mas educado com o
 // servidor publico (nao e dimensionado pra rajada alta).
 const CONCORRENCIA = 6;
+// Acima disso (razao rota_real/reta), REJEITA o ajuste e mantem a reta.
+// Achado ao vivo (06/07/2026): quando a via exige contorno grande (mao
+// unica, rio, rodovia sem saida ali), o OSRM retorna uma rota gigante
+// (caso real: reta de 555m virou rota de 7.430m, 13x) — desenhar isso
+// parece um "tiro" pior que a reta original. O carro quase certamente nao
+// fez esse contorno todo num unico salto de amostragem; foi so um gap de
+// GPS. Reta (mesmo cortando reto) e menos errado que um loop de km.
+const RAZAO_MAX_ACEITAVEL = 2.5;
 
 type Ponto = { lat: number; lng: number };
 
 type OsrmRouteResponse = {
   code: string;
-  routes?: { geometry?: { coordinates?: [number, number][] } }[];
+  routes?: { geometry?: { coordinates?: [number, number][] }; distance?: number }[];
 };
 
 // Busca o caminho real (nas ruas) entre dois pontos. Em qualquer falha
-// (rede, timeout, sem rota), retorna null — o chamador mantém a reta original.
+// (rede, timeout, sem rota) OU quando a rota real e desproporcionalmente
+// mais longa que a reta (ver RAZAO_MAX_ACEITAVEL), retorna null — o
+// chamador mantém a reta original naquele trecho.
 async function buscarCaminhoReal(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
   try {
     const res = await fetch(
@@ -40,8 +50,11 @@ async function buscarCaminhoReal(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
     );
     if (!res.ok) return null;
     const data = (await res.json()) as OsrmRouteResponse;
-    const coords = data.routes?.[0]?.geometry?.coordinates;
-    if (data.code !== "Ok" || !coords || coords.length === 0) return null;
+    const rota = data.routes?.[0];
+    const coords = rota?.geometry?.coordinates;
+    if (data.code !== "Ok" || !coords || coords.length === 0 || rota?.distance == null) return null;
+    const distanciaReta = haversineM(a.lat, a.lng, b.lat, b.lng);
+    if (distanciaReta > 0 && rota.distance / distanciaReta > RAZAO_MAX_ACEITAVEL) return null;
     return coords.map(([lng, lat]) => ({ lat, lng }));
   } catch {
     return null;
