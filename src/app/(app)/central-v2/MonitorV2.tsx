@@ -68,6 +68,19 @@ function prioAlerta(a: { nivel: string; tipo: string }): number {
   return (a.nivel === "critico" ? 100 : 0) + (TIPO_PRIORITY[a.tipo] ?? 0);
 }
 
+// Tipos que disparam apito + flash de "novo" por cliente (cod_user_unitrac).
+// Pedido do cliente (06/07/2026): parar de notificar tudo que vira crítico —
+// cada operação só quer ser incomodada pelo que realmente importa pra ela.
+// Todos os outros tipos continuam sendo detectados/salvos/visíveis na lista,
+// só não tocam apito nem piscam como "novo". Cliente/tipo não mapeado aqui =
+// não notifica nada (default seguro).
+// PÂNICO é exceção de segurança e sempre notifica, em qualquer cliente —
+// não é negociável mesmo se não estiver nessa lista.
+const TIPOS_NOTIFICAM_POR_CLIENTE: Record<string, string[]> = {
+  "4096": ["desvio"],          // Nutry: só desvio de rota (já mostrado na faixa do topo)
+  "4586": ["parada_cliente"],  // Benassi: só parada de 1h30+ dentro do cliente
+};
+
 function tempoAtras(desde: string): string {
   const diff = Math.floor((Date.now() - new Date(desde).getTime()) / 60000);
   if (diff < 60) return `${diff}min`;
@@ -385,13 +398,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         if (!res.ok) return;
         const data: { alertas?: AlertaEnriquecido[] } = await res.json();
         const novos = data.alertas ?? [];
+        const tiposQueNotificam = TIPOS_NOTIFICAM_POR_CLIENTE[cliente] ?? [];
+        const ehNotificavel = (a: AlertaEnriquecido) => a.tipo === "panico" || tiposQueNotificam.includes(a.tipo);
         const idsAntes = new Set(alertasRef.current
-          .filter(a => a.nivel === "critico" && a.status === "ativo").map(a => a.id));
-        const novosCriticos = novos.filter(a => a.nivel === "critico" && a.status === "ativo" && !idsAntes.has(a.id));
-        if (novosCriticos.length > 0) {
-          setNovosIdsArr(arr => [...arr, ...novosCriticos.map(a => a.id)]);
+          .filter(a => ehNotificavel(a) && a.status === "ativo").map(a => a.id));
+        const novosParaNotificar = novos.filter(a => ehNotificavel(a) && a.status === "ativo" && !idsAntes.has(a.id));
+        if (novosParaNotificar.length > 0) {
+          setNovosIdsArr(arr => [...arr, ...novosParaNotificar.map(a => a.id)]);
 
-          const panicos = novosCriticos.filter(a => a.tipo === "panico" && !panicoVistosRef.current.has(a.id));
+          const panicos = novosParaNotificar.filter(a => a.tipo === "panico" && !panicoVistosRef.current.has(a.id));
           if (panicos.length > 0) {
             panicos.forEach(a => panicoVistosRef.current.add(a.id));
             setPanicoAlerta(panicos[0]);
