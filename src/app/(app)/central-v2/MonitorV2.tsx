@@ -183,6 +183,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [grupos, setGrupos] = useState<{ gvc: number; gvn: string; veiculos: { placa: string; cv: string }[] }[]>([]);
   const [gruposOcultos, setGruposOcultos] = useState<Set<number>>(new Set());
 
+  // "Ver apenas selecionados" — filtro manual por placa (Configurações), independente
+  // dos grupos/tipos. modoSelecionados só entra em vigor quando o usuário confirma
+  // no seletor (tela dedicada); a lista de cv's marcados fica salva mesmo desligado.
+  const [veiculosSelecionados, setVeiculosSelecionados] = useState<Set<string>>(new Set());
+  const [modoSelecionados, setModoSelecionados] = useState(false);
+  const [seletorAberto, setSeletorAberto] = useState(false);
+  const [buscaSeletor, setBuscaSeletor] = useState("");
+
   // Theme + satellite (satélite padrão = true)
   const [tema, setTema] = useState<"dark" | "light">("dark");
   const [satelite, setSatelite] = useState(true);
@@ -220,6 +228,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
     const gruposOcultosS = localStorage.getItem("transmonseg-grupos-ocultos");
     if (gruposOcultosS) { try { setGruposOcultos(new Set(JSON.parse(gruposOcultosS))); } catch { /* ignore */ } }
+    const veiculosSelS = localStorage.getItem("transmonseg-veiculos-selecionados");
+    if (veiculosSelS) { try { setVeiculosSelecionados(new Set(JSON.parse(veiculosSelS))); } catch { /* ignore */ } }
+    if (localStorage.getItem("transmonseg-modo-selecionados") === "true") setModoSelecionados(true);
   }, []);
 
   const setTemaComPersistencia = useCallback((novo: "dark" | "light") => {
@@ -282,6 +293,25 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       localStorage.setItem("transmonseg-grupos-ocultos", JSON.stringify([...next]));
       return next;
     });
+  }, []);
+
+  const salvarVeiculosSelecionados = useCallback((next: Set<string>) => {
+    setVeiculosSelecionados(next);
+    localStorage.setItem("transmonseg-veiculos-selecionados", JSON.stringify([...next]));
+  }, []);
+
+  const toggleVeiculoSelecionado = useCallback((cv: string) => {
+    setVeiculosSelecionados(prev => {
+      const next = new Set(prev);
+      if (next.has(cv)) next.delete(cv); else next.add(cv);
+      localStorage.setItem("transmonseg-veiculos-selecionados", JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
+
+  const setModoSelecionadosComPersistencia = useCallback((v: boolean) => {
+    localStorage.setItem("transmonseg-modo-selecionados", String(v));
+    setModoSelecionados(v);
   }, []);
 
   const tocarPanico = useCallback(() => {
@@ -701,6 +731,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
   const vmFiltrado: VeiculoMapa[] = useMemo(() => {
     let base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
+    if (modoSelecionados && veiculosSelecionados.size > 0) {
+      // Veículo selecionado sempre permanece visível, mesmo fora da lista escolhida
+      base = base.filter(v => veiculosSelecionados.has(v.cv) || v.cv === cvSelecionado);
+    }
     if (gruposOcultos.size > 0) {
       // Veículo selecionado sempre permanece visível no mapa, mesmo se o grupo dele estiver oculto
       base = base.filter(v => {
@@ -725,7 +759,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       lat: al.lat, lng: al.lng, local: al.local, rumo: null,
     };
     return [...base, sintetico];
-  }, [veiculosMapa, filtroComm, filtroTipos, gruposOcultos, cvParaGrupo, cvSelecionado, alertas]);
+  }, [veiculosMapa, filtroComm, filtroTipos, gruposOcultos, cvParaGrupo, cvSelecionado, alertas, modoSelecionados, veiculosSelecionados]);
 
   const vmAtual = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
 
@@ -739,6 +773,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (vista === "critico" && a.nivel !== "critico") return false;
     if (vista === "atencao" && a.nivel !== "atencao") return false;
     if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
+    if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
     if (gruposOcultos.size > 0) {
       const g = cvParaGrupo.get(a.cv);
       if (g !== undefined && gruposOcultos.has(g)) return false;
@@ -776,6 +811,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const desviosAtivos = alertas
     .filter(a => a.tipo === "desvio")
     .filter(a => {
+      if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
       if (gruposOcultos.size === 0) return true;
       const g = cvParaGrupo.get(a.cv);
       return g === undefined || !gruposOcultos.has(g);
@@ -1060,6 +1096,35 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                     </button>
                   ))}
                 </div>
+
+                {/* Ver apenas veículos selecionados — abre tela dedicada de escolha */}
+                <div style={{ borderTop: `1px solid ${T.border}`, padding: "6px 8px 8px" }}>
+                  <div style={{ fontSize: 10, color: T.muted, padding: "4px 6px 4px", fontWeight: 600, letterSpacing: ".05em" }}>
+                    VEÍCULOS
+                  </div>
+                  <button onClick={() => { setSeletorAberto(true); setSettingsAberto(false); }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 9,
+                      width: "100%", padding: "7px 10px", borderRadius: 7,
+                      background: modoSelecionados ? `${T.accent}12` : "transparent",
+                      border: `1px solid ${modoSelecionados ? T.accent + "44" : "transparent"}`,
+                      color: modoSelecionados ? T.accent : T.text,
+                      fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
+                      fontWeight: modoSelecionados ? 700 : 400,
+                    }}>
+                    <div style={{
+                      width: 12, height: 12, borderRadius: 3, flexShrink: 0,
+                      background: modoSelecionados ? T.accent : "transparent",
+                      border: `1.5px solid ${modoSelecionados ? T.accent : T.dim}`,
+                    }} />
+                    Ver apenas selecionados
+                    {modoSelecionados && veiculosSelecionados.size > 0 && (
+                      <span style={{ marginLeft: "auto", fontSize: 9, fontFamily: FONT_MONO, color: T.accent }}>
+                        {veiculosSelecionados.size}
+                      </span>
+                    )}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1107,6 +1172,21 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>VEÍC.</div>
             </div>
           </div>
+
+          {/* Filtro ativo de "ver apenas selecionados" — sempre visível pra não confundir o operador */}
+          {modoSelecionados && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "6px 8px",
+              borderBottom: `1px solid ${T.border}`, flexShrink: 0,
+              background: `${T.accent}0c`,
+            }}>
+              <span style={{ fontSize: 10, color: T.accent, fontWeight: 700, letterSpacing: ".05em" }}>
+                FILTRO: {veiculosSelecionados.size} VEÍC.
+              </span>
+              <button onClick={() => setSeletorAberto(true)} style={{ ...tinyBtn(T.accent), marginLeft: "auto" }}>Editar</button>
+              <button onClick={() => setModoSelecionadosComPersistencia(false)} style={tinyBtn(T.dim)}>Mostrar todos</button>
+            </div>
+          )}
 
           {/* Filter tabs */}
           <div style={{ display: "flex", padding: "5px 6px", gap: 3, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
@@ -1833,6 +1913,119 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   color: "#78716c", fontSize: 16, cursor: "pointer",
                 }}>
                 ♪
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================
+          SELETOR DE VEÍCULOS — "ver apenas selecionados" (Configurações)
+      ================================================================ */}
+      {seletorAberto && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: Z.panico,
+          background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+          onClick={e => { if (e.target === e.currentTarget) setSeletorAberto(false); }}>
+          <div style={{
+            width: "min(420px, 92vw)", maxHeight: "80vh",
+            background: T.card, border: `1px solid ${T.border}`, borderRadius: 12,
+            boxShadow: "0 16px 48px rgba(0,0,0,0.4)",
+            display: "flex", flexDirection: "column", overflow: "hidden",
+            fontFamily: FONT_SANS,
+          }}>
+            <div style={{
+              padding: "14px 16px 10px", borderBottom: `1px solid ${T.border}`,
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: T.text }}>
+                Ver apenas veículos selecionados
+              </span>
+              <button onClick={() => setSeletorAberto(false)}
+                style={{ background: "none", border: "none", color: T.dim, fontSize: 18, cursor: "pointer", lineHeight: 1 }}>
+                ×
+              </button>
+            </div>
+
+            <div style={{ padding: "10px 16px 6px" }}>
+              <input
+                autoFocus
+                value={buscaSeletor}
+                onChange={e => setBuscaSeletor(e.target.value)}
+                placeholder="Digite a placa..."
+                style={{
+                  width: "100%", height: 32, borderRadius: 7, border: `1px solid ${T.border}`,
+                  background: tema === "dark" ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)",
+                  color: T.text, padding: "0 10px", fontSize: 13,
+                  fontFamily: FONT_MONO, outline: "none", boxSizing: "border-box",
+                }}
+              />
+            </div>
+
+            <div style={{ padding: "6px 16px 6px", display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={() => salvarVeiculosSelecionados(new Set(veiculosBase.map(v => v.cv)))}
+                style={tinyBtn(T.accent)}>
+                Marcar todos
+              </button>
+              <button onClick={() => salvarVeiculosSelecionados(new Set())} style={tinyBtn(T.dim)}>
+                Limpar
+              </button>
+              <span style={{ marginLeft: "auto", fontSize: 10, color: T.dim, fontFamily: FONT_MONO }}>
+                {veiculosSelecionados.size} selecionado{veiculosSelecionados.size === 1 ? "" : "s"}
+              </span>
+            </div>
+
+            <div style={{ flex: 1, overflowY: "auto", padding: "0 10px 10px", minHeight: 120 }}>
+              {veiculosBase
+                .filter(v => v.placa.toLowerCase().includes(buscaSeletor.toLowerCase()))
+                .map(v => {
+                  const marcado = veiculosSelecionados.has(v.cv);
+                  return (
+                    <button key={v.cv} onClick={() => toggleVeiculoSelecionado(v.cv)}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 9, width: "100%",
+                        padding: "7px 8px", borderRadius: 7, marginBottom: 2,
+                        background: marcado ? `${T.accent}12` : "transparent",
+                        border: "1px solid transparent", cursor: "pointer",
+                        color: T.text, fontSize: 12, fontFamily: FONT_MONO, textAlign: "left",
+                      }}>
+                      <div style={{
+                        width: 14, height: 14, borderRadius: 3, flexShrink: 0,
+                        background: marcado ? T.accent : "transparent",
+                        border: `1.5px solid ${marcado ? T.accent : T.dim}`,
+                      }} />
+                      {v.placa}
+                    </button>
+                  );
+                })}
+              {veiculosBase.length === 0 && (
+                <div style={{ padding: "16px 8px", fontSize: 12, color: T.dim, textAlign: "center" }}>
+                  Nenhum veículo carregado.
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding: "10px 16px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
+              <button onClick={() => { setModoSelecionadosComPersistencia(false); setSeletorAberto(false); }}
+                style={{
+                  flex: 1, height: 32, borderRadius: 7, border: `1px solid ${T.border}`,
+                  background: "transparent", color: T.dim, fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
+                }}>
+                Mostrar todos
+              </button>
+              <button onClick={() => { setModoSelecionadosComPersistencia(true); setSeletorAberto(false); }}
+                disabled={veiculosSelecionados.size === 0}
+                style={{
+                  flex: 1, height: 32, borderRadius: 7, border: "none",
+                  background: veiculosSelecionados.size === 0 ? T.border : T.accent,
+                  color: veiculosSelecionados.size === 0 ? T.dim : "#fff",
+                  fontSize: 12, fontWeight: 700,
+                  cursor: veiculosSelecionados.size === 0 ? "default" : "pointer",
+                  fontFamily: FONT_SANS,
+                }}>
+                Gerar mapa ({veiculosSelecionados.size})
               </button>
             </div>
           </div>
