@@ -338,6 +338,28 @@ export async function buscarPosicaoUnica(
   }
 }
 
+// Extrai o centroide aproximado de uma geometria GeoJSON (media dos vertices).
+// Usado para achar o "ponto" de uma base (poligono real de garagem/CD).
+type GeoJSONGeomSimple =
+  | { type: "Polygon"; coordinates: number[][][] }
+  | { type: "MultiPolygon"; coordinates: number[][][][] };
+
+export function centroideGeo(
+  geom: GeoJSONGeomSimple | null
+): { lat: number; lng: number } | null {
+  if (!geom) return null;
+  const anel =
+    geom.type === "Polygon"
+      ? geom.coordinates[0]
+      : geom.type === "MultiPolygon"
+        ? geom.coordinates[0]?.[0]
+        : null;
+  if (!anel || anel.length === 0) return null;
+  const lat = anel.reduce((s, c) => s + c[1], 0) / anel.length;
+  const lng = anel.reduce((s, c) => s + c[0], 0) / anel.length;
+  return { lat, lng };
+}
+
 // Normaliza uma posição bruta da Unitrac para o tipo interno.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizar(p: Record<string, any>): PosicaoNormalizada {

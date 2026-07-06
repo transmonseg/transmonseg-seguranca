@@ -6,18 +6,18 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import {
   agruparAlvosPorPlaca,
   agruparPontosPorPlaca,
-  distAlvoPendenteMaisProximoM,
-  alvoPendenteMaisProximo,
   alvoMaisProximoQualquer,
   rumoGraus,
   haversineM,
   normalizar,
+  centroideGeo,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
   avaliar,
   detectarJammer,
   foraDeRota,
+  afastouDeTudo,
   emHorarioOperacao,
   detectarRetornoTardio,
   detectarParadaNoturnaIgnicaoAtiva,
@@ -25,9 +25,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import {
-  hashAlvos, buscarRotaOSRM, distanciaAoCorredorM, centroideGeo, RAIO_CORREDOR_M,
-} from "@/lib/osrm";
+import { celulasDoSegmento, vizinhanca3x3 } from "@/lib/celulas";
 import { buscarTiroteiosRJ } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
@@ -239,6 +237,11 @@ function pontoEmGeo(lng: number, lat: number, geom: GeoJSONGeom | null): boolean
   return false;
 }
 
+// Ponto de INÍCIO de uma sequência de desvio (1º ciclo em que o veículo se
+// afastou de todos os destinos legítimos). Persistido em posicoes_atuais
+// para sobreviver entre ciclos e nascer o alerta já com o local correto.
+type DesvioInicio = { lat: number; lng: number; ts: string; menor_dist_m: number };
+
 // ─── Handler principal ───────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
@@ -351,11 +354,15 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, fora_corredor, ultimo_evento");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento");
 
     const mapaPosAtual = new Map<
       string,
-      { lat: number | null; lng: number | null; velocidade: number | null; parado_desde: string | null; fora_corredor: boolean; ultimo_evento: string | null }
+      {
+        lat: number | null; lng: number | null; velocidade: number | null;
+        parado_desde: string | null; desvio_streak: number; desvio_inicio: DesvioInicio | null;
+        ultimo_evento: string | null;
+      }
     >();
 
     for (const row of posatuaisRows ?? []) {
@@ -364,7 +371,8 @@ export async function POST(request: Request) {
         lng: row.lng,
         velocidade: row.velocidade,
         parado_desde: row.parado_desde,
-        fora_corredor: row.fora_corredor ?? false,
+        desvio_streak: row.desvio_streak ?? 0,
+        desvio_inicio: (row.desvio_inicio as DesvioInicio | null) ?? null,
         ultimo_evento: row.ultimo_evento ?? null,
       });
     }
@@ -400,37 +408,23 @@ export async function POST(request: Request) {
     // comunidade por culpa de timeout pontual da API Unitrac).
     const clientesComSucesso = new Set<string>();
 
-    // Cache de rotas OSRM por veiculo (validade 4h). Carregado em lote antes
-    // do loop para evitar N queries individuais.
-    const mapaRotasCache = new Map<string, { alvos_hash: string; pontos_rota: [number, number][] }>();
-    {
-      const todosVeiculoIds = [...mapaCv.values()].map((v) => v.veiculo_id);
-      if (todosVeiculoIds.length > 0) {
-        const pgRotas = await pool.connect();
-        try {
-          const { rows: rotasRows } = await pgRotas.query<{
-            veiculo_id: string;
-            alvos_hash: string;
-            pontos_rota: [number, number][];
-          }>(
-            `SELECT veiculo_id, alvos_hash, pontos_rota
-             FROM rotas_cache
-             WHERE veiculo_id = ANY($1::uuid[])
-               AND criado_em > now() - interval '4 hours'`,
-            [todosVeiculoIds]
-          );
-          for (const r of rotasRows) {
-            mapaRotasCache.set(r.veiculo_id, { alvos_hash: r.alvos_hash, pontos_rota: r.pontos_rota });
-          }
-        } catch { /* graceful: sem cache = recalcula */ } finally {
-          pgRotas.release();
-        }
-      }
-    }
-    // Acumula rotas novas/atualizadas para upsert em batch ao final do ciclo.
-    const rotasParaUpsert: { veiculo_id: string; alvos_hash: string; pontos_rota: [number, number][] }[] = [];
-    let osrmChamadasNoCiclo = 0;
-    const OSRM_MAX_POR_CICLO = 5;
+    // Celulas do tapete cobertas pelo trajeto de cada veiculo neste ciclo —
+    // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
+    const celulasCiclo: { cliente_id: string; celula: string }[] = [];
+    // Contagem do tapete por cliente, cacheada no ciclo: distingue "fora do
+    // tapete" de "tapete ainda nao semeado" (que nao pode modular severidade).
+    const tapeteContagem = new Map<string, number>();
+    const contarTapeteCliente = async (clienteId: string): Promise<number> => {
+      const cacheado = tapeteContagem.get(clienteId);
+      if (cacheado !== undefined) return cacheado;
+      const { count } = await supabase
+        .from("corredor_celulas")
+        .select("celula", { count: "exact", head: true })
+        .eq("cliente_id", clienteId);
+      const n = count ?? 0;
+      tapeteContagem.set(clienteId, n);
+      return n;
+    };
 
     for (const cliente of clientes) {
       // Obter CVs deste cliente
@@ -592,19 +586,77 @@ export async function POST(request: Request) {
             }
           }
 
-          // ─── Desvio de rota: distância aos pontos de entrega pendentes ──
-          // A rota planejada são os alvos (pontos) do veículo. O detector de
-          // desvio compara a distância atual ao ponto pendente mais próximo
-          // com a do ciclo anterior (afastamento).
+          // ─── Desvio v2: destinos legítimos = alvos pendentes + bases ────
+          // Sem rota planejada, desvio é comportamento: afastar-se de TODOS
+          // os destinos ao mesmo tempo, sustentado por ciclos consecutivos.
           const pontosVeiculo = pontosPorPlaca.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
-          const temPendentes = (pontosVeiculo ?? []).some((pt) => !pt.feito);
-          const maisProximo = alvoPendenteMaisProximo(pos.lat, pos.lng, pontosVeiculo);
-          const distAlvoM = maisProximo?.distM ?? null;
-          const distAlvoAnteriorM =
-            anterior && anterior.lat != null && anterior.lng != null
-              ? distAlvoPendenteMaisProximoM(anterior.lat, anterior.lng, pontosVeiculo)
-              : null;
+          const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
+          const temPendentes = pendentes.length > 0;
+          const centroidesBases = basesCliente
+            .map((b) => centroideGeo(b.geom))
+            .filter((c): c is { lat: number; lng: number } => c !== null);
+          const destinos = [
+            ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
+            ...centroidesBases,
+          ];
+          const distDestinosM = destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng));
+          const temAnterior = !!anterior && anterior.lat != null && anterior.lng != null;
+          const distDestinosAnteriorM = temAnterior
+            ? destinos.map((d) => haversineM(anterior!.lat!, anterior!.lng!, d.lat, d.lng))
+            : [];
+          const menorDistDestinoM = distDestinosM.length > 0 ? Math.min(...distDestinosM) : null;
+
+          // Guarda anti-teleporte: salto implausível entre ciclos (>2,5km em
+          // ~1min, ou seja >150km/h implícitos) congela o streak.
+          const saltoImplausivel =
+            temAnterior && haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng) > 2500;
+
+          let desvioStreak: number = anterior?.desvio_streak ?? 0;
+          let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
+          if (pos.fresco && !saltoImplausivel && pos.velocidade > 0 && temAnterior) {
+            if (afastouDeTudo(distDestinosM, distDestinosAnteriorM)) {
+              desvioStreak += 1;
+              if (desvioStreak === 1) {
+                desvioInicio = {
+                  lat: anterior!.lat!,
+                  lng: anterior!.lng!,
+                  ts: agora.toISOString(),
+                  menor_dist_m: Math.min(...distDestinosAnteriorM),
+                };
+              }
+            } else {
+              desvioStreak = 0;
+              desvioInicio = null;
+            }
+          }
+          const afastamentoAcumuladoM =
+            desvioInicio && menorDistDestinoM !== null
+              ? menorDistDestinoM - desvioInicio.menor_dist_m
+              : 0;
+
+          // Camada 2 (tapete): consulta APENAS candidatos reais (streak >= 2)
+          // pra manter o custo de leitura desprezível.
+          let dentroTapete: boolean | null = null;
+          if (desvioStreak >= 2 && pos.fresco) {
+            const tapeteTotal = await contarTapeteCliente(cliente_id);
+            if (tapeteTotal > 0) {
+              const { data: hits } = await supabase
+                .from("corredor_celulas")
+                .select("celula")
+                .eq("cliente_id", cliente_id)
+                .in("celula", vizinhanca3x3(pos.lat, pos.lng))
+                .limit(1);
+              dentroTapete = (hits ?? []).length > 0;
+            }
+          }
+
+          // Alimentar o tapete: células do trajeto desde o ciclo anterior.
+          if (pos.fresco && temAnterior && (anterior!.lat !== pos.lat || anterior!.lng !== pos.lng)) {
+            for (const c of celulasDoSegmento(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)) {
+              celulasCiclo.push({ cliente_id, celula: c });
+            }
+          }
 
           // Parada no cliente (Benassi): verificar se o veiculo esta parado
           // dentro do raio de qualquer ponto da rota (feito OU pendente).
@@ -614,62 +666,15 @@ export async function POST(request: Request) {
             maisProximoQualquer !== null &&
             maisProximoQualquer.distM <= Math.max(maisProximoQualquer.ponto.raio, 150);
 
-          // Rumo do movimento (ciclo anterior → posição atual) e rumo até o
-          // ponto pendente mais próximo, para o detector corroborar o desvio.
+          // Rumo do movimento (ciclo anterior → posição atual) — usado pelo
+          // detector de saída não autorizada (rumo até a base).
           const rumoMovimento =
-            anterior && anterior.lat != null && anterior.lng != null &&
-            (anterior.lat !== pos.lat || anterior.lng !== pos.lng)
-              ? rumoGraus(anterior.lat, anterior.lng, pos.lat, pos.lng)
+            temAnterior && (anterior!.lat !== pos.lat || anterior!.lng !== pos.lng)
+              ? rumoGraus(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)
               : null;
-          const rumoAlvo = maisProximo
-            ? rumoGraus(pos.lat, pos.lng, maisProximo.ponto.lat, maisProximo.ponto.lng)
-            : null;
-          // Condição FROUXA de permanência: ainda fora de rota (anti-pisca).
-          const estaForaDeRota = pos.fresco && foraDeRota(pos, { distAlvoM, temPendentes, emOperacao, foraDaBase });
-
-          // ─── Corredor OSRM: distância do veículo à rota planejada ───────
-          // Calculado apenas para veículos frescos, em operação, fora da base
-          // e com entregas pendentes. Usa cache de 4h; máx 5 chamadas/ciclo.
-          let distCorredorM: number | null = null;
-          if (temPendentes && emOperacao && foraDaBase && pos.fresco) {
-            const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
-            if (pendentes.length > 0) {
-              const novoHash = hashAlvos(pendentes);
-              const cachado = mapaRotasCache.get(veiculo_id);
-              let pontosRota: [number, number][] | null = cachado?.pontos_rota ?? null;
-
-              if (!cachado || cachado.alvos_hash !== novoHash) {
-                if (osrmChamadasNoCiclo < OSRM_MAX_POR_CICLO) {
-                  const basesCliente2 = mapaBasesCliente.get(cliente_id) ?? [];
-                  const centroBase = basesCliente2.length > 0
-                    ? centroideGeo(basesCliente2[0].geom)
-                    : null;
-                  const waypoints: { lat: number; lng: number }[] = [];
-                  if (centroBase) waypoints.push(centroBase);
-                  waypoints.push(...pendentes.map((p) => ({ lat: p.lat, lng: p.lng })));
-                  if (waypoints.length >= 2) {
-                    const rota = await buscarRotaOSRM(waypoints);
-                    if (rota) {
-                      pontosRota = rota;
-                      osrmChamadasNoCiclo++;
-                      rotasParaUpsert.push({ veiculo_id, alvos_hash: novoHash, pontos_rota: rota });
-                      mapaRotasCache.set(veiculo_id, { alvos_hash: novoHash, pontos_rota: rota });
-                    }
-                  }
-                }
-              }
-
-              if (pontosRota && pontosRota.length > 0) {
-                distCorredorM = distanciaAoCorredorM(pos.lat, pos.lng, pontosRota);
-              }
-            }
-          }
-
-          // Debounce OSRM: o veiculo ja estava fora do corredor no ciclo anterior?
-          const jaForaCorretor = anterior?.fora_corredor ?? false;
-          // Estado atual fora do corredor (para salvar no upsert e alimentar o proximo ciclo).
-          const CORREDOR_TOLERANCIA_M = 800;
-          const foraCorretor = distCorredorM !== null && distCorredorM > CORREDOR_TOLERANCIA_M;
+          // Condição FROUXA de permanência (anti-pisca), agora incluindo bases.
+          const estaForaDeRota =
+            pos.fresco && foraDeRota(pos, { menorDistDestinoM, emOperacao, foraDaBase });
 
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
@@ -778,13 +783,15 @@ export async function POST(request: Request) {
                   emOperacao,
                   foraDaBase,
                   noCliente,
-                  distAlvoM,
-                  distAlvoAnteriorM,
+                  distDestinosM,
+                  distDestinosAnteriorM,
+                  desvioStreak,
+                  afastamentoAcumuladoM,
+                  dentroTapete,
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
                   rumoMovimento,
-                  rumoAlvo,
                   distTiroteioM,
                   tiroteioIdadeMin,
                   estavEmMovimento: candidatoParadaAnomala ? estavEmMovimento : undefined,
@@ -793,8 +800,6 @@ export async function POST(request: Request) {
                   temPOIProximo: temPOI,
                   vizinhosParados,
                   jaParedoNoCicloAnterior,
-                  distCorredorM,
-                  jaForaCorretor,
                   rumoBase,
                   distBaseM,
                 })
@@ -873,14 +878,14 @@ export async function POST(request: Request) {
               `INSERT INTO posicoes_atuais
                 (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
                  panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
-                 entregas_feitas, entregas_total, local, fora_corredor, rumo,
-                 ultimo_evento, ultimo_evento_em)
+                 entregas_feitas, entregas_total, local, desvio_streak, rumo,
+                 ultimo_evento, ultimo_evento_em, desvio_inicio)
                VALUES
                 ($1, $2, $3,
                  ST_SetSRID(ST_MakePoint($4, $2), 4326)::geography,
                  $5, $6, $7, $8, $9, $10, $11,
                  $12::timestamptz, $13::timestamptz, $14::timestamptz,
-                 $15, $16, $17, $18, $19, $20, $14::timestamptz)
+                 $15, $16, $17, $18, $19, $20, $14::timestamptz, $21::jsonb)
                ON CONFLICT (veiculo_id) DO UPDATE SET
                  lat              = EXCLUDED.lat,
                  lng              = EXCLUDED.lng,
@@ -898,7 +903,8 @@ export async function POST(request: Request) {
                  entregas_feitas  = EXCLUDED.entregas_feitas,
                  entregas_total   = EXCLUDED.entregas_total,
                  local            = COALESCE(EXCLUDED.local, posicoes_atuais.local),
-                 fora_corredor    = EXCLUDED.fora_corredor,
+                 desvio_streak    = EXCLUDED.desvio_streak,
+                 desvio_inicio    = EXCLUDED.desvio_inicio,
                  rumo             = EXCLUDED.rumo,
                  ultimo_evento    = EXCLUDED.ultimo_evento,
                  ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
@@ -921,9 +927,10 @@ export async function POST(request: Request) {
                 entregas_feitas,
                 entregas_total,
                 localVeiculo,
-                foraCorretor,
+                desvioStreak,
                 rumoMovimento !== null ? Math.round(rumoMovimento) : null,
                 pos.evento,
+                desvioInicio ? JSON.stringify(desvioInicio) : null,
               ]
             );
           } finally {
@@ -964,6 +971,7 @@ export async function POST(request: Request) {
               }
 
               if (!jaExiste) {
+                const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null;
                 await supabase.from("alertas").insert({
                   cliente_id,
                   veiculo_id,
@@ -972,8 +980,13 @@ export async function POST(request: Request) {
                   motivo: alerta.motivo,
                   score: alerta.score,
                   status: "ativo",
-                  lat: pos.lat,
-                  lng: pos.lng,
+                  // Desvio: lat/lng do PONTO DE INÍCIO da sequência (onde
+                  // começou a se afastar), não da posição do disparo.
+                  lat: ehDesvio ? desvioInicio!.lat : pos.lat,
+                  lng: ehDesvio ? desvioInicio!.lng : pos.lng,
+                  contexto: ehDesvio
+                    ? { inicio_ts: desvioInicio!.ts, fora_tapete: dentroTapete === false }
+                    : {},
                   desde: agora.toISOString(),
                 });
               }
@@ -1032,27 +1045,26 @@ export async function POST(request: Request) {
       }
     }
 
-    // Upsert das rotas OSRM calculadas neste ciclo
-    if (rotasParaUpsert.length > 0) {
-      const pgRotasUp = await pool.connect();
+    // Upsert batch do tapete (1 statement por ciclo). O WHERE evita churn de
+    // dead tuples: cada célula só é reescrita uma vez por dia.
+    if (celulasCiclo.length > 0) {
+      const pgCelulas = await pool.connect();
       try {
-        for (const r of rotasParaUpsert) {
-          await pgRotasUp.query(
-            `INSERT INTO rotas_cache (veiculo_id, alvos_hash, pontos_rota, criado_em)
-             VALUES ($1, $2, $3::jsonb, now())
-             ON CONFLICT (veiculo_id) DO UPDATE SET
-               alvos_hash  = EXCLUDED.alvos_hash,
-               pontos_rota = EXCLUDED.pontos_rota,
-               criado_em   = EXCLUDED.criado_em`,
-            [r.veiculo_id, r.alvos_hash, JSON.stringify(r.pontos_rota)]
-          );
-        }
-      } catch (errRotas) {
-        const msg = `Aviso: erro ao salvar rotas_cache: ${String(errRotas)}`;
+        await pgCelulas.query(
+          `INSERT INTO corredor_celulas (cliente_id, celula, ultimo_visto)
+           SELECT DISTINCT c.cid::uuid, c.cel, current_date
+           FROM unnest($1::uuid[], $2::text[]) AS c(cid, cel)
+           ON CONFLICT (cliente_id, celula) DO UPDATE
+             SET ultimo_visto = EXCLUDED.ultimo_visto
+             WHERE corredor_celulas.ultimo_visto < EXCLUDED.ultimo_visto`,
+          [celulasCiclo.map((c) => c.cliente_id), celulasCiclo.map((c) => c.celula)]
+        );
+      } catch (errCelulas) {
+        const msg = `Aviso: erro ao salvar corredor_celulas: ${String(errCelulas)}`;
         console.warn(msg);
         erros.push(msg);
       } finally {
-        pgRotasUp.release();
+        pgCelulas.release();
       }
     }
 
@@ -1242,6 +1254,10 @@ export async function POST(request: Request) {
         );
         await pgClean.query(
           `DELETE FROM eventos WHERE ts < now() - interval '7 days'`
+        );
+        // Tapete: células sem visita há mais de 30 dias saem do corredor.
+        await pgClean.query(
+          `DELETE FROM corredor_celulas WHERE ultimo_visto < current_date - 30`
         );
       } catch (errClean) {
         console.warn("Limpeza periódica falhou (não crítico):", errClean);
