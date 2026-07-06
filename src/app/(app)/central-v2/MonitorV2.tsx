@@ -848,6 +848,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const alvosFeitos = alvosEfetivos.filter(p => p.feito).length;
   const alvosTotal = alvosEfetivos.length;
 
+  // Pontos de entrega exibidos no mapa (camada de fundo, todas as placas) —
+  // quando "ver apenas selecionados" está ativo, só mostra os pontos das
+  // placas escolhidas. alvosGlobais (não filtrado) continua servindo o
+  // progressoPorPlaca e o fallback de alvosEfetivos acima.
+  const alvosGlobaisMapa = useMemo(() => {
+    if (!modoSelecionados || veiculosSelecionados.size === 0) return alvosGlobais;
+    // PontoEntrega não tem cv, só placa — traduz o Set de cv's selecionados pras placas correspondentes
+    const placas = new Set(veiculosBase.filter(v => veiculosSelecionados.has(v.cv)).map(v => v.placa));
+    return alvosGlobais.filter(a => a.placa && placas.has(a.placa));
+  }, [alvosGlobais, modoSelecionados, veiculosSelecionados, veiculosBase]);
+
   // Progresso de entregas por placa (para exibir nos cards de alerta)
   const progressoPorPlaca = useMemo(() => {
     const m = new Map<string, { feitos: number; total: number }>();
@@ -1441,7 +1452,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             rastro={rastro}
             paradas={paradas}
             alvos={alvosEfetivos}
-            alvosGlobais={alvosGlobais}
+            alvosGlobais={alvosGlobaisMapa}
             bases={bases}
             favelas={camFavelas ? favelas : null}
             tiroteios={camTiroteios ? tiroteios : []}
