@@ -32,7 +32,7 @@ export async function GET(request: Request) {
   // egress da Supabase em 11 dias (31GB). Mesmo dado, consulta muito menor.
   const { data: alertasRaw } = await supabase
     .from("alertas")
-    .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score")
+    .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng")
     .eq("cliente_id", clienteId)
     .in("status", ["ativo", "reconhecido"]);
 
@@ -77,6 +77,8 @@ export async function GET(request: Request) {
       desde: string;
       status: string;
       score: number | null;
+      lat: number | null;
+      lng: number | null;
     }) => {
       const veiculo = veiculoMap.get(a.veiculo_id) as
         | { id: string; cv: string; placa: string }
@@ -92,11 +94,22 @@ export async function GET(request: Request) {
           }
         | undefined;
       return {
-        ...a,
+        id: a.id,
+        veiculo_id: a.veiculo_id,
+        nivel: a.nivel,
+        tipo: a.tipo,
+        motivo: a.motivo,
+        desde: a.desde,
+        status: a.status,
+        score: a.score,
         cv: veiculo?.cv ?? "",
         placa: veiculo?.placa ?? "?????",
         lat: pos?.lat ?? null,
         lng: pos?.lng ?? null,
+        // Ponto de ORIGEM do próprio alerta (para "desvio": onde a sequência
+        // começou) — distinto de lat/lng acima, que é a posição ATUAL do veículo.
+        origemLat: a.lat,
+        origemLng: a.lng,
         velocidade: pos?.velocidade ?? null,
         ignicao: pos?.ignicao ?? null,
         atraso_min: pos?.atraso_min ?? null,

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 interface Cliente { id: string; nome: string; cod_user_unitrac: string; }
 interface Veiculo { id: string; cliente_id: string; placa: string; cv: string; }
 interface PosicaoAtual { veiculo_id: string; lat: number | null; lng: number | null; velocidade: number; ignicao: boolean; atraso_min: number; local: string | null; }
-interface Alerta { id: string; cliente_id: string; veiculo_id: string; nivel: "critico" | "atencao"; tipo: string; motivo: string | null; desde: string; status: string; score: number | null; }
+interface Alerta { id: string; cliente_id: string; veiculo_id: string; nivel: "critico" | "atencao"; tipo: string; motivo: string | null; desde: string; status: string; score: number | null; lat: number | null; lng: number | null; }
 
 function ordemSeveridade(tipo: string): number {
   const t = tipo?.toLowerCase() ?? "";
@@ -32,7 +32,7 @@ export default async function CentralPage({
       supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
       supabase.from("veiculos").select("id, cliente_id, placa, cv"),
       supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
-      supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score").in("status", ["ativo", "reconhecido"]),
+      supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng").in("status", ["ativo", "reconhecido"]),
     ]);
 
   const clientes: Cliente[] = clientesRaw ?? [];
@@ -52,7 +52,15 @@ export default async function CentralPage({
   const enriquecer = (a: Alerta) => {
     const v = veiculoById.get(a.veiculo_id);
     const p = posicaoPorVeiculo.get(a.veiculo_id);
-    return { ...a, cv: v?.cv ?? "", placa: v?.placa ?? "?????", local: p?.local ?? null, lat: p?.lat ?? null, lng: p?.lng ?? null, velocidade: p?.velocidade ?? null, ignicao: p?.ignicao ?? null, atraso_min: p?.atraso_min ?? null };
+    return {
+      ...a,
+      cv: v?.cv ?? "", placa: v?.placa ?? "?????", local: p?.local ?? null,
+      // lat/lng = posição ATUAL do veículo (posicoes_atuais); origemLat/Lng =
+      // ponto de ORIGEM do próprio alerta (para "desvio": onde começou).
+      lat: p?.lat ?? null, lng: p?.lng ?? null,
+      origemLat: a.lat, origemLng: a.lng,
+      velocidade: p?.velocidade ?? null, ignicao: p?.ignicao ?? null, atraso_min: p?.atraso_min ?? null,
+    };
   };
 
   const alertasIniciais = [

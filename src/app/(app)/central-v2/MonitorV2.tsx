@@ -26,6 +26,8 @@ interface AlertaEnriquecido {
   score: number | null;
   lat: number | null;
   lng: number | null;
+  origemLat: number | null;
+  origemLng: number | null;
   velocidade: number | null;
   ignicao: boolean | null;
   atraso_min: number | null;
@@ -86,15 +88,6 @@ function formatarDist(m: number): string {
   return `${(m / 1000).toFixed(1)}km`;
 }
 
-function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
-  const R = 6371000;
-  const toR = (d: number) => (d * Math.PI) / 180;
-  const dLat = toR(bLat - aLat);
-  const dLng = toR(bLng - aLng);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
 // ── Font helpers ───────────────────────────────────────────────────────
 const FONT_SANS = "var(--font-geist), system-ui, sans-serif";
 const FONT_MONO = "var(--font-geist-mono), ui-monospace, 'Cascadia Code', monospace";
@@ -127,6 +120,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Vehicle selection
   const [cvSelecionado, setCvSelecionado] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // Ref do cv selecionado — lido dentro do poll de posições (10s) sem
+  // precisar recriar o efeito a cada seleção.
+  const cvSelecionadoRef = useRef<string | null>(null);
+  useEffect(() => { cvSelecionadoRef.current = cvSelecionado; }, [cvSelecionado]);
   // Guard: ignore map click within 500ms of a marker click (prevents disappear bug)
   const lastMarkerClickRef = useRef(0);
   // Abort controller for vehicle data fetches (cancels stale requests on vehicle switch)
@@ -198,9 +195,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
   // Alerta ativo (último card clicado na sidebar)
   const [alertaAtivoId, setAlertaAtivoId] = useState<string | null>(null);
-
-  // ETA da próxima entrega (minutos, calculado pelo mapa via Directions API)
-  const [etaProxima, setEtaProxima] = useState<number | null>(null);
 
   // Panico overlay
   const [panicoAlerta, setPanicoAlerta] = useState<AlertaEnriquecido | null>(null);
@@ -420,7 +414,27 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         const res = await fetch(`/api/mapa?cliente=${encodeURIComponent(cliente)}`);
         if (!res.ok) return;
         const data: { veiculos?: VeiculoMapa[] } = await res.json();
-        setVeiculosMapa(data.veiculos ?? []);
+        const veiculos = data.veiculos ?? [];
+        setVeiculosMapa(veiculos);
+
+        // Rastro vivo: anexa a posição nova do veículo focado ao rastro já
+        // carregado (se moveu mais de 10m). Sem isso o rastro azul só se
+        // atualizava na seleção, ficando parado enquanto o carro andava.
+        const cvFoco = cvSelecionadoRef.current;
+        if (cvFoco) {
+          const v = veiculos.find(x => x.cv === cvFoco);
+          if (v?.lat != null && v?.lng != null) {
+            const lat = v.lat, lng = v.lng;
+            setRastro(r => {
+              if (r.length === 0) return r; // fetch inicial ainda em voo
+              const [la, lo] = r[r.length - 1];
+              const dLat = (lat - la) * 111_320;
+              const dLng = (lng - lo) * 111_320 * Math.cos((la * Math.PI) / 180);
+              const distM = Math.sqrt(dLat * dLat + dLng * dLng);
+              return distM > 10 ? [...r, [lat, lng] as [number, number]] : r;
+            });
+          }
+        }
       } catch { /* ignore */ }
     };
     poll();
@@ -567,7 +581,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setParadas([]);
     setAlvos([]);
     setEventos([]);
-    setEtaProxima(null);
     setCmdSirene("idle");
     setCmdBloqueio("idle");
     setMotorBloqueado(false);
@@ -641,16 +654,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     await marcarFalsoPositivo(id);
   }, []);
 
-  const handleResolverTodos = useCallback(() => {
-    const criticos = alertas.filter(a => a.nivel === "critico");
-    if (criticos.length === 0) return;
-    startResolver(async () => {
-      setAlertas(a => a.filter(x => x.nivel !== "critico"));
-      await resolverVarios(criticos.map(a => a.id));
-      setConfirmarResolver(false);
-    });
-  }, [alertas]);
-
   // ── Map controls ─────────────────────────────────────────────────────
   const cmdZoom = useCallback((z: number) => {
     gatilhoRef.current += 1;
@@ -722,6 +725,20 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Ordena só por prioridade — seleção não move o card, só brilha no lugar
   const alertasOrdenados = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
 
+  // Resolve os alertas VISÍVEIS na aba atual (Crítico/Atenção/Tudo), não só
+  // os críticos — antes travava em nivel==="critico" e nao fazia nada nas
+  // outras abas.
+  const handleResolverTodos = useCallback(() => {
+    const alvos = alertasFiltrados;
+    if (alvos.length === 0) return;
+    startResolver(async () => {
+      const ids = new Set(alvos.map(a => a.id));
+      setAlertas(a => a.filter(x => !ids.has(x.id)));
+      await resolverVarios(alvos.map(a => a.id));
+      setConfirmarResolver(false);
+    });
+  }, [alertasFiltrados]);
+
   // Desvios de rota — faixa dedicada no topo do mapa, sempre visivel independente
   // dos filtros da sidebar (vista/tipo). Ordenado do mais recente pro mais antigo.
   const desviosAtivos = alertas
@@ -732,6 +749,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       return g === undefined || !gruposOcultos.has(g);
     })
     .sort((a, b) => new Date(b.desde).getTime() - new Date(a.desde).getTime());
+
+  // Ponto de início do desvio ativo do veículo selecionado (para o marcador
+  // + linha no mapa). origemLat/origemLng vêm do próprio alerta (Task 4),
+  // não da posição atual do veículo.
+  const desvioSelecionado = useMemo(() => {
+    if (!cvSelecionado) return null;
+    const a = desviosAtivos.find(
+      (x) => x.cv === cvSelecionado && x.origemLat != null && x.origemLng != null
+    );
+    return a ? { lat: a.origemLat as number, lng: a.origemLng as number } : null;
+  }, [desviosAtivos, cvSelecionado]);
 
   const veiculosBusca = busca.length >= 2
     ? veiculosBase.filter(v => v.placa.toLowerCase().includes(busca.toLowerCase())).slice(0, 8)
@@ -751,14 +779,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
   const alvosFeitos = alvosEfetivos.filter(p => p.feito).length;
   const alvosTotal = alvosEfetivos.length;
-  const alvosOrdenados = [...alvosEfetivos].sort((a, b) => a.ordem - b.ordem).map(p => ({
-    ...p,
-    dist: (!p.feito && vmAtual?.lat && vmAtual?.lng && (p.lat !== 0 || p.lng !== 0))
-      ? haversineM(vmAtual.lat, vmAtual.lng, p.lat, p.lng)
-      : null,
-  }));
-  const alvosPendentes = alvosOrdenados.filter(p => !p.feito);
-  const proximoCliente = alvosPendentes[0] ?? null;
 
   // Progresso de entregas por placa (para exibir nos cards de alerta)
   const progressoPorPlaca = useMemo(() => {
@@ -1153,8 +1173,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             );
           })()}
 
-          {/* Resolver todos */}
-          {nCriticos > 0 && (
+          {/* Resolver todos — os VISÍVEIS na aba atual (Crítico/Atenção/Tudo) */}
+          {alertasFiltrados.length > 0 && (
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
                 <div style={{ display: "flex", gap: 5 }}>
@@ -1179,7 +1199,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   background: "transparent", border: `1px solid ${T.border}`,
                   color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
                 }}>
-                  Resolver críticos ({nCriticos})
+                  {vista === "critico" ? `Resolver críticos (${alertasFiltrados.length})`
+                    : vista === "atencao" ? `Resolver atenção (${alertasFiltrados.length})`
+                    : `Resolver todos (${alertasFiltrados.length})`}
                 </button>
               )}
             </div>
@@ -1312,6 +1334,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             favelas={camFavelas ? favelas : null}
             tiroteios={camTiroteios ? tiroteios : []}
             rouboCarga={camRouboCarga ? rouboCarga : null}
+            desvioInicio={desvioSelecionado}
             seguir={seguir}
             gatilhoFrota={gatilhoFrota}
             flyPara={flyPara}
@@ -1323,7 +1346,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             satelite={satelite}
             trafego={camTrafego}
             onZoomChange={setZoomAtual}
-            onEtaChange={setEtaProxima}
           />
 
           {/* Faixa de desvios de rota — topo central, clicavel, sempre visivel */}
@@ -1608,45 +1630,18 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   ) : alvosTotal === 0 ? (
                     <div style={{ fontSize: 11, color: T.dim }}>Sem rota hoje</div>
                   ) : (
-                    <>
-                      {/* progresso compacto */}
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: FONT_MONO, color: T.text, flexShrink: 0 }}>
-                          {alvosFeitos}/{alvosTotal}
-                        </span>
-                        <div style={{ flex: 1, height: 3, background: `${T.border}88`, borderRadius: 2, overflow: "hidden" }}>
-                          <div style={{
-                            height: "100%",
-                            width: `${alvosTotal > 0 ? Math.round((alvosFeitos / alvosTotal) * 100) : 0}%`,
-                            background: T.green, borderRadius: 2, transition: "width .4s",
-                          }} />
-                        </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, fontFamily: FONT_MONO, color: T.text, flexShrink: 0 }}>
+                        {alvosFeitos}/{alvosTotal}
+                      </span>
+                      <div style={{ flex: 1, height: 3, background: `${T.border}88`, borderRadius: 2, overflow: "hidden" }}>
+                        <div style={{
+                          height: "100%",
+                          width: `${alvosTotal > 0 ? Math.round((alvosFeitos / alvosTotal) * 100) : 0}%`,
+                          background: T.green, borderRadius: 2, transition: "width .4s",
+                        }} />
                       </div>
-                      {/* só a próxima entrega */}
-                      {proximoCliente ? (
-                        <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
-                          <span style={{
-                            flexShrink: 0, width: 14, height: 14, borderRadius: "50%",
-                            display: "inline-flex", alignItems: "center", justifyContent: "center",
-                            fontSize: 7, fontWeight: 800, fontFamily: FONT_MONO, lineHeight: 1,
-                            background: "#f97316", color: "#0a0a0a",
-                          }}>{proximoCliente.ordem}</span>
-                          <span style={{
-                            flex: 1, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                            fontWeight: 600, color: T.text,
-                          }}>
-                            {proximoCliente.nome || `Ponto ${proximoCliente.ordem}`}
-                          </span>
-                          {etaProxima != null && (
-                            <span style={{ flexShrink: 0, fontSize: 9, fontFamily: FONT_MONO, color: "#f97316", fontWeight: 700 }}>
-                              ~{etaProxima}min
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 10, color: T.green, fontWeight: 600 }}>Rota concluída</div>
-                      )}
-                    </>
+                    </div>
                   )}
                 </div>
               )}

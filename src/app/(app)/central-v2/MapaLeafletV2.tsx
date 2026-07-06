@@ -85,6 +85,9 @@ export interface Props {
   favelas: GeoJsonCollection | null;
   tiroteios: Tiroteio[];
   rouboCarga: GeoJsonCollection | null;
+  // Ponto de início do desvio ativo do veículo selecionado (lat/lng do
+  // alerta). Desenha marcador de aviso + linha até a posição atual.
+  desvioInicio?: { lat: number; lng: number } | null;
   seguir: boolean;
   gatilhoFrota: number;
   flyPara: { lat: number; lng: number; gatilho: number } | null;
@@ -97,7 +100,6 @@ export interface Props {
   satelite: boolean;
   trafego?: boolean;
   onZoomChange?: (zoom: number) => void;
-  onEtaChange?: (eta: number | null) => void;
 }
 
 const CENTER_DEFAULT = { lat: -22.9, lng: -43.2 };
@@ -376,9 +378,10 @@ function agruparAlvosPorPonto(alvos: PontoEntrega[]): GrupoAlvo[] {
 export default function MapaLeafletV2({
   veiculosMapa, cvSelecionado, mostrarRastro, mostrarParadas,
   rastro, paradas, alvos, alvosGlobais, bases, favelas, tiroteios, rouboCarga,
+  desvioInicio,
   seguir, gatilhoFrota, flyPara, zoomCmd,
   onVeiculoClick, onMapaVazioClick, onAlvoClick,
-  mapTokens, tema, satelite, trafego, onZoomChange, onEtaChange,
+  mapTokens, tema, satelite, trafego, onZoomChange,
 }: Props) {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "",
@@ -392,13 +395,11 @@ export default function MapaLeafletV2({
   const [itensAlvoSelecionado, setItensAlvoSelecionado] = useState<PontoEntrega[]>([]);
   const [zoomLocal, setZoomLocal] = useState(11);
   const showLabel = zoomLocal >= 14;
-  const [etaMinutos, setEtaMinutos] = useState<number | null>(null);
   const prevFlyG   = useRef(-1);
   const prevZoomG  = useRef(0);
   const prevFrotaG = useRef(-1);
   const lastPanKey = useRef("");
   const rastroLinesRef = useRef<google.maps.Polyline[]>([]);
-  const routeLinesRef  = useRef<google.maps.Polyline[]>([]);
   const alvosGlobaisMarkersRef = useRef<google.maps.Marker[]>([]);
 
   // Controla o rastro de forma imperativa para garantir limpeza quando cvSelecionado vai a null.
@@ -496,82 +497,6 @@ export default function MapaLeafletV2({
   );
   const chaveProximoPendente = alvosPendentes[0] ? chaveDoPonto(alvosPendentes[0]) : null;
 
-  // Memoizado pelos valores reais de lat/lng — evita recriar o array a cada render
-  // e disparo infinito do useEffect de rota.
-  const routeWaypoints = useMemo<google.maps.LatLngLiteral[] | null>(() => {
-    if (!vmSelecionado?.lat || !vmSelecionado?.lng) return null;
-    const next = alvosPendentes[0];
-    if (!next || (next.lat === 0 && next.lng === 0)) return null;
-    return [
-      { lat: vmSelecionado.lat, lng: vmSelecionado.lng },
-      { lat: next.lat, lng: next.lng },
-    ];
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vmSelecionado?.lat, vmSelecionado?.lng, alvosPendentes[0]?.lat, alvosPendentes[0]?.lng]);
-
-  // Linha pontilhada de rota com ETA via Directions API — imperativa pelo mesmo bug do Polyline declarativo no React 18.
-  useEffect(() => {
-    routeLinesRef.current.forEach(p => p.setMap(null));
-    routeLinesRef.current = [];
-    if (!map || !routeWaypoints || routeWaypoints.length < 2) {
-      setEtaMinutos(null);
-      onEtaChange?.(null);
-      return;
-    }
-
-    // Desenha linha reta imediatamente (feedback visual instantâneo)
-    const drawLines = (path: google.maps.LatLngLiteral[]) => {
-      routeLinesRef.current.forEach(p => p.setMap(null));
-      routeLinesRef.current = [];
-      const dashIcon: google.maps.Symbol = { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 4 };
-      const outer = new google.maps.Polyline({
-        map, path, strokeColor: "#000000", strokeWeight: 4, strokeOpacity: 0, geodesic: true, zIndex: 10,
-        icons: [{ icon: { ...dashIcon, strokeColor: "#000000", strokeOpacity: 0.55 }, offset: "0", repeat: "14px" }],
-      });
-      const inner = new google.maps.Polyline({
-        map, path, strokeColor: "#f97316", strokeWeight: 2, strokeOpacity: 0, geodesic: true, zIndex: 11,
-        icons: [{ icon: { ...dashIcon, strokeColor: "#f97316", strokeOpacity: 0.9 }, offset: "0", repeat: "14px" }],
-      });
-      routeLinesRef.current = [outer, inner];
-    };
-
-    drawLines(routeWaypoints);
-
-    // ETA inicial por haversine ÷ 25 km/h enquanto OSRM carrega
-    const o = routeWaypoints[0];
-    const d = routeWaypoints[1];
-    const R = 6_371_000;
-    const toR = (deg: number) => (deg * Math.PI) / 180;
-    const dLat = toR(d.lat - o.lat);
-    const dLng = toR(d.lng - o.lng);
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toR(o.lat)) * Math.cos(toR(d.lat)) * Math.sin(dLng / 2) ** 2;
-    const distM = 2 * R * Math.asin(Math.sqrt(a));
-    setEtaMinutos(Math.ceil(distM / (25_000 / 3600) / 60));
-    onEtaChange?.(Math.ceil(distM / (25_000 / 3600) / 60));
-
-    // Rota pelas ruas via OSRM (gratuito, sem chave)
-    const ctrl = new AbortController();
-    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${o.lng},${o.lat};${d.lng},${d.lat}?overview=full&geometries=geojson`;
-    fetch(osrmUrl, { signal: ctrl.signal })
-      .then(r => r.json())
-      .then((data: { routes?: Array<{ geometry: { coordinates: [number, number][] }; duration: number }> }) => {
-        const route = data?.routes?.[0];
-        if (!route) return;
-        const roadPath = route.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }));
-        drawLines(roadPath);
-        const etaReal = Math.ceil(route.duration / 60);
-        setEtaMinutos(etaReal);
-        onEtaChange?.(etaReal);
-      })
-      .catch(() => { /* mantém linha reta + ETA haversine em caso de falha */ });
-
-    return () => {
-      ctrl.abort();
-      routeLinesRef.current.forEach(p => p.setMap(null));
-      routeLinesRef.current = [];
-    };
-  }, [map, routeWaypoints]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Marcadores globais de entregas — imperativos para não travar React com 300+ markers.
   // Agrupados por ponto (mesmo pontocodigo) pra nao empilhar N marcadores identicos.
   useEffect(() => {
@@ -632,13 +557,6 @@ export default function MapaLeafletV2({
     scaledSize: new window.google.maps.Size(10, 10),
     anchor: new window.google.maps.Point(5, 5),
   };
-
-  // Dashed line icon sequence for route
-  const dashSeq = [{
-    icon: { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 4 } as google.maps.Symbol,
-    offset: "0",
-    repeat: "14px",
-  }];
 
   return (
     <GoogleMap
@@ -791,7 +709,36 @@ export default function MapaLeafletV2({
         );
       })}
 
-      {/* linha pontilhada gerenciada imperativamente via useEffect + routeLinesRef */}
+      {/* ── Início do desvio ativo do veículo selecionado ── */}
+      {cvSelecionado && desvioInicio && vmSelecionado?.lat != null && vmSelecionado?.lng != null && (
+        <>
+          <Polyline
+            path={[
+              { lat: desvioInicio.lat, lng: desvioInicio.lng },
+              { lat: vmSelecionado.lat, lng: vmSelecionado.lng },
+            ]}
+            options={{
+              strokeColor: "#ef4444",
+              strokeOpacity: 0.7,
+              strokeWeight: 2,
+              zIndex: 29,
+            }}
+          />
+          <Marker
+            position={{ lat: desvioInicio.lat, lng: desvioInicio.lng }}
+            title="Início do desvio"
+            zIndex={30}
+            icon={{
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: 8,
+              fillColor: "#ef4444",
+              fillOpacity: 0.9,
+              strokeColor: "#7f1d1d",
+              strokeWeight: 2,
+            }}
+          />
+        </>
+      )}
 
       {/* ── Pontos de entrega (só quando há veículo selecionado) — agrupados por ponto ── */}
       {cvSelecionado && gruposAlvos.map(g => {
