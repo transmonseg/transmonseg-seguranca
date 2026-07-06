@@ -1,5 +1,6 @@
 // Retorna o historico de posicoes (rastro) de um veiculo nas ultimas N horas.
 import { buscarRastro, removerPicosRastro } from "@/lib/unitrac";
+import { ajustarRastroParaRuas } from "@/lib/rastro-matching";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,9 @@ export async function GET(request: Request) {
 
   try {
     const pontos = await buscarRastro(cv, horas);
-    return Response.json({ pontos: removerPicosRastro(pontos) });
+    const semPicos = removerPicosRastro(pontos);
+    const pontosAjustados = await ajustarRastroParaRuas(semPicos);
+    return Response.json({ pontos: pontosAjustados });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });
   }

@@ -1,0 +1,94 @@
+// Ajusta o rastro (trajeto JA percorrido) pra colar na malha viaria real via
+// OSRM (servico publico, gratuito, sem chave). Diferente do antigo "corredor"
+// de rota (removido — inventava destino futuro), aqui so corrigimos um
+// trajeto GPS que ja aconteceu: sem isso, a linha entre dois pontos de GPS
+// reais e desenhada RETA no mapa, cortando direto por cima de quarteirao ou
+// casas quando o salto entre eles e grande (amostragem esparsa da Unitrac).
+//
+// Por que /route (2 pontos por chamada) e nao /match (o servico "certo" pra
+// trace GPS): o servidor publico do OSRM tem um teto de tamanho de trace
+// pra /match muito baixo (testado: falha com so 12 pontos, "TooBig") —
+// inviavel pra um rastro com centenas de pontos. /route entre 2 pontos nao
+// tem esse teto e da o caminho real na rua entre eles, que e o que importa
+// pros saltos grandes; saltos pequenos ja ficam bons como reta mesmo.
+import { haversineM } from "./unitrac";
+
+// Acima disso (m), a reta entre dois pontos consecutivos corta quarteirao
+// visivelmente — vale a pena buscar o caminho real. Abaixo, reta ja fica bem.
+const GAP_MINIMO_M = 400;
+// Teto de chamadas por rastro: mesmo em trajetos longos/esparsos (96h), nao
+// deixa a tela esperar dezenas de chamadas sequenciais.
+const MAX_CHAMADAS = 40;
+// Quantas chamadas em voo ao mesmo tempo — rapido, mas educado com o
+// servidor publico (nao e dimensionado pra rajada alta).
+const CONCORRENCIA = 6;
+
+type Ponto = { lat: number; lng: number };
+
+type OsrmRouteResponse = {
+  code: string;
+  routes?: { geometry?: { coordinates?: [number, number][] } }[];
+};
+
+// Busca o caminho real (nas ruas) entre dois pontos. Em qualquer falha
+// (rede, timeout, sem rota), retorna null — o chamador mantém a reta original.
+async function buscarCaminhoReal(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
+  try {
+    const res = await fetch(
+      `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?geometries=geojson&overview=full`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as OsrmRouteResponse;
+    const coords = data.routes?.[0]?.geometry?.coordinates;
+    if (data.code !== "Ok" || !coords || coords.length === 0) return null;
+    return coords.map(([lng, lat]) => ({ lat, lng }));
+  } catch {
+    return null;
+  }
+}
+
+// Identifica os indices i (0-based) onde o salto pontos[i] -> pontos[i+1] é
+// grande o bastante pra valer a pena corrigir. Função pura, testável sem rede.
+export function indicesDeSaltosGrandes(pontos: Ponto[]): number[] {
+  const indices: number[] = [];
+  for (let i = 0; i < pontos.length - 1; i++) {
+    const d = haversineM(pontos[i].lat, pontos[i].lng, pontos[i + 1].lat, pontos[i + 1].lng);
+    if (d > GAP_MINIMO_M) indices.push(i);
+  }
+  return indices;
+}
+
+// Ajusta o rastro: para cada salto grande entre pontos consecutivos, busca o
+// caminho real na rua e o insere no lugar da reta. Processa em lotes com
+// concorrência limitada; teto de chamadas evita travar em trajetos muito
+// esparsos. Qualquer falha individual mantém a reta original naquele trecho
+// — o rastro nunca fica pior do que estava.
+export async function ajustarRastroParaRuas(pontos: Ponto[]): Promise<Ponto[]> {
+  if (pontos.length < 2) return pontos;
+
+  const indices = indicesDeSaltosGrandes(pontos).slice(0, MAX_CHAMADAS);
+  if (indices.length === 0) return pontos;
+
+  const caminhos = new Map<number, Ponto[]>();
+  for (let i = 0; i < indices.length; i += CONCORRENCIA) {
+    const lote = indices.slice(i, i + CONCORRENCIA);
+    const resultados = await Promise.all(
+      lote.map((idx) => buscarCaminhoReal(pontos[idx], pontos[idx + 1]))
+    );
+    lote.forEach((idx, j) => {
+      const caminho = resultados[j];
+      if (caminho) caminhos.set(idx, caminho);
+    });
+  }
+
+  if (caminhos.size === 0) return pontos;
+
+  const resultado: Ponto[] = [];
+  for (let i = 0; i < pontos.length; i++) {
+    resultado.push(pontos[i]);
+    const caminho = caminhos.get(i);
+    if (caminho) resultado.push(...caminho);
+  }
+  return resultado;
+}
