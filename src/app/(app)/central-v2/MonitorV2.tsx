@@ -6,6 +6,7 @@ import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
 import { resolverAlerta, marcarFalsoPositivo, resolverVarios } from "../acoes-alertas";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
+import { createClient as createSupabaseBrowser } from "@/lib/supabase/browser";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
@@ -359,7 +360,24 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     };
   }
 
-  // ── Polls ────────────────────────────────────────────────────────────
+  // ── Tick do motor via Supabase Realtime ──────────────────────────────
+  // O motor grava dado novo 1x/min e emite um broadcast "tick" (sem payload)
+  // ao terminar o ciclo. As buscas de alertas/mapa rodam QUANDO o tick chega
+  // (dado fresquinho, ~1-2s depois do motor gravar) em vez de pollar as
+  // cegas a cada 10-15s. Os setInterval abaixo viram só fallback lento pra
+  // quando o websocket cair. Isso corta ~6x as consultas por tela e ainda
+  // atualiza MAIS rapido que o poll antigo.
+  const [motorTick, setMotorTick] = useState(0);
+  useEffect(() => {
+    const supabase = createSupabaseBrowser();
+    const canal = supabase
+      .channel("motor-tick")
+      .on("broadcast", { event: "tick" }, () => setMotorTick(t => t + 1))
+      .subscribe();
+    return () => { supabase.removeChannel(canal); };
+  }, []);
+
+  // ── Polls (tick-driven; interval = fallback se o realtime cair) ──────
   useEffect(() => {
     const poll = async () => {
       try {
@@ -385,9 +403,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       } catch { /* ignore */ }
     };
     poll();
-    const t = setInterval(poll, 15_000);
+    const t = setInterval(poll, 45_000);
     return () => clearInterval(t);
-  }, [cliente]);
+  }, [cliente, motorTick]);
 
   useEffect(() => {
     const poll = async () => {
@@ -419,9 +437,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       } catch { /* ignore */ }
     };
     poll();
-    const t = setInterval(poll, 10_000);
+    const t = setInterval(poll, 45_000);
     return () => clearInterval(t);
-  }, [cliente]);
+  }, [cliente, motorTick]);
 
   // Grupos de frota Unitrac (gvc/gvn) — fetcha uma vez por cliente
   useEffect(() => {

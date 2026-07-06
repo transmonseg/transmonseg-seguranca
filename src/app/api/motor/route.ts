@@ -1302,6 +1302,27 @@ export async function POST(request: Request) {
       }
     }
 
+    // Tick via Realtime broadcast: avisa as telas abertas que o ciclo
+    // terminou e ha dado novo. As telas buscam /api/mapa e /api/alertas SO
+    // quando o tick chega (1x/min) em vez de pollar as cegas a cada 10-15s.
+    // Payload vazio de proposito (canal publico, nenhum dado sensivel).
+    // 1 mensagem HTTP por ciclo; falha e silenciosa (fallback: as telas
+    // mantem um poll lento de seguranca).
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/realtime/v1/api/broadcast`, {
+        method: "POST",
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY ?? ""}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: [{ topic: "motor-tick", event: "tick", payload: {} }],
+        }),
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch { /* nao critico: fallback de poll lento cobre */ }
+
     return Response.json({
       processados: totalProcessados,
       frescos: totalFrescos,

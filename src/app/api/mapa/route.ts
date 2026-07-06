@@ -24,6 +24,13 @@ type CacheEntry = { bases: unknown; pontosEntrega: { lat: number; lng: number }[
 const CACHE_MS = 60_000;
 const cachePorCliente = new Map<string, CacheEntry>();
 
+// Posições/veículos: o motor grava 1x por minuto, então um cache curtinho
+// (10s) faz N telas que buscam no mesmo tick do motor compartilharem UMA
+// query — é o que permite muitas telas abertas sem multiplicar egress.
+type VeiculosCacheEntry = { veiculos: unknown[]; expiraEm: number };
+const VEICULOS_CACHE_MS = 10_000;
+const veiculosCachePorCliente = new Map<string, VeiculosCacheEntry>();
+
 export async function GET(request: Request) {
   // Posições de frota são dado sensível: exige operador logado.
   const auth = await createClient();
@@ -47,26 +54,32 @@ export async function GET(request: Request) {
 
     // LEFT JOIN LATERAL busca o tipo do alerta ativo de maior prioridade por veiculo.
     // Prioridade: critico antes de atencao; dentro do mesmo nivel, ordem alfabetica (estavel).
-    // Veiculos sem alerta retornam tipo = null.
-    const veiculos = (
-      await client.query<{ cv: string }>(
-        `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
-                p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
-                p.rumo, al.tipo
-         from posicoes_atuais p
-         join veiculos v on v.id = p.veiculo_id
-         left join lateral (
-           select a.tipo
-           from alertas a
-           where a.veiculo_id = v.id
-             and a.status in ('ativo', 'reconhecido')
-           order by (a.nivel = 'critico') desc, a.tipo
-           limit 1
-         ) al on true
-         where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`,
-        [clienteId]
-      )
-    ).rows;
+    // Veiculos sem alerta retornam tipo = null. Cache curto (ver VEICULOS_CACHE_MS).
+    let veiculosCache = veiculosCachePorCliente.get(clienteId);
+    if (!veiculosCache || veiculosCache.expiraEm <= Date.now()) {
+      const veiculosRows = (
+        await client.query<{ cv: string }>(
+          `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
+                  p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
+                  p.rumo, al.tipo
+           from posicoes_atuais p
+           join veiculos v on v.id = p.veiculo_id
+           left join lateral (
+             select a.tipo
+             from alertas a
+             where a.veiculo_id = v.id
+               and a.status in ('ativo', 'reconhecido')
+             order by (a.nivel = 'critico') desc, a.tipo
+             limit 1
+           ) al on true
+           where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`,
+          [clienteId]
+        )
+      ).rows;
+      veiculosCache = { veiculos: veiculosRows, expiraEm: Date.now() + VEICULOS_CACHE_MS };
+      veiculosCachePorCliente.set(clienteId, veiculosCache);
+    }
+    const veiculos = veiculosCache.veiculos;
 
     // Bases + malha de entregas: cacheadas por cliente (ver CACHE_MS acima).
     let cache = cachePorCliente.get(clienteId);
