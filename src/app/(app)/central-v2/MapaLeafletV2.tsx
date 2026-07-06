@@ -875,11 +875,6 @@ export default function MapaLeafletV2({
                   {situacaoGrupo === 1 ? "Feito" : "Esteve no local"}: {formatarHoraParada(alvoSelecionado.dataRealizado)}
                 </div>
               )}
-              {alvoSelecionado.dataInicio && !alvoSelecionado.feito && (
-                <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
-                  Previsto: {formatarHoraParada(alvoSelecionado.dataInicio)}
-                </div>
-              )}
               {alvoSelecionado.observacoes && (
                 <div style={{ fontSize: 10, color: "#d1d5db", marginTop: 4, fontStyle: "italic" }}>
                   {alvoSelecionado.observacoes}
