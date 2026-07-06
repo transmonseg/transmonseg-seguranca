@@ -9,7 +9,7 @@ import {
   detectarParadaLonga,
   detectarParadaAnomala,
   detectarDesvio,
-  distanciaAumentou,
+  afastouDeTudo,
   detectarTiroteioProximo,
   detectarSaidaNaoAutorizada,
   foraDeRota,
@@ -227,9 +227,11 @@ describe("avaliar - cenarios parada_cliente", () => {
   });
 });
 
-describe("detectarDesvio (v3: afastamento do destino mais proximo, rapido e sem piso)", () => {
+describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos flood ao vivo 06/07)", () => {
+  // 3 destinos (2 pendentes + 1 base) — cenario tipico com varias entregas.
   const base = {
-    menorDistDestinoM: 6000,
+    distDestinosM: [6000, 8000, 12000],
+    distDestinosAnteriorM: [5000, 7000, 11000],
     temPendentes: true,
     emOperacao: true,
     foraDaBase: true,
@@ -240,13 +242,13 @@ describe("detectarDesvio (v3: afastamento do destino mais proximo, rapido e sem 
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
-  it("streak 2 dentro de via conhecida: atencao (dispara rapido, sem piso de distancia acumulada)", () => {
+  it("streak 2 afastando de TODOS, via conhecida: atencao (dispara rapido, sem piso de distancia)", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: true });
     expect(a?.nivel).toBe("atencao");
     expect(a?.tipo).toBe("desvio");
   });
 
-  it("streak 2 fora do tapete: critico direto (via que a frota nunca percorreu)", () => {
+  it("streak 2 fora do tapete (cobertura minima confirmada): critico direto", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: false });
     expect(a?.nivel).toBe("critico");
   });
@@ -273,23 +275,42 @@ describe("detectarDesvio (v3: afastamento do destino mais proximo, rapido e sem 
     expect(detectarDesvio(emMov, { ...base, entregasFeitas: 0 })).toBeNull();
   });
 
-  it("perto do destino (nao afastando) tambem pode disparar — quem decide e o streak, nao a distancia absoluta", () => {
-    // menorDistDestinoM pequeno (300m) mas ainda dentro do teto: o piso de
-    // distancia absoluta foi removido de proposito (desvio de 500m ja e grave).
-    const a = detectarDesvio(emMov, { ...base, menorDistDestinoM: 300 });
+  it("ENTREGA NORMAL: aproximando so do 2o pendente (nao o mais proximo) NAO dispara — bug real corrigido", () => {
+    // Motorista indo para o destino de 8000m (que ficou mais perto, 7200),
+    // mesmo afastando do de 6000m (foi pra 6300) e da base (12000->12300).
+    // O v3 anterior disparava aqui porque so olhava "o mais proximo" (6000);
+    // o v4 exige afastar de TODOS, e aproximar de qualquer um cancela.
+    const a = detectarDesvio(emMov, {
+      ...base,
+      distDestinosM: [6300, 7200, 12300],
+      distDestinosAnteriorM: [6000, 8000, 12000],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("afastando de TODOS os destinos ao mesmo tempo dispara", () => {
+    const a = detectarDesvio(emMov, {
+      ...base,
+      distDestinosM: [6300, 8300, 12300],
+      distDestinosAnteriorM: [6000, 8000, 12000],
+    });
     expect(a).not.toBeNull();
   });
 
   it("acima do teto de deslocamento interurbano (25km) nao dispara", () => {
-    expect(detectarDesvio(emMov, { ...base, menorDistDestinoM: 30000 })).toBeNull();
+    expect(detectarDesvio(emMov, {
+      ...base, distDestinosM: [30000, 40000], distDestinosAnteriorM: [29000, 39000],
+    })).toBeNull();
   });
 
-  it("sem destino valido (menorDistDestinoM null) nao dispara", () => {
-    expect(detectarDesvio(emMov, { ...base, menorDistDestinoM: null })).toBeNull();
+  it("sem destinos (array vazio) nao dispara", () => {
+    expect(detectarDesvio(emMov, { ...base, distDestinosM: [], distDestinosAnteriorM: [] })).toBeNull();
   });
 
   it("0 pendentes (fim de rota): unico destino e a base, mesma regra unificada", () => {
-    const a = detectarDesvio(emMov, { ...base, temPendentes: false, streak: 2 });
+    const a = detectarDesvio(emMov, {
+      ...base, temPendentes: false, distDestinosM: [12300], distDestinosAnteriorM: [12000], streak: 2,
+    });
     expect(a?.nivel).toBe("atencao");
   });
 
@@ -299,19 +320,19 @@ describe("detectarDesvio (v3: afastamento do destino mais proximo, rapido e sem 
   });
 });
 
-describe("distanciaAumentou", () => {
-  it("true quando a distancia cresce alem da margem de 50m", () => {
-    expect(distanciaAumentou(6000, 5000)).toBe(true);
+describe("afastouDeTudo", () => {
+  it("true quando TODAS as distancias cresceram alem da margem de 50m", () => {
+    expect(afastouDeTudo([6000, 8000], [5000, 7000])).toBe(true);
   });
-  it("false quando a distancia caiu (aproximando)", () => {
-    expect(distanciaAumentou(6000, 6900)).toBe(false);
+  it("false quando aproxima de QUALQUER destino (entrega normal a um pendente distante)", () => {
+    expect(afastouDeTudo([6300, 7200], [6000, 8000])).toBe(false);
   });
   it("false quando o crescimento fica dentro da margem de ruido de GPS", () => {
-    expect(distanciaAumentou(5030, 5000)).toBe(false);
+    expect(afastouDeTudo([5030, 7040], [5000, 7000])).toBe(false);
   });
-  it("false com valores nulos (sem ciclo anterior ou sem destino)", () => {
-    expect(distanciaAumentou(null, 5000)).toBe(false);
-    expect(distanciaAumentou(5000, null)).toBe(false);
+  it("false sem destinos ou com arrays de tamanhos diferentes", () => {
+    expect(afastouDeTudo([], [])).toBe(false);
+    expect(afastouDeTudo([5000], [])).toBe(false);
   });
 });
 
@@ -414,10 +435,11 @@ describe("avaliar", () => {
     const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 120, emOperacao: true, foraDaBase: true });
     expect(alerta?.tipo).toBe("panico");
   });
-  it("desvio entra na avaliacao quando ha destino (menorDistDestinoM definido)", () => {
+  it("desvio entra na avaliacao quando ha destinos (distDestinosM definido)", () => {
     const alerta = avaliar(posicaoBase({ velocidade: 40 }), {
       ...ctxOp,
-      menorDistDestinoM: 6000,
+      distDestinosM: [6000, 9000],
+      distDestinosAnteriorM: [5000, 8000],
       temPendentes: true,
       entregasFeitas: 3,
       desvioStreak: 4,
@@ -426,13 +448,14 @@ describe("avaliar", () => {
     expect(alerta?.tipo).toBe("desvio");
     expect(alerta?.nivel).toBe("critico");
   });
-  it("sem destino (menorDistDestinoM ausente) NAO avalia desvio", () => {
+  it("sem destinos (distDestinosM ausente) NAO avalia desvio", () => {
     expect(avaliar(posicaoBase({ velocidade: 40 }), ctxOp)).toBeNull();
   });
   it("panico tem prioridade sobre desvio", () => {
     const alerta = avaliar(posicaoBase({ velocidade: 40, panico: true }), {
       ...ctxOp,
-      menorDistDestinoM: 6000,
+      distDestinosM: [6000, 9000],
+      distDestinosAnteriorM: [5000, 8000],
       temPendentes: true,
       entregasFeitas: 3,
       desvioStreak: 4,

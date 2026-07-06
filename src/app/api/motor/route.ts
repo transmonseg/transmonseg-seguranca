@@ -17,7 +17,7 @@ import {
   avaliar,
   detectarJammer,
   foraDeRota,
-  distanciaAumentou,
+  afastouDeTudo,
   emHorarioOperacao,
   detectarRetornoTardio,
   detectarParadaNoturnaIgnicaoAtiva,
@@ -604,13 +604,14 @@ export async function POST(request: Request) {
             }
           }
 
-          // ─── Desvio v3: destino mais próximo (alvo pendente ou base) ────
-          // Sem rota planejada, desvio é comportamento: o veículo deveria
-          // estar progredindo em direção ao destino legítimo mais próximo
-          // (não a TODOS — com várias entregas espalhadas, exigir que a
-          // distância a todas cresça ao mesmo tempo mascara desvio real por
-          // pura geometria de rua) e não está. Rápido e sem piso de distância
-          // de propósito: um desvio de 500m já pode ser um assalto começando.
+          // ─── Desvio v4: afastamento de TODOS os destinos legítimos ──────
+          // Sem rota planejada, desvio é comportamento: o veículo se afasta
+          // de TODOS os destinos (alvos pendentes + bases) em vez de
+          // progredir rumo a pelo menos um deles. NÃO usa só "o mais
+          // próximo" — corrigido ao vivo em 06/07/2026 (flood de 22 falsos
+          // positivos em 20min): motorista indo pra entrega que não é a
+          // mais próxima (comuníssimo com 2+ pendentes) disparava desvio
+          // numa entrega normal. Ver detectarDesvio em lib/detectores.ts.
           const pontosVeiculo = pontosPorPlaca.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
@@ -623,12 +624,11 @@ export async function POST(request: Request) {
             ...centroidesBases,
           ];
           const temAnterior = !!anterior && anterior.lat != null && anterior.lng != null;
-          const menorDistDestinoM = destinos.length > 0
-            ? Math.min(...destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng)))
-            : null;
-          const menorDistDestinoAnteriorM = temAnterior && destinos.length > 0
-            ? Math.min(...destinos.map((d) => haversineM(anterior!.lat!, anterior!.lng!, d.lat, d.lng)))
-            : null;
+          const distDestinosM = destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng));
+          const distDestinosAnteriorM = temAnterior
+            ? destinos.map((d) => haversineM(anterior!.lat!, anterior!.lng!, d.lat, d.lng))
+            : [];
+          const menorDistDestinoM = distDestinosM.length > 0 ? Math.min(...distDestinosM) : null;
 
           // Guarda anti-teleporte: salto implausível entre ciclos (>2,5km em
           // ~1min, ou seja >150km/h implícitos) congela o streak.
@@ -638,14 +638,14 @@ export async function POST(request: Request) {
           let desvioStreak: number = anterior?.desvio_streak ?? 0;
           let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
           if (pos.fresco && !saltoImplausivel && pos.velocidade > 0 && temAnterior) {
-            if (distanciaAumentou(menorDistDestinoM, menorDistDestinoAnteriorM)) {
+            if (afastouDeTudo(distDestinosM, distDestinosAnteriorM)) {
               desvioStreak += 1;
               if (desvioStreak === 1) {
                 desvioInicio = {
                   lat: anterior!.lat!,
                   lng: anterior!.lng!,
                   ts: agora.toISOString(),
-                  menor_dist_m: menorDistDestinoAnteriorM ?? 0,
+                  menor_dist_m: distDestinosAnteriorM.length > 0 ? Math.min(...distDestinosAnteriorM) : 0,
                 };
               }
             } else {
@@ -663,10 +663,19 @@ export async function POST(request: Request) {
           // decidir a severidade rápido. Custo já é baixo: getTapeteCliente
           // cacheia o Set inteiro do cliente por CACHE_TAPETE_MS, então isso
           // aqui é só um Set.has() em memória, sem query por veículo.
+          //
+          // TAPETE_MIN_CELULAS: piso de cobertura mínima antes de confiar em
+          // "fora do tapete" como sinal. Achado ao vivo em 06/07/2026: logo
+          // após aplicar a migration (tapete vazio/recém-criado), TODO
+          // veículo parecia "fora de via conhecida" e virava crítico em 2
+          // ciclos — ruído de cold-start, não sinal real. Sem cobertura
+          // mínima, dentroTapete fica null (não modula, nunca crítico só
+          // por isso).
+          const TAPETE_MIN_CELULAS = 300;
           let dentroTapete: boolean | null = null;
           if (pos.fresco) {
             const tapeteCliente = await getTapeteCliente(cliente_id);
-            if (tapeteCliente.size > 0) {
+            if (tapeteCliente.size >= TAPETE_MIN_CELULAS) {
               dentroTapete = vizinhanca3x3(pos.lat, pos.lng).some((c) => tapeteCliente.has(c));
             }
           }
@@ -803,7 +812,8 @@ export async function POST(request: Request) {
                   emOperacao,
                   foraDaBase,
                   noCliente,
-                  menorDistDestinoM,
+                  distDestinosM,
+                  distDestinosAnteriorM,
                   desvioStreak,
                   afastamentoAcumuladoM,
                   dentroTapete,

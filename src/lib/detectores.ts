@@ -283,48 +283,66 @@ const DESVIO_RESOLVE_M = 2500;
 const AFASTAMENTO_MARGEM_M = 50;
 
 // A Unitrac NÃO fornece rota planejada nem ordem confiável de entregas.
-// Desvio aqui é comportamento: o veículo se afastando do destino legítimo
-// mais próximo (qualquer entrega pendente ou base) em vez de progredir.
+// Desvio aqui é comportamento: o veículo se afastando de TODOS os destinos
+// legítimos (cada entrega pendente + cada base) em vez de progredir rumo a
+// pelo menos um deles.
 //
-// Por que "mais próximo" e não "todos os destinos": com várias entregas
-// espalhadas pela cidade, exigir que a distância a TODAS cresça ao mesmo
-// tempo é raro só por geometria de rua — mascara desvio real (o carro
-// pode ficar "chegando mais perto" de algum ponto distante por acaso,
-// mesmo estando de fato sequestrado). O sinal certo é mais simples: ele
-// deveria estar progredindo em direção ao destino mais próximo dele, e não
-// está.
+// Por que TODOS e não só o mais próximo (corrigido ao vivo em produção —
+// achado real, não teórico: 06/07/2026, 22 alertas em 20min): usar só o
+// destino mais próximo dispara em entrega NORMAL sempre que o motorista tem
+// 2+ pendentes e vai para a que não é a mais próxima (comuníssimo — a ordem
+// de distância euclidiana raramente é a ordem real da rota). Exigir que a
+// distância a TODOS cresça ao mesmo tempo é o critério matematicamente
+// correto de "não está progredindo rumo a nada legítimo": basta se aproximar
+// de QUALQUER pendente ou base pra cancelar a suspeita, então a entrega
+// comum (indo para qualquer pendente, mesmo o mais distante) nunca dispara.
 //
 // Por que sem piso de distância mínima: um desvio de 500m já pode ser um
 // assalto em andamento. Não dá pra esperar acumular quilômetros. A proteção
 // contra falso positivo vem de outro lugar: persistência mínima (2 ciclos,
 // ~2min, o mais rápido que dá pra filtrar ruído de GPS de 1 leitura) e do
-// tapete histórico (ver Camada 2 abaixo) — rua que a frota nunca percorreu é
-// um sinal quase certo, independente de quão perto/longe do próximo cliente.
+// tapete histórico (ver Camada 2 abaixo, com piso de tamanho mínimo pra não
+// repetir o falso-positivo de cold-start do dia 06/07 — tapete vazio/pequeno
+// não pode ser tratado como "fora de via conhecida").
 export type CtxDesvio = {
-  menorDistDestinoM: number | null;
+  // Distância atual e do ciclo anterior a CADA destino legítimo (mesma ordem
+  // nos dois arrays): alvos pendentes + bases do cliente.
+  distDestinosM: number[];
+  distDestinosAnteriorM: number[];
   temPendentes: boolean;
   emOperacao: boolean;
   foraDaBase: boolean;
   entregasFeitas?: number;
-  // Ciclos consecutivos se afastando do destino mais próximo (motor persiste).
+  // Ciclos consecutivos afastando-se de TUDO (motor incrementa e persiste).
   streak: number;
   // menorDist(agora) - menorDist(no início da sequência). Só informativo
-  // (mostrado no motivo do alerta); não é mais exigência pra disparar.
+  // (mostrado no motivo do alerta); não é exigência pra disparar.
   afastamentoAcumuladoM: number;
   // Camada 2 (tapete): true = célula (3x3) já percorrida pela frota nos
-  // últimos 30 dias; false = fora de qualquer caminho conhecido (sinal forte,
-  // crítico imediato); null = tapete sem dado na região (não modula).
+  // últimos 30 dias; false = fora de qualquer caminho conhecido E o tapete
+  // já tem cobertura mínima confiável (motor só passa false quando o
+  // tamanho do tapete supera o piso — ver TAPETE_MIN_CELULAS no motor);
+  // null = sem tapete confiável ainda na região (não modula, nunca crítico
+  // só por isso).
   dentroTapete: boolean | null;
 };
 
-// A distância ao destino cresceu de verdade desde o ciclo anterior?
-export function distanciaAumentou(atualM: number | null, anteriorM: number | null): boolean {
-  if (atualM === null || anteriorM === null) return false;
-  return atualM > anteriorM + AFASTAMENTO_MARGEM_M;
+// O veículo se afastou de TODOS os destinos legítimos desde o ciclo
+// anterior? Aproximar de QUALQUER um cancela — é assim que uma entrega
+// normal (rumo a um pendente que não é o mais próximo) nunca dispara.
+export function afastouDeTudo(
+  distDestinosM: number[],
+  distDestinosAnteriorM: number[]
+): boolean {
+  if (distDestinosM.length === 0) return false;
+  if (distDestinosM.length !== distDestinosAnteriorM.length) return false;
+  return distDestinosM.every(
+    (d, i) => d > distDestinosAnteriorM[i] + AFASTAMENTO_MARGEM_M
+  );
 }
 
 // Condição FROUXA de permanência do alerta (anti-pisca): mantém enquanto o
-// veículo segue longe (>=2,5km) do destino mais próximo, incluindo bases.
+// veículo segue longe (>=2,5km) de TODOS os destinos, incluindo bases.
 export function foraDeRota(
   p: PosicaoNormalizada,
   ctx: { menorDistDestinoM: number | null; emOperacao: boolean; foraDaBase: boolean }
@@ -336,26 +354,34 @@ export function foraDeRota(
 
 // Detector de DESVIO (gatilho de criação). Rápido de propósito: streak>=2
 // (~2min) já dispara, sem piso de distância — um desvio pequeno pode ser
-// um assalto começando. A precisão vem do tapete (via desconhecida = quase
-// certeza) e da persistência mínima (mata ruído de 1 leitura de GPS).
+// um assalto começando. A precisão vem de exigir afastamento de TODOS os
+// destinos (não só o mais próximo), do tapete (via desconhecida, com
+// cobertura mínima confirmada) e da persistência (mata ruído de GPS).
 export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
   if (!ctx.emOperacao || !ctx.foraDaBase) return null;
   if (p.velocidade <= 0) return null;
   // Indo para a primeira entrega do dia: sem referência de comportamento ainda.
   if (ctx.temPendentes && (ctx.entregasFeitas ?? 1) === 0) return null;
-  if (ctx.menorDistDestinoM === null) return null;
-  if (ctx.menorDistDestinoM > DESVIO_GATILHO_TETO_M) return null;
+  if (ctx.distDestinosM.length === 0) return null;
+
+  const menorDistM = Math.min(...ctx.distDestinosM);
+  if (menorDistM > DESVIO_GATILHO_TETO_M) return null;
   if (ctx.streak < 2) return null;
+  // Checagem própria (não confia só no streak pré-computado pelo motor):
+  // se o ciclo ATUAL mostra aproximação de qualquer destino, cancela na
+  // hora — não espera o motor zerar o streak no próximo ciclo.
+  if (!afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM)) return null;
 
   const kmAcum = (Math.max(0, ctx.afastamentoAcumuladoM) / 1000).toFixed(1).replace(".", ",");
+  const nDest = ctx.distDestinosM.length;
 
-  // Fora de qualquer via já percorrida pela frota: sinal quase certo, crítico
-  // já no 2º ciclo (mesma velocidade da atenção, mas com confiança maior).
+  // Fora de qualquer via já percorrida pela frota (com cobertura mínima
+  // confirmada pelo motor): sinal quase certo, crítico já no 2º ciclo.
   if (ctx.dentroTapete === false) {
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Fora de via conhecida da frota há ${ctx.streak} leituras, afastando-se do destino mais próximo (+${kmAcum}km)`,
+      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras, fora de via conhecida da frota (+${kmAcum}km)`,
       score: 80,
     };
   }
@@ -366,7 +392,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Afastando-se do destino mais próximo há ${ctx.streak} leituras seguidas (+${kmAcum}km)`,
+      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (+${kmAcum}km)`,
       score: 68,
     };
   }
@@ -374,7 +400,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   return {
     nivel: "atencao",
     tipo: "desvio",
-    motivo: `Afastando-se do destino mais próximo há ${ctx.streak} leituras (+${kmAcum}km)`,
+    motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras (+${kmAcum}km)`,
     score: 45,
   };
 }
@@ -554,9 +580,10 @@ export function avaliarTodos(
       distTiroteioM: ctx.distTiroteioM ?? null,
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
     }),
-    ctx.menorDistDestinoM !== undefined
+    ctx.distDestinosM !== undefined
       ? detectarDesvio(p, {
-          menorDistDestinoM: ctx.menorDistDestinoM ?? null,
+          distDestinosM: ctx.distDestinosM ?? [],
+          distDestinosAnteriorM: ctx.distDestinosAnteriorM ?? [],
           temPendentes: ctx.temPendentes ?? false,
           emOperacao: ctx.emOperacao,
           foraDaBase: ctx.foraDaBase,
@@ -583,7 +610,8 @@ export function avaliar(
     emOperacao: boolean;
     foraDaBase: boolean;
     noCliente?: boolean;
-    menorDistDestinoM?: number | null;
+    distDestinosM?: number[];
+    distDestinosAnteriorM?: number[];
     desvioStreak?: number;
     afastamentoAcumuladoM?: number;
     dentroTapete?: boolean | null;
@@ -650,9 +678,10 @@ export function avaliar(
       distTiroteioM: ctx.distTiroteioM ?? null,
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
     }),
-    ctx.menorDistDestinoM !== undefined
+    ctx.distDestinosM !== undefined
       ? detectarDesvio(p, {
-          menorDistDestinoM: ctx.menorDistDestinoM ?? null,
+          distDestinosM: ctx.distDestinosM ?? [],
+          distDestinosAnteriorM: ctx.distDestinosAnteriorM ?? [],
           temPendentes: ctx.temPendentes ?? false,
           emOperacao: ctx.emOperacao,
           foraDaBase: ctx.foraDaBase,
