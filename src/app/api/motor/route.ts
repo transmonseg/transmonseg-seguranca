@@ -17,7 +17,7 @@ import {
   avaliar,
   detectarJammer,
   foraDeRota,
-  afastouDeTudo,
+  distanciaAumentou,
   emHorarioOperacao,
   detectarRetornoTardio,
   detectarParadaNoturnaIgnicaoAtiva,
@@ -54,6 +54,14 @@ const LIMITE_GEOCODES_NOVOS = TEM_GOOGLE_GEOCODE ? 30 : 3;
 type VeiculoCache = { veiculos: { id: string; cv: string; grupo: string | null }[]; expiraEm: number };
 const CACHE_FROTA_MS = 3 * 60_000; // 3 min: renova rápido o bastante pra pegar veículo novo/desativado sem demora perceptível
 const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
+
+// Tapete histórico (Camada 2 do desvio): células que a frota já percorreu nos
+// últimos 30 dias, por cliente. É o sinal PRIMÁRIO e precisa estar disponível
+// desde o 1º ciclo suspeito — por isso cacheado por cliente (não por
+// veículo), com TTL curto, em vez de 1 query por veículo por ciclo.
+type TapeteCache = { celulas: Set<string>; expiraEm: number };
+const CACHE_TAPETE_MS = 3 * 60_000;
+const cacheTapetePorCliente = new Map<string, TapeteCache>();
 
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
@@ -411,20 +419,30 @@ export async function POST(request: Request) {
     // Celulas do tapete cobertas pelo trajeto de cada veiculo neste ciclo —
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
     const celulasCiclo: { cliente_id: string; celula: string }[] = [];
-    // Contagem do tapete por cliente, cacheada no ciclo: distingue "fora do
-    // tapete" de "tapete ainda nao semeado" (que nao pode modular severidade).
-    const tapeteContagem = new Map<string, number>();
-    const contarTapeteCliente = async (clienteId: string): Promise<number> => {
-      const cacheado = tapeteContagem.get(clienteId);
-      if (cacheado !== undefined) return cacheado;
-      const { count } = await supabase
-        .from("corredor_celulas")
-        .select("celula", { count: "exact", head: true })
-        .eq("cliente_id", clienteId);
-      const n = count ?? 0;
-      tapeteContagem.set(clienteId, n);
-      return n;
-    };
+
+    // Tapete por cliente: busca TODAS as celulas de uma vez (via pool, sem o
+    // limite de linhas do PostgREST) e cacheia em memoria por CACHE_TAPETE_MS.
+    // E o sinal PRIMARIO do desvio (nao so um modulador), entao precisa estar
+    // pronto desde o 1o ciclo suspeito de cada veiculo — por isso 1 busca por
+    // cliente aqui, nao 1 query por veiculo candidato dentro do loop.
+    async function getTapeteCliente(clienteId: string): Promise<Set<string>> {
+      const cache = cacheTapetePorCliente.get(clienteId);
+      if (cache && cache.expiraEm > Date.now()) return cache.celulas;
+      const pgTapete = await pool.connect();
+      try {
+        const { rows } = await pgTapete.query<{ celula: string }>(
+          `SELECT celula FROM corredor_celulas WHERE cliente_id = $1`,
+          [clienteId]
+        );
+        const celulas = new Set(rows.map((r) => r.celula));
+        cacheTapetePorCliente.set(clienteId, { celulas, expiraEm: Date.now() + CACHE_TAPETE_MS });
+        return celulas;
+      } catch {
+        return cache?.celulas ?? new Set();
+      } finally {
+        pgTapete.release();
+      }
+    }
 
     for (const cliente of clientes) {
       // Obter CVs deste cliente
@@ -586,9 +604,13 @@ export async function POST(request: Request) {
             }
           }
 
-          // ─── Desvio v2: destinos legítimos = alvos pendentes + bases ────
-          // Sem rota planejada, desvio é comportamento: afastar-se de TODOS
-          // os destinos ao mesmo tempo, sustentado por ciclos consecutivos.
+          // ─── Desvio v3: destino mais próximo (alvo pendente ou base) ────
+          // Sem rota planejada, desvio é comportamento: o veículo deveria
+          // estar progredindo em direção ao destino legítimo mais próximo
+          // (não a TODOS — com várias entregas espalhadas, exigir que a
+          // distância a todas cresça ao mesmo tempo mascara desvio real por
+          // pura geometria de rua) e não está. Rápido e sem piso de distância
+          // de propósito: um desvio de 500m já pode ser um assalto começando.
           const pontosVeiculo = pontosPorPlaca.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
@@ -600,12 +622,13 @@ export async function POST(request: Request) {
             ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
             ...centroidesBases,
           ];
-          const distDestinosM = destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng));
           const temAnterior = !!anterior && anterior.lat != null && anterior.lng != null;
-          const distDestinosAnteriorM = temAnterior
-            ? destinos.map((d) => haversineM(anterior!.lat!, anterior!.lng!, d.lat, d.lng))
-            : [];
-          const menorDistDestinoM = distDestinosM.length > 0 ? Math.min(...distDestinosM) : null;
+          const menorDistDestinoM = destinos.length > 0
+            ? Math.min(...destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng)))
+            : null;
+          const menorDistDestinoAnteriorM = temAnterior && destinos.length > 0
+            ? Math.min(...destinos.map((d) => haversineM(anterior!.lat!, anterior!.lng!, d.lat, d.lng)))
+            : null;
 
           // Guarda anti-teleporte: salto implausível entre ciclos (>2,5km em
           // ~1min, ou seja >150km/h implícitos) congela o streak.
@@ -615,14 +638,14 @@ export async function POST(request: Request) {
           let desvioStreak: number = anterior?.desvio_streak ?? 0;
           let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
           if (pos.fresco && !saltoImplausivel && pos.velocidade > 0 && temAnterior) {
-            if (afastouDeTudo(distDestinosM, distDestinosAnteriorM)) {
+            if (distanciaAumentou(menorDistDestinoM, menorDistDestinoAnteriorM)) {
               desvioStreak += 1;
               if (desvioStreak === 1) {
                 desvioInicio = {
                   lat: anterior!.lat!,
                   lng: anterior!.lng!,
                   ts: agora.toISOString(),
-                  menor_dist_m: Math.min(...distDestinosAnteriorM),
+                  menor_dist_m: menorDistDestinoAnteriorM ?? 0,
                 };
               }
             } else {
@@ -635,19 +658,16 @@ export async function POST(request: Request) {
               ? menorDistDestinoM - desvioInicio.menor_dist_m
               : 0;
 
-          // Camada 2 (tapete): consulta APENAS candidatos reais (streak >= 2)
-          // pra manter o custo de leitura desprezível.
+          // Camada 2 (tapete): sinal PRIMÁRIO, calculado TODO ciclo (não só
+          // quando já suspeito) — precisa estar pronto desde o 1º ciclo pra
+          // decidir a severidade rápido. Custo já é baixo: getTapeteCliente
+          // cacheia o Set inteiro do cliente por CACHE_TAPETE_MS, então isso
+          // aqui é só um Set.has() em memória, sem query por veículo.
           let dentroTapete: boolean | null = null;
-          if (desvioStreak >= 2 && pos.fresco) {
-            const tapeteTotal = await contarTapeteCliente(cliente_id);
-            if (tapeteTotal > 0) {
-              const { data: hits } = await supabase
-                .from("corredor_celulas")
-                .select("celula")
-                .eq("cliente_id", cliente_id)
-                .in("celula", vizinhanca3x3(pos.lat, pos.lng))
-                .limit(1);
-              dentroTapete = (hits ?? []).length > 0;
+          if (pos.fresco) {
+            const tapeteCliente = await getTapeteCliente(cliente_id);
+            if (tapeteCliente.size > 0) {
+              dentroTapete = vizinhanca3x3(pos.lat, pos.lng).some((c) => tapeteCliente.has(c));
             }
           }
 
@@ -783,8 +803,7 @@ export async function POST(request: Request) {
                   emOperacao,
                   foraDaBase,
                   noCliente,
-                  distDestinosM,
-                  distDestinosAnteriorM,
+                  menorDistDestinoM,
                   desvioStreak,
                   afastamentoAcumuladoM,
                   dentroTapete,

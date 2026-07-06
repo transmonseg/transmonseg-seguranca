@@ -9,7 +9,7 @@ import {
   detectarParadaLonga,
   detectarParadaAnomala,
   detectarDesvio,
-  afastouDeTudo,
+  distanciaAumentou,
   detectarTiroteioProximo,
   detectarSaidaNaoAutorizada,
   foraDeRota,
@@ -227,45 +227,42 @@ describe("avaliar - cenarios parada_cliente", () => {
   });
 });
 
-describe("detectarDesvio (v2: afastamento de todos os destinos)", () => {
-  // Destinos = alvos pendentes + bases. dist*: mesma ordem nos dois arrays.
+describe("detectarDesvio (v3: afastamento do destino mais proximo, rapido e sem piso)", () => {
   const base = {
-    distDestinosM: [6000, 8000, 12000],
-    distDestinosAnteriorM: [5000, 7000, 11000],
+    menorDistDestinoM: 6000,
     temPendentes: true,
     emOperacao: true,
     foraDaBase: true,
     entregasFeitas: 2,
     streak: 2,
-    afastamentoAcumuladoM: 900,
+    afastamentoAcumuladoM: 300,
     dentroTapete: null as boolean | null,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
-  it("streak 2 + acumulado 500m+ dentro de caminho conhecido: atencao", () => {
+  it("streak 2 dentro de via conhecida: atencao (dispara rapido, sem piso de distancia acumulada)", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: true });
     expect(a?.nivel).toBe("atencao");
     expect(a?.tipo).toBe("desvio");
   });
 
-  it("streak 2 fora do tapete: critico direto", () => {
+  it("streak 2 fora do tapete: critico direto (via que a frota nunca percorreu)", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: false });
     expect(a?.nivel).toBe("critico");
   });
 
-  it("streak 4 + acumulado 1,5km+: critico mesmo dentro do tapete", () => {
-    const a = detectarDesvio(emMov, {
-      ...base, streak: 4, afastamentoAcumuladoM: 1600, dentroTapete: true,
-    });
+  it("streak 4 escala pra critico mesmo dentro do tapete (persistencia longa)", () => {
+    const a = detectarDesvio(emMov, { ...base, streak: 4, dentroTapete: true });
     expect(a?.nivel).toBe("critico");
   });
 
-  it("streak 1 nao dispara (persistencia minima 2 ciclos)", () => {
-    expect(detectarDesvio(emMov, { ...base, streak: 1 })).toBeNull();
+  it("desvio pequeno (afastamento acumulado de so 300m) ja dispara atencao", () => {
+    const a = detectarDesvio(emMov, { ...base, afastamentoAcumuladoM: 300 });
+    expect(a).not.toBeNull();
   });
 
-  it("acumulado abaixo de 500m nao dispara em tapete desconhecido/conhecido", () => {
-    expect(detectarDesvio(emMov, { ...base, afastamentoAcumuladoM: 300 })).toBeNull();
+  it("streak 1 nao dispara (persistencia minima 2 ciclos, ~2min)", () => {
+    expect(detectarDesvio(emMov, { ...base, streak: 1 })).toBeNull();
   });
 
   it("parado nao dispara", () => {
@@ -276,28 +273,24 @@ describe("detectarDesvio (v2: afastamento de todos os destinos)", () => {
     expect(detectarDesvio(emMov, { ...base, entregasFeitas: 0 })).toBeNull();
   });
 
-  it("fora da faixa local nao dispara (menor dist < 2,5km ou > 25km)", () => {
-    expect(detectarDesvio(emMov, {
-      ...base, distDestinosM: [2000, 8000], distDestinosAnteriorM: [1500, 7000],
-    })).toBeNull();
-    expect(detectarDesvio(emMov, {
-      ...base, distDestinosM: [30000, 40000], distDestinosAnteriorM: [29000, 39000],
-    })).toBeNull();
+  it("perto do destino (nao afastando) tambem pode disparar — quem decide e o streak, nao a distancia absoluta", () => {
+    // menorDistDestinoM pequeno (300m) mas ainda dentro do teto: o piso de
+    // distancia absoluta foi removido de proposito (desvio de 500m ja e grave).
+    const a = detectarDesvio(emMov, { ...base, menorDistDestinoM: 300 });
+    expect(a).not.toBeNull();
   });
 
-  it("0 pendentes (fim de rota): afastando da base 3 ciclos + 2km = atencao", () => {
-    const a = detectarDesvio(emMov, {
-      ...base, temPendentes: false, distDestinosM: [7000], distDestinosAnteriorM: [6000],
-      streak: 3, afastamentoAcumuladoM: 2100,
-    });
+  it("acima do teto de deslocamento interurbano (25km) nao dispara", () => {
+    expect(detectarDesvio(emMov, { ...base, menorDistDestinoM: 30000 })).toBeNull();
+  });
+
+  it("sem destino valido (menorDistDestinoM null) nao dispara", () => {
+    expect(detectarDesvio(emMov, { ...base, menorDistDestinoM: null })).toBeNull();
+  });
+
+  it("0 pendentes (fim de rota): unico destino e a base, mesma regra unificada", () => {
+    const a = detectarDesvio(emMov, { ...base, temPendentes: false, streak: 2 });
     expect(a?.nivel).toBe("atencao");
-  });
-
-  it("0 pendentes com streak 2 nao dispara (limiar maior no fim de rota)", () => {
-    expect(detectarDesvio(emMov, {
-      ...base, temPendentes: false, distDestinosM: [7000], distDestinosAnteriorM: [6000],
-      streak: 2, afastamentoAcumuladoM: 2100,
-    })).toBeNull();
   });
 
   it("fora de operacao ou dentro da base nao dispara", () => {
@@ -306,19 +299,19 @@ describe("detectarDesvio (v2: afastamento de todos os destinos)", () => {
   });
 });
 
-describe("afastouDeTudo", () => {
-  it("true quando TODAS as distancias cresceram alem da margem de 50m", () => {
-    expect(afastouDeTudo([6000, 8000], [5000, 7000])).toBe(true);
+describe("distanciaAumentou", () => {
+  it("true quando a distancia cresce alem da margem de 50m", () => {
+    expect(distanciaAumentou(6000, 5000)).toBe(true);
   });
-  it("false quando aproxima de QUALQUER destino", () => {
-    expect(afastouDeTudo([6000, 6900], [5000, 7000])).toBe(false);
+  it("false quando a distancia caiu (aproximando)", () => {
+    expect(distanciaAumentou(6000, 6900)).toBe(false);
   });
-  it("false quando o crescimento fica dentro da margem de ruido", () => {
-    expect(afastouDeTudo([5030, 7040], [5000, 7000])).toBe(false);
+  it("false quando o crescimento fica dentro da margem de ruido de GPS", () => {
+    expect(distanciaAumentou(5030, 5000)).toBe(false);
   });
-  it("false sem destinos ou com arrays de tamanhos diferentes", () => {
-    expect(afastouDeTudo([], [])).toBe(false);
-    expect(afastouDeTudo([5000], [])).toBe(false);
+  it("false com valores nulos (sem ciclo anterior ou sem destino)", () => {
+    expect(distanciaAumentou(null, 5000)).toBe(false);
+    expect(distanciaAumentou(5000, null)).toBe(false);
   });
 });
 
@@ -421,11 +414,10 @@ describe("avaliar", () => {
     const alerta = avaliar(posicaoBase({ panico: true }), { paradoMin: 120, emOperacao: true, foraDaBase: true });
     expect(alerta?.tipo).toBe("panico");
   });
-  it("desvio entra na avaliacao quando ha destinos (distDestinosM definido)", () => {
+  it("desvio entra na avaliacao quando ha destino (menorDistDestinoM definido)", () => {
     const alerta = avaliar(posicaoBase({ velocidade: 40 }), {
       ...ctxOp,
-      distDestinosM: [6000, 9000],
-      distDestinosAnteriorM: [5000, 8000],
+      menorDistDestinoM: 6000,
       temPendentes: true,
       entregasFeitas: 3,
       desvioStreak: 4,
@@ -434,14 +426,13 @@ describe("avaliar", () => {
     expect(alerta?.tipo).toBe("desvio");
     expect(alerta?.nivel).toBe("critico");
   });
-  it("sem destinos (distDestinosM ausente) NAO avalia desvio", () => {
+  it("sem destino (menorDistDestinoM ausente) NAO avalia desvio", () => {
     expect(avaliar(posicaoBase({ velocidade: 40 }), ctxOp)).toBeNull();
   });
   it("panico tem prioridade sobre desvio", () => {
     const alerta = avaliar(posicaoBase({ velocidade: 40, panico: true }), {
       ...ctxOp,
-      distDestinosM: [6000, 9000],
-      distDestinosAnteriorM: [5000, 8000],
+      menorDistDestinoM: 6000,
       temPendentes: true,
       entregasFeitas: 3,
       desvioStreak: 4,
