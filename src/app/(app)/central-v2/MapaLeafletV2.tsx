@@ -170,11 +170,11 @@ const DOT_START  = dotSvg("#22c55e", "#064e1a");
 // vermelho/amarelo/verde/azul/cinza pros seus 5 estados). Pendente em amarelo-ouro
 // (igual ao portal Unitrac original). Entregue em rosa/magenta forte — verde ficou
 // reservado pro veiculo "em movimento" (repetir gerava confusao entre os dois).
-// A Unitrac tem um 3º código (alvosituacaoservico=98, achado em varredura na API)
-// que fecha a entrega sem ser o "feito" padrão — tratamos como "outro"/preto até
-// confirmar o significado exato com o suporte Unitrac. Preto (nao cinza) de
-// proposito: o portal deles tem um estado "Cancelado" em preto que pode ser esse
-// mesmo caso, e cinza ja e a cor do veiculo com motor desligado.
+// A Unitrac tem um 3º código (alvosituacaoservico=98) que fecha a entrega sem
+// ser o "feito" padrão — CONFIRMADO com a operação: significa "esteve no
+// local" (não é cancelado nem remarcado). Só 3 status existem de verdade:
+// pendente, realizado (feito) e esteve no local. Preto (nao cinza) de
+// proposito: cinza ja e a cor do veiculo com motor desligado.
 export const COR_PENDENTE = "#eab308";
 export const COR_ENTREGUE = "#ec4899";
 export const COR_OUTRO = "#27272a";
@@ -511,7 +511,7 @@ export default function MapaLeafletV2({
         map,
         icon: criarIconeAlvo(g.situacaoEfetiva, false, g.qtd),
         title:
-          (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Encerrado")) +
+          (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Esteve no local")) +
           (g.qtd > 1 ? ` (${g.qtd} entregas)` : ""),
         zIndex: g.situacaoEfetiva !== 0 ? 10 : 13,
         clickable: true,
@@ -749,7 +749,7 @@ export default function MapaLeafletV2({
             position={{ lat: g.representante.lat, lng: g.representante.lng }}
             icon={criarIconeAlvo(g.situacaoEfetiva, proximo, g.qtd)}
             title={
-              (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Encerrado")) +
+              (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Esteve no local")) +
               (g.qtd > 1 ? ` (${g.qtd} entregas)` : "")
             }
             zIndex={proximo ? 15 : 12}
@@ -821,7 +821,7 @@ export default function MapaLeafletV2({
                   {agrupado
                     ? `${itens.length} entregas neste ponto`
                     : situacaoGrupo === 1 ? "Entregue"
-                    : situacaoGrupo !== 0 ? `Encerrado (cod. ${alvoSelecionado.situacao})`
+                    : situacaoGrupo !== 0 ? "Esteve no local"
                     : `Pendente #${alvoSelecionado.ordem + 1}`}
                 </span>
                 <button onClick={fechar}
@@ -872,7 +872,7 @@ export default function MapaLeafletV2({
               )}
               {alvoSelecionado.dataRealizado && (
                 <div style={{ fontSize: 10, color: situacaoGrupo === 1 ? COR_ENTREGUE : COR_OUTRO, marginTop: 4 }}>
-                  {situacaoGrupo === 1 ? "Feito" : "Encerrado"}: {formatarHoraParada(alvoSelecionado.dataRealizado)}
+                  {situacaoGrupo === 1 ? "Feito" : "Esteve no local"}: {formatarHoraParada(alvoSelecionado.dataRealizado)}
                 </div>
               )}
               {alvoSelecionado.dataInicio && !alvoSelecionado.feito && (

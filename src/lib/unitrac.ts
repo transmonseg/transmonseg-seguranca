@@ -55,7 +55,7 @@ export async function buscarPosicoes(cvs: string[]): Promise<unknown[]> {
 // ordem na rota e situação (feito/pendente).
 export type AlvoUnitrac = {
   placa: string;
-  alvosituacaoservico: number; // 0=pendente, 1=feito, 98=outro (visto em producao, significado exato nao confirmado)
+  alvosituacaoservico: number; // 0=pendente, 1=realizado (feito), 98=esteve no local (confirmado com a operacao)
   alvocodigo?: number; // id estavel da entrega, unico por linha (NF)
   pontocodigo?: number; // id estavel do PONTO/endereco — varias linhas (NFs) podem compartilhar o mesmo pontocodigo
   pontolatitude?: number;
@@ -85,8 +85,8 @@ export type PontoEntrega = {
   raio: number; // metros
   ordem: number;
   nome: string;
-  feito: boolean; // true quando situacao !== 0 (encerrado, seja confirmado ou nao)
-  situacao: number; // codigo bruto da Unitrac: 0=pendente, 1=feito, 98=outro (significado exato nao confirmado com a Unitrac)
+  feito: boolean; // true quando situacao !== 0 (realizado ou esteve no local)
+  situacao: number; // codigo bruto da Unitrac: 0=pendente, 1=realizado, 98=esteve no local
   codigo: number | null; // alvocodigo da Unitrac — id estavel pra usar como key de lista
   pontoCodigo: number | null; // pontocodigo da Unitrac — varios alvos (NFs) podem compartilhar o mesmo ponto/endereco
   documento: string | null;

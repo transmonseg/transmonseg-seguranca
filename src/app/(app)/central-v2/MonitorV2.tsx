@@ -1459,7 +1459,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 {[
                   { cor: COR_PENDENTE, label: "Pendente" },
                   { cor: COR_ENTREGUE, label: "Entregue" },
-                  { cor: COR_OUTRO, label: "Encerrado (outro)" },
+                  { cor: COR_OUTRO, label: "Esteve no local" },
                 ].map(({ cor, label }) => (
                   <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
                     <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
