@@ -86,10 +86,10 @@ describe("detectarJammer", () => {
     expect(alerta?.tipo).toBe("jammer");
     expect(alerta?.score).toBe(80);
   });
-  it("atraso no limite inferior (30) aciona jammer em nivel atencao", () => {
+  it("atraso no limite inferior (30) aciona jammer (nivel atencao eliminado, tudo critico)", () => {
     const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 30 }));
     expect(alerta).not.toBeNull();
-    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.nivel).toBe("critico");
     expect(alerta?.score).toBe(55);
   });
   it("atraso abaixo da janela (15) nao aciona jammer", () => {
@@ -110,10 +110,10 @@ describe("detectarJammer", () => {
 });
 
 describe("detectarExcessoVelocidade", () => {
-  it("velocidade=121 retorna excesso atencao", () => {
+  it("velocidade=121 retorna excesso critico", () => {
     const alerta = detectarExcessoVelocidade(posicaoBase({ velocidade: 121 }));
     expect(alerta).not.toBeNull();
-    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("excesso");
     expect(alerta?.score).toBe(40);
   });
@@ -143,10 +143,10 @@ describe("emHorarioOperacao", () => {
 });
 
 describe("detectarParadaLonga", () => {
-  it("95min + emOperacao + foraDaBase retorna parada_longa atencao", () => {
+  it("95min + emOperacao + foraDaBase retorna parada_longa critico", () => {
     const alerta = detectarParadaLonga({ paradoMin: 95, emOperacao: true, foraDaBase: true });
     expect(alerta).not.toBeNull();
-    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("parada_longa");
     expect(alerta?.score).toBe(50);
     expect(alerta?.motivo).toContain("1h35min");
@@ -242,9 +242,9 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
-  it("streak 2 afastando de TODOS, via conhecida: atencao (dispara rapido, sem piso de distancia)", () => {
+  it("streak 2 afastando de TODOS, via conhecida: critico (dispara rapido, sem piso de distancia)", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: true });
-    expect(a?.nivel).toBe("atencao");
+    expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("desvio");
   });
 
@@ -311,7 +311,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     const a = detectarDesvio(emMov, {
       ...base, temPendentes: false, distDestinosM: [12300], distDestinosAnteriorM: [12000], streak: 2,
     });
-    expect(a?.nivel).toBe("atencao");
+    expect(a?.nivel).toBe("critico");
   });
 
   it("fora de operacao ou dentro da base nao dispara", () => {
@@ -346,15 +346,15 @@ describe("detectarTiroteioProximo", () => {
     expect(a?.motivo).toContain("500m");
     expect(a?.motivo).toContain("25min");
   });
-  it("tiroteio a 800m retorna atencao (faixa 600m-2km)", () => {
+  it("tiroteio a 800m retorna critico (faixa 600m-2km)", () => {
     const a = detectarTiroteioProximo(fresco, { distTiroteioM: 800, tiroteioIdadeMin: 25 });
-    expect(a?.nivel).toBe("atencao");
+    expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("tiroteio");
     expect(a?.motivo).toContain("800m");
   });
-  it("tiroteio a 2km retorna atencao", () => {
+  it("tiroteio a 2km retorna critico", () => {
     const a = detectarTiroteioProximo(fresco, { distTiroteioM: 2000, tiroteioIdadeMin: 10 });
-    expect(a?.nivel).toBe("atencao");
+    expect(a?.nivel).toBe("critico");
     expect(a?.score).toBe(50);
     expect(a?.motivo).toContain("2,0km");
   });
@@ -411,14 +411,14 @@ describe("avaliar", () => {
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("jammer");
   });
-  it("velocidade=121 retorna excesso atencao", () => {
+  it("velocidade=121 retorna excesso critico", () => {
     const alerta = avaliar(posicaoBase({ velocidade: 121 }), ctxOp);
-    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("excesso");
   });
-  it("paradoMin=95 + emOperacao + foraDaBase retorna parada_longa atencao", () => {
+  it("paradoMin=95 + emOperacao + foraDaBase retorna parada_longa critico", () => {
     const alerta = avaliar(posicaoBase(), { paradoMin: 95, emOperacao: true, foraDaBase: true });
-    expect(alerta?.nivel).toBe("atencao");
+    expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("parada_longa");
   });
   it("paradoMin=95 + emOperacao=false NAO retorna parada_longa", () => {
@@ -502,13 +502,13 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(a?.tipo).toBe("saida_nao_autorizada");
     expect(a?.score).toBe(80);
   });
-  it("fora da base, sem rota, ignicao ligada e PARADO retorna atencao", () => {
+  it("fora da base, sem rota, ignicao ligada e PARADO retorna critico", () => {
     const a = detectarSaidaNaoAutorizada(
       posicaoBase({ ignicao: true, fresco: true, velocidade: 0 }),
       { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
     );
     expect(a).not.toBeNull();
-    expect(a?.nivel).toBe("atencao");
+    expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("saida_nao_autorizada");
     expect(a?.score).toBe(45);
   });

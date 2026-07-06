@@ -1150,11 +1150,12 @@ export async function POST(request: Request) {
               .some((a) => pontoEmGeo(a.lng, a.lat, vf.geofence_geojson));
             if (temEntregaNaFavela && !vf.panico) continue;
 
-            // Graduar: em transito (velocidade > 0, sem panico) = atencao/amarelo;
-            // parado ou panico = critico/vermelho.
+            // Nivel "atencao"/amarelo eliminado (pedido do cliente 06/07): tudo
+            // vira critico/vermelho. Score ainda diferencia em transito de
+            // parado, so a severidade exibida que deixou de escalonar.
             const emMovimento = vf.velocidade > 0 && !vf.panico;
-            const nivelAlerta: "critico" | "atencao" = emMovimento ? "atencao" : "critico";
-            const nivelDb = emMovimento ? "amarelo" : "vermelho";
+            const nivelAlerta: "critico" | "atencao" = "critico";
+            const nivelDb = "vermelho";
             const scoreFavela = emMovimento ? 60 : 95;
             const motivoFavela = emMovimento
               ? `Em transito pela comunidade: ${vf.nome_favela}`

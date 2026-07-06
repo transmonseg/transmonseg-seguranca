@@ -75,7 +75,7 @@ export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
   if (p.atraso < JAMMER_ATENCAO_MIN || p.atraso > JAMMER_TETO_MIN) return null;
   if (p.atraso < JAMMER_CRITICO_MIN) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "jammer",
       motivo: `Sinal ausente ha ${p.atraso}min com ignicao ligada (monitorar)`,
       score: 55,
@@ -132,7 +132,7 @@ export function detectarSaidaNaoAutorizada(
     };
   }
   return {
-    nivel: "atencao",
+    nivel: "critico",
     tipo: "saida_nao_autorizada",
     motivo: "Parado fora da base sem rota programada",
     score: 45,
@@ -144,7 +144,7 @@ export function detectarExcessoVelocidade(p: PosicaoNormalizada): Alerta | null 
   // 100 km/h gerava falso atencao em qualquer estrada normal.
   if (p.velocidade > 120) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "excesso",
       motivo: `Excesso de velocidade: ${p.velocidade} km/h`,
       score: 40,
@@ -208,7 +208,7 @@ export function detectarParadaLonga(ctx: {
   if (ctx.entregasTotal && ctx.entregasTotal > 0 && ctx.entregasFeitas !== undefined && ctx.entregasFeitas >= ctx.entregasTotal) return null;
   if (ctx.paradoMin >= 90 && ctx.emOperacao && ctx.foraDaBase) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "parada_longa",
       motivo: `Parado ha ${formataDuracao(ctx.paradoMin)}, contatar equipe`,
       score: 50,
@@ -254,8 +254,10 @@ export function detectarParadaAnomala(ctx: {
   if (ctx.esMadrugada) score += 15;
   if (ctx.emZonaRisco) score += 10;
 
-  // Madrugada + zona de risco juntos: combinacao classica de roubo — escala para critico.
-  const nivel: "critico" | "atencao" = (ctx.esMadrugada && ctx.emZonaRisco) ? "critico" : "atencao";
+  // Todo mundo vira critico agora (pedido do cliente 06/07: acabar com o
+  // nivel "atencao") — mantido o sufixo de madrugada/zona de risco no motivo
+  // pra nao perder o contexto de severidade dentro do proprio texto.
+  const nivel: "critico" | "atencao" = "critico";
 
   const duracao = formataDuracao(ctx.paradoMin);
   const sufixo = (ctx.esMadrugada && ctx.emZonaRisco)
@@ -398,7 +400,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   }
 
   return {
-    nivel: "atencao",
+    nivel: "critico",
     tipo: "desvio",
     motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras (+${kmAcum}km)`,
     score: 45,
@@ -450,7 +452,7 @@ export function detectarTiroteioProximo(
       };
     }
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "tiroteio",
       motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) — monitorar situacao`,
       score: 60,
@@ -458,7 +460,7 @@ export function detectarTiroteioProximo(
   }
   if (ctx.distTiroteioM <= 2000) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "tiroteio",
       motivo: `Tiroteio a ${fmtDist(ctx.distTiroteioM)} (${quando}) proximo a rota`,
       score: 50,
@@ -482,7 +484,7 @@ export function detectarRetornoTardio(ctx: {
   if (!ctx.foraDaBase) return null;
   if (ctx.paradoMin < 60) return null;
   return {
-    nivel: "atencao",
+    nivel: "critico",
     tipo: "retorno_tardio",
     motivo: `Rota concluida ha ${formataDuracao(ctx.paradoMin)} sem retorno a base`,
     score: 58,
