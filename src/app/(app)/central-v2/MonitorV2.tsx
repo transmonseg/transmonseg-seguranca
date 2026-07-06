@@ -168,7 +168,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const gatilhoRef = useRef(0);
 
   // UI
-  const [vista, setVista] = useState<"tudo" | "critico" | "atencao">("tudo");
+  const [vista, setVista] = useState<"tudo" | "critico">("tudo");
   const [filtroComm, setFiltroComm] = useState<number | null>(null);
   const [busca, setBusca] = useState("");
   const [comboAberto, setComboAberto] = useState(false);
@@ -222,8 +222,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (localStorage.getItem("transmonseg-roubo") === "false") setCamRouboCarga(false);
     if (localStorage.getItem("transmonseg-trafego") === "true") setCamTrafego(true);
     if (localStorage.getItem("transmonseg-legenda") === "true") setLegendaAberta(true);
-    const vistaS = localStorage.getItem("transmonseg-vista") as "tudo" | "critico" | "atencao" | null;
-    if (vistaS) setVista(vistaS);
+    const vistaS = localStorage.getItem("transmonseg-vista");
+    if (vistaS === "tudo" || vistaS === "critico") setVista(vistaS);
     const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
     if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
     const gruposOcultosS = localStorage.getItem("transmonseg-grupos-ocultos");
@@ -272,7 +272,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     });
   }, []);
 
-  const setVistaComPersistencia = useCallback((v: "tudo" | "critico" | "atencao") => {
+  const setVistaComPersistencia = useCallback((v: "tudo" | "critico") => {
     localStorage.setItem("transmonseg-vista", v);
     setVista(v);
   }, []);
@@ -753,7 +753,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (!al) return base;
     const sintetico: VeiculoMapa = {
       placa: al.placa, cv: al.cv,
-      nivel: al.nivel === "critico" ? "vermelho" : "amarelo",
+      nivel: "vermelho",
       velocidade: al.velocidade ?? 0, ignicao: al.ignicao ?? false,
       atraso_min: al.atraso_min ?? 999, tipo: al.tipo,
       lat: al.lat, lng: al.lng, local: al.local, rumo: null,
@@ -771,7 +771,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
   const alertasFiltrados = alertas.filter(a => {
     if (vista === "critico" && a.nivel !== "critico") return false;
-    if (vista === "atencao" && a.nivel !== "atencao") return false;
     if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
     if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
     if (gruposOcultos.size > 0) {
@@ -784,7 +783,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Ordena só por prioridade — seleção não move o card, só brilha no lugar
   const alertasOrdenados = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
 
-  // Resolve os alertas VISÍVEIS na aba atual (Crítico/Atenção/Tudo), não só
+  // Resolve os alertas VISÍVEIS na aba atual (Crítico/Tudo), não só
   // os críticos — antes travava em nivel==="critico" e nao fazia nada nas
   // outras abas.
   const handleResolverTodos = useCallback(() => {
@@ -834,7 +833,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     : [];
 
   const nCriticos = alertas.filter(a => a.nivel === "critico").length;
-  const nAtencao = alertas.filter(a => a.nivel === "atencao").length;
 
   // Fallback: se o fetch individual retornou vazio mas alvosGlobais tem dados da placa, usa o global
   const alvosEfetivos = useMemo(() => {
@@ -1170,12 +1168,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </div>
               <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>CRÍTICO</div>
             </div>
-            <div style={{ flex: 1, padding: "9px 12px", borderRight: `1px solid ${T.border}` }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: nAtencao > 0 ? T.yellow : T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
-                {nAtencao}
-              </div>
-              <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em", marginTop: 2 }}>ATENÇÃO</div>
-            </div>
             <div style={{ flex: 1, padding: "9px 12px" }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
                 {veiculosMapa.length}
@@ -1201,8 +1193,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
           {/* Filter tabs */}
           <div style={{ display: "flex", padding: "5px 6px", gap: 3, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
-            {(["tudo", "critico", "atencao"] as const).map(v => {
-              const color = v === "tudo" ? T.accent : v === "critico" ? T.red : T.yellow;
+            {(["tudo", "critico"] as const).map(v => {
+              const color = v === "tudo" ? T.accent : T.red;
               return (
                 <button key={v} onClick={() => setVistaComPersistencia(v)} style={{
                   flex: 1, height: 27, borderRadius: 6, border: "none", cursor: "pointer",
@@ -1211,7 +1203,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   fontSize: 10, fontWeight: 700, letterSpacing: ".06em",
                   fontFamily: FONT_SANS, transition: "all .12s",
                 }}>
-                  {v === "tudo" ? "TUDO" : v === "critico" ? "CRÍTICO" : "ATENÇÃO"}
+                  {v === "tudo" ? "TUDO" : "CRÍTICO"}
                 </button>
               );
             })}
@@ -1257,7 +1249,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             // Tipos disponíveis com base na vista (nível), mas SEM filtro de tipo para não sumir
             const tiposDisponiveis = [...new Set(alertas.filter(a => {
               if (vista === "critico" && a.nivel !== "critico") return false;
-              if (vista === "atencao" && a.nivel !== "atencao") return false;
               return true;
             }).map(a => a.tipo))].sort((a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0));
             if (tiposDisponiveis.length === 0) return null;
@@ -1296,7 +1287,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             );
           })()}
 
-          {/* Resolver todos — os VISÍVEIS na aba atual (Crítico/Atenção/Tudo) */}
+          {/* Resolver todos — os VISÍVEIS na aba atual (Crítico/Tudo) */}
           {alertasFiltrados.length > 0 && (
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
@@ -1323,7 +1314,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
                 }}>
                   {vista === "critico" ? `Resolver críticos (${alertasFiltrados.length})`
-                    : vista === "atencao" ? `Resolver atenção (${alertasFiltrados.length})`
                     : `Resolver todos (${alertasFiltrados.length})`}
                 </button>
               )}
@@ -1565,7 +1555,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 </div>
                 {[
                   { cor: T.red, label: "Alerta crítico" },
-                  { cor: T.yellow, label: "Alerta atenção" },
                   { cor: T.green, label: "Em movimento" },
                   { cor: mapTokens.parado, label: "Parado, motor ligado" },
                   { cor: T.dim, label: "Motor desligado" },
