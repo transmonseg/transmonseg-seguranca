@@ -198,7 +198,10 @@ function encodeForSvg(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// Cópia exata do iconeStatus do V1 (MapaMonitor.tsx) adaptada para SVG data URL
+// Baseado no iconeStatus do V1 (MapaMonitor.tsx) adaptada para SVG data URL.
+// Glifo interno trocado de caminhao pra quadrado+triangulo (pedido do cliente
+// 06/07: bater com o simbolo simples que a Unitrac usa), tamanho reduzido
+// ~13% (escala aplicada so no scaledSize/anchor, sem mexer no path do pin).
 function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showLabel: boolean): google.maps.Icon {
   const cor = corVeiculo(vm, tok);
   const semComm = vm.atraso_min > 60;
@@ -217,17 +220,20 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
       <circle cx="22" cy="22" r="22" fill="${cor}" opacity="0.15"/>
       <circle cx="22" cy="22" r="19" fill="rgba(4,4,8,0.96)" stroke="${cor}" stroke-width="3"/>
       <g transform="translate(10,10)" fill="none" stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="1" y="3" width="15" height="13"/>
-        <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
-        <circle cx="5.5" cy="18.5" r="2.5"/>
-        <circle cx="18.5" cy="18.5" r="2.5"/>
+        <rect x="4" y="2" width="15" height="13"/>
+        <polygon points="7 15 16 15 11.5 22"/>
       </g>
       ${labelSvg}
     </svg>`;
+    // Pedido do cliente (06/07): icone um pouco menor. scaledSize/anchor
+    // menores que o viewBox — a API do Google Maps escala a imagem (SVG data
+    // URI) pro tamanho pedido preservando proporcao, sem precisar recalcular
+    // a geometria interna do SVG.
+    const escala = 0.87;
     return {
       url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-      scaledSize: new window.google.maps.Size(44, height),
-      anchor: new window.google.maps.Point(22, 22),
+      scaledSize: new window.google.maps.Size(44 * escala, height * escala),
+      anchor: new window.google.maps.Point(22 * escala, 22 * escala),
     };
   }
 
@@ -248,19 +254,18 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
     const svgLabel = `<svg width="64" height="52" viewBox="0 0 64 52" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
       <path d="M32 2 C24 2 19 8 19 15 C19 22 25 30 32 36 C39 30 45 22 45 15 C45 8 40 2 32 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
       <g transform="translate(21,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="1" y="3" width="15" height="13"/>
-        <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
-        <circle cx="5.5" cy="18.5" r="2.5"/>
-        <circle cx="18.5" cy="18.5" r="2.5"/>
+        <rect x="4" y="2" width="15" height="13"/>
+        <polygon points="7 15 16 15 11.5 22"/>
       </g>
       ${setaSvgLabel}
       <rect x="1" y="38" width="62" height="13" rx="4" fill="rgba(0,0,0,0.82)"/>
       <text x="32" y="47.5" text-anchor="middle" font-family="'Courier New',Courier,monospace" font-size="9" font-weight="700" fill="white" letter-spacing="0.8">${encodeForSvg(vm.placa)}</text>
     </svg>`;
+    const escalaLabel = 0.87;
     return {
       url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svgLabel)}`,
-      scaledSize: new window.google.maps.Size(64, 52),
-      anchor: new window.google.maps.Point(32, 36),
+      scaledSize: new window.google.maps.Size(64 * escalaLabel, 52 * escalaLabel),
+      anchor: new window.google.maps.Point(32 * escalaLabel, 36 * escalaLabel),
     };
   }
 
@@ -278,17 +283,16 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
   const svg = `<svg width="30" height="38" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
     <path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
     <g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="1" y="3" width="15" height="13"/>
-      <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
-      <circle cx="5.5" cy="18.5" r="2.5"/>
-      <circle cx="18.5" cy="18.5" r="2.5"/>
+      <rect x="4" y="2" width="15" height="13"/>
+      <polygon points="7 15 16 15 11.5 22"/>
     </g>
     ${setaSvg}
   </svg>`;
+  const escalaPlano = 0.87;
   return {
     url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-    scaledSize: new window.google.maps.Size(30, 38),
-    anchor: new window.google.maps.Point(15, 36),
+    scaledSize: new window.google.maps.Size(30 * escalaPlano, 38 * escalaPlano),
+    anchor: new window.google.maps.Point(15 * escalaPlano, 36 * escalaPlano),
   };
 }
 
@@ -682,12 +686,15 @@ export default function MapaLeafletV2({
         />
       )}
 
-      {/* ── Paradas (SVG dot pixel-size, igual ao CircleMarker do V1) ── */}
+      {/* ── Paradas de tempo (SVG dot pixel-size, igual ao CircleMarker do V1) ──
+          Pedido do cliente (06/07): vermelho em vez de roxo, um pouco menor.
+          Nao mexe nos marcadores de ponto de entrega (criarIconeAlvo) — esses
+          continuam com a paleta pendente/entregue/outro de sempre. */}
       {cvSelecionado && mostrarParadas && paradas.map(p => {
         const grande = p.tempoMin >= 30;
-        const cor    = grande ? "#a855f7" : "#c084fc";
-        const fill   = grande ? "#a855f7" : "#e9d5ff";
-        const size   = grande ? 18 : 12;
+        const cor    = grande ? "#ef4444" : "#f87171";
+        const fill   = grande ? "#ef4444" : "#fecaca";
+        const size   = grande ? 15 : 10;
         const r      = size / 2;
         const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
           <circle cx="${r}" cy="${r}" r="${r - 1}" fill="${fill}" stroke="${cor}" stroke-width="2" opacity="0.85"/>
