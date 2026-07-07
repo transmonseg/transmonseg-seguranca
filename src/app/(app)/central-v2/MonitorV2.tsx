@@ -234,7 +234,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (gruposOcultosS) { try { setGruposOcultos(new Set(JSON.parse(gruposOcultosS))); } catch { /* ignore */ } }
     const veiculosSelS = localStorage.getItem("transmonseg-veiculos-selecionados");
     if (veiculosSelS) { try { setVeiculosSelecionados(new Set(JSON.parse(veiculosSelS))); } catch { /* ignore */ } }
-    if (localStorage.getItem("transmonseg-modo-selecionados") === "true") setModoSelecionados(true);
+    // modoSelecionados NUNCA persiste entre carregamentos — deliberado (achado
+    // ao vivo 06/07: filtro ficou ligado com so 5 veiculos marcados e escondeu
+    // a frota inteira, incluindo alertas ativos de OUTROS veiculos, sem que
+    // ninguem percebesse ate reabrir a tela dias depois). A lista de veiculos
+    // marcados continua salva pra reativar rapido, mas o modo em si sempre
+    // comeca desligado a cada sessao — precisa de um clique consciente.
   }, []);
 
   const setTemaComPersistencia = useCallback((novo: "dark" | "light") => {
@@ -305,10 +310,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const salvarVeiculosSelecionados = useCallback((next: Set<string>) => {
     setVeiculosSelecionados(next);
     localStorage.setItem("transmonseg-veiculos-selecionados", JSON.stringify([...next]));
-    if (next.size === 0) {
-      localStorage.setItem("transmonseg-modo-selecionados", "false");
-      setModoSelecionados(false);
-    }
+    if (next.size === 0) setModoSelecionados(false);
   }, []);
 
   const toggleVeiculoSelecionado = useCallback((cv: string) => {
@@ -316,16 +318,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       const next = new Set(prev);
       if (next.has(cv)) next.delete(cv); else next.add(cv);
       localStorage.setItem("transmonseg-veiculos-selecionados", JSON.stringify([...next]));
-      if (next.size === 0) {
-        localStorage.setItem("transmonseg-modo-selecionados", "false");
-        setModoSelecionados(false);
-      }
+      if (next.size === 0) setModoSelecionados(false);
       return next;
     });
   }, []);
 
-  const setModoSelecionadosComPersistencia = useCallback((v: boolean) => {
-    localStorage.setItem("transmonseg-modo-selecionados", String(v));
+  // Deliberadamente NAO persiste em localStorage (ver comentario no useEffect
+  // de carregamento) — o modo sempre volta a "desligado" numa nova sessao.
+  const setModoSelecionadosSessao = useCallback((v: boolean) => {
     setModoSelecionados(v);
   }, []);
 
@@ -1203,7 +1203,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 FILTRO: {veiculosSelecionados.size} VEÍC.
               </span>
               <button onClick={() => setSeletorAberto(true)} style={{ ...tinyBtn(T.accent), marginLeft: "auto" }}>Editar</button>
-              <button onClick={() => setModoSelecionadosComPersistencia(false)} style={tinyBtn(T.dim)}>Mostrar todos</button>
+              <button onClick={() => setModoSelecionadosSessao(false)} style={tinyBtn(T.dim)}>Mostrar todos</button>
             </div>
           )}
 
@@ -2049,14 +2049,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
 
             <div style={{ padding: "10px 16px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
-              <button onClick={() => { setModoSelecionadosComPersistencia(false); setSeletorAberto(false); }}
+              <button onClick={() => { setModoSelecionadosSessao(false); setSeletorAberto(false); }}
                 style={{
                   flex: 1, height: 32, borderRadius: 7, border: `1px solid ${T.border}`,
                   background: "transparent", color: T.dim, fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
                 }}>
                 Mostrar todos
               </button>
-              <button onClick={() => { setModoSelecionadosComPersistencia(true); setSeletorAberto(false); }}
+              <button onClick={() => { setModoSelecionadosSessao(true); setSeletorAberto(false); }}
                 disabled={veiculosSelecionados.size === 0}
                 style={{
                   flex: 1, height: 32, borderRadius: 7, border: "none",
