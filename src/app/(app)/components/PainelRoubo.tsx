@@ -1,5 +1,5 @@
 // Painel de roubo de carga no RJ (ISP-RJ, últimos 12 meses). Server component:
-// busca direto da lib (cache em memória). Ranking dos municípios com barras.
+// busca direto da lib (cache em memória). Ranking por CISP (área de delegacia) com barras.
 import { obterRouboCarga } from "@/lib/roubocarga";
 
 export default async function PainelRoubo() {
@@ -28,7 +28,7 @@ export default async function PainelRoubo() {
       <div className="rounded-2xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", padding: "1.5rem 1.75rem" }}>
         <div className="flex flex-col gap-3">
           {top.map((m) => (
-            <div key={m.cod} className="flex items-center gap-3">
+            <div key={m.cisp} className="flex items-center gap-3">
               <span className="text-sm flex-shrink-0" style={{ color: "var(--text-muted)", width: "11rem" }}>
                 {m.nome}
               </span>
@@ -42,7 +42,7 @@ export default async function PainelRoubo() {
           ))}
         </div>
         <p className="text-xs mt-4" style={{ color: "var(--text-dim)" }}>
-          Registros oficiais por município (o ponto exato é sigiloso). No mapa, ative a camada
+          Registros oficiais por área de delegacia/CISP (o ponto exato é sigiloso). No mapa, ative a camada
           &ldquo;Roubo de carga&rdquo; para ver o calor por regi&atilde;o.
         </p>
       </div>

@@ -1,16 +1,22 @@
-// Roubo de carga no RJ (dados públicos gratuitos do ISP-RJ) por município,
-// somando os últimos 12 meses disponíveis, casado com a malha municipal do IBGE.
-// Lib de servidor. Fonte: ispdados.rj.gov.br (mensal por município) + IBGE malhas.
-// O ponto exato do roubo é sigiloso; o público é agregado por município.
+// Roubo de carga no RJ (dados públicos gratuitos do ISP-RJ) por CISP
+// (Circunscrição Integrada de Segurança Pública — área de delegacia),
+// somando os últimos 12 meses disponíveis, casado com os polígonos de CISP
+// importados uma vez em `geofences` (tipo='cisp', ver scripts/importar-cisp.mjs).
+//
+// Antes disso era agregado por MUNICÍPIO (BaseMunicipioMensal.csv) — dado
+// muito grosseiro: o município do Rio de Janeiro inteiro (Manguinhos,
+// Realengo, Irajá, Jacarepaguá...) tinha o MESMO valor de roubo_carga.
+// CISP tem 137 áreas no estado (44 só na capital), diferenciando bairro
+// dentro da mesma cidade — mesmo órgão/portal, mesmo formato de coluna,
+// só troca a chave de agregação.
+import pg from "pg";
 
-const ISP_CSV = "https://www.ispdados.rj.gov.br/Arquivos/BaseMunicipioMensal.csv";
-const IBGE_MALHA =
-  "https://servicodados.ibge.gov.br/api/v4/malhas/estados/33?formato=application/vnd.geo+json&intrarregiao=municipio&qualidade=intermediaria";
+const ISP_CSV = "https://www.ispdados.rj.gov.br/Arquivos/BaseDPEvolucaoMensalCisp.csv";
 
-export type RouboCargaMunicipio = { cod: string; nome: string; total: number };
+export type RouboCargaCisp = { cisp: string; nome: string; total: number };
 export type RouboCargaDados = {
-  geojson: GeoJSON.FeatureCollection; // municípios com properties { cod, nome, roubo_carga }
-  ranking: RouboCargaMunicipio[]; // ordenado desc
+  geojson: GeoJSON.FeatureCollection; // CISPs com properties { cisp, nome, roubo_carga }
+  ranking: RouboCargaCisp[]; // ordenado desc
   total: number;
   periodo: string; // ex "07/2025 a 06/2026"
   atualizado: string; // ISO de quando montamos
@@ -19,12 +25,11 @@ export type RouboCargaDados = {
 // Cache em memória do processo: dados mensais, não precisam remontar a cada acesso.
 let cache: { dados: RouboCargaDados; exp: number } | null = null;
 
-const norm = (mesAno: number) => mesAno; // chave ano*12+mes
 const rotuloMes = (ano: number, mes: number) => `${String(mes).padStart(2, "0")}/${ano}`;
 
-// Agrega roubo_carga por município (fmun_cod) nos 12 meses mais recentes do CSV.
+// Agrega roubo_carga por CISP (área de delegacia) nos 12 meses mais recentes do CSV.
 async function agregarISP(): Promise<{
-  porCod: Map<string, { nome: string; total: number }>;
+  porCisp: Map<string, { munic: string; total: number }>;
   periodo: string;
   total: number;
 } | null> {
@@ -35,16 +40,16 @@ async function agregarISP(): Promise<{
   if (linhas.length < 2) return null;
 
   const h = linhas[0].split(";");
-  const iCod = h.findIndex((c) => /^fmun_cod$/i.test(c));
-  const iNome = h.findIndex((c) => /^fmun$/i.test(c));
+  const iCisp = h.findIndex((c) => /^cisp$/i.test(c));
+  const iMunic = h.findIndex((c) => /^munic$/i.test(c));
   const iAno = h.findIndex((c) => /^ano$/i.test(c));
   const iMes = h.findIndex((c) => /^mes$/i.test(c));
   const iCarga = h.findIndex((c) => /^roubo_carga$/i.test(c));
-  if ([iCod, iNome, iAno, iMes, iCarga].some((i) => i < 0)) return null;
+  if ([iCisp, iMunic, iAno, iMes, iCarga].some((i) => i < 0)) return null;
 
   // descobrir o mês mais recente presente
   let maxChave = 0;
-  const dados: { cod: string; nome: string; ano: number; mes: number; carga: number }[] = [];
+  const dados: { cisp: string; munic: string; ano: number; mes: number; carga: number }[] = [];
   for (const l of linhas.slice(1)) {
     const c = l.split(";");
     const ano = parseInt(c[iAno], 10);
@@ -52,23 +57,48 @@ async function agregarISP(): Promise<{
     if (!Number.isFinite(ano) || !Number.isFinite(mes)) continue;
     const chave = ano * 12 + mes;
     if (chave > maxChave) maxChave = chave;
-    dados.push({ cod: String(c[iCod]).trim(), nome: c[iNome], ano, mes, carga: parseInt(c[iCarga], 10) || 0 });
+    dados.push({ cisp: String(c[iCisp]).trim(), munic: c[iMunic], ano, mes, carga: parseInt(c[iCarga], 10) || 0 });
   }
   if (maxChave === 0) return null;
   const minChave = maxChave - 11; // janela de 12 meses
 
-  const porCod = new Map<string, { nome: string; total: number }>();
+  const porCisp = new Map<string, { munic: string; total: number }>();
   let total = 0;
   for (const d of dados) {
     const chave = d.ano * 12 + d.mes;
-    if (norm(chave) < minChave || norm(chave) > maxChave) continue;
-    const e = porCod.get(d.cod) ?? { nome: d.nome, total: 0 };
+    if (chave < minChave || chave > maxChave) continue;
+    const e = porCisp.get(d.cisp) ?? { munic: d.munic, total: 0 };
     e.total += d.carga;
-    porCod.set(d.cod, e);
+    porCisp.set(d.cisp, e);
     total += d.carga;
   }
   const periodo = `${rotuloMes(Math.floor((minChave - 1) / 12), ((minChave - 1) % 12) + 1)} a ${rotuloMes(Math.floor((maxChave - 1) / 12), ((maxChave - 1) % 12) + 1)}`;
-  return { porCod, periodo, total };
+  return { porCisp, periodo, total };
+}
+
+// Malha de polígonos de CISP, importada uma vez em geofences (tipo='cisp').
+// Estática (limites de 2019) — não precisa refazer o join a cada request,
+// só reconsultar o banco (rápido, sem chamada externa).
+async function buscarMalhaCisp(): Promise<GeoJSON.FeatureCollection | null> {
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  try {
+    const r = await pool.query<{ cisp: string; geojson: GeoJSON.Geometry }>(
+      `select meta->>'cisp' as cisp,
+              ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom::geometry, 0.00002))::jsonb as geojson
+       from geofences where tipo = 'cisp'`
+    );
+    if (r.rows.length === 0) return null;
+    return {
+      type: "FeatureCollection",
+      features: r.rows.map((row) => ({
+        type: "Feature",
+        properties: { cisp: row.cisp },
+        geometry: row.geojson,
+      })),
+    };
+  } finally {
+    await pool.end();
+  }
 }
 
 export async function obterRouboCarga(): Promise<RouboCargaDados | null> {
@@ -79,23 +109,22 @@ export async function obterRouboCarga(): Promise<RouboCargaDados | null> {
     const isp = await agregarISP();
     if (!isp) return cache?.dados ?? null;
 
-    const malhaResp = await fetch(IBGE_MALHA, { next: { revalidate: 604800 } });
-    if (!malhaResp.ok) return cache?.dados ?? null;
-    const malha = (await malhaResp.json()) as GeoJSON.FeatureCollection;
+    const malha = await buscarMalhaCisp();
+    if (!malha) return cache?.dados ?? null;
 
-    // Junta intensidade de roubo de carga em cada município da malha.
+    // Junta intensidade de roubo de carga em cada CISP da malha.
     for (const f of malha.features) {
-      const cod = String((f.properties as { codarea?: string })?.codarea ?? "");
-      const info = isp.porCod.get(cod);
+      const cisp = String((f.properties as { cisp?: string })?.cisp ?? "");
+      const info = isp.porCisp.get(cisp);
       f.properties = {
-        cod,
-        nome: info?.nome ?? "",
+        cisp,
+        nome: info?.munic ? `CISP ${cisp} (${info.munic})` : `CISP ${cisp}`,
         roubo_carga: info?.total ?? 0,
       };
     }
 
-    const ranking: RouboCargaMunicipio[] = [...isp.porCod.entries()]
-      .map(([cod, v]) => ({ cod, nome: v.nome, total: v.total }))
+    const ranking: RouboCargaCisp[] = [...isp.porCisp.entries()]
+      .map(([cisp, v]) => ({ cisp, nome: `CISP ${cisp} (${v.munic})`, total: v.total }))
       .sort((a, b) => b.total - a.total);
 
     const dados: RouboCargaDados = {
