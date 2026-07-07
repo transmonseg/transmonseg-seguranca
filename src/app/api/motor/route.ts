@@ -11,6 +11,7 @@ import {
   haversineM,
   normalizar,
   centroideGeo,
+  distanciaAoSegmentoM,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
@@ -698,6 +699,28 @@ export async function POST(request: Request) {
             : [];
           const menorDistDestinoM = distDestinosM.length > 0 ? Math.min(...distDestinosM) : null;
 
+          // Trajeto perpendicular (ponto cego do afastamento, ver detectarDesvio):
+          // distância do veículo à reta mais próxima entre alguma base e algum
+          // destino/pendente — pega o "aproximando de qualquer destino, mas por
+          // um caminho absurdo" que o gatilho por afastamento não vê. Não
+          // persiste nada novo: só compara ciclo atual x anterior, em memória.
+          const segmentosPlausiveis =
+            centroidesBases.length > 0
+              ? destinos.flatMap((d) => centroidesBases.map((b) => ({ origem: b, destino: d })))
+              : [];
+          const desvioTrajetoM =
+            segmentosPlausiveis.length > 0
+              ? Math.min(...segmentosPlausiveis.map((s) => distanciaAoSegmentoM(pos, s.origem, s.destino)))
+              : null;
+          const desvioTrajetoAnteriorM =
+            temAnterior && segmentosPlausiveis.length > 0
+              ? Math.min(
+                  ...segmentosPlausiveis.map((s) =>
+                    distanciaAoSegmentoM({ lat: anterior!.lat!, lng: anterior!.lng! }, s.origem, s.destino)
+                  )
+                )
+              : null;
+
           // Guarda anti-teleporte: salto implausível entre ciclos (>2,5km em
           // ~1min, ou seja >150km/h implícitos) congela o streak.
           const saltoImplausivel =
@@ -901,6 +924,8 @@ export async function POST(request: Request) {
                   afastamentoAcumuladoM,
                   dentroTapete,
                   riscoAreaAtual,
+                  desvioTrajetoM,
+                  desvioTrajetoAnteriorM,
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,

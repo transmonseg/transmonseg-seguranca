@@ -264,6 +264,8 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     afastamentoAcumuladoM: 300,
     dentroTapete: null as boolean | null,
     riscoAreaAtual: 0,
+    desvioTrajetoM: null as number | null,
+    desvioTrajetoAnteriorM: null as number | null,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 

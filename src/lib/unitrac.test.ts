@@ -1,5 +1,44 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, type AlvoUnitrac } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, type AlvoUnitrac } from "./unitrac";
+
+describe("distanciaAoSegmentoM", () => {
+  const origem = { lat: -22.9000, lng: -43.2000 };
+  const destino = { lat: -22.9100, lng: -43.2000 }; // ~1,1km ao sul, mesma longitude
+
+  it("ponto EXATAMENTE sobre o segmento: distancia ~0", () => {
+    const meio = { lat: -22.9050, lng: -43.2000 };
+    expect(distanciaAoSegmentoM(meio, origem, destino)).toBeLessThan(1);
+  });
+
+  it("ponto afastado perpendicularmente do meio do segmento: distancia bate com o afastamento real", () => {
+    // ~0.01 grau de longitude na latitude -22.905 ~ 1027m
+    const afastado = { lat: -22.9050, lng: -43.2100 };
+    const d = distanciaAoSegmentoM(afastado, origem, destino);
+    expect(d).toBeGreaterThan(900);
+    expect(d).toBeLessThan(1150);
+  });
+
+  it("ponto alem do DESTINO (fora do segmento): usa distancia ao destino, nao extrapola a reta", () => {
+    const alemDoDestino = { lat: -22.9200, lng: -43.2000 }; // mais ao sul que o destino, na mesma linha
+    const d = distanciaAoSegmentoM(alemDoDestino, origem, destino);
+    const distAoDestino = haversineM(alemDoDestino.lat, alemDoDestino.lng, destino.lat, destino.lng);
+    expect(d).toBeCloseTo(distAoDestino, -1); // mesma ordem de grandeza (aproximacao planar vs haversine)
+  });
+
+  it("ponto antes da ORIGEM (fora do segmento): usa distancia a origem, nao extrapola a reta", () => {
+    const antesDaOrigem = { lat: -22.8900, lng: -43.2000 };
+    const d = distanciaAoSegmentoM(antesDaOrigem, origem, destino);
+    const distAOrigem = haversineM(antesDaOrigem.lat, antesDaOrigem.lng, origem.lat, origem.lng);
+    expect(d).toBeCloseTo(distAOrigem, -1);
+  });
+
+  it("origem === destino: vira distancia ao ponto (sem divisao por zero)", () => {
+    const p = { lat: -22.9050, lng: -43.2050 };
+    const d = distanciaAoSegmentoM(p, origem, origem);
+    const distDireta = haversineM(p.lat, p.lng, origem.lat, origem.lng);
+    expect(d).toBeCloseTo(distDireta, -1);
+  });
+});
 
 describe("removerPicosRastro", () => {
   it("remove um pico isolado (pula pra fora da rua e volta)", () => {

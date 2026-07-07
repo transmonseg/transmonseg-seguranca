@@ -3,6 +3,7 @@
 // Nunca importe nada de 'next' aqui — lib pura TypeScript.
 
 import type { PosicaoNormalizada } from "./unitrac";
+import { distanciaAoSegmentoM } from "./unitrac";
 
 export type Alerta = {
   nivel: "critico" | "atencao";
@@ -297,6 +298,12 @@ const DESVIO_GATILHO_TETO_M = 25000;
 const DESVIO_RESOLVE_M = 2500;
 // Crescimento mínimo por ciclo pra contar como afastamento real (ruído de GPS).
 const AFASTAMENTO_MARGEM_M = 50;
+// Distância perpendicular (m) a qualquer segmento base->destino acima da
+// qual um trajeto é considerado "fora de qualquer caminho direto plausível",
+// mesmo que a distância bruta ao destino esteja caindo (ver desvioTrajetoM
+// em CtxDesvio). Bem acima do que uma via secundária/contorno legítimo
+// costuma desviar (poucas centenas de m a ~1-2km) — só pega desvio grande.
+export const TRAJETO_PERPENDICULAR_LIMIAR_M = 3000;
 
 // A Unitrac NÃO fornece rota planejada nem ordem confiável de entregas.
 // Desvio aqui é comportamento: o veículo se afastando de TODOS os destinos
@@ -350,6 +357,16 @@ export type CtxDesvio = {
   // ativar junto com o gatilho normal de streak; só faz o "fora do tapete"
   // (ou equivalente) disparar mais rápido, nunca suprime nem atrasa alerta.
   riscoAreaAtual: number;
+  // Ponto cego identificado (comparação com iBOAT, pesquisa 07/07): o
+  // gatilho principal cancela a suspeita assim que o veículo se aproxima de
+  // QUALQUER destino — um trajeto raro que ainda assim vai "na direção"
+  // certa nunca dispara. Este par (ciclo atual + anterior) mede a menor
+  // distância perpendicular do veículo a qualquer segmento base->destino
+  // plausível (ver distanciaAoSegmentoM) — pega desvio grande mesmo quando
+  // tecnicamente aproximando. null = sem base/destino suficiente pra
+  // calcular (não modula, nunca dispara só por isso).
+  desvioTrajetoM: number | null;
+  desvioTrajetoAnteriorM: number | null;
 };
 
 // Pesos do score de risco de área (0-100). Cada camada contribui
@@ -437,11 +454,37 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
 
   const menorDistM = Math.min(...ctx.distDestinosM);
   if (menorDistM > DESVIO_GATILHO_TETO_M) return null;
+
+  const afastandoDeTudo = afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM);
+
+  // Ponto cego do gatilho principal: aproximar de QUALQUER destino cancela a
+  // suspeita, mesmo que o caminho até lá seja um desvio enorme (ex.:
+  // sequestro que ainda assim segue "na direção" de uma entrega). Checa 2
+  // leituras (atual + anterior, sem precisar de streak persistido) de
+  // distância perpendicular a qualquer segmento base->destino plausível —
+  // se as DUAS estão muito longe de qualquer caminho direto, dispara mesmo
+  // aproximando. Só entra em jogo quando o gatilho normal NÃO disparou.
+  if (
+    !afastandoDeTudo &&
+    ctx.desvioTrajetoM !== null &&
+    ctx.desvioTrajetoAnteriorM !== null &&
+    ctx.desvioTrajetoM >= TRAJETO_PERPENDICULAR_LIMIAR_M &&
+    ctx.desvioTrajetoAnteriorM >= TRAJETO_PERPENDICULAR_LIMIAR_M
+  ) {
+    const kmFora = (ctx.desvioTrajetoM / 1000).toFixed(1).replace(".", ",");
+    return {
+      nivel: "critico",
+      tipo: "desvio",
+      motivo: `Trajeto ${kmFora}km fora de qualquer caminho direto plausível até os destinos, mesmo aproximando`,
+      score: 65,
+    };
+  }
+
   if (ctx.streak < 2) return null;
   // Checagem própria (não confia só no streak pré-computado pelo motor):
   // se o ciclo ATUAL mostra aproximação de qualquer destino, cancela na
   // hora — não espera o motor zerar o streak no próximo ciclo.
-  if (!afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM)) return null;
+  if (!afastandoDeTudo) return null;
 
   const kmAcum = (Math.max(0, ctx.afastamentoAcumuladoM) / 1000).toFixed(1).replace(".", ",");
   const nDest = ctx.distDestinosM.length;
@@ -678,6 +721,8 @@ export function avaliarTodos(
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
+          desvioTrajetoM: ctx.desvioTrajetoM ?? null,
+          desvioTrajetoAnteriorM: ctx.desvioTrajetoAnteriorM ?? null,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
@@ -703,6 +748,8 @@ export function avaliar(
     afastamentoAcumuladoM?: number;
     dentroTapete?: boolean | null;
     riscoAreaAtual?: number;
+    desvioTrajetoM?: number | null;
+    desvioTrajetoAnteriorM?: number | null;
     temPendentes?: boolean;
     entregasTotal?: number;
     entregasFeitas?: number;
@@ -778,6 +825,8 @@ export function avaliar(
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
+          desvioTrajetoM: ctx.desvioTrajetoM ?? null,
+          desvioTrajetoAnteriorM: ctx.desvioTrajetoAnteriorM ?? null,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);

@@ -173,6 +173,42 @@ export function agruparPontosPorPlaca(alvos: AlvoUnitrac[]): Map<string, PontoEn
   return mapa;
 }
 
+// Distância perpendicular (metros) de um ponto até o SEGMENTO de reta entre
+// origem e destino — aproximação planar (equirretangular, projeta lat/lng em
+// metros locais usando a latitude média como referência pra escala de
+// longitude). Precisa o suficiente pra poucos km em escala urbana (erro
+// desprezível frente aos limiares de km usados aqui). Clampa a projeção a
+// [0,1] no segmento — não deixa "perpendicular infinita" antes da origem ou
+// depois do destino, o que faria a distância disparar por geometria, não
+// por desvio real.
+export function distanciaAoSegmentoM(
+  ponto: { lat: number; lng: number },
+  origem: { lat: number; lng: number },
+  destino: { lat: number; lng: number }
+): number {
+  const latRef = (origem.lat + destino.lat + ponto.lat) / 3;
+  const mPorGrauLat = 111320;
+  const mPorGrauLng = 111320 * Math.cos((latRef * Math.PI) / 180);
+
+  const toXY = (p: { lat: number; lng: number }) => ({
+    x: (p.lng - origem.lng) * mPorGrauLng,
+    y: (p.lat - origem.lat) * mPorGrauLat,
+  });
+
+  const d = toXY(destino);
+  const p = toXY(ponto);
+
+  const lenSq = d.x * d.x + d.y * d.y;
+  if (lenSq === 0) return Math.sqrt(p.x * p.x + p.y * p.y); // origem === destino
+
+  let t = (p.x * d.x + p.y * d.y) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+
+  const projX = t * d.x;
+  const projY = t * d.y;
+  return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+}
+
 // Distância em metros entre dois pontos (Haversine).
 export function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6371000;
