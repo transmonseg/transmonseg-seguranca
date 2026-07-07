@@ -1522,8 +1522,13 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             onZoomChange={setZoomAtual}
           />
 
-          {/* Faixa de desvios de rota — topo central, clicavel, sempre visivel */}
-          {desviosAtivos.length > 0 && (
+          {/* Faixa de desvios de rota — topo central, clicavel. So aparece pro
+              cliente que tem desvio como foco (TIPOS_NOTIFICAM_POR_CLIENTE) -
+              achado ao vivo 07/07: a faixa aparecia pra QUALQUER cliente com
+              desvio ativo, mesmo a Benassi (que so deveria ser notificada por
+              parada_cliente >1h). A faixa pulsante e uma forma de notificacao
+              visual tanto quanto o apito - tem que respeitar o mesmo mapa. */}
+          {tiposFoco.includes("desvio") && desviosAtivos.length > 0 && (
             <div style={{
               position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
               zIndex: Z.toasts, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6,
