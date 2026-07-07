@@ -327,7 +327,55 @@ export type CtxDesvio = {
   // null = sem tapete confiável ainda na região (não modula, nunca crítico
   // só por isso).
   dentroTapete: boolean | null;
+  // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
+  // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
+  // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
+  // urgência que desvio numa rua conhecida mas dentro de uma favela/com
+  // tiroteio recente perto/com histórico de roubo de carga alto no CISP.
+  // Default 0 (sem dado de risco disponível) — nunca ACELERA sozinho sem
+  // ativar junto com o gatilho normal de streak; só faz o "fora do tapete"
+  // (ou equivalente) disparar mais rápido, nunca suprime nem atrasa alerta.
+  riscoAreaAtual: number;
 };
+
+// Pesos do score de risco de área (0-100). Cada camada contribui
+// independente — não é probabilidade, é um índice de prioridade pro
+// desvio decidir se escala rápido (ver RISCO_AREA_LIMIAR).
+const RISCO_FAVELA = 40;
+const RISCO_TIROTEIO_PERTO = 40;
+const RISCO_ROUBO_CARGA_ALTO = 20;
+const RISCO_ROUBO_CARGA_MEDIO = 10;
+const RISCO_CORREDOR_RODOVIA = 20;
+const RISCO_MADRUGADA = 10;
+// Acima disso, trata como "área de risco elevado" pro desvio escalar tão
+// rápido quanto "fora do tapete" — um sinal isolado (só favela, ou só
+// tiroteio perto) já basta; não precisa de combinação de vários.
+export const RISCO_AREA_LIMIAR = 40;
+
+// Score de risco da posição ATUAL do veículo (0-100), combinando sinais
+// geográficos/temporais independentes do tapete de rotas. Função pura —
+// o motor busca os dados (favela, tiroteio, roubo_carga por CISP, horário)
+// e só passa os booleanos/números já resolvidos aqui.
+export function calcularRiscoArea(ctx: {
+  emFavela: boolean;
+  tiroteioRecentePertoM: number | null; // null = nenhum tiroteio ativo relevante
+  rouboCargaCispTotal: number | null; // null = sem CISP resolvido pra essa posição
+  emCorredorRodoviaRisco: boolean;
+  madrugada: boolean; // 0h-5h horário local
+}): number {
+  let score = 0;
+  if (ctx.emFavela) score += RISCO_FAVELA;
+  if (ctx.tiroteioRecentePertoM !== null && ctx.tiroteioRecentePertoM <= 1500) {
+    score += RISCO_TIROTEIO_PERTO;
+  }
+  if (ctx.rouboCargaCispTotal !== null) {
+    if (ctx.rouboCargaCispTotal >= 15) score += RISCO_ROUBO_CARGA_ALTO;
+    else if (ctx.rouboCargaCispTotal > 0) score += RISCO_ROUBO_CARGA_MEDIO;
+  }
+  if (ctx.emCorredorRodoviaRisco) score += RISCO_CORREDOR_RODOVIA;
+  if (ctx.madrugada) score += RISCO_MADRUGADA;
+  return Math.min(100, score);
+}
 
 // O veículo se afastou de TODOS os destinos legítimos desde o ciclo
 // anterior? Aproximar de QUALQUER um cancela — é assim que uma entrega
@@ -384,6 +432,21 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       nivel: "critico",
       tipo: "desvio",
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras, fora de via conhecida da frota (+${kmAcum}km)`,
+      score: 80,
+    };
+  }
+
+  // Via CONHECIDA mas área ATUAL de risco elevado (favela, tiroteio recente
+  // perto, CISP com histórico alto de roubo de carga, corredor de rodovia
+  // perigosa, ou madrugada — ver calcularRiscoArea): escala tão rápido
+  // quanto "fora do tapete". "Rua que a frota já usa" não é garantia de
+  // segurança se a região está quente agora — resposta rápida importa mais
+  // que esperar mais ciclos só porque a via em si é conhecida.
+  if (ctx.riscoAreaAtual >= RISCO_AREA_LIMIAR) {
+    return {
+      nivel: "critico",
+      tipo: "desvio",
+      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras, em área de risco elevado (+${kmAcum}km)`,
       score: 80,
     };
   }
@@ -593,6 +656,7 @@ export function avaliarTodos(
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
+          riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
@@ -617,6 +681,7 @@ export function avaliar(
     desvioStreak?: number;
     afastamentoAcumuladoM?: number;
     dentroTapete?: boolean | null;
+    riscoAreaAtual?: number;
     temPendentes?: boolean;
     entregasTotal?: number;
     entregasFeitas?: number;
@@ -691,6 +756,7 @@ export function avaliar(
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
+          riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);

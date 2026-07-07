@@ -9,6 +9,8 @@ import {
   detectarParadaLonga,
   detectarParadaAnomala,
   detectarDesvio,
+  calcularRiscoArea,
+  RISCO_AREA_LIMIAR,
   afastouDeTudo,
   detectarTiroteioProximo,
   detectarSaidaNaoAutorizada,
@@ -239,6 +241,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     streak: 2,
     afastamentoAcumuladoM: 300,
     dentroTapete: null as boolean | null,
+    riscoAreaAtual: 0,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
@@ -317,6 +320,95 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
   it("fora de operacao ou dentro da base nao dispara", () => {
     expect(detectarDesvio(emMov, { ...base, emOperacao: false })).toBeNull();
     expect(detectarDesvio(emMov, { ...base, foraDaBase: false })).toBeNull();
+  });
+
+  it("via CONHECIDA mas area de risco elevado (>= limiar): escala tao rapido quanto fora do tapete", () => {
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: true, riscoAreaAtual: RISCO_AREA_LIMIAR });
+    expect(a?.nivel).toBe("critico");
+    expect(a?.score).toBe(80);
+    expect(a?.motivo).toContain("área de risco elevado");
+  });
+
+  it("via conhecida e area de risco BAIXO (abaixo do limiar): mantem escalonamento normal (score 45 no streak 2)", () => {
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: true, riscoAreaAtual: RISCO_AREA_LIMIAR - 1 });
+    expect(a?.score).toBe(45);
+  });
+
+  it("risco de area nunca SUPRIME nem atrasa o alerta - so acelera", () => {
+    // fora do tapete ja e score 80 por si so; risco alto nao muda isso nem quebra
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: false, riscoAreaAtual: 100 });
+    expect(a?.nivel).toBe("critico");
+    expect(a?.score).toBe(80);
+  });
+});
+
+describe("calcularRiscoArea", () => {
+  it("sem nenhum sinal de risco: score 0", () => {
+    expect(calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
+      emCorredorRodoviaRisco: false, madrugada: false,
+    })).toBe(0);
+  });
+
+  it("dentro de favela sozinho ja atinge o limiar de escalonamento", () => {
+    const score = calcularRiscoArea({
+      emFavela: true, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
+      emCorredorRodoviaRisco: false, madrugada: false,
+    });
+    expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
+  });
+
+  it("tiroteio recente proximo (<=1500m) sozinho ja atinge o limiar", () => {
+    const score = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: 800, rouboCargaCispTotal: null,
+      emCorredorRodoviaRisco: false, madrugada: false,
+    });
+    expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
+  });
+
+  it("tiroteio longe demais (>1500m) nao conta", () => {
+    const score = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: 5000, rouboCargaCispTotal: null,
+      emCorredorRodoviaRisco: false, madrugada: false,
+    });
+    expect(score).toBe(0);
+  });
+
+  it("roubo de carga alto no CISP (>=15 em 12 meses) soma mais que medio", () => {
+    const alto = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 20,
+      emCorredorRodoviaRisco: false, madrugada: false,
+    });
+    const medio = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 3,
+      emCorredorRodoviaRisco: false, madrugada: false,
+    });
+    expect(alto).toBeGreaterThan(medio);
+    expect(medio).toBeGreaterThan(0);
+  });
+
+  it("madrugada sozinha NAO atinge o limiar (so um reforco, nao gatilho isolado)", () => {
+    const score = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
+      emCorredorRodoviaRisco: false, madrugada: true,
+    });
+    expect(score).toBeLessThan(RISCO_AREA_LIMIAR);
+  });
+
+  it("combinacao de sinais fracos pode somar acima do limiar", () => {
+    const score = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 20,
+      emCorredorRodoviaRisco: true, madrugada: false,
+    });
+    expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
+  });
+
+  it("nunca passa de 100 mesmo com todos os sinais ativos", () => {
+    const score = calcularRiscoArea({
+      emFavela: true, tiroteioRecentePertoM: 100, rouboCargaCispTotal: 999,
+      emCorredorRodoviaRisco: true, madrugada: true,
+    });
+    expect(score).toBeLessThanOrEqual(100);
   });
 });
 

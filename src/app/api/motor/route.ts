@@ -22,6 +22,7 @@ import {
   detectarRetornoTardio,
   detectarParadaNoturnaIgnicaoAtiva,
   detectarAceleracaoBrusca,
+  calcularRiscoArea,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -29,6 +30,7 @@ import { celulasDoSegmento, vizinhanca3x3 } from "@/lib/celulas";
 import { buscarTiroteiosRJ } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
+import { obterRouboCarga } from "@/lib/roubocarga";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -399,11 +401,65 @@ export async function POST(request: Request) {
     // Tiroteios ATIVOS (últimas 3h) do RJ inteiro — risco em tempo real comum
     // a todas as frotas. Cruzamos com cada veículo (detector tiroteio próximo).
     // Falha graciosa: sem tiroteios, o detector simplesmente não dispara.
+    // Exclui acaoPolicial=true (achado da pesquisa 07/07): operação policial
+    // de rotina não é preditiva de assalto a carga — contar isso como risco
+    // infla o score de área numa região só porque teve uma blitz/operação.
     let tiroteiosAtivos: Tiroteio[] = [];
     try {
-      tiroteiosAtivos = (await buscarTiroteiosRJ(1)).filter((t) => t.recente);
+      tiroteiosAtivos = (await buscarTiroteiosRJ(1)).filter((t) => t.recente && !t.acaoPolicial);
     } catch {
       tiroteiosAtivos = [];
+    }
+
+    // ─── Score de risco de área (camada 3 do desvio) ────────────────────
+    // Combina favela + CISP (roubo de carga do ISP-RJ) + corredor de rodovia
+    // de alto risco (BR-040/101/116/493, curado a partir de Firjan/NTC) —
+    // ver calcularRiscoArea em lib/detectores.ts. Batch único pra toda a
+    // frota fresca (não por veículo candidato): testado que a versão
+    // correlacionada por linha é ~150x mais lenta (CTE com JOIN normal:
+    // ~230ms pra ~300 veículos; scalar subquery por linha: ~35s — acima do
+    // orçamento de um ciclo de 1min). Falha graciosa: sem dado, risco fica 0.
+    const riscoPorVeiculo = new Map<string, { emFavela: boolean; cisp: string | null; emCorredorRisco: boolean }>();
+    try {
+      const { rows } = await pool.query<{ veiculo_id: string; em_favela: boolean; cisp: string | null; em_corredor_risco: boolean }>(
+        `WITH cisp AS (
+           SELECT p.veiculo_id, g.meta->>'cisp' as cisp
+           FROM posicoes_atuais p
+           JOIN geofences g ON g.tipo = 'cisp' AND ST_Intersects(g.geom, p.geom)
+           WHERE p.atraso_min <= 60
+         ),
+         corredor AS (
+           SELECT DISTINCT p.veiculo_id
+           FROM posicoes_atuais p
+           JOIN geofences g ON g.tipo = 'risco' AND ST_DWithin(g.geom, p.geom, 250)
+           WHERE p.atraso_min <= 60
+         )
+         SELECT
+           p.veiculo_id,
+           EXISTS (SELECT 1 FROM geofences g WHERE g.tipo = 'favela' AND ST_Intersects(g.geom, p.geom)) AS em_favela,
+           cisp.cisp,
+           (corredor.veiculo_id IS NOT NULL) AS em_corredor_risco
+         FROM posicoes_atuais p
+         LEFT JOIN cisp ON cisp.veiculo_id = p.veiculo_id
+         LEFT JOIN corredor ON corredor.veiculo_id = p.veiculo_id
+         WHERE p.atraso_min <= 60`
+      );
+      for (const r of rows) {
+        riscoPorVeiculo.set(r.veiculo_id, { emFavela: r.em_favela, cisp: r.cisp, emCorredorRisco: r.em_corredor_risco });
+      }
+    } catch (errRisco) {
+      erros.push(`Aviso: score de risco de area indisponivel neste ciclo: ${String(errRisco)}`);
+    }
+
+    // Roubo de carga por CISP (ISP-RJ, cache de 6h na própria lib) — mapa
+    // cisp -> total nos últimos 12 meses, pra resolver o rouboCargaCispTotal
+    // de cada veículo via o cisp já resolvido acima.
+    const rouboCargaPorCisp = new Map<string, number>();
+    try {
+      const dadosRoubo = await obterRouboCarga();
+      for (const item of dadosRoubo?.ranking ?? []) rouboCargaPorCisp.set(item.cisp, item.total);
+    } catch {
+      // Sem dado: rouboCargaCispTotal fica null pra todo mundo, calcularRiscoArea trata como 0.
     }
 
     // Acumulador de pontos de entrega por veiculo_id — usado na supressao
@@ -804,6 +860,20 @@ export async function POST(request: Request) {
             vizinhosParados = Math.max(0, dentro - 1); // exclui o proprio veiculo
           }
 
+          // Score de risco de área (camada 3 do desvio, ver calcularRiscoArea):
+          // combina favela + tiroteio ativo perto (já filtrado sem acaoPolicial)
+          // + roubo de carga do CISP atual + corredor de rodovia de risco +
+          // madrugada. Falha graciosa: sem dado resolvido (query do batch falhou
+          // ou veiculo não frecso o bastante), tudo fica no "sem sinal" (0).
+          const riscoLocal = riscoPorVeiculo.get(veiculo_id);
+          const riscoAreaAtual = calcularRiscoArea({
+            emFavela: riscoLocal?.emFavela ?? false,
+            tiroteioRecentePertoM: distTiroteioM,
+            rouboCargaCispTotal: riscoLocal?.cisp ? rouboCargaPorCisp.get(riscoLocal.cisp) ?? 0 : null,
+            emCorredorRodoviaRisco: riscoLocal?.emCorredorRisco ?? false,
+            madrugada: horaSP >= 0 && horaSP < 5,
+          });
+
           let alerta: Alerta | null = alertaJammer
             ? alertaJammer
             : pos.fresco
@@ -817,6 +887,7 @@ export async function POST(request: Request) {
                   desvioStreak,
                   afastamentoAcumuladoM,
                   dentroTapete,
+                  riscoAreaAtual,
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
