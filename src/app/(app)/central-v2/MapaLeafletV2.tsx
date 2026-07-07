@@ -347,10 +347,14 @@ function criarIconeAlvo(situacao: number, proximo: boolean, qtd: number = 1): go
   }
 
   const svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">${corpo}${badge}</svg>`;
+  // Pedido do cliente (07/07): bolinha de ponto de entrega um pouco menor.
+  // Mesma tecnica dos icones de veiculo — escala so no scaledSize/anchor,
+  // sem mexer no raio/posicao interna do SVG.
+  const escalaAlvo = 0.8;
   return {
     url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-    scaledSize: new window.google.maps.Size(w, h),
-    anchor: new window.google.maps.Point(cx, cy),
+    scaledSize: new window.google.maps.Size(w * escalaAlvo, h * escalaAlvo),
+    anchor: new window.google.maps.Point(cx * escalaAlvo, cy * escalaAlvo),
   };
 }
 
