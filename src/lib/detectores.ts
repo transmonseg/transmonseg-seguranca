@@ -304,6 +304,14 @@ const AFASTAMENTO_MARGEM_M = 50;
 // em CtxDesvio). Bem acima do que uma via secundária/contorno legítimo
 // costuma desviar (poucas centenas de m a ~1-2km) — só pega desvio grande.
 export const TRAJETO_PERPENDICULAR_LIMIAR_M = 3000;
+// Perfil de rota (ver PerfilRotaEstado em rotaperfil.ts): quando há histórico
+// confiável do desvio NORMAL desse destino específico, o limiar acima vira um
+// TETO (nunca fica mais leniente) e o limiar efetivo pode ficar bem menor —
+// ex.: uma entrega que sempre teve ~50m de desvio ficando com 500m hoje é
+// muito anômalo PRA ELA, mesmo bem abaixo do teto fixo global.
+export const PERFIL_ROTA_MIN_AMOSTRAS = 8;
+export const PERFIL_ROTA_Z = 4;
+export const PERFIL_ROTA_LIMIAR_MIN_M = 200;
 
 // A Unitrac NÃO fornece rota planejada nem ordem confiável de entregas.
 // Desvio aqui é comportamento: o veículo se afastando de TODOS os destinos
@@ -367,6 +375,13 @@ export type CtxDesvio = {
   // calcular (não modula, nunca dispara só por isso).
   desvioTrajetoM: number | null;
   desvioTrajetoAnteriorM: number | null;
+  // Perfil estatístico (EWMA) do desvio perpendicular normal PRA ESSE destino
+  // específico (ver rotaperfil.ts), amostrado pelo motor na aproximação
+  // final de entregas passadas. null/0 amostras = sem histórico confiável
+  // ainda (usa só o teto fixo global, comportamento idêntico a antes).
+  perfilRotaMedia: number | null;
+  perfilRotaDesvioPadrao: number | null;
+  perfilRotaAmostras: number;
 };
 
 // Pesos do score de risco de área (0-100). Cada camada contribui
@@ -464,18 +479,39 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // distância perpendicular a qualquer segmento base->destino plausível —
   // se as DUAS estão muito longe de qualquer caminho direto, dispara mesmo
   // aproximando. Só entra em jogo quando o gatilho normal NÃO disparou.
+  //
+  // Limiar por-rota (ver PERFIL_ROTA_* acima): com histórico confiável desse
+  // destino específico, o limiar efetivo pode ficar bem MENOR que o teto
+  // fixo (nunca maior — Math.min garante que o teto global continua sendo o
+  // pior caso). Piso de PERFIL_ROTA_LIMIAR_MIN_M evita virar hipersensível
+  // numa rota historicamente perfeita (ruído de GPS puro já soma ~dezenas de
+  // metros).
+  const temPerfilConfiavel =
+    ctx.perfilRotaAmostras >= PERFIL_ROTA_MIN_AMOSTRAS &&
+    ctx.perfilRotaMedia !== null &&
+    ctx.perfilRotaDesvioPadrao !== null;
+  const limiarTrajetoEfetivo = temPerfilConfiavel
+    ? Math.min(
+        TRAJETO_PERPENDICULAR_LIMIAR_M,
+        Math.max(PERFIL_ROTA_LIMIAR_MIN_M, ctx.perfilRotaMedia! + PERFIL_ROTA_Z * ctx.perfilRotaDesvioPadrao!)
+      )
+    : TRAJETO_PERPENDICULAR_LIMIAR_M;
+
   if (
     !afastandoDeTudo &&
     ctx.desvioTrajetoM !== null &&
     ctx.desvioTrajetoAnteriorM !== null &&
-    ctx.desvioTrajetoM >= TRAJETO_PERPENDICULAR_LIMIAR_M &&
-    ctx.desvioTrajetoAnteriorM >= TRAJETO_PERPENDICULAR_LIMIAR_M
+    ctx.desvioTrajetoM >= limiarTrajetoEfetivo &&
+    ctx.desvioTrajetoAnteriorM >= limiarTrajetoEfetivo
   ) {
     const kmFora = (ctx.desvioTrajetoM / 1000).toFixed(1).replace(".", ",");
+    const motivoPerfil = temPerfilConfiavel
+      ? ` (rota costuma ter só ~${Math.round(ctx.perfilRotaMedia!)}m de desvio)`
+      : "";
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Trajeto ${kmFora}km fora de qualquer caminho direto plausível até os destinos, mesmo aproximando`,
+      motivo: `Trajeto ${kmFora}km fora de qualquer caminho direto plausível até os destinos, mesmo aproximando${motivoPerfil}`,
       score: 65,
     };
   }
@@ -723,6 +759,9 @@ export function avaliarTodos(
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
           desvioTrajetoM: ctx.desvioTrajetoM ?? null,
           desvioTrajetoAnteriorM: ctx.desvioTrajetoAnteriorM ?? null,
+          perfilRotaMedia: ctx.perfilRotaMedia ?? null,
+          perfilRotaDesvioPadrao: ctx.perfilRotaDesvioPadrao ?? null,
+          perfilRotaAmostras: ctx.perfilRotaAmostras ?? 0,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
@@ -750,6 +789,9 @@ export function avaliar(
     riscoAreaAtual?: number;
     desvioTrajetoM?: number | null;
     desvioTrajetoAnteriorM?: number | null;
+    perfilRotaMedia?: number | null;
+    perfilRotaDesvioPadrao?: number | null;
+    perfilRotaAmostras?: number;
     temPendentes?: boolean;
     entregasTotal?: number;
     entregasFeitas?: number;
@@ -827,6 +869,9 @@ export function avaliar(
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
           desvioTrajetoM: ctx.desvioTrajetoM ?? null,
           desvioTrajetoAnteriorM: ctx.desvioTrajetoAnteriorM ?? null,
+          perfilRotaMedia: ctx.perfilRotaMedia ?? null,
+          perfilRotaDesvioPadrao: ctx.perfilRotaDesvioPadrao ?? null,
+          perfilRotaAmostras: ctx.perfilRotaAmostras ?? 0,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);

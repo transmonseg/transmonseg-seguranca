@@ -266,6 +266,9 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     riscoAreaAtual: 0,
     desvioTrajetoM: null as number | null,
     desvioTrajetoAnteriorM: null as number | null,
+    perfilRotaMedia: null as number | null,
+    perfilRotaDesvioPadrao: null as number | null,
+    perfilRotaAmostras: 0,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
@@ -363,6 +366,70 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     const a = detectarDesvio(emMov, { ...base, dentroTapete: false, riscoAreaAtual: 100 });
     expect(a?.nivel).toBe("critico");
     expect(a?.score).toBe(80);
+  });
+});
+
+describe("detectarDesvio + perfil de rota (limiar por-destino via EWMA, ver rotaperfil.ts)", () => {
+  // Aproximando (nao afastando de tudo) -- so assim o gatilho de trajeto
+  // perpendicular entra em jogo (é o que o perfil de rota modula).
+  const baseAproximando = {
+    distDestinosM: [4000],
+    distDestinosAnteriorM: [4500],
+    temPendentes: true,
+    emOperacao: true,
+    foraDaBase: true,
+    entregasFeitas: 2,
+    streak: 0,
+    afastamentoAcumuladoM: 0,
+    dentroTapete: null as boolean | null,
+    riscoAreaAtual: 0,
+  };
+  const emMov2 = posicaoBase({ velocidade: 40 });
+
+  it("sem perfil de rota (0 amostras): usa teto fixo global de 3000m, 500m nao dispara", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando,
+      desvioTrajetoM: 500, desvioTrajetoAnteriorM: 500,
+      perfilRotaMedia: null, perfilRotaDesvioPadrao: null, perfilRotaAmostras: 0,
+    });
+    expect(a).toBeNull();
+  });
+
+  it("rota historicamente MUITO consistente (media 50m, desvio 10m): 500m dispara bem abaixo do teto global", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando,
+      desvioTrajetoM: 500, desvioTrajetoAnteriorM: 500,
+      perfilRotaMedia: 50, perfilRotaDesvioPadrao: 10, perfilRotaAmostras: 20,
+    });
+    expect(a?.score).toBe(65);
+    expect(a?.motivo).toContain("rota costuma ter só ~50m de desvio");
+  });
+
+  it("piso minimo de 200m: rota com variancia praticamente zero nao vira hipersensivel a ruido de GPS", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando,
+      desvioTrajetoM: 150, desvioTrajetoAnteriorM: 150,
+      perfilRotaMedia: 10, perfilRotaDesvioPadrao: 0, perfilRotaAmostras: 20,
+    });
+    expect(a).toBeNull();
+  });
+
+  it("limiar por-rota NUNCA fica mais leniente que o teto global (rota naturalmente tortuosa)", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando,
+      desvioTrajetoM: 2500, desvioTrajetoAnteriorM: 2500, // abaixo do teto global de 3000m
+      perfilRotaMedia: 5000, perfilRotaDesvioPadrao: 1000, perfilRotaAmostras: 20, // media+4*desvio = 9000m
+    });
+    expect(a).toBeNull();
+  });
+
+  it("perfil com poucas amostras (abaixo de PERFIL_ROTA_MIN_AMOSTRAS): ainda nao confia, usa teto fixo", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando,
+      desvioTrajetoM: 500, desvioTrajetoAnteriorM: 500,
+      perfilRotaMedia: 50, perfilRotaDesvioPadrao: 10, perfilRotaAmostras: 3,
+    });
+    expect(a).toBeNull();
   });
 });
 

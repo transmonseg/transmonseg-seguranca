@@ -31,6 +31,7 @@ type Ciclo = {
   lat: number; lng: number; velocidade?: number;
   dentroTapete?: boolean | null; riscoAreaAtual?: number;
   desvioTrajetoM?: number | null;
+  perfilRotaMedia?: number | null; perfilRotaDesvioPadrao?: number | null; perfilRotaAmostras?: number;
 };
 
 // Ponto a "passo" graus de distancia de origem, na direcao que se AFASTA de
@@ -89,6 +90,9 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
       riscoAreaAtual: c.riscoAreaAtual ?? 0,
       desvioTrajetoM,
       desvioTrajetoAnteriorM,
+      perfilRotaMedia: c.perfilRotaMedia ?? null,
+      perfilRotaDesvioPadrao: c.perfilRotaDesvioPadrao ?? null,
+      perfilRotaAmostras: c.perfilRotaAmostras ?? 0,
     };
     resultados.push(detectarDesvio(posicaoBase({ velocidade }), ctx));
     anteriorDist = distDestinosM;
@@ -251,6 +255,7 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
         entregasFeitas: 0, // 0 feitas ainda, com pendentes -> sem referencia de comportamento
         streak, afastamentoAcumuladoM: 0, dentroTapete: false, riscoAreaAtual: 100,
         desvioTrajetoM: null, desvioTrajetoAnteriorM: null,
+        perfilRotaMedia: null, perfilRotaDesvioPadrao: null, perfilRotaAmostras: 0,
       }));
       anteriorDist = distDestinosM;
     }
