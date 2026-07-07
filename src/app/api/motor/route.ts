@@ -27,7 +27,7 @@ import {
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
 import { celulasDoSegmento, vizinhanca3x3 } from "@/lib/celulas";
-import { buscarTiroteiosRJ } from "@/lib/fogocruzado";
+import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
@@ -462,6 +462,18 @@ export async function POST(request: Request) {
       // Sem dado: rouboCargaCispTotal fica null pra todo mundo, calcularRiscoArea trata como 0.
     }
 
+    // Perfil horario multiplicativo (Fogo Cruzado, cache de 24h na propria
+    // lib — nao busca historico a cada ciclo, so 1x/dia). Substitui o antigo
+    // bonus fixo de madrugada por um fator continuo por hora (0-23),
+    // consenso da literatura STKDE/aoristic. Falha graciosa: sem dado,
+    // fator fica 1 (neutro) pra toda hora, nao inventa risco nem penaliza.
+    let perfilHorario: number[] = new Array(24).fill(1);
+    try {
+      perfilHorario = await obterPerfilHorario();
+    } catch {
+      // mantem neutro
+    }
+
     // Acumulador de pontos de entrega por veiculo_id — usado na supressao
     // de alerta favela quando o proprio destino esta dentro da comunidade.
     const veiculoIdToAlvos = new Map<string, PontoEntrega[]>();
@@ -862,16 +874,17 @@ export async function POST(request: Request) {
 
           // Score de risco de área (camada 3 do desvio, ver calcularRiscoArea):
           // combina favela + tiroteio ativo perto (já filtrado sem acaoPolicial)
-          // + roubo de carga do CISP atual + corredor de rodovia de risco +
-          // madrugada. Falha graciosa: sem dado resolvido (query do batch falhou
-          // ou veiculo não frecso o bastante), tudo fica no "sem sinal" (0).
+          // + roubo de carga do CISP atual + corredor de rodovia de risco,
+          // multiplicado pelo fator horario (Fogo Cruzado, 60 dias, aoristic).
+          // Falha graciosa: sem dado resolvido (query do batch falhou ou
+          // veiculo não fresco o bastante), tudo fica no "sem sinal" (0).
           const riscoLocal = riscoPorVeiculo.get(veiculo_id);
           const riscoAreaAtual = calcularRiscoArea({
             emFavela: riscoLocal?.emFavela ?? false,
             tiroteioRecentePertoM: distTiroteioM,
             rouboCargaCispTotal: riscoLocal?.cisp ? rouboCargaPorCisp.get(riscoLocal.cisp) ?? 0 : null,
             emCorredorRodoviaRisco: riscoLocal?.emCorredorRisco ?? false,
-            madrugada: horaSP >= 0 && horaSP < 5,
+            fatorHorario: perfilHorario[horaSP] ?? 1,
           });
 
           let alerta: Alerta | null = alertaJammer

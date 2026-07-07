@@ -81,15 +81,17 @@ describe("detectarBau", () => {
 });
 
 describe("detectarJammer", () => {
+  // velocidade:40 (em movimento quando o sinal caiu) pros testes "base", pra
+  // isolar do novo modificador de "parado quando o sinal caiu" (testado a parte).
   it("ignicao ligada e atraso=60 retorna jammer critico", () => {
-    const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 60 }));
+    const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 60, velocidade: 40 }));
     expect(alerta).not.toBeNull();
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.tipo).toBe("jammer");
     expect(alerta?.score).toBe(80);
   });
   it("atraso no limite inferior (30) aciona jammer (nivel atencao eliminado, tudo critico)", () => {
-    const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 30 }));
+    const alerta = detectarJammer(posicaoBase({ ignicao: true, atraso: 30, velocidade: 40 }));
     expect(alerta).not.toBeNull();
     expect(alerta?.nivel).toBe("critico");
     expect(alerta?.score).toBe(55);
@@ -108,6 +110,26 @@ describe("detectarJammer", () => {
   });
   it("atraso=0 nao aciona jammer", () => {
     expect(detectarJammer(posicaoBase({ ignicao: true, atraso: 0 }))).toBeNull();
+  });
+
+  // Achado da pesquisa 07/07: jammer coincidindo com o veiculo PARADO no
+  // momento em que o sinal caiu e sinal mais forte (~85% dos roubos de carga
+  // documentados no Mexico envolveram jammer) — score mais alto, motivo mais
+  // especifico pro operador priorizar.
+  describe("modificador: parado quando o sinal caiu (velocidade=0 na ultima leitura)", () => {
+    it("jammer critico (60min) com veiculo parado: score 90 (vs 80 em movimento)", () => {
+      const parado = detectarJammer(posicaoBase({ ignicao: true, atraso: 60, velocidade: 0 }));
+      const movimento = detectarJammer(posicaoBase({ ignicao: true, atraso: 60, velocidade: 40 }));
+      expect(parado?.score).toBe(90);
+      expect(movimento?.score).toBe(80);
+      expect(parado?.motivo).toContain("PARADO quando o sinal caiu");
+    });
+    it("jammer inicial (30min) com veiculo parado: score 65 (vs 55 em movimento)", () => {
+      const parado = detectarJammer(posicaoBase({ ignicao: true, atraso: 30, velocidade: 0 }));
+      const movimento = detectarJammer(posicaoBase({ ignicao: true, atraso: 30, velocidade: 40 }));
+      expect(parado?.score).toBe(65);
+      expect(movimento?.score).toBe(55);
+    });
   });
 });
 
@@ -343,17 +365,17 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
 });
 
 describe("calcularRiscoArea", () => {
-  it("sem nenhum sinal de risco: score 0", () => {
+  it("sem nenhum sinal de risco: score 0 (mesmo com fator horario alto)", () => {
     expect(calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, madrugada: false,
+      emCorredorRodoviaRisco: false, fatorHorario: 1.6,
     })).toBe(0);
   });
 
-  it("dentro de favela sozinho ja atinge o limiar de escalonamento", () => {
+  it("dentro de favela sozinho ja atinge o limiar de escalonamento (fator horario neutro)", () => {
     const score = calcularRiscoArea({
       emFavela: true, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, madrugada: false,
+      emCorredorRodoviaRisco: false, fatorHorario: 1,
     });
     expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
   });
@@ -361,7 +383,7 @@ describe("calcularRiscoArea", () => {
   it("tiroteio recente proximo (<=1500m) sozinho ja atinge o limiar", () => {
     const score = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: 800, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, madrugada: false,
+      emCorredorRodoviaRisco: false, fatorHorario: 1,
     });
     expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
   });
@@ -369,7 +391,7 @@ describe("calcularRiscoArea", () => {
   it("tiroteio longe demais (>1500m) nao conta", () => {
     const score = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: 5000, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, madrugada: false,
+      emCorredorRodoviaRisco: false, fatorHorario: 1,
     });
     expect(score).toBe(0);
   });
@@ -377,36 +399,41 @@ describe("calcularRiscoArea", () => {
   it("roubo de carga alto no CISP (>=15 em 12 meses) soma mais que medio", () => {
     const alto = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 20,
-      emCorredorRodoviaRisco: false, madrugada: false,
+      emCorredorRodoviaRisco: false, fatorHorario: 1,
     });
     const medio = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 3,
-      emCorredorRodoviaRisco: false, madrugada: false,
+      emCorredorRodoviaRisco: false, fatorHorario: 1,
     });
     expect(alto).toBeGreaterThan(medio);
     expect(medio).toBeGreaterThan(0);
   });
 
-  it("madrugada sozinha NAO atinge o limiar (so um reforco, nao gatilho isolado)", () => {
-    const score = calcularRiscoArea({
-      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, madrugada: true,
+  it("fator horario e MULTIPLICATIVO: amplifica proporcionalmente um sinal espacial ja existente", () => {
+    const base = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 3, // medio = 10
+      emCorredorRodoviaRisco: false, fatorHorario: 1,
     });
-    expect(score).toBeLessThan(RISCO_AREA_LIMIAR);
+    const amplificado = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 3,
+      emCorredorRodoviaRisco: false, fatorHorario: 1.6,
+    });
+    expect(base).toBe(10);
+    expect(amplificado).toBe(16); // 10 * 1.6, nao 10 + bonus fixo
   });
 
   it("combinacao de sinais fracos pode somar acima do limiar", () => {
     const score = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 20,
-      emCorredorRodoviaRisco: true, madrugada: false,
+      emCorredorRodoviaRisco: true, fatorHorario: 1,
     });
     expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
   });
 
-  it("nunca passa de 100 mesmo com todos os sinais ativos", () => {
+  it("nunca passa de 100 mesmo com todos os sinais ativos e fator horario maximo", () => {
     const score = calcularRiscoArea({
       emFavela: true, tiroteioRecentePertoM: 100, rouboCargaCispTotal: 999,
-      emCorredorRodoviaRisco: true, madrugada: true,
+      emCorredorRodoviaRisco: true, fatorHorario: 1.6,
     });
     expect(score).toBeLessThanOrEqual(100);
   });

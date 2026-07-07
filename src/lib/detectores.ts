@@ -73,19 +73,33 @@ const JAMMER_TETO_MIN = 180;
 export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
   if (!p.ignicao) return null;
   if (p.atraso < JAMMER_ATENCAO_MIN || p.atraso > JAMMER_TETO_MIN) return null;
+
+  // Achado da pesquisa (07/07): ~85% dos roubos de carga documentados no
+  // Mexico envolveram jammer, e casos reais mostram que foi o sinal cair
+  // justamente durante uma PARADA (nao um jammer com o veiculo em movimento,
+  // que pode ser so sombra de sinal num tunel/vao entre predios) que expos
+  // o roubo. p.velocidade aqui e a ULTIMA leitura conhecida antes do sinal
+  // cair (a linha nao atualiza durante o gap) — reflete o estado real no
+  // momento em que o sinal sumiu, nao um "zero" por falta de dado.
+  const paradoQuandoSinalCaiu = p.velocidade === 0;
+
   if (p.atraso < JAMMER_CRITICO_MIN) {
     return {
       nivel: "critico",
       tipo: "jammer",
-      motivo: `Sinal ausente ha ${p.atraso}min com ignicao ligada (monitorar)`,
-      score: 55,
+      motivo: paradoQuandoSinalCaiu
+        ? `Sinal ausente ha ${p.atraso}min — veiculo estava PARADO quando o sinal caiu (monitorar de perto)`
+        : `Sinal ausente ha ${p.atraso}min com ignicao ligada (monitorar)`,
+      score: paradoQuandoSinalCaiu ? 65 : 55,
     };
   }
   return {
     nivel: "critico",
     tipo: "jammer",
-    motivo: `Sinal perdido ha ${p.atraso}min com ignicao ligada (possivel bloqueador GPS)`,
-    score: 80,
+    motivo: paradoQuandoSinalCaiu
+      ? `Sinal perdido ha ${p.atraso}min — veiculo estava PARADO quando o sinal caiu (padrao de bloqueio durante parada, ver protocolo)`
+      : `Sinal perdido ha ${p.atraso}min com ignicao ligada (possivel bloqueador GPS)`,
+    score: paradoQuandoSinalCaiu ? 90 : 80,
   };
 }
 
@@ -346,7 +360,12 @@ const RISCO_TIROTEIO_PERTO = 40;
 const RISCO_ROUBO_CARGA_ALTO = 20;
 const RISCO_ROUBO_CARGA_MEDIO = 10;
 const RISCO_CORREDOR_RODOVIA = 20;
-const RISCO_MADRUGADA = 10;
+// Fator horario multiplicativo (ver calcularPerfilHorario em fogocruzado.ts):
+// fora dessa faixa, um horario com poucos dados historicos poderia zerar ou
+// disparar o score espacial por ruido estatistico — consenso da literatura
+// STKDE/aoristic e sempre MULTIPLICAR a base espacial, nunca somar bonus fixo.
+export const FATOR_HORARIO_MIN = 0.7;
+export const FATOR_HORARIO_MAX = 1.6;
 // Acima disso, trata como "área de risco elevado" pro desvio escalar tão
 // rápido quanto "fora do tapete" — um sinal isolado (só favela, ou só
 // tiroteio perto) já basta; não precisa de combinação de vários.
@@ -361,7 +380,10 @@ export function calcularRiscoArea(ctx: {
   tiroteioRecentePertoM: number | null; // null = nenhum tiroteio ativo relevante
   rouboCargaCispTotal: number | null; // null = sem CISP resolvido pra essa posição
   emCorredorRodoviaRisco: boolean;
-  madrugada: boolean; // 0h-5h horário local
+  // Fator multiplicativo por hora do dia (ver calcularPerfilHorario), tipico
+  // 0.7-1.6. Default esperado 1 (neutro) quando nao ha perfil horario
+  // disponivel ainda (ex.: Fogo Cruzado fora do ar) — nunca inventa risco.
+  fatorHorario: number;
 }): number {
   let score = 0;
   if (ctx.emFavela) score += RISCO_FAVELA;
@@ -373,8 +395,7 @@ export function calcularRiscoArea(ctx: {
     else if (ctx.rouboCargaCispTotal > 0) score += RISCO_ROUBO_CARGA_MEDIO;
   }
   if (ctx.emCorredorRodoviaRisco) score += RISCO_CORREDOR_RODOVIA;
-  if (ctx.madrugada) score += RISCO_MADRUGADA;
-  return Math.min(100, score);
+  return Math.min(100, score * ctx.fatorHorario);
 }
 
 // O veículo se afastou de TODOS os destinos legítimos desde o ciclo
