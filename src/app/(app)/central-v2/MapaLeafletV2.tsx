@@ -199,9 +199,12 @@ function encodeForSvg(s: string): string {
 }
 
 // Baseado no iconeStatus do V1 (MapaMonitor.tsx) adaptada para SVG data URL.
-// Glifo interno trocado de caminhao pra quadrado+triangulo (pedido do cliente
-// 06/07: bater com o simbolo simples que a Unitrac usa), tamanho reduzido
-// ~13% (escala aplicada so no scaledSize/anchor, sem mexer no path do pin).
+// Glifo interno do caminhao mantido como sempre foi — o que o cliente pediu
+// pra trocar (07/07) foi a FORMA DE FORA colorida: teardrop -> quadrado com
+// triangulo apontando pra baixo (pentagono de 5 pontos, um path so, sem
+// costura entre "quadrado" e "triangulo"), mais perto do pin que a Unitrac
+// usa. Tamanho reduzido ~13% (escala aplicada so no scaledSize/anchor, sem
+// mexer na geometria interna do SVG).
 function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showLabel: boolean): google.maps.Icon {
   const cor = corVeiculo(vm, tok);
   const semComm = vm.atraso_min > 60;
@@ -220,8 +223,10 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
       <circle cx="22" cy="22" r="22" fill="${cor}" opacity="0.15"/>
       <circle cx="22" cy="22" r="19" fill="rgba(4,4,8,0.96)" stroke="${cor}" stroke-width="3"/>
       <g transform="translate(10,10)" fill="none" stroke="${cor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="4" y="2" width="15" height="13"/>
-        <polygon points="7 15 16 15 11.5 22"/>
+        <rect x="1" y="3" width="15" height="13"/>
+        <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+        <circle cx="5.5" cy="18.5" r="2.5"/>
+        <circle cx="18.5" cy="18.5" r="2.5"/>
       </g>
       ${labelSvg}
     </svg>`;
@@ -252,10 +257,12 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
         `<circle cx="${x2}" cy="${y2}" r="2" fill="white" opacity="0.95"/>`;
     }
     const svgLabel = `<svg width="64" height="52" viewBox="0 0 64 52" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
-      <path d="M32 2 C24 2 19 8 19 15 C19 22 25 30 32 36 C39 30 45 22 45 15 C45 8 40 2 32 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
+      <polygon points="19,2 45,2 45,22 32,36 19,22" fill="${cor}" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
       <g transform="translate(21,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="4" y="2" width="15" height="13"/>
-        <polygon points="7 15 16 15 11.5 22"/>
+        <rect x="1" y="3" width="15" height="13"/>
+        <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+        <circle cx="5.5" cy="18.5" r="2.5"/>
+        <circle cx="18.5" cy="18.5" r="2.5"/>
       </g>
       ${setaSvgLabel}
       <rect x="1" y="38" width="62" height="13" rx="4" fill="rgba(0,0,0,0.82)"/>
@@ -281,10 +288,12 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
   }
 
   const svg = `<svg width="30" height="38" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
-    <path d="M15 2 C7 2 2 8 2 15 C2 22 8 30 15 36 C22 30 28 22 28 15 C28 8 23 2 15 2 Z" fill="${cor}" stroke="white" stroke-width="1.5"/>
+    <polygon points="3,2 27,2 27,22 15,36 3,22" fill="${cor}" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
     <g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="4" y="2" width="15" height="13"/>
-      <polygon points="7 15 16 15 11.5 22"/>
+      <rect x="1" y="3" width="15" height="13"/>
+      <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+      <circle cx="5.5" cy="18.5" r="2.5"/>
+      <circle cx="18.5" cy="18.5" r="2.5"/>
     </g>
     ${setaSvg}
   </svg>`;
