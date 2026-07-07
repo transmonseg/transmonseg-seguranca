@@ -81,6 +81,17 @@ const TIPOS_NOTIFICAM_POR_CLIENTE: Record<string, string[]> = {
   "4586": ["parada_cliente"],  // Benassi: só parada de 1h30+ dentro do cliente
 };
 
+// Rótulo da 2ª aba de filtro na sidebar (pedido do cliente 07/07): "CRÍTICO"
+// não filtrava nada de útil (todo alerta já é crítico desde que a atenção foi
+// eliminada) — vira uma aba de FOCO especifica por cliente, mostrando só os
+// tipos que de fato importam pra aquela operação (mesmo mapa usado pro apito).
+// Cliente não mapeado aqui = 2ª aba não aparece (só "TUDO"), pra não mostrar
+// uma aba que sempre fica vazia.
+const LABEL_FOCO_POR_CLIENTE: Record<string, string> = {
+  "4096": "DESVIOS",
+  "4586": "1H+ CLIENTE",
+};
+
 function tempoAtras(desde: string): string {
   const diff = Math.floor((Date.now() - new Date(desde).getTime()) / 60000);
   if (diff < 60) return `${diff}min`;
@@ -168,7 +179,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const gatilhoRef = useRef(0);
 
   // UI
-  const [vista, setVista] = useState<"tudo" | "critico">("tudo");
+  const [vista, setVista] = useState<"tudo" | "foco">("tudo");
+  // Tipos que a 2ª aba ("foco") filtra pra esse cliente, e o rótulo dela —
+  // mesmo mapa usado pro apito (ver TIPOS_NOTIFICAM_POR_CLIENTE acima).
+  const tiposFoco = TIPOS_NOTIFICAM_POR_CLIENTE[cliente] ?? [];
+  const labelFoco = LABEL_FOCO_POR_CLIENTE[cliente];
   const [filtroComm, setFiltroComm] = useState<number | null>(null);
   const [busca, setBusca] = useState("");
   const [comboAberto, setComboAberto] = useState(false);
@@ -227,7 +242,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (localStorage.getItem("transmonseg-trafego") === "true") setCamTrafego(true);
     if (localStorage.getItem("transmonseg-legenda") === "true") setLegendaAberta(true);
     const vistaS = localStorage.getItem("transmonseg-vista");
-    if (vistaS === "tudo" || vistaS === "critico") setVista(vistaS);
+    // "critico" e valor legado (pre-rename da 2a aba pra "foco" em 07/07) —
+    // trata como "foco" pra nao perder a preferencia salva de quem ja usava.
+    if (vistaS === "tudo") setVista("tudo");
+    else if (vistaS === "critico" || vistaS === "foco") setVista("foco");
     const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
     if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
     const gruposOcultosS = localStorage.getItem("transmonseg-grupos-ocultos");
@@ -281,7 +299,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     });
   }, []);
 
-  const setVistaComPersistencia = useCallback((v: "tudo" | "critico") => {
+  const setVistaComPersistencia = useCallback((v: "tudo" | "foco") => {
     localStorage.setItem("transmonseg-vista", v);
     setVista(v);
   }, []);
@@ -785,7 +803,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     : null;
 
   const alertasFiltrados = alertas.filter(a => {
-    if (vista === "critico" && a.nivel !== "critico") return false;
+    if (vista === "foco" && !tiposFoco.includes(a.tipo)) return false;
     if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
     if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
     if (gruposOcultos.size > 0) {
@@ -1207,9 +1225,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           )}
 
-          {/* Filter tabs */}
+          {/* Filter tabs — 2ª aba é especifica por cliente ("foco": os tipos que
+              importam pra essa operação, mesmo mapa do apito). Cliente sem
+              mapeamento não ganha 2ª aba (ficaria sempre vazia). */}
           <div style={{ display: "flex", padding: "5px 6px", gap: 3, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
-            {(["tudo", "critico"] as const).map(v => {
+            {(labelFoco ? (["tudo", "foco"] as const) : (["tudo"] as const)).map(v => {
               const color = v === "tudo" ? T.accent : T.red;
               return (
                 <button key={v} onClick={() => setVistaComPersistencia(v)} style={{
@@ -1219,7 +1239,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   fontSize: 10, fontWeight: 700, letterSpacing: ".06em",
                   fontFamily: FONT_SANS, transition: "all .12s",
                 }}>
-                  {v === "tudo" ? "TUDO" : "CRÍTICO"}
+                  {v === "tudo" ? "TUDO" : labelFoco}
                 </button>
               );
             })}
@@ -1229,7 +1249,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               cabeçalho compacto em vez de duas faixas de pílulas sempre abertas */}
           {(() => {
             const tiposDisponiveis = [...new Set(alertas.filter(a => {
-              if (vista === "critico" && a.nivel !== "critico") return false;
+              if (vista === "foco" && !tiposFoco.includes(a.tipo)) return false;
               return true;
             }).map(a => a.tipo))].sort((a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0));
             const temGrupos = grupos.length > 1;
@@ -1354,7 +1374,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   background: "transparent", border: `1px solid ${T.border}`,
                   color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
                 }}>
-                  {vista === "critico" ? `Resolver críticos (${alertasFiltrados.length})`
+                  {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasFiltrados.length})`
                     : `Resolver todos (${alertasFiltrados.length})`}
                 </button>
               )}
