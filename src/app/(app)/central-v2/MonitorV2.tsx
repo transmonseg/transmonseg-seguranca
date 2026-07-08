@@ -10,6 +10,7 @@ import { createClient as createSupabaseBrowser } from "@/lib/supabase/browser";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
+import EscopoMapaSwitcher from "./EscopoMapaSwitcher";
 
 const MapaLeafletV2 = dynamic(() => import("./MapaLeafletV2"), { ssr: false });
 
@@ -1522,6 +1523,24 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             onZoomChange={setZoomAtual}
           />
 
+          {/* Alternador TODOS x SELECIONADOS — topo central do mapa. Clique
+              direto num rotulo OU arraste o thumb (estilo iPad Split View).
+              Reaproveita modoSelecionados/veiculosSelecionados que ja existiam
+              (antes so acessivel via checkbox enterrado em Configurações). */}
+          <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: Z.badge }}>
+            <EscopoMapaSwitcher
+              modo={modoSelecionados ? "selecionados" : "todos"}
+              totalSelecionados={veiculosSelecionados.size}
+              temSelecao={veiculosSelecionados.size > 0}
+              onEscolher={(m) => setModoSelecionadosSessao(m === "selecionados")}
+              onAbrirSeletor={() => setSeletorAberto(true)}
+              tema={tema}
+              accent={T.accent}
+              border={T.border}
+              muted={T.muted}
+            />
+          </div>
+
           {/* Faixa de desvios de rota — topo central, clicavel. So aparece pro
               cliente que tem desvio como foco (TIPOS_NOTIFICAM_POR_CLIENTE) -
               achado ao vivo 07/07: a faixa aparecia pra QUALQUER cliente com
@@ -1530,7 +1549,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               visual tanto quanto o apito - tem que respeitar o mesmo mapa. */}
           {tiposFoco.includes("desvio") && desviosAtivos.length > 0 && (
             <div style={{
-              position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
+              // top: 56 (nao 12) pra nao empilhar em cima do EscopoMapaSwitcher acima.
+              position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)",
               zIndex: Z.toasts, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6,
               maxWidth: "calc(100% - 24px)", maxHeight: 150, overflowY: "auto", padding: 2,
             }}>
