@@ -31,7 +31,6 @@ import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
-import { candidatoEntregaProximidade } from "@/lib/entrega-proximidade";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -571,15 +570,6 @@ export async function POST(request: Request) {
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
     const celulasCiclo: { cliente_id: string; celula: string }[] = [];
 
-    // Candidatos a entrega por proximidade detectados neste ciclo (ver
-    // lib/entrega-proximidade.ts), insert em batch ao final, mesmo padrao
-    // de celulasCiclo.
-    const candidatosEntregaCiclo: {
-      cliente_id: string; veiculo_id: string; alvo_codigo: number;
-      ponto_codigo: number | null; lat: number; lng: number;
-      distancia_m: number; parado_min: number;
-    }[] = [];
-
     // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
     // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
     // pool.connect()+query POR VEICULO dentro do loop. Achado 07/07/2026
@@ -727,17 +717,6 @@ export async function POST(request: Request) {
       // Geocode restrito deste ciclo (ver comentario acima de preencherGeocodeCacheCandidatos).
       await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
-      // Confirmacoes manuais de entrega (ver lib/entrega-proximidade.ts):
-      // 1 busca por cliente, mesmo padrao das outras buscas em batch acima.
-      const { data: confirmacoesRows } = await supabase
-        .from("entregas_confirmacao_manual")
-        .select("alvo_codigo")
-        .eq("cliente_id", cliente.id)
-        .eq("status", "confirmado");
-      const alvosConfirmadosManualmente = new Set(
-        (confirmacoesRows ?? []).map((r) => r.alvo_codigo as number)
-      );
-
       // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
       const { data: todosAlertasAbertos } = await supabase
         .from("alertas")
@@ -847,33 +826,8 @@ export async function POST(request: Request) {
           // numa entrega normal. Ver detectarDesvio em lib/detectores.ts.
           const pontosVeiculo = pontosPorPlaca.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
-          const pendentes = (pontosVeiculo ?? []).filter(
-            (pt) => !pt.feito && !(pt.codigo != null && alvosConfirmadosManualmente.has(pt.codigo))
-          );
+          const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
           const temPendentes = pendentes.length > 0;
-
-          // Candidato a entrega por proximidade (compensa bug de perimetro
-          // do Unitrac), so registra, nunca confirma sozinho (ver
-          // lib/entrega-proximidade.ts).
-          if (pos.fresco && pos.velocidade === 0 && paradoMin >= 5) {
-            const candidato = candidatoEntregaProximidade(
-              { lat: pos.lat, lng: pos.lng },
-              paradoMin,
-              pendentes
-            );
-            if (candidato && candidato.codigo != null) {
-              candidatosEntregaCiclo.push({
-                cliente_id,
-                veiculo_id,
-                alvo_codigo: candidato.codigo,
-                ponto_codigo: candidato.pontoCodigo,
-                lat: pos.lat,
-                lng: pos.lng,
-                distancia_m: Math.round(haversineM(pos.lat, pos.lng, candidato.lat, candidato.lng)),
-                parado_min: paradoMin,
-              });
-            }
-          }
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))
             .filter((c): c is { lat: number; lng: number } => c !== null);
@@ -988,14 +942,8 @@ export async function POST(request: Request) {
           }
 
           // ─── Entregas do veículo ────────────────────────────────────────
-          // Confirmadas manualmente (pt.feito=false pro Unitrac, mas o
-          // operador confirmou aqui) contam a mais; as que o Unitrac já
-          // marcou feito=true já vêm somadas em entregas.feitos.
-          const confirmadosDoVeiculo = (pontosVeiculo ?? []).filter(
-            (pt) => !pt.feito && pt.codigo != null && alvosConfirmadosManualmente.has(pt.codigo)
-          ).length;
           const entregas = entregasPorPlaca.get(pos.placa) ?? { feitos: 0, total: 0 };
-          const entregas_feitas = entregas.feitos + confirmadosDoVeiculo;
+          const entregas_feitas = entregas.feitos;
           const entregas_total = entregas.total;
 
           // Determinar nivel e alerta com ordem de prioridade correta:
@@ -1389,40 +1337,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Candidatos a entrega por proximidade: insert, ignora se ja existe
-    // (unique cliente_id+alvo_codigo: so vira candidato 1 vez).
-    if (candidatosEntregaCiclo.length > 0) {
-      const pgEntregas = await pool.connect();
-      try {
-        await pgEntregas.query(
-          `INSERT INTO entregas_confirmacao_manual
-             (cliente_id, veiculo_id, alvo_codigo, ponto_codigo, lat, lng, distancia_m, parado_min)
-           SELECT c.cid::uuid, c.vid::uuid, c.ac::bigint, c.pc::bigint, c.lat::float8, c.lng::float8, c.dm::integer, c.pm::integer
-           FROM unnest(
-             $1::uuid[], $2::uuid[], $3::bigint[], $4::bigint[],
-             $5::float8[], $6::float8[], $7::integer[], $8::integer[]
-           ) AS c(cid, vid, ac, pc, lat, lng, dm, pm)
-           ON CONFLICT (cliente_id, alvo_codigo) DO NOTHING`,
-          [
-            candidatosEntregaCiclo.map((c) => c.cliente_id),
-            candidatosEntregaCiclo.map((c) => c.veiculo_id),
-            candidatosEntregaCiclo.map((c) => c.alvo_codigo),
-            candidatosEntregaCiclo.map((c) => c.ponto_codigo),
-            candidatosEntregaCiclo.map((c) => c.lat),
-            candidatosEntregaCiclo.map((c) => c.lng),
-            candidatosEntregaCiclo.map((c) => c.distancia_m),
-            candidatosEntregaCiclo.map((c) => c.parado_min),
-          ]
-        );
-      } catch (errEntregas) {
-        const msg = `Erro ao gravar candidatos de entrega: ${String(errEntregas)}`;
-        console.error(msg);
-        erros.push(msg);
-      } finally {
-        pgEntregas.release();
-      }
-    }
-
     // Auto-resolução de alertas de rotina para veículos sem comunicação.
     // Quando o veículo para (ignição desligada, atraso > 120min), o loop principal
     // faz `continue` antes de gerenciar alertas — eles ficam presos indefinidamente.
@@ -1674,15 +1588,6 @@ export async function POST(request: Request) {
         // Tapete: células sem visita há mais de 30 dias saem do corredor.
         await pgClean.query(
           `DELETE FROM corredor_celulas WHERE ultimo_visto < current_date - 30`
-        );
-        // Confirmacao manual de entrega: linhas resolvidas (confirmado ou
-        // rejeitado) ha mais de 60 dias saem, a tabela cresce devagar (1
-        // linha por candidato real, nao por ciclo) mas ainda precisa de teto,
-        // mesmo padrao de geocode_cache/corredor_celulas.
-        await pgClean.query(
-          `DELETE FROM entregas_confirmacao_manual
-           WHERE status IN ('confirmado','rejeitado')
-             AND resolvido_em < now() - interval '60 days'`
         );
       } catch (errClean) {
         console.warn("Limpeza periódica falhou (não crítico):", errClean);
