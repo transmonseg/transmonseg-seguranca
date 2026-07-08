@@ -453,7 +453,7 @@ Localizar o bloco de limpeza periódica (comentário `// Tapete: células sem vi
 
 ```typescript
         // Confirmacao manual de entrega: linhas resolvidas (confirmado ou
-        // rejeitado) ha mais de 60 dias saem — a tabela cresce devagar (1
+        // rejeitado) ha mais de 60 dias saem, a tabela cresce devagar (1
         // linha por candidato real, nao por ciclo) mas ainda precisa de teto,
         // mesmo padrao de geocode_cache/corredor_celulas.
         await pgClean.query(
