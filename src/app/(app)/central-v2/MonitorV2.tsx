@@ -213,6 +213,20 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [comboAberto, setComboAberto] = useState(false);
   const [novosIdsArr, setNovosIdsArr] = useState<string[]>([]);
   const [mostrarTodosDesvios, setMostrarTodosDesvios] = useState(false);
+  // Split view: cada painel expande/recolhe sua propria faixa de desvios,
+  // independente do outro (ver renderFaixaDesvio).
+  const [mostrarTodosDesviosSplitTodos, setMostrarTodosDesviosSplitTodos] = useState(false);
+  const [mostrarTodosDesviosSplitSelecionados, setMostrarTodosDesviosSplitSelecionados] = useState(false);
+  // Motivo do alerta truncado (nowrap+ellipsis) fica ilegivel quando e longo —
+  // toggle por card pra expandir/recolher o texto completo sob demanda.
+  const [motivosExpandidos, setMotivosExpandidos] = useState<Set<string>>(new Set());
+  const toggleMotivoExpandido = useCallback((id: string) => {
+    setMotivosExpandidos(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
   const [confirmarResolver, setConfirmarResolver] = useState(false);
   const [resolvendoTodos, startResolver] = useTransition();
 
@@ -243,6 +257,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [splitView, setSplitView] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.5);
   const mapAreaRef = useRef<HTMLDivElement>(null);
+  // Qual painel do split view "dono" da selecao atual (camera + drawer +
+  // marcador em destaque) — ver comentario completo em selecionarVeiculo.
+  const [ladoSelecionado, setLadoSelecionado] = useState<"todos" | "selecionados" | null>(null);
 
   // Theme + satellite (satélite padrão = true)
   const [tema, setTema] = useState<"dark" | "light">("dark");
@@ -676,13 +693,24 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   }, []);
 
   // ── Vehicle selection ────────────────────────────────────────────────
-  const selecionarVeiculo = useCallback((cv: string, coords?: { lat: number; lng: number }) => {
+  // `lado`: em split view, qual painel (TODOS/SELECIONADOS) originou a seleção
+  // — so aquele painel reage (camera + destaque do marcador + drawer). Sem
+  // isso os 2 mapas compartilhavam cvSelecionado/flyPara e clicar num painel
+  // "vazava" pro outro (achado real 08/07: selecionar um carro na tela TODOS
+  // tambem centralizava/realcava na tela SELECIONADOS). null = modo unico
+  // (fora do split) ou origem nao-ligada a um painel especifico (ex.: busca).
+  const selecionarVeiculo = useCallback((
+    cv: string,
+    coords?: { lat: number; lng: number },
+    lado?: "todos" | "selecionados" | null
+  ) => {
     // Abortar fetch IMEDIATAMENTE — antes do próximo render+useEffect. Sem isso, uma
     // resposta que chega entre o setState e o useEffect pode chamar setRastro(A_data)
     // depois do setRastro([]) daqui, deixando o rastro do veículo antigo visível.
     fetchAbortRef.current?.abort();
     fetchAbortRef.current = null;
 
+    setLadoSelecionado(lado ?? null);
     setCvSelecionado(cv);
     // Incrementar reloadKey força o useEffect a disparar mesmo se cvSelecionado não mudou
     // (re-seleção do mesmo veículo). Garante que carregarVeiculo é chamado exatamente UMA vez.
@@ -709,6 +737,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     fetchAbortRef.current?.abort();
     fetchAbortRef.current = null;
     setCvSelecionado(null);
+    setLadoSelecionado(null);
     setAlertaAtivoId(null);
     setRastro([]);
     setParadas([]);
@@ -727,6 +756,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const handleVeiculoClick = useCallback((vm: VeiculoMapa) => {
     lastMarkerClickRef.current = Date.now();
     selecionarVeiculo(vm.cv);
+  }, [selecionarVeiculo]);
+
+  // Variantes usadas pelos 2 paineis do split view — cada uma marca de qual
+  // painel veio o clique (ver selecionarVeiculo).
+  const handleVeiculoClickTodos = useCallback((vm: VeiculoMapa) => {
+    lastMarkerClickRef.current = Date.now();
+    selecionarVeiculo(vm.cv, undefined, "todos");
+  }, [selecionarVeiculo]);
+  const handleVeiculoClickSelecionados = useCallback((vm: VeiculoMapa) => {
+    lastMarkerClickRef.current = Date.now();
+    selecionarVeiculo(vm.cv, undefined, "selecionados");
   }, [selecionarVeiculo]);
 
   // Click no mapa vazio: apenas fecha popups, nao deseleciona veiculo
@@ -875,6 +915,26 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Ordena só por prioridade — seleção não move o card, só brilha no lugar
   const alertasOrdenados = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
 
+  // Split view: sidebar mostra 2 secoes independentes (TODOS + SELECIONADOS)
+  // em vez de 1 lista unica — mesma logica de vmTodos/vmSelecionados no mapa.
+  // Recalculado A PARTE de alertasFiltrados (que respeita modoSelecionados,
+  // usado so pelo modo unico fora do split) pra secao TODOS nunca ficar
+  // filtrada por selecao — mesma classe de bug ja corrigida na malha de
+  // pontos de entrega (alvosGlobaisSelecionados).
+  const alertasFiltradosSplitBase = alertas.filter(a => {
+    if (vista === "foco" && !tiposFoco.includes(a.tipo)) return false;
+    if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
+    if (gruposOcultos.size > 0) {
+      const g = cvParaGrupo.get(a.cv);
+      if (g !== undefined && gruposOcultos.has(g)) return false;
+    }
+    return true;
+  });
+  const alertasOrdenadosSplitTodos = [...alertasFiltradosSplitBase].sort((a, b) => prioAlerta(b) - prioAlerta(a));
+  const alertasOrdenadosSplitSelecionados = veiculosSelecionados.size > 0
+    ? alertasOrdenadosSplitTodos.filter(a => veiculosSelecionados.has(a.cv))
+    : alertasOrdenadosSplitTodos;
+
   // Resolve os alertas VISÍVEIS na aba atual (Crítico/Tudo), não só
   // os críticos — antes travava em nivel==="critico" e nao fazia nada nas
   // outras abas.
@@ -908,6 +968,22 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       return g === undefined || !gruposOcultos.has(g);
     })
     .sort((a, b) => new Date(b.desde).getTime() - new Date(a.desde).getTime());
+
+  // Split view: mesma malha de desviosAtivos, mas SEM o gate de
+  // modoSelecionados (que so vale pro modo unico) — a secao TODOS da faixa
+  // nunca pode ficar filtrada por selecao (mesma classe de bug ja corrigida
+  // na malha de entregas e na lista de alertas da sidebar).
+  const desviosAtivosSplitTodos = alertas
+    .filter(a => a.tipo === "desvio")
+    .filter(a => {
+      if (gruposOcultos.size === 0) return true;
+      const g = cvParaGrupo.get(a.cv);
+      return g === undefined || !gruposOcultos.has(g);
+    })
+    .sort((a, b) => new Date(b.desde).getTime() - new Date(a.desde).getTime());
+  const desviosAtivosSplitSelecionados = veiculosSelecionados.size > 0
+    ? desviosAtivosSplitTodos.filter(a => veiculosSelecionados.has(a.cv))
+    : desviosAtivosSplitTodos;
 
   // Ponto de início do desvio ativo do veículo selecionado (para o marcador
   // + linha no mapa). origemLat/origemLng vêm do próprio alerta (Task 4),
@@ -988,6 +1064,319 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     desvioInicio: desvioSelecionado, seguir, gatilhoFrota, flyPara, zoomCmd,
     onVeiculoClick: handleVeiculoClick, onMapaVazioClick: stableHandleMapaVazio,
     mapTokens, tema, satelite, trafego: camTrafego, onZoomChange: setZoomAtual,
+  };
+
+  // Card de alerta da sidebar — extraido pra funcao (em vez de JSX inline
+  // duplicado) porque o split view precisa da MESMA renderizacao em 3
+  // lugares (lista unica fora do split, secao TODOS e secao SELECIONADOS
+  // dentro do split), so variando `compacto` (secao TODOS fica "mais fina"
+  // — so placa/tipo/tempo, sem motivo/progresso/acoes, pedido do cliente
+  // 08/07 porque a lista completa da frota inteira lotava a tela) e `lado`
+  // (garante que focar o veiculo por esse card ancora camera/drawer no
+  // painel certo — ver selecionarVeiculo).
+  const renderCardAlerta = (
+    a: AlertaEnriquecido,
+    opts?: { compacto?: boolean; lado?: "todos" | "selecionados" }
+  ) => {
+    const compacto = opts?.compacto ?? false;
+    const lado = opts?.lado ?? null;
+    const cor = a.nivel === "critico" ? T.red : T.yellow;
+    const ativo = alertaAtivoId === a.id;
+    const doCarro = cvSelecionado === a.cv;
+    const focar = () => {
+      setAlertaAtivoId(a.id);
+      selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined, lado);
+    };
+
+    if (compacto) {
+      return (
+        <motion.div key={a.id}
+          layout="position"
+          initial={{ opacity: 0, y: -4, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
+          transition={{ type: "spring", stiffness: 500, damping: 34 }}
+          onClick={focar}
+          className="v2-alert-card"
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "5px 8px", marginBottom: 2, borderRadius: 6,
+            borderLeft: `3px solid ${cor}`,
+            background: ativo
+              ? (tema === "dark" ? `${cor}22` : `${cor}14`)
+              : doCarro
+                ? (tema === "dark" ? `${cor}12` : `${cor}08`)
+                : (tema === "dark" ? `${cor}07` : `${cor}05`),
+            cursor: "pointer",
+          }}>
+          <span style={{ fontFamily: FONT_MONO, fontWeight: 800, fontSize: 11, letterSpacing: ".02em", flexShrink: 0 }}>
+            {a.placa}
+          </span>
+          <span style={{
+            fontSize: 9, fontWeight: 700, color: cor, letterSpacing: ".02em",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>
+            {nomeT(a.tipo)}
+          </span>
+          <span suppressHydrationWarning style={{ fontSize: 9, color: T.dim, marginLeft: "auto", fontFamily: FONT_MONO, flexShrink: 0 }}>
+            {tempoAtras(a.desde)}
+          </span>
+        </motion.div>
+      );
+    }
+
+    return (
+      <motion.div key={a.id}
+        layout="position"
+        initial={{ opacity: 0, y: -6, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
+        transition={{ type: "spring", stiffness: 500, damping: 34 }}
+        onClick={focar}
+        className="v2-alert-card"
+        style={{
+          marginBottom: 4, borderRadius: 8,
+          borderTop: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
+          borderRight: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
+          borderBottom: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
+          borderLeft: `3px solid ${cor}`,
+          background: ativo
+            ? (tema === "dark" ? `${cor}22` : `${cor}14`)
+            : doCarro
+              ? (tema === "dark" ? `${cor}12` : `${cor}08`)
+              : (tema === "dark" ? `${cor}07` : `${cor}05`),
+          cursor: "pointer",
+          boxShadow: ativo ? `0 0 0 1px ${cor}44` : "none",
+        }}>
+        <div style={{ padding: "8px 10px 7px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+            <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 13, letterSpacing: ".04em" }}>
+              {a.placa}
+            </span>
+            <span style={{
+              fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4,
+              background: `${cor}18`, color: cor, letterSpacing: ".04em",
+            }}>
+              {nomeT(a.tipo)}
+            </span>
+            <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, marginLeft: "auto", fontFamily: FONT_MONO }}>
+              {tempoAtras(a.desde)}
+            </span>
+          </div>
+          {a.motivo && (() => {
+            const expandido = motivosExpandidos.has(a.id);
+            // Heuristica de tamanho (sem medir layout real): acima disso o
+            // texto quase sempre corta no card estreito da sidebar.
+            const longoDemaisPraCard = a.motivo.length > 55;
+            return (
+              <div style={{ margin: "0 0 2px" }}>
+                <p style={{
+                  margin: 0, fontSize: 11, color: T.muted, lineHeight: 1.35,
+                  whiteSpace: expandido ? "normal" : "nowrap",
+                  overflow: expandido ? "visible" : "hidden",
+                  textOverflow: expandido ? "clip" : "ellipsis",
+                }}>
+                  {a.motivo}
+                </p>
+                {longoDemaisPraCard && (
+                  <button
+                    onMouseDown={e => { e.stopPropagation(); toggleMotivoExpandido(a.id); }}
+                    className="v2-btn-tiny"
+                    style={{
+                      ...BASE_BTN, height: 16, padding: 0, marginTop: 1,
+                      fontSize: 10, fontWeight: 700, color: T.accent,
+                      justifyContent: "flex-start",
+                    }}
+                  >
+                    {expandido ? "ver menos" : "ver motivo completo"}
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+          {a.local && (
+            <p style={{
+              margin: "0 0 6px", fontSize: 10, color: T.dim, lineHeight: 1.3,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
+              {a.local}
+            </p>
+          )}
+          {(() => {
+            const prog = progressoPorPlaca.get(a.placa);
+            if (!prog || prog.total === 0) return null;
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                <span style={{ fontSize: 9, color: T.dim, fontFamily: FONT_MONO, flexShrink: 0 }}>
+                  {prog.feitos}/{prog.total} entr.
+                </span>
+                <div style={{ flex: 1, height: 2, background: `${T.border}`, borderRadius: 1, overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%",
+                    width: `${prog.total > 0 ? Math.round((prog.feitos / prog.total) * 100) : 0}%`,
+                    background: prog.feitos === prog.total ? T.green : T.accent,
+                    borderRadius: 1, transition: "width .3s",
+                  }} />
+                </div>
+              </div>
+            );
+          })()}
+          <div style={{ display: "flex", gap: 4 }}>
+            <motion.button whileTap={{ scale: 0.92 }}
+              onMouseDown={e => { e.stopPropagation(); focar(); }}
+              className="v2-btn-tiny" style={tinyBtn(T.accent)}>
+              Focar
+            </motion.button>
+            <motion.button whileTap={{ scale: 0.92 }}
+              onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
+              className="v2-btn-tiny" style={tinyBtn(T.green)}>
+              Resolver
+            </motion.button>
+            <motion.button whileTap={{ scale: 0.92 }}
+              onMouseDown={e => { e.stopPropagation(); handleFalso(a.id); }}
+              className="v2-btn-tiny" style={tinyBtn(T.muted)}>
+              Falso
+            </motion.button>
+          </div>
+        </div>
+      </motion.div>
+    );
+  };
+
+  // Faixa de desvios do topo do mapa — extraida pra funcao (o split view
+  // precisa de 2 instancias independentes, uma centrada em cada painel, cada
+  // uma com seu proprio limite de chips/expandir — ver MAX_CHIPS_DESVIO).
+  const renderFaixaDesvio = (
+    desvios: AlertaEnriquecido[],
+    opts: {
+      left: string; width: string; maxChips: number;
+      mostrarTodos: boolean; onToggleMostrarTodos: () => void;
+      lado?: "todos" | "selecionados"; compacto?: boolean;
+    }
+  ) => {
+    if (!tiposFoco.includes("desvio") || desvios.length === 0) return null;
+    const visiveis = opts.mostrarTodos ? desvios : desvios.slice(0, opts.maxChips);
+    const pad = opts.compacto ? "5px 9px" : "7px 13px";
+    const ladoResolvido = opts.lado ?? null;
+    return (
+      <div style={{
+        position: "absolute", top: 56, left: opts.left, width: opts.width,
+        display: "flex", justifyContent: "center", zIndex: Z.toasts, pointerEvents: "none",
+      }}>
+        <div style={{
+          display: "flex", flexWrap: "wrap", justifyContent: "center", gap: opts.compacto ? 4 : 6,
+          maxWidth: "calc(100% - 24px)", maxHeight: 150, overflowY: "auto", padding: 2,
+          pointerEvents: "auto",
+        }}>
+          {visiveis.map(a => {
+            const cor = a.nivel === "critico" ? T.red : T.yellow;
+            const ativo = alertaAtivoId === a.id;
+            const focar = () => {
+              setAlertaAtivoId(a.id);
+              selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined, ladoResolvido);
+            };
+            return (
+              <button key={a.id}
+                onClick={focar}
+                style={{
+                  ...BASE_BTN, flexShrink: 0, gap: opts.compacto ? 6 : 8,
+                  padding: pad, borderRadius: 8,
+                  background: ativo
+                    ? (tema === "dark" ? `${cor}22` : `${cor}14`)
+                    : (tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)"),
+                  backdropFilter: "blur(6px)",
+                  border: `1px solid ${cor}55`, borderLeft: `3px solid ${cor}`,
+                  boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+                }}
+                title={`Desvio de rota — ${a.placa} — clique pra focar`}
+              >
+                <span className="animate-pulse-live" style={{ width: 7, height: 7, borderRadius: "50%", background: cor, flexShrink: 0 }} />
+                <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: opts.compacto ? 11 : 13, color: T.text, letterSpacing: ".04em" }}>
+                  {a.placa}
+                </span>
+                {!opts.compacto && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: cor, letterSpacing: ".03em" }}>
+                    DESVIO DE ROTA
+                  </span>
+                )}
+                <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, fontFamily: FONT_MONO }}>
+                  {tempoAtras(a.desde)}
+                </span>
+              </button>
+            );
+          })}
+          {!opts.mostrarTodos && desvios.length > opts.maxChips && (
+            <button
+              onClick={opts.onToggleMostrarTodos}
+              style={{
+                ...BASE_BTN, flexShrink: 0, padding: pad, borderRadius: 8,
+                background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
+                backdropFilter: "blur(6px)", border: `1px solid ${T.border}`,
+                boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+                fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
+              }}
+              title="Mostrar todos os desvios ativos"
+            >
+              +{desvios.length - opts.maxChips}
+            </button>
+          )}
+          {opts.mostrarTodos && desvios.length > opts.maxChips && (
+            <button
+              onClick={opts.onToggleMostrarTodos}
+              style={{
+                ...BASE_BTN, flexShrink: 0, padding: pad, borderRadius: 8,
+                background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
+                backdropFilter: "blur(6px)", border: `1px solid ${T.border}`,
+                boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+                fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
+              }}
+              title="Recolher"
+            >
+              ver menos
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Split view: cada painel so "e dono" (camera + destaque + rastro/paradas/
+  // alvos do veiculo focado) da selecao quando ladoSelecionado bate com ele —
+  // caso contrario zera esses campos, pra nao vazar pro outro painel (bug
+  // real corrigido 08/07: clicar um carro na tela TODOS tambem centralizava
+  // e destacava na tela SELECIONADOS, porque os 2 mapas compartilhavam
+  // cvSelecionado/flyPara/rastro). gatilhoFrota e zoomCmd continuam
+  // compartilhados de proposito (botoes de toolbar gerais, nao ligados a um
+  // veiculo especifico).
+  const donoTodos = ladoSelecionado === "todos";
+  const propsPainelTodos = {
+    ...propsMapaComuns,
+    cvSelecionado: donoTodos ? cvSelecionado : null,
+    flyPara: donoTodos ? flyPara : null,
+    seguir: donoTodos ? seguir : false,
+    desvioInicio: donoTodos ? desvioSelecionado : null,
+    rastro: donoTodos ? rastro : [],
+    paradas: donoTodos ? paradas : [],
+    alvos: donoTodos ? alvosEfetivos : [],
+    mostrarRastro: donoTodos ? mostrarRastro : false,
+    mostrarParadas: donoTodos ? mostrarParadas : false,
+    alvosGlobais,
+    onVeiculoClick: handleVeiculoClickTodos,
+  };
+  const donoSelecionados = ladoSelecionado === "selecionados";
+  const propsPainelSelecionados = {
+    ...propsMapaComuns,
+    cvSelecionado: donoSelecionados ? cvSelecionado : null,
+    flyPara: donoSelecionados ? flyPara : null,
+    seguir: donoSelecionados ? seguir : false,
+    desvioInicio: donoSelecionados ? desvioSelecionado : null,
+    rastro: donoSelecionados ? rastro : [],
+    paradas: donoSelecionados ? paradas : [],
+    alvos: donoSelecionados ? alvosEfetivos : [],
+    mostrarRastro: donoSelecionados ? mostrarRastro : false,
+    mostrarParadas: donoSelecionados ? mostrarParadas : false,
+    alvosGlobais: alvosGlobaisSelecionados,
+    onVeiculoClick: handleVeiculoClickSelecionados,
   };
 
   // ── Render ────────────────────────────────────────────────────────────
@@ -1435,8 +1824,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             );
           })()}
 
-          {/* Resolver todos — os VISÍVEIS na aba atual (Crítico/Tudo) */}
-          {alertasFiltrados.length > 0 && (
+          {/* Resolver todos — os VISÍVEIS na aba atual (Crítico/Tudo). Some no
+              split view: com 2 secoes (TODOS/SELECIONADOS) o "todos" desse
+              botao fica ambiguo — cada card mantem seu proprio Resolver/Falso. */}
+          {!splitView && alertasFiltrados.length > 0 && (
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
                 <div style={{ display: "flex", gap: 5 }}>
@@ -1468,123 +1859,59 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           )}
 
-          {/* Alert list */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "4px 6px 8px" }}>
-            {alertasFiltrados.length === 0 && (
-              <div style={{ padding: "28px 16px", textAlign: "center", color: T.dim, fontSize: 12 }}>
-                <div style={{ marginBottom: 6, opacity: 0.6 }}>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ display: "inline-block" }}>
-                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                    <polyline points="22 4 12 14.01 9 11.01"/>
-                  </svg>
-                </div>
-                Nenhum alerta ativo
-              </div>
-            )}
-            <AnimatePresence initial={false}>
-            {alertasOrdenados.map(a => {
-              const cor = a.nivel === "critico" ? T.red : T.yellow;
-              const ativo = alertaAtivoId === a.id;
-              const doCarro = cvSelecionado === a.cv;
-              return (
-                <motion.div key={a.id}
-                  layout="position"
-                  initial={{ opacity: 0, y: -6, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
-                  transition={{ type: "spring", stiffness: 500, damping: 34 }}
-                  onClick={() => {
-                    setAlertaAtivoId(a.id);
-                    selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
-                  }}
-                  className="v2-alert-card"
-                  style={{
-                    marginBottom: 4, borderRadius: 8,
-                    borderTop: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
-                    borderRight: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
-                    borderBottom: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
-                    borderLeft: `3px solid ${cor}`,
-                    background: ativo
-                      ? (tema === "dark" ? `${cor}22` : `${cor}14`)
-                      : doCarro
-                        ? (tema === "dark" ? `${cor}12` : `${cor}08`)
-                        : (tema === "dark" ? `${cor}07` : `${cor}05`),
-                    cursor: "pointer",
-                    boxShadow: ativo ? `0 0 0 1px ${cor}44` : "none",
-                  }}>
-                  <div style={{ padding: "8px 10px 7px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                      <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 13, letterSpacing: ".04em" }}>
-                        {a.placa}
-                      </span>
-                      <span style={{
-                        fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4,
-                        background: `${cor}18`, color: cor, letterSpacing: ".04em",
-                      }}>
-                        {nomeT(a.tipo)}
-                      </span>
-                      <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, marginLeft: "auto", fontFamily: FONT_MONO }}>
-                        {tempoAtras(a.desde)}
-                      </span>
-                    </div>
-                    {a.motivo && (
-                      <p style={{
-                        margin: "0 0 2px", fontSize: 11, color: T.muted, lineHeight: 1.35,
-                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                      }}>
-                        {a.motivo}
-                      </p>
-                    )}
-                    {a.local && (
-                      <p style={{
-                        margin: "0 0 6px", fontSize: 10, color: T.dim, lineHeight: 1.3,
-                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                      }}>
-                        {a.local}
-                      </p>
-                    )}
-                    {(() => {
-                      const prog = progressoPorPlaca.get(a.placa);
-                      if (!prog || prog.total === 0) return null;
-                      return (
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                          <span style={{ fontSize: 9, color: T.dim, fontFamily: FONT_MONO, flexShrink: 0 }}>
-                            {prog.feitos}/{prog.total} entr.
-                          </span>
-                          <div style={{ flex: 1, height: 2, background: `${T.border}`, borderRadius: 1, overflow: "hidden" }}>
-                            <div style={{
-                              height: "100%",
-                              width: `${prog.total > 0 ? Math.round((prog.feitos / prog.total) * 100) : 0}%`,
-                              background: prog.feitos === prog.total ? T.green : T.accent,
-                              borderRadius: 1, transition: "width .3s",
-                            }} />
-                          </div>
-                        </div>
-                      );
-                    })()}
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <motion.button whileTap={{ scale: 0.92 }}
-                        onMouseDown={e => { e.stopPropagation(); selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined); }}
-                        className="v2-btn-tiny" style={tinyBtn(T.accent)}>
-                        Focar
-                      </motion.button>
-                      <motion.button whileTap={{ scale: 0.92 }}
-                        onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
-                        className="v2-btn-tiny" style={tinyBtn(T.green)}>
-                        Resolver
-                      </motion.button>
-                      <motion.button whileTap={{ scale: 0.92 }}
-                        onMouseDown={e => { e.stopPropagation(); handleFalso(a.id); }}
-                        className="v2-btn-tiny" style={tinyBtn(T.muted)}>
-                        Falso
-                      </motion.button>
-                    </div>
+          {/* Alert list — fora do split view: 1 lista so, como sempre foi.
+              Em split view: 2 secoes independentes (TODOS compacta pra caber
+              a frota inteira sem lotar a tela + SELECIONADOS detalhada) em
+              vez de misturar tudo numa lista so — pedido do cliente 08/07. */}
+          {!splitView ? (
+            <div style={{ flex: 1, overflowY: "auto", padding: "4px 6px 8px" }}>
+              {alertasFiltrados.length === 0 && (
+                <div style={{ padding: "28px 16px", textAlign: "center", color: T.dim, fontSize: 12 }}>
+                  <div style={{ marginBottom: 6, opacity: 0.6 }}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ display: "inline-block" }}>
+                      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                      <polyline points="22 4 12 14.01 9 11.01"/>
+                    </svg>
                   </div>
-                </motion.div>
-              );
-            })}
-            </AnimatePresence>
-          </div>
+                  Nenhum alerta ativo
+                </div>
+              )}
+              <AnimatePresence initial={false}>
+                {alertasOrdenados.map(a => renderCardAlerta(a))}
+              </AnimatePresence>
+            </div>
+          ) : (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{
+                padding: "6px 8px 4px", fontSize: 9, fontWeight: 700, color: T.dim,
+                letterSpacing: ".06em", flexShrink: 0,
+              }}>
+                TODOS · {alertasOrdenadosSplitTodos.length}
+              </div>
+              <div style={{ flex: "1 1 0", overflowY: "auto", padding: "0 6px 6px", minHeight: 0 }}>
+                <AnimatePresence initial={false}>
+                  {alertasOrdenadosSplitTodos.map(a => renderCardAlerta(a, { compacto: true, lado: "todos" }))}
+                </AnimatePresence>
+              </div>
+
+              <div style={{
+                padding: "6px 8px 4px", fontSize: 9, fontWeight: 700, color: T.dim,
+                letterSpacing: ".06em", borderTop: `1px solid ${T.border}`, flexShrink: 0,
+              }}>
+                SELECIONADOS · {alertasOrdenadosSplitSelecionados.length}
+              </div>
+              <div style={{ flex: "1 1 0", overflowY: "auto", padding: "0 6px 8px", minHeight: 0 }}>
+                {alertasOrdenadosSplitSelecionados.length === 0 && (
+                  <div style={{ padding: "16px 12px", textAlign: "center", color: T.dim, fontSize: 11 }}>
+                    Nenhum alerta nos selecionados
+                  </div>
+                )}
+                <AnimatePresence initial={false}>
+                  {alertasOrdenadosSplitSelecionados.map(a => renderCardAlerta(a, { compacto: false, lado: "selecionados" }))}
+                </AnimatePresence>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ============================================================
@@ -1595,7 +1922,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {splitView ? (
             <div style={{ display: "flex", width: "100%", height: "100%" }}>
               <div style={{ width: `${splitRatio * 100}%`, height: "100%", position: "relative", overflow: "hidden", flexShrink: 0 }}>
-                <MapaLeafletV2 veiculosMapa={vmTodos} {...propsMapaComuns} alvosGlobais={alvosGlobais} />
+                <MapaLeafletV2 veiculosMapa={vmTodos} {...propsPainelTodos} />
                 <div style={rotuloPainelStyle("left", T, tema)}>TODOS · {vmTodos.length}</div>
               </div>
 
@@ -1615,7 +1942,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               />
 
               <div style={{ width: `${(1 - splitRatio) * 100}%`, height: "100%", position: "relative", overflow: "hidden", flexShrink: 0 }}>
-                <MapaLeafletV2 veiculosMapa={vmSelecionados} {...propsMapaComuns} alvosGlobais={alvosGlobaisSelecionados} />
+                <MapaLeafletV2 veiculosMapa={vmSelecionados} {...propsPainelSelecionados} />
                 <div style={rotuloPainelStyle("right", T, tema)}>SELECIONADOS · {vmSelecionados.length}</div>
               </div>
             </div>
@@ -1653,84 +1980,34 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               desvios simultaneos): mostra os mais recentes + contador "+N"
               que expande a lista inteira sob demanda. Nunca ESCONDE um
               desvio ativo do sistema, so limita quantos chips aparecem de
-              uma vez na faixa. */}
-          {tiposFoco.includes("desvio") && desviosAtivos.length > 0 && (
-            <div style={{
-              // top: 56 (nao 12) pra nao empilhar em cima do EscopoMapaSwitcher acima.
-              position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)",
-              zIndex: Z.toasts, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6,
-              maxWidth: "calc(100% - 24px)", maxHeight: 150, overflowY: "auto", padding: 2,
-            }}>
-              {(mostrarTodosDesvios ? desviosAtivos : desviosAtivos.slice(0, MAX_CHIPS_DESVIO)).map(a => {
-                const cor = a.nivel === "critico" ? T.red : T.yellow;
-                const ativo = alertaAtivoId === a.id;
-                return (
-                  <button key={a.id}
-                    onClick={() => {
-                      setAlertaAtivoId(a.id);
-                      selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
-                    }}
-                    style={{
-                      ...BASE_BTN, flexShrink: 0, gap: 8,
-                      padding: "7px 13px", borderRadius: 8,
-                      background: ativo
-                        ? (tema === "dark" ? `${cor}22` : `${cor}14`)
-                        : (tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)"),
-                      backdropFilter: "blur(6px)",
-                      border: `1px solid ${cor}55`, borderLeft: `3px solid ${cor}`,
-                      boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
-                    }}
-                    title={`Desvio de rota — ${a.placa} — clique pra focar`}
-                  >
-                    <span className="animate-pulse-live" style={{ width: 7, height: 7, borderRadius: "50%", background: cor, flexShrink: 0 }} />
-                    <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 13, color: T.text, letterSpacing: ".04em" }}>
-                      {a.placa}
-                    </span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: cor, letterSpacing: ".03em" }}>
-                      DESVIO DE ROTA
-                    </span>
-                    <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, fontFamily: FONT_MONO }}>
-                      {tempoAtras(a.desde)}
-                    </span>
-                  </button>
-                );
-              })}
-              {!mostrarTodosDesvios && desviosAtivos.length > MAX_CHIPS_DESVIO && (
-                <button
-                  onClick={() => setMostrarTodosDesvios(true)}
-                  style={{
-                    ...BASE_BTN, flexShrink: 0,
-                    padding: "7px 13px", borderRadius: 8,
-                    background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
-                    backdropFilter: "blur(6px)",
-                    border: `1px solid ${T.border}`,
-                    boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
-                    fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
-                  }}
-                  title="Mostrar todos os desvios ativos"
-                >
-                  +{desviosAtivos.length - MAX_CHIPS_DESVIO}
-                </button>
-              )}
-              {mostrarTodosDesvios && desviosAtivos.length > MAX_CHIPS_DESVIO && (
-                <button
-                  onClick={() => setMostrarTodosDesvios(false)}
-                  style={{
-                    ...BASE_BTN, flexShrink: 0,
-                    padding: "7px 13px", borderRadius: 8,
-                    background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
-                    backdropFilter: "blur(6px)",
-                    border: `1px solid ${T.border}`,
-                    boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
-                    fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
-                  }}
-                  title="Recolher"
-                >
-                  ver menos
-                </button>
-              )}
-            </div>
-          )}
+              uma vez na faixa.
+              Split view: 2 faixas independentes, uma centrada em cada painel
+              (nao mais 1 faixa so cobrindo os 2 mapas) — a do TODOS fica mais
+              fina (menos chips por padrao, sem o rotulo "DESVIO DE ROTA" em
+              cada chip) pedido do cliente 08/07, ja que ela cobre a frota
+              inteira. */}
+          {!splitView
+            ? renderFaixaDesvio(desviosAtivos, {
+                left: "0%", width: "100%", maxChips: MAX_CHIPS_DESVIO,
+                mostrarTodos: mostrarTodosDesvios,
+                onToggleMostrarTodos: () => setMostrarTodosDesvios(v => !v),
+              })
+            : (
+              <>
+                {renderFaixaDesvio(desviosAtivosSplitTodos, {
+                  left: "0%", width: `${splitRatio * 100}%`, maxChips: 3, compacto: true,
+                  lado: "todos",
+                  mostrarTodos: mostrarTodosDesviosSplitTodos,
+                  onToggleMostrarTodos: () => setMostrarTodosDesviosSplitTodos(v => !v),
+                })}
+                {renderFaixaDesvio(desviosAtivosSplitSelecionados, {
+                  left: `${splitRatio * 100}%`, width: `${(1 - splitRatio) * 100}%`,
+                  maxChips: MAX_CHIPS_DESVIO, lado: "selecionados",
+                  mostrarTodos: mostrarTodosDesviosSplitSelecionados,
+                  onToggleMostrarTodos: () => setMostrarTodosDesviosSplitSelecionados(v => !v),
+                })}
+              </>
+            )}
 
           {/* Vehicle count badge */}
           <div style={{
@@ -1817,7 +2094,13 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             animate={{ y: cvSelecionado ? "0%" : "108%" }}
             transition={{ type: "spring", stiffness: 420, damping: 38 }}
             style={{
-              position: "absolute", bottom: 0, left: 0, right: 0, zIndex: Z.drawer,
+              position: "absolute", bottom: 0, zIndex: Z.drawer,
+              // Split view: a barra ancora so embaixo do painel que originou a
+              // selecao (ver ladoSelecionado) — antes era full-width e cobria
+              // os 2 paineis, dando a impressao de que os mapas nao eram
+              // independentes um do outro.
+              left: splitView && ladoSelecionado === "selecionados" ? `${splitRatio * 100}%` : 0,
+              right: splitView && ladoSelecionado === "todos" ? `${(1 - splitRatio) * 100}%` : 0,
               background: T.drawerBg, backdropFilter: "blur(16px)",
               borderTop: `2px solid ${T.accent}22`,
               boxShadow: tema === "dark" ? "0 -10px 40px rgba(0,0,0,0.65)" : "0 -8px 32px rgba(0,0,0,0.10)",
