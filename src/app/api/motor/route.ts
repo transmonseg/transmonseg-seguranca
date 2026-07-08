@@ -770,6 +770,17 @@ export async function POST(request: Request) {
       // Geocode restrito deste ciclo (ver comentario acima de preencherGeocodeCacheCandidatos).
       await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
+      // Confirmacoes manuais de entrega (ver lib/entrega-proximidade.ts):
+      // 1 busca por cliente, mesmo padrao das outras buscas em batch acima.
+      const { data: confirmacoesRows } = await supabase
+        .from("entregas_confirmacao_manual")
+        .select("alvo_codigo")
+        .eq("cliente_id", cliente.id)
+        .eq("status", "confirmado");
+      const alvosConfirmadosManualmente = new Set(
+        (confirmacoesRows ?? []).map((r) => r.alvo_codigo as number)
+      );
+
       // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
       const { data: todosAlertasAbertos } = await supabase
         .from("alertas")
@@ -879,7 +890,9 @@ export async function POST(request: Request) {
           // numa entrega normal. Ver detectarDesvio em lib/detectores.ts.
           const pontosVeiculo = pontosPorPlaca.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
-          const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
+          const pendentes = (pontosVeiculo ?? []).filter(
+            (pt) => !pt.feito && !(pt.codigo != null && alvosConfirmadosManualmente.has(pt.codigo))
+          );
           const temPendentes = pendentes.length > 0;
 
           // Candidato a entrega por proximidade (compensa bug de perimetro
@@ -1083,8 +1096,14 @@ export async function POST(request: Request) {
           }
 
           // ─── Entregas do veículo ────────────────────────────────────────
+          // Confirmadas manualmente (pt.feito=false pro Unitrac, mas o
+          // operador confirmou aqui) contam a mais; as que o Unitrac já
+          // marcou feito=true já vêm somadas em entregas.feitos.
+          const confirmadosDoVeiculo = (pontosVeiculo ?? []).filter(
+            (pt) => !pt.feito && pt.codigo != null && alvosConfirmadosManualmente.has(pt.codigo)
+          ).length;
           const entregas = entregasPorPlaca.get(pos.placa) ?? { feitos: 0, total: 0 };
-          const entregas_feitas = entregas.feitos;
+          const entregas_feitas = entregas.feitos + confirmadosDoVeiculo;
           const entregas_total = entregas.total;
 
           // Determinar nivel e alerta com ordem de prioridade correta:
@@ -1797,6 +1816,15 @@ export async function POST(request: Request) {
         // Tapete: células sem visita há mais de 30 dias saem do corredor.
         await pgClean.query(
           `DELETE FROM corredor_celulas WHERE ultimo_visto < current_date - 30`
+        );
+        // Confirmacao manual de entrega: linhas resolvidas (confirmado ou
+        // rejeitado) ha mais de 60 dias saem, a tabela cresce devagar (1
+        // linha por candidato real, nao por ciclo) mas ainda precisa de teto,
+        // mesmo padrao de geocode_cache/corredor_celulas.
+        await pgClean.query(
+          `DELETE FROM entregas_confirmacao_manual
+           WHERE status IN ('confirmado','rejeitado')
+             AND resolvido_em < now() - interval '60 days'`
         );
       } catch (errClean) {
         console.warn("Limpeza periódica falhou (não crítico):", errClean);
