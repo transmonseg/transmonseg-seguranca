@@ -40,8 +40,6 @@ export default function EscopoMapaSwitcher({
   // Cor dos rotulos reage CONTINUAMENTE a posicao do thumb durante o arrasto
   // (nao so no fim) — o toque "vivo" que faz a interacao parecer boa.
   const corTodos = useTransform(x, [0, TERCO], ["#ffffff", muted]);
-  const corAmbosEsq = useTransform(x, [0, TERCO], [muted, "#ffffff"]);
-  const corAmbosDir = useTransform(x, [TERCO, TERCO * 2], ["#ffffff", muted]);
   const corSelecionados = useTransform(x, [TERCO, TERCO * 2], [muted, "#ffffff"]);
 
   useEffect(() => {
@@ -122,13 +120,9 @@ export default function EscopoMapaSwitcher({
         style={{
           position: "relative", zIndex: 1, flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+          display: "flex", alignItems: "center", justifyContent: "center",
         }}
       >
-        <motion.span style={{
-          position: "relative", zIndex: 3, color: corAmbosEsq,
-          fontSize: 10.5, fontFamily: "var(--font-geist), system-ui, sans-serif",
-        }}>◧</motion.span>
         <span style={{
           position: "relative", zIndex: 3, color: modo === "ambos" ? "#fff" : muted,
           fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
@@ -136,10 +130,6 @@ export default function EscopoMapaSwitcher({
         }}>
           AMBOS
         </span>
-        <motion.span style={{
-          position: "relative", zIndex: 3, color: corAmbosDir,
-          fontSize: 10.5, fontFamily: "var(--font-geist), system-ui, sans-serif",
-        }}>◨</motion.span>
       </motion.button>
 
       <motion.button

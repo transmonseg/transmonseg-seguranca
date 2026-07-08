@@ -1584,7 +1584,20 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 <div style={rotuloPainelStyle("left", T, tema)}>TODOS · {vmTodos.length}</div>
               </div>
 
-              <SplitDivider containerRef={mapAreaRef} ratio={splitRatio} onChange={setSplitRatio} accent={T.accent} />
+              <SplitDivider
+                containerRef={mapAreaRef}
+                ratio={splitRatio}
+                onChange={setSplitRatio}
+                onFundir={(ladoQueFicaCheio) => {
+                  // Arrastou o divisor ate a borda e soltou: funde pra tela
+                  // cheia daquele lado (igual arrastar uma aba de janela ate
+                  // a beirada) — volta a razao pro meio pra proxima vez que
+                  // abrir o split de novo comece equilibrado.
+                  escolherEscopoMapa(ladoQueFicaCheio);
+                  setSplitRatio(0.5);
+                }}
+                accent={T.accent}
+              />
 
               <div style={{ width: `${(1 - splitRatio) * 100}%`, height: "100%", position: "relative", overflow: "hidden", flexShrink: 0 }}>
                 <MapaLeafletV2 veiculosMapa={vmSelecionados} {...propsMapaComuns} />
