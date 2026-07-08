@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
 import { resolverAlerta, marcarFalsoPositivo, resolverVarios } from "../acoes-alertas";
+import { listarCandidatosEntrega, confirmarEntrega, rejeitarEntrega, type CandidatoEntrega } from "../entregas-confirmacao-actions";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import { createClient as createSupabaseBrowser } from "@/lib/supabase/browser";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
@@ -758,6 +759,23 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const t = setInterval(poll, 45_000);
     return () => clearInterval(t);
   }, [cliente, motorTick]);
+
+  // Candidatos a entrega por proximidade (compensa bug de perimetro do
+  // Unitrac, ver docs/plans/2026-07-08-entrega-proximidade-e-desvio-tapete-design.md).
+  const [candidatosEntrega, setCandidatosEntrega] = useState<CandidatoEntrega[]>([]);
+  useEffect(() => {
+    listarCandidatosEntrega(clienteAtivoId).then(setCandidatosEntrega).catch(() => {});
+  }, [clienteAtivoId, motorTick]);
+
+  const handleConfirmarEntrega = useCallback((id: string) => {
+    setCandidatosEntrega(c => c.filter(x => x.id !== id));
+    confirmarEntrega(id).catch(() => {});
+  }, []);
+
+  const handleRejeitarEntrega = useCallback((id: string) => {
+    setCandidatosEntrega(c => c.filter(x => x.id !== id));
+    rejeitarEntrega(id).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const poll = async () => {
@@ -2197,6 +2215,32 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 })}
               </>
             )}
+
+          {/* Faixa de candidatos a entrega por proximidade (compensa bug de
+              perimetro do Unitrac que as vezes nao marca entrega feita mesmo
+              o veiculo tendo parado no endereco certo) - nunca confirma
+              sozinho, so sugere pro operador. So no modo unico por ora. */}
+          {!splitView && candidatosEntrega.length > 0 && (
+            <div style={{
+              position: "absolute", top: 100, left: "50%", transform: "translateX(-50%)",
+              zIndex: Z.toasts, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6,
+              maxWidth: "calc(100% - 24px)",
+            }}>
+              {candidatosEntrega.map((c) => (
+                <div key={c.id} style={{
+                  ...BASE_BTN, flexShrink: 0, gap: 8, padding: "7px 13px", borderRadius: 8,
+                  background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
+                  backdropFilter: "blur(6px)", border: `1px solid ${T.green}55`, borderLeft: `3px solid ${T.green}`,
+                  boxShadow: "0 4px 14px rgba(0,0,0,0.25)", cursor: "default",
+                }}>
+                  <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 13, color: T.text }}>{c.placa}</span>
+                  <span style={{ fontSize: 10, color: T.muted }}>parece ter entregue aqui ({c.distancia_m}m, {c.parado_min}min parado)</span>
+                  <button onClick={() => handleConfirmarEntrega(c.id)} style={tinyBtn(T.green)}>Confirmar</button>
+                  <button onClick={() => handleRejeitarEntrega(c.id)} style={tinyBtn(T.dim)}>Descartar</button>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Vehicle count badge */}
           <div style={{
