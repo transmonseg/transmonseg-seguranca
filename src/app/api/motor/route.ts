@@ -62,11 +62,21 @@ const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
 
 // Tapete histórico (Camada 2 do desvio): células que a frota já percorreu nos
 // últimos 30 dias, por cliente. É o sinal PRIMÁRIO e precisa estar disponível
-// desde o 1º ciclo suspeito — por isso cacheado por cliente (não por
-// veículo), com TTL curto, em vez de 1 query por veículo por ciclo.
-type TapeteCache = { celulas: Set<string>; expiraEm: number };
+// desde o 1º ciclo suspeito.
+//
+// Achado real 08/07: a versão anterior buscava a TABELA INTEIRA por cliente
+// (150k+ células acumuladas) a cada expiração do cache de 3min. O cache de
+// FREQUÊNCIA não ajuda quando o PAYLOAD de cada busca já é gigante —
+// confirmado no pg_stat_statements: 169 MILHÕES de linhas retornadas só
+// nessa query, ~12GB de egress, estourando o free tier do Supabase em 286%.
+// Fix: busca só as células CANDIDATAS (vizinhança 3x3 dos veículos frescos
+// deste ciclo, poucos milhares de chaves) via `celula = ANY($2)`, não a
+// tabela inteira. A contagem total (só pro piso TAPETE_MIN_CELULAS, que
+// decide se o tapete do cliente já tem cobertura mínima) fica num cache
+// separado e minúsculo (1 inteiro por cliente).
+type ContagemTapeteCache = { contagem: number; expiraEm: number };
 const CACHE_TAPETE_MS = 3 * 60_000;
-const cacheTapetePorCliente = new Map<string, TapeteCache>();
+const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
 
 // Perfil de rota (baseline estatístico por destino, ver rotaperfil.ts): média
 // e desvio-padrão (EWMA) do desvio perpendicular observado na aproximação
@@ -172,36 +182,48 @@ async function buscarAlvosComTimeout(cvs: string[]): Promise<{
   }
 }
 
-// ─── Cache em memoria de geocode_cache (tabela inteira, ~45k linhas/6MB) ───
+// ─── Cache em memoria de geocode_cache (por ciclo, restrito a candidatos) ──
 // Achado 07/07/2026 investigando estouro de CPU da Vercel: geocodeReverso
 // fazia 1 pool.connect()+SELECT por veiculo parado/em alerta -- num ciclo
-// tipico isso e ~170 dos ~300 veiculos (maioria da frota parada fazendo
-// entrega). Igual ao tapete/perfil de rota: 1 busca da tabela inteira,
-// cacheada por CACHE_GEOCODE_MS, em vez de 1 query por veiculo.
-type GeocodeCacheGlobal = { mapa: Map<string, string>; expiraEm: number };
-const CACHE_GEOCODE_MS = 3 * 60_000;
-let cacheGeocodeGlobal: GeocodeCacheGlobal | null = null;
-
+// tipico isso e ~170 dos ~300 veiculos. A 1a correcao trocou isso por 1
+// busca da TABELA INTEIRA (cacheada por TTL) -- so que a tabela cresceu pra
+// ~48k linhas/5MB, e junto com o tapete (ver ContagemTapeteCache acima) isso
+// gerou o estouro de egress de 08/07 (286% do free tier do Supabase).
+// Fix: mesma ideia do tapete -- busca so os candidatos (posicoes frescas)
+// DESTE ciclo via join com unnest, nao a tabela inteira. cacheGeocode agora
+// e um Map comum (nao module-level), populado por cliente e reusado dentro
+// do mesmo ciclo -- sem TTL entre ciclos, porque o payload ja e pequeno.
 function chaveGeocode(lat: number, lng: number): string {
   const latR = Math.round(lat * 10000) / 10000;
   const lngR = Math.round(lng * 10000) / 10000;
   return `${latR}:${lngR}`;
 }
 
-async function getGeocodeCacheGlobal(pool: pg.Pool): Promise<Map<string, string>> {
-  if (cacheGeocodeGlobal && cacheGeocodeGlobal.expiraEm > Date.now()) {
-    return cacheGeocodeGlobal.mapa;
+async function preencherGeocodeCacheCandidatos(
+  pool: pg.Pool,
+  cacheGeocode: Map<string, string>,
+  chavesCandidatas: Set<string>
+): Promise<void> {
+  if (chavesCandidatas.size === 0) return;
+  const lats: number[] = [];
+  const lngs: number[] = [];
+  for (const chave of chavesCandidatas) {
+    const [la, lo] = chave.split(":").map(Number);
+    lats.push(la);
+    lngs.push(lo);
   }
   const pgClient = await pool.connect();
   try {
     const { rows } = await pgClient.query<{ lat: number; lng: number; endereco: string }>(
-      `SELECT lat, lng, endereco FROM geocode_cache`
+      `SELECT g.lat, g.lng, g.endereco
+       FROM geocode_cache g
+       JOIN (SELECT unnest($1::float8[]) AS lat, unnest($2::float8[]) AS lng) c
+         ON g.lat = c.lat AND g.lng = c.lng`,
+      [lats, lngs]
     );
-    const mapa = new Map(rows.map((r) => [chaveGeocode(r.lat, r.lng), r.endereco]));
-    cacheGeocodeGlobal = { mapa, expiraEm: Date.now() + CACHE_GEOCODE_MS };
-    return mapa;
+    for (const r of rows) cacheGeocode.set(chaveGeocode(r.lat, r.lng), r.endereco);
   } catch {
-    return cacheGeocodeGlobal?.mapa ?? new Map();
+    /* nao-critico: cache miss vira nova chamada externa (Nominatim/Google), como sempre */
   } finally {
     pgClient.release();
   }
@@ -340,9 +362,9 @@ export async function POST(request: Request) {
 
   // Contador de geocodes novos consumidos neste ciclo
   const contadorGeocodesNovos = { valor: 0 };
-  // Cache em memoria da tabela geocode_cache inteira (ver getGeocodeCacheGlobal
-  // acima) — elimina 1 SELECT por veiculo parado/em alerta (era ~170/ciclo).
-  const cacheGeocode = await getGeocodeCacheGlobal(pool);
+  // Populado por cliente (candidatos deste ciclo, ver preencherGeocodeCacheCandidatos
+  // e a pre-passada de cada cliente) — nao busca a tabela inteira (ver comentario ali).
+  const cacheGeocode = new Map<string, string>();
 
   // Keep-alive da sessao do portal Unitrac (sirene/bloqueio) — pinga pra
   // evitar expirar por inatividade. Nao-critico: falha aqui nunca derruba o
@@ -577,25 +599,48 @@ export async function POST(request: Request) {
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
-    // Tapete por cliente: busca TODAS as celulas de uma vez (via pool, sem o
-    // limite de linhas do PostgREST) e cacheia em memoria por CACHE_TAPETE_MS.
-    // E o sinal PRIMARIO do desvio (nao so um modulador), entao precisa estar
-    // pronto desde o 1o ciclo suspeito de cada veiculo — por isso 1 busca por
-    // cliente aqui, nao 1 query por veiculo candidato dentro do loop.
-    async function getTapeteCliente(clienteId: string): Promise<Set<string>> {
-      const cache = cacheTapetePorCliente.get(clienteId);
-      if (cache && cache.expiraEm > Date.now()) return cache.celulas;
+    // Contagem total de células do tapete do cliente — só pro piso
+    // TAPETE_MIN_CELULAS (nunca fica gigante: é 1 inteiro, cacheado por
+    // CACHE_TAPETE_MS, igual antes). Ver comentário completo acima
+    // (ContagemTapeteCache) do porquê isso NÃO busca as células em si.
+    async function getContagemTapeteCliente(clienteId: string): Promise<number> {
+      const cache = cacheContagemTapetePorCliente.get(clienteId);
+      if (cache && cache.expiraEm > Date.now()) return cache.contagem;
+      const pgTapete = await pool.connect();
+      try {
+        const { rows } = await pgTapete.query<{ n: string }>(
+          `SELECT count(*)::bigint AS n FROM corredor_celulas WHERE cliente_id = $1`,
+          [clienteId]
+        );
+        const contagem = Number(rows[0]?.n ?? 0);
+        cacheContagemTapetePorCliente.set(clienteId, { contagem, expiraEm: Date.now() + CACHE_TAPETE_MS });
+        return contagem;
+      } catch {
+        return cache?.contagem ?? 0;
+      } finally {
+        pgTapete.release();
+      }
+    }
+
+    // Busca só as células CANDIDATAS (vizinhança 3x3 dos veículos frescos
+    // deste ciclo — poucos milhares de chaves, não os 150k+ do cliente
+    // inteiro) que de fato existem no tapete. Sem TTL: o conjunto de
+    // candidatas muda a cada ciclo (posições diferentes), cachear não
+    // ajudaria — o payload já é pequeno por construção.
+    async function buscarCelulasTapeteCandidatas(
+      clienteId: string,
+      candidatas: string[]
+    ): Promise<Set<string>> {
+      if (candidatas.length === 0) return new Set();
       const pgTapete = await pool.connect();
       try {
         const { rows } = await pgTapete.query<{ celula: string }>(
-          `SELECT celula FROM corredor_celulas WHERE cliente_id = $1`,
-          [clienteId]
+          `SELECT celula FROM corredor_celulas WHERE cliente_id = $1 AND celula = ANY($2::text[])`,
+          [clienteId, candidatas]
         );
-        const celulas = new Set(rows.map((r) => r.celula));
-        cacheTapetePorCliente.set(clienteId, { celulas, expiraEm: Date.now() + CACHE_TAPETE_MS });
-        return celulas;
+        return new Set(rows.map((r) => r.celula));
       } catch {
-        return cache?.celulas ?? new Set();
+        return new Set();
       } finally {
         pgTapete.release();
       }
@@ -681,16 +726,39 @@ export async function POST(request: Request) {
       // Pre-passada: coleta os veiculos PARADOS e frescos do cliente. Usado para
       // detectar congestionamento — varios parados na mesma area = transito/fila,
       // nao roubo. Comparar veiculos entre si mata o falso positivo de parada anomala.
+      // Tambem coleta a vizinhanca 3x3 de TODA posicao fresca — candidatas pra
+      // busca restrita do tapete logo abaixo (ver buscarCelulasTapeteCandidatas) —
+      // e a chave de geocode de cada posicao fresca, candidata pra busca restrita
+      // do geocode_cache (ver preencherGeocodeCacheCandidatos). Superset seguro:
+      // inclui veiculo fresco em movimento sem alerta, que na real nao precisa de
+      // geocode — so deixa a lista de candidatas um pouco maior, nunca erra.
       const paradosFrescos: { lat: number; lng: number }[] = [];
+      const celulasCandidatasTapete = new Set<string>();
+      const chavesCandidatasGeocode = new Set<string>();
       for (const raw of posicoesRaw) {
         try {
           const p = normalizar(raw as Record<string, unknown>);
           if (p.fresco && p.velocidade === 0 && p.lat != null && p.lng != null) {
             paradosFrescos.push({ lat: p.lat, lng: p.lng });
           }
+          if (p.fresco && p.lat != null && p.lng != null) {
+            for (const c of vizinhanca3x3(p.lat, p.lng)) celulasCandidatasTapete.add(c);
+            chavesCandidatasGeocode.add(chaveGeocode(p.lat, p.lng));
+          }
         } catch { /* posicao malformada: ignora na pre-passada */ }
       }
       const RAIO_CONGESTION_M = 250;
+
+      // Tapete restrito deste ciclo (ver comentario em ContagemTapeteCache) +
+      // contagem total cacheada — 1 busca por cliente, payload proporcional
+      // aos veiculos do ciclo, nao a tabela inteira.
+      const contagemTapeteCliente = await getContagemTapeteCliente(cliente.id);
+      const celulasTapeteCliente = await buscarCelulasTapeteCandidatas(
+        cliente.id,
+        [...celulasCandidatasTapete]
+      );
+      // Geocode restrito deste ciclo (ver comentario acima de preencherGeocodeCacheCandidatos).
+      await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
       // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
       const { data: todosAlertasAbertos } = await supabase
@@ -869,8 +937,8 @@ export async function POST(request: Request) {
 
           // Camada 2 (tapete): sinal PRIMÁRIO, calculado TODO ciclo (não só
           // quando já suspeito) — precisa estar pronto desde o 1º ciclo pra
-          // decidir a severidade rápido. Custo já é baixo: getTapeteCliente
-          // cacheia o Set inteiro do cliente por CACHE_TAPETE_MS, então isso
+          // decidir a severidade rápido. celulasTapeteCliente já veio restrita
+          // às candidatas deste ciclo (ver pre-passada acima), então isso
           // aqui é só um Set.has() em memória, sem query por veículo.
           //
           // TAPETE_MIN_CELULAS: piso de cobertura mínima antes de confiar em
@@ -882,11 +950,8 @@ export async function POST(request: Request) {
           // por isso).
           const TAPETE_MIN_CELULAS = 300;
           let dentroTapete: boolean | null = null;
-          if (pos.fresco) {
-            const tapeteCliente = await getTapeteCliente(cliente_id);
-            if (tapeteCliente.size >= TAPETE_MIN_CELULAS) {
-              dentroTapete = vizinhanca3x3(pos.lat, pos.lng).some((c) => tapeteCliente.has(c));
-            }
+          if (pos.fresco && contagemTapeteCliente >= TAPETE_MIN_CELULAS) {
+            dentroTapete = vizinhanca3x3(pos.lat, pos.lng).some((c) => celulasTapeteCliente.has(c));
           }
 
           // Alimentar o tapete: células do trajeto desde o ciclo anterior.
