@@ -4,6 +4,10 @@ import { ajustarRastroParaRuas } from "@/lib/rastro-matching";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
+// MAX_CHAMADAS subiu de 40 pra 200 (ver rastro-matching.ts) — margem de
+// segurança pra janelas de 96h bem esparsas, medido em ~5,6s pra 122
+// chamadas reais; o default de maxDuration da Vercel seria curto demais.
+export const maxDuration = 30;
 
 export async function GET(request: Request) {
   // Rastro e dado sensivel de frota: exige operador logado.

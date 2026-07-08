@@ -16,9 +16,14 @@ import { haversineM } from "./unitrac";
 // Acima disso (m), a reta entre dois pontos consecutivos corta quarteirao
 // visivelmente — vale a pena buscar o caminho real. Abaixo, reta ja fica bem.
 const GAP_MINIMO_M = 400;
-// Teto de chamadas por rastro: mesmo em trajetos longos/esparsos (96h), nao
-// deixa a tela esperar dezenas de chamadas sequenciais.
-const MAX_CHAMADAS = 40;
+// Teto de chamadas por rastro. 40 era baixo demais e deixava a maior parte
+// do rastro sem corrigir (achado real 08/07: veiculo com 24h de rastro tinha
+// 122 saltos grandes — só os 40 primeiros por ordem cronológica eram
+// corrigidos, os outros ~80 ficavam retos, exatamente os "tiros" cortando
+// morro reportados). Medido ao vivo: 122 chamadas reais (concorrência 6)
+// levam ~5,6s, bem dentro do tempo que a tela já mostra "carregando..." —
+// o teto nunca foi sobre latência, era baixo demais por precaução excessiva.
+const MAX_CHAMADAS = 200;
 // Quantas chamadas em voo ao mesmo tempo — rapido, mas educado com o
 // servidor publico (nao e dimensionado pra rajada alta).
 const CONCORRENCIA = 6;
