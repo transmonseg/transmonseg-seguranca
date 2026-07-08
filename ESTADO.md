@@ -30,7 +30,7 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
   - **Camada 1 (comportamental):** afastando-se de **TODOS** os destinos legítimos (alvos pendentes + bases) por N ciclos — v4 voltou a exigir afastamento de todos (não só do mais próximo) após observação ao vivo. Guarda anti-teleporte (>150km/h implícito congela o streak). Faixa local 2,5-25km (acima é deslocamento interurbano).
   - **Camada 2 (tapete histórico, `corredor_celulas`, migration 010):** grade de células ~100m por cliente, populada todo ciclo do motor (interpolação a cada ~80m) + bootstrap inicial (`scripts/bootstrap-corredor.mjs`, rastro de 96h). Fora do tapete = crítico direto no 2º ciclo. Em produção: **152k+ células** acumuladas.
   - **Camada 3 (score de risco de área, `calcularRiscoArea`):** favela + tiroteio recente (Fogo Cruzado, <1,5km) + roubo de carga do CISP + corredor rodoviário de risco + fator horário multiplicativo — nunca dispara sozinho, só acelera a escalada do gatilho comportamental.
-  - **Perfil estatístico por rota (`rota_perfil`, migration 011, EWMA):** baseline de desvio perpendicular normal POR destino específico; fecha o ponto cego do teto fixo global de 3km. Em produção: **1.218 perfis** acumulados.
+  - **Perfil estatístico por rota (`rota_perfil`, migration 011, EWMA):** ~~baseline de desvio perpendicular normal POR destino específico~~ **substituído em 08/07/2026** (ver bullet abaixo) — tabela mantida (dado histórico), mas não é mais lida pelo detector.
   - Nível "atenção" **eliminado** — tudo que dispara vira crítico direto (pedido explícito).
   - `desvio_inicio` (jsonb, migration 010) grava o ponto de início real do desvio (não o ciclo do disparo); UI marca esse ponto + traça o trecho desviado no mapa.
   - Migrations 010/011 **aplicadas em produção** (verificado: tabelas + colunas presentes, dado real acumulando).
@@ -48,6 +48,7 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
 - [x] **Rastro no mapa:** matching com OSRM pra colar saltos de GPS na rua real (rejeita ajuste desproporcional, "tiro" pior que a reta); remove rajadas de pico de GPS; rastro do veículo focado acompanha o poll em tempo real (antes só buscava na seleção).
 - [x] **Mapa v2 — split view real:** TODOS + SELECIONADOS lado a lado com divisor arrastável (`SplitDivider`, estilo Apple — clique ou arrasto, funde pra tela cheia na borda); `EscopoMapaSwitcher`. Ícones de veículo (quadrado+triângulo), paradas vermelhas, cores por status revisadas várias vezes.
 - [x] **Filtros de monitor:** "ver apenas veículos selecionados" em Configurações (não persiste ativo entre sessões, por decisão); 2ª aba de filtro virou "foco por cliente" (não mais "crítico"); toasts e painel de eventos removidos.
+- [x] **Confirmação de entrega por proximidade + Camada 3 do desvio via tapete real (08/07/2026):** ver `docs/plans/2026-07-08-entrega-proximidade-e-desvio-tapete-design.md`/`-plano.md`. (1) Motor detecta veículo parado >=5min a <=500m de um pendente que o Unitrac não confirmou (bug de perímetro deles) e grava candidato em `entregas_confirmacao_manual` (migration 012); faixa na UI com Confirmar/Descartar (nunca confirma sozinho, nunca escreve no Unitrac); confirmado conta em `entregas_feitas` e sai da lista de pendentes; expira em 60 dias. (2) Camada 3 do desvio trocou o cálculo por linha reta base→destino (`TRAJETO_PERPENDICULAR_LIMIAR_M`/perfil de rota, removidos) por "aproximando de um destino mas fora do tapete conhecido por 2 leituras seguidas" (`fora_tapete_streak`, migration 012) — achado real (TUK-0H45): a linha reta degenerava em distância crua quando a base fica dezenas de km distante, disparando em aproximação normal. Motivo da Camada 1 agora mostra fase/tempo aproximado, não só o número seco. 334 testes.
 
 ## Próximos passos (retomar aqui)
 - [ ] **Fase 5b — RBAC por cliente (quando precisar):** cliente Nutry/Benassi logar e ver só a frota dele (policies RLS + claim de cliente). Hoje só central. Destrava Realtime full.
@@ -59,5 +60,5 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
 ## Notas
 - `.env.local` tem as chaves (gitignored, repo é público — nunca commitar).
 - Migrations: `node --env-file=.env.local scripts/aplicar-migration.mjs <arquivo.sql>` (manual, auto-deploy não roda migration).
-- 330 testes Vitest passando (9 arquivos) em 2026-07-08.
+- 334 testes Vitest passando (10 arquivos) em 2026-07-08.
 - Schema/detectores/fontes detalhados na memória do Claude (project_transmonseg_*).
