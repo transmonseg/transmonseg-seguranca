@@ -9,6 +9,17 @@ export const dynamic = "force-dynamic";
 // chamadas reais; o default de maxDuration da Vercel seria curto demais.
 export const maxDuration = 30;
 
+// Cache EM MEMORIA (nao e tabela no banco — nao pesa o Supabase, nao precisa
+// de limpeza/retencao) por cv+horas: se 2 operadores abrirem o MESMO veiculo
+// quase ao mesmo tempo (ou o mesmo operador clicar "Atualizar" 2x seguidas),
+// a 2a chamada reaproveita o resultado em vez de refazer buscarRastro +
+// remocao de picos + ate 200 chamadas de ajuste de rua (OSRM) do zero.
+// Some sozinho quando a funcao serverless reciclar; nunca cresce sem limite
+// (no maximo 1 entrada por veiculo da frota ja visto neste processo quente).
+type RastroCacheEntry = { pontos: { lat: number; lng: number }[]; expiraEm: number };
+const RASTRO_CACHE_MS = 30_000;
+const cacheRastroPorChave = new Map<string, RastroCacheEntry>();
+
 export async function GET(request: Request) {
   // Rastro e dado sensivel de frota: exige operador logado.
   const auth = await createClient();
@@ -27,10 +38,17 @@ export async function GET(request: Request) {
     ? Math.min(96, Math.max(1, Math.round(horasRaw)))
     : 24;
 
+  const chave = `${cv}:${horas}`;
+  const cache = cacheRastroPorChave.get(chave);
+  if (cache && cache.expiraEm > Date.now()) {
+    return Response.json({ pontos: cache.pontos });
+  }
+
   try {
     const pontos = await buscarRastro(cv, horas);
     const semPicos = removerPicosRastro(pontos);
     const pontosAjustados = await ajustarRastroParaRuas(semPicos);
+    cacheRastroPorChave.set(chave, { pontos: pontosAjustados, expiraEm: Date.now() + RASTRO_CACHE_MS });
     return Response.json({ pontos: pontosAjustados });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });

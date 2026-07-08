@@ -4,6 +4,13 @@ import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
+// Cache EM MEMORIA (nao e tabela no banco, some sozinho, nunca precisa de
+// limpeza) por cv+horas — mesmo motivo do /api/rastro: 2 operadores no
+// mesmo veiculo (ou "Atualizar" 2x) reaproveitam a busca em vez de repetir.
+type StopsCacheEntry = { paradas: unknown[]; expiraEm: number };
+const STOPS_CACHE_MS = 30_000;
+const cacheStopsPorChave = new Map<string, StopsCacheEntry>();
+
 export async function GET(request: Request) {
   // Paradas sao dado sensivel de frota: exige operador logado.
   const auth = await createClient();
@@ -22,8 +29,15 @@ export async function GET(request: Request) {
     ? Math.min(96, Math.max(1, Math.round(horasRaw)))
     : 24;
 
+  const chave = `${cv}:${horas}`;
+  const cache = cacheStopsPorChave.get(chave);
+  if (cache && cache.expiraEm > Date.now()) {
+    return Response.json({ paradas: cache.paradas });
+  }
+
   try {
     const paradas = await buscarStops(cv, horas);
+    cacheStopsPorChave.set(chave, { paradas, expiraEm: Date.now() + STOPS_CACHE_MS });
     return Response.json({ paradas });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });
