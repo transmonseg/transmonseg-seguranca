@@ -75,7 +75,7 @@ export default function EscopoMapaSwitcher({
       <motion.div
         drag="x"
         style={{
-          x, position: "absolute", top: PAD, left: 0,
+          x, position: "absolute", top: PAD, left: PAD,
           width: TERCO, height: ALTURA - PAD * 2,
           borderRadius: (ALTURA - PAD * 2) / 2,
           background: accent, cursor: "grab", zIndex: 2,
@@ -104,12 +104,17 @@ export default function EscopoMapaSwitcher({
           position: "relative", zIndex: 1, flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center",
-          color: corTodos,
-          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
-          fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}
       >
-        TODOS
+        {/* zIndex 3: acima do thumb (zIndex 2) — senao o rotulo do segmento
+            ATIVO fica escondido embaixo do thumb opaco (bug achado ao vivo). */}
+        <motion.span style={{
+          position: "relative", zIndex: 3, color: corTodos,
+          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
+          fontFamily: "var(--font-geist), system-ui, sans-serif",
+        }}>
+          TODOS
+        </motion.span>
       </motion.button>
 
       <motion.button
@@ -118,13 +123,23 @@ export default function EscopoMapaSwitcher({
           position: "relative", zIndex: 1, flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
-          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
-          fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}
       >
-        <motion.span style={{ color: corAmbosEsq }}>◧</motion.span>
-        <span style={{ color: modo === "ambos" ? "#fff" : muted }}>AMBOS</span>
-        <motion.span style={{ color: corAmbosDir }}>◨</motion.span>
+        <motion.span style={{
+          position: "relative", zIndex: 3, color: corAmbosEsq,
+          fontSize: 10.5, fontFamily: "var(--font-geist), system-ui, sans-serif",
+        }}>◧</motion.span>
+        <span style={{
+          position: "relative", zIndex: 3, color: modo === "ambos" ? "#fff" : muted,
+          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
+          fontFamily: "var(--font-geist), system-ui, sans-serif",
+        }}>
+          AMBOS
+        </span>
+        <motion.span style={{
+          position: "relative", zIndex: 3, color: corAmbosDir,
+          fontSize: 10.5, fontFamily: "var(--font-geist), system-ui, sans-serif",
+        }}>◨</motion.span>
       </motion.button>
 
       <motion.button
@@ -133,14 +148,18 @@ export default function EscopoMapaSwitcher({
           position: "relative", zIndex: 1, flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-          color: corSelecionados,
-          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
-          fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}
       >
-        SELECIONADOS
+        <motion.span style={{
+          position: "relative", zIndex: 3, color: corSelecionados,
+          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
+          fontFamily: "var(--font-geist), system-ui, sans-serif",
+        }}>
+          SELECIONADOS
+        </motion.span>
         {totalSelecionados > 0 && (
           <span style={{
+            position: "relative", zIndex: 3,
             fontSize: 9, fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
             background: modo === "selecionados" ? "rgba(255,255,255,0.22)" : `${accent}22`,
             color: modo === "selecionados" ? "#fff" : accent,
