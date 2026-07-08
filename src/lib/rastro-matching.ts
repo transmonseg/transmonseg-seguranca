@@ -29,7 +29,14 @@ const CONCORRENCIA = 6;
 // parece um "tiro" pior que a reta original. O carro quase certamente nao
 // fez esse contorno todo num unico salto de amostragem; foi so um gap de
 // GPS. Reta (mesmo cortando reto) e menos errado que um loop de km.
-const RAZAO_MAX_ACEITAVEL = 2.5;
+//
+// 2.5x rejeitava contorno LEGITIMO com frequencia: a frota opera em regiao
+// serrana (Nova Friburgo/RJ), onde uma estrada real contornando morro/vale
+// facilmente passa de 2.5x a distancia em reta pro mesmo salto de GPS —
+// o ajuste bom (rua real) era descartado exatamente nos trechos mais
+// tortuosos, sobrando a reta cortando por cima do morro (visto ao vivo
+// 08/07). 5x ainda pega o caso originalmente motivador (13x).
+const RAZAO_MAX_ACEITAVEL = 5;
 
 type Ponto = { lat: number; lng: number };
 

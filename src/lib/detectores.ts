@@ -301,9 +301,14 @@ const AFASTAMENTO_MARGEM_M = 50;
 // Distância perpendicular (m) a qualquer segmento base->destino acima da
 // qual um trajeto é considerado "fora de qualquer caminho direto plausível",
 // mesmo que a distância bruta ao destino esteja caindo (ver desvioTrajetoM
-// em CtxDesvio). Bem acima do que uma via secundária/contorno legítimo
-// costuma desviar (poucas centenas de m a ~1-2km) — só pega desvio grande.
-export const TRAJETO_PERPENDICULAR_LIMIAR_M = 3000;
+// em CtxDesvio). A frota opera em região serrana (Nova Friburgo/RJ): estradas
+// reais contornam morro e vale, então mesmo uma entrega legítima de médio
+// curso ("linha reta" à base de dezenas de km) pode desviar vários km da reta
+// sem ser desvio nenhum — 3000m gerava falso positivo ao vivo (08/07,
+// 4,4km reais de estrada de serra virando "crítico"). 5000m ainda pega
+// desvio grosseiro; a rede de segurança principal contra sequestro/roubo
+// continua sendo o gatilho comportamental (afastouDeTudo), não este.
+export const TRAJETO_PERPENDICULAR_LIMIAR_M = 5000;
 // Perfil de rota (ver PerfilRotaEstado em rotaperfil.ts): quando há histórico
 // confiável do desvio NORMAL desse destino específico, o limiar acima vira um
 // TETO (nunca fica mais leniente) e o limiar efetivo pode ficar bem menor —

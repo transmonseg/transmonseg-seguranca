@@ -417,7 +417,7 @@ describe("detectarDesvio + perfil de rota (limiar por-destino via EWMA, ver rota
   it("limiar por-rota NUNCA fica mais leniente que o teto global (rota naturalmente tortuosa)", () => {
     const a = detectarDesvio(emMov2, {
       ...baseAproximando,
-      desvioTrajetoM: 2500, desvioTrajetoAnteriorM: 2500, // abaixo do teto global de 3000m
+      desvioTrajetoM: 4500, desvioTrajetoAnteriorM: 4500, // abaixo do teto global de 5000m
       perfilRotaMedia: 5000, perfilRotaDesvioPadrao: 1000, perfilRotaAmostras: 20, // media+4*desvio = 9000m
     });
     expect(a).toBeNull();

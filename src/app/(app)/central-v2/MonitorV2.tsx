@@ -942,12 +942,22 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // quando "ver apenas selecionados" está ativo, só mostra os pontos das
   // placas escolhidas. alvosGlobais (não filtrado) continua servindo o
   // progressoPorPlaca e o fallback de alvosEfetivos acima.
-  const alvosGlobaisMapa = useMemo(() => {
-    if (!modoSelecionados || veiculosSelecionados.size === 0) return alvosGlobais;
+  //
+  // Calculado À PARTE do modo único (alvosGlobaisMapa abaixo) porque o split
+  // view (splitView="ambos") renderiza os DOIS paineis (TODOS + SELECIONADOS)
+  // ao mesmo tempo, cada um precisando da sua própria malha de pontos — bug
+  // real corrigido: antes os dois paineis compartilhavam o mesmo valor via
+  // propsMapaComuns, então ativar "ver apenas selecionados" (modoSelecionados)
+  // também filtrava o painel TODOS, escondendo a malha completa da frota nele.
+  const alvosGlobaisSelecionados = useMemo(() => {
+    if (veiculosSelecionados.size === 0) return alvosGlobais;
     // PontoEntrega não tem cv, só placa — traduz o Set de cv's selecionados pras placas correspondentes
     const placas = new Set(veiculosBase.filter(v => veiculosSelecionados.has(v.cv)).map(v => v.placa));
     return alvosGlobais.filter(a => a.placa && placas.has(a.placa));
-  }, [alvosGlobais, modoSelecionados, veiculosSelecionados, veiculosBase]);
+  }, [alvosGlobais, veiculosSelecionados, veiculosBase]);
+
+  // Modo único (não-split): mesma regra de sempre, gated por modoSelecionados.
+  const alvosGlobaisMapa = modoSelecionados ? alvosGlobaisSelecionados : alvosGlobais;
 
   // Progresso de entregas por placa (para exibir nos cards de alerta)
   const progressoPorPlaca = useMemo(() => {
@@ -1585,7 +1595,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {splitView ? (
             <div style={{ display: "flex", width: "100%", height: "100%" }}>
               <div style={{ width: `${splitRatio * 100}%`, height: "100%", position: "relative", overflow: "hidden", flexShrink: 0 }}>
-                <MapaLeafletV2 veiculosMapa={vmTodos} {...propsMapaComuns} />
+                <MapaLeafletV2 veiculosMapa={vmTodos} {...propsMapaComuns} alvosGlobais={alvosGlobais} />
                 <div style={rotuloPainelStyle("left", T, tema)}>TODOS · {vmTodos.length}</div>
               </div>
 
@@ -1605,7 +1615,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               />
 
               <div style={{ width: `${(1 - splitRatio) * 100}%`, height: "100%", position: "relative", overflow: "hidden", flexShrink: 0 }}>
-                <MapaLeafletV2 veiculosMapa={vmSelecionados} {...propsMapaComuns} />
+                <MapaLeafletV2 veiculosMapa={vmSelecionados} {...propsMapaComuns} alvosGlobais={alvosGlobaisSelecionados} />
                 <div style={rotuloPainelStyle("right", T, tema)}>SELECIONADOS · {vmSelecionados.length}</div>
               </div>
             </div>

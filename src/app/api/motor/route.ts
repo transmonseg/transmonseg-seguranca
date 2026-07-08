@@ -921,7 +921,22 @@ export async function POST(request: Request) {
               // Le o histórico ANTES de amostrar este ciclo — comparar contra
               // uma média que já inclui a própria leitura atual enviesaria a
               // checagem (sempre pareceria "normal").
-              if (estadoAtual) {
+              //
+              // So APLICA o perfil (usa pra apertar o limiar em detectarDesvio)
+              // quando o veiculo esta na MESMA janela de proximidade em que ele
+              // foi amostrado (<=500m do pendente, ver escrita abaixo) — bug
+              // real corrigido: antes o perfil era lido e aplicado SEMPRE que
+              // havia pendentes, mesmo com o veiculo a 10-20km de distancia no
+              // meio do trajeto. Como o perfil so aprende o desvio da
+              // APROXIMACAO FINAL (tipicamente dezenas de metros, sempre
+              // pequeno por construcao), aplicar esse limiar apertado num
+              // veiculo ainda longe de qualquer destino disparava falso
+              // positivo direto (visto ao vivo 08/07: veiculo a 23km do
+              // pendente mais proximo, streak comportamental zerado, mas
+              // "critico" so porque o perfil daquele destino tem media de
+              // ~100m). Fora da janela de proximidade, cai pro teto fixo
+              // global (TRAJETO_PERPENDICULAR_LIMIAR_M).
+              if (estadoAtual && pendenteMaisProximo.dist <= PERFIL_ROTA_PROXIMIDADE_M) {
                 perfilRotaMedia = estadoAtual.mediaM;
                 perfilRotaDesvioPadrao = desvioPadraoDe(estadoAtual);
                 perfilRotaAmostras = estadoAtual.nAmostras;

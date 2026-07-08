@@ -273,19 +273,19 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
 });
 
 describe("desvioTrajetoM — fecha parte do ponto cego (aproxima do destino mas por caminho implausivel)", () => {
-  it("aproximando do destino mas trajeto fica >=3km fora de qualquer caminho direto por 2 leituras seguidas: dispara score 65 SEM esperar streak", () => {
+  it("aproximando do destino mas trajeto fica >=5km fora de qualquer caminho direto por 2 leituras seguidas: dispara score 65 SEM esperar streak", () => {
     const fracoes = [0, 0.3, 0.6];
     const ciclos: Ciclo[] = fracoes.map((f) => ({
       ...aproximarDe(MANGUINHOS, REALENGO, f),
-      desvioTrajetoM: 4000,
+      desvioTrajetoM: 6000,
     }));
     const resultados = simular(REALENGO, ciclos);
     expect(resultados[0]).toBeNull(); // 1o ciclo: ainda sem leitura anterior
     expect(resultados[1]?.score).toBe(65); // 2a leitura ruim seguida: dispara na hora, nao espera streak>=2
-    expect(resultados[1]?.motivo).toContain("4,0km fora de qualquer caminho direto plausível");
+    expect(resultados[1]?.motivo).toContain("6,0km fora de qualquer caminho direto plausível");
   });
 
-  it("aproximando por caminho plausivel (desvioTrajetoM abaixo do limiar de 3km): nao dispara", () => {
+  it("aproximando por caminho plausivel (desvioTrajetoM abaixo do limiar de 5km): nao dispara", () => {
     const fracoes = [0, 0.3, 0.6];
     const ciclos: Ciclo[] = fracoes.map((f) => ({
       ...aproximarDe(MANGUINHOS, REALENGO, f),
