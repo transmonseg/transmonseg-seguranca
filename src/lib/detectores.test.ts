@@ -264,11 +264,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     afastamentoAcumuladoM: 300,
     dentroTapete: null as boolean | null,
     riscoAreaAtual: 0,
-    desvioTrajetoM: null as number | null,
-    desvioTrajetoAnteriorM: null as number | null,
-    perfilRotaMedia: null as number | null,
-    perfilRotaDesvioPadrao: null as number | null,
-    perfilRotaAmostras: 0,
+    foraTapeteStreak: 0,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
@@ -369,9 +365,8 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
   });
 });
 
-describe("detectarDesvio + perfil de rota (limiar por-destino via EWMA, ver rotaperfil.ts)", () => {
-  // Aproximando (nao afastando de tudo) -- so assim o gatilho de trajeto
-  // perpendicular entra em jogo (é o que o perfil de rota modula).
+describe("detectarDesvio + Camada 3 (fora do tapete, ponto cego do afastamento)", () => {
+  // Aproximando (nao afastando de tudo) -- so assim a Camada 3 entra em jogo.
   const baseAproximando = {
     distDestinosM: [4000],
     distDestinosAnteriorM: [4500],
@@ -386,50 +381,29 @@ describe("detectarDesvio + perfil de rota (limiar por-destino via EWMA, ver rota
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
 
-  it("sem perfil de rota (0 amostras): usa teto fixo global de 3000m, 500m nao dispara", () => {
-    const a = detectarDesvio(emMov2, {
-      ...baseAproximando,
-      desvioTrajetoM: 500, desvioTrajetoAnteriorM: 500,
-      perfilRotaMedia: null, perfilRotaDesvioPadrao: null, perfilRotaAmostras: 0,
-    });
+  it("aproximando de destino real MAS fora do tapete por 2 leituras: dispara (caso real TUK-0H45)", () => {
+    const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 2 });
+    expect(a?.nivel).toBe("critico");
+    expect(a?.motivo).toContain("fora de via conhecida há 2 leituras");
+  });
+
+  it("aproximando e DENTRO do tapete (streak 0): nao dispara -- caso real TUK-0H45/TTM-2G01 corrigido", () => {
+    const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 0 });
     expect(a).toBeNull();
   });
 
-  it("rota historicamente MUITO consistente (media 50m, desvio 10m): 500m dispara bem abaixo do teto global", () => {
-    const a = detectarDesvio(emMov2, {
-      ...baseAproximando,
-      desvioTrajetoM: 500, desvioTrajetoAnteriorM: 500,
-      perfilRotaMedia: 50, perfilRotaDesvioPadrao: 10, perfilRotaAmostras: 20,
-    });
-    expect(a?.score).toBe(65);
-    expect(a?.motivo).toContain("rota costuma ter só ~50m de desvio");
-  });
-
-  it("piso minimo de 200m: rota com variancia praticamente zero nao vira hipersensivel a ruido de GPS", () => {
-    const a = detectarDesvio(emMov2, {
-      ...baseAproximando,
-      desvioTrajetoM: 150, desvioTrajetoAnteriorM: 150,
-      perfilRotaMedia: 10, perfilRotaDesvioPadrao: 0, perfilRotaAmostras: 20,
-    });
+  it("fora do tapete so 1 leitura (abaixo do minimo): nao dispara ainda", () => {
+    const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 1 });
     expect(a).toBeNull();
   });
 
-  it("limiar por-rota NUNCA fica mais leniente que o teto global (rota naturalmente tortuosa)", () => {
+  it("afastando de tudo (Camada 1) tem prioridade -- fora do tapete nao importa nesse caso", () => {
     const a = detectarDesvio(emMov2, {
       ...baseAproximando,
-      desvioTrajetoM: 4500, desvioTrajetoAnteriorM: 4500, // abaixo do teto global de 5000m
-      perfilRotaMedia: 5000, perfilRotaDesvioPadrao: 1000, perfilRotaAmostras: 20, // media+4*desvio = 9000m
+      distDestinosM: [6300], distDestinosAnteriorM: [6000], streak: 2,
+      foraTapeteStreak: 5,
     });
-    expect(a).toBeNull();
-  });
-
-  it("perfil com poucas amostras (abaixo de PERFIL_ROTA_MIN_AMOSTRAS): ainda nao confia, usa teto fixo", () => {
-    const a = detectarDesvio(emMov2, {
-      ...baseAproximando,
-      desvioTrajetoM: 500, desvioTrajetoAnteriorM: 500,
-      perfilRotaMedia: 50, perfilRotaDesvioPadrao: 10, perfilRotaAmostras: 3,
-    });
-    expect(a).toBeNull();
+    expect(a?.motivo).not.toContain("nunca percorreu");
   });
 });
 

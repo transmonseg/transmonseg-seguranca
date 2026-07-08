@@ -11,7 +11,6 @@ import {
   haversineM,
   normalizar,
   centroideGeo,
-  distanciaAoSegmentoM,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
@@ -27,13 +26,11 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
+import { celulasDoSegmento, vizinhanca3x3 } from "@/lib/celulas";
 import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
-import { atualizarPerfilRota, desvioPadraoDe } from "@/lib/rotaperfil";
-import type { PerfilRotaEstado } from "@/lib/rotaperfil";
 import { candidatoEntregaProximidade } from "@/lib/entrega-proximidade";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
@@ -78,17 +75,6 @@ const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
 type ContagemTapeteCache = { contagem: number; expiraEm: number };
 const CACHE_TAPETE_MS = 3 * 60_000;
 const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
-
-// Perfil de rota (baseline estatístico por destino, ver rotaperfil.ts): média
-// e desvio-padrão (EWMA) do desvio perpendicular observado na aproximação
-// final de cada destino já visitado. Mesmo padrão de cache do tapete: 1
-// busca por cliente, TTL curto, nunca 1 query por veículo por ciclo.
-type PerfilRotaCache = { perfis: Map<string, PerfilRotaEstado>; expiraEm: number };
-const CACHE_PERFIL_ROTA_MS = 3 * 60_000;
-const cachePerfilRotaPorCliente = new Map<string, PerfilRotaCache>();
-// Distância (m) ao pendente mais próximo pra considerar "aproximação final"
-// e amostrar o desvio perpendicular pro perfil daquele destino específico.
-const PERFIL_ROTA_PROXIMIDADE_M = 500;
 
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
@@ -460,14 +446,14 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak");
 
     const mapaPosAtual = new Map<
       string,
       {
         lat: number | null; lng: number | null; velocidade: number | null;
         parado_desde: string | null; desvio_streak: number; desvio_inicio: DesvioInicio | null;
-        ultimo_evento: string | null;
+        ultimo_evento: string | null; fora_tapete_streak: number;
       }
     >();
 
@@ -480,6 +466,7 @@ export async function POST(request: Request) {
         desvio_streak: row.desvio_streak ?? 0,
         desvio_inicio: (row.desvio_inicio as DesvioInicio | null) ?? null,
         ultimo_evento: row.ultimo_evento ?? null,
+        fora_tapete_streak: row.fora_tapete_streak ?? 0,
       });
     }
 
@@ -605,7 +592,7 @@ export async function POST(request: Request) {
       atraso_min: number; panico: boolean; bau_aberto: boolean; nivel: string; motivo: string | null;
       datagps: string; parado_desde: string | null; updated_at: string; entregas_feitas: number;
       entregas_total: number; local: string | null; desvio_streak: number; rumo: number | null;
-      ultimo_evento: string | null; desvio_inicio: string | null;
+      ultimo_evento: string | null; desvio_inicio: string | null; fora_tapete_streak: number;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -655,36 +642,6 @@ export async function POST(request: Request) {
         pgTapete.release();
       }
     }
-
-    // Perfil de rota por cliente: mesmo padrão do tapete acima (1 busca por
-    // cliente, cacheada). Tabela pequena (1 linha por destino já visitado,
-    // não por evento/ciclo) — nunca chega perto do volume do tapete.
-    async function getPerfilRotaCliente(clienteId: string): Promise<Map<string, PerfilRotaEstado>> {
-      const cache = cachePerfilRotaPorCliente.get(clienteId);
-      if (cache && cache.expiraEm > Date.now()) return cache.perfis;
-      const pgPerfil = await pool.connect();
-      try {
-        const { rows } = await pgPerfil.query<{
-          celula: string; n_amostras: number; media_m: number; variancia_m2: number;
-        }>(
-          `SELECT celula, n_amostras, media_m, variancia_m2 FROM rota_perfil WHERE cliente_id = $1`,
-          [clienteId]
-        );
-        const perfis = new Map(
-          rows.map((r) => [r.celula, { nAmostras: r.n_amostras, mediaM: r.media_m, varianciaM2: r.variancia_m2 }])
-        );
-        cachePerfilRotaPorCliente.set(clienteId, { perfis, expiraEm: Date.now() + CACHE_PERFIL_ROTA_MS });
-        return perfis;
-      } catch {
-        return cache?.perfis ?? new Map();
-      } finally {
-        pgPerfil.release();
-      }
-    }
-
-    // Amostras do perfil de rota coletadas neste ciclo (chave cliente_id:celula
-    // -> estado final ja atualizado) — upsert em batch ao final, igual tapete.
-    const perfilRotaTocadoCiclo = new Map<string, { cliente_id: string; celula: string; estado: PerfilRotaEstado }>();
 
     for (const cliente of clientes) {
       // Obter CVs deste cliente
@@ -931,28 +888,6 @@ export async function POST(request: Request) {
             : [];
           const menorDistDestinoM = distDestinosM.length > 0 ? Math.min(...distDestinosM) : null;
 
-          // Trajeto perpendicular (ponto cego do afastamento, ver detectarDesvio):
-          // distância do veículo à reta mais próxima entre alguma base e algum
-          // destino/pendente — pega o "aproximando de qualquer destino, mas por
-          // um caminho absurdo" que o gatilho por afastamento não vê. Não
-          // persiste nada novo: só compara ciclo atual x anterior, em memória.
-          const segmentosPlausiveis =
-            centroidesBases.length > 0
-              ? destinos.flatMap((d) => centroidesBases.map((b) => ({ origem: b, destino: d })))
-              : [];
-          const desvioTrajetoM =
-            segmentosPlausiveis.length > 0
-              ? Math.min(...segmentosPlausiveis.map((s) => distanciaAoSegmentoM(pos, s.origem, s.destino)))
-              : null;
-          const desvioTrajetoAnteriorM =
-            temAnterior && segmentosPlausiveis.length > 0
-              ? Math.min(
-                  ...segmentosPlausiveis.map((s) =>
-                    distanciaAoSegmentoM({ lat: anterior!.lat!, lng: anterior!.lng! }, s.origem, s.destino)
-                  )
-                )
-              : null;
-
           // Guarda anti-teleporte: salto implausível entre ciclos (>2,5km em
           // ~1min, ou seja >150km/h implícitos) congela o streak.
           const saltoImplausivel =
@@ -1000,67 +935,24 @@ export async function POST(request: Request) {
             dentroTapete = vizinhanca3x3(pos.lat, pos.lng).some((c) => celulasTapeteCliente.has(c));
           }
 
+          // Streak de "aproximando mas fora do tapete" — Camada 3 do desvio
+          // (ver detectarDesvio em detectores.ts). So incrementa com
+          // cobertura minima confirmada (mesmo piso do dentroTapete acima) —
+          // sem tapete confiavel ainda, fica 0 (nunca dispara por cold-start,
+          // mesma protecao de sempre).
+          let foraTapeteStreak: number = anterior?.fora_tapete_streak ?? 0;
+          if (pos.fresco && !saltoImplausivel && contagemTapeteCliente >= TAPETE_MIN_CELULAS) {
+            if (!afastouDeTudo(distDestinosM, distDestinosAnteriorM) && dentroTapete === false) {
+              foraTapeteStreak += 1;
+            } else {
+              foraTapeteStreak = 0;
+            }
+          }
+
           // Alimentar o tapete: células do trajeto desde o ciclo anterior.
           if (pos.fresco && temAnterior && (anterior!.lat !== pos.lat || anterior!.lng !== pos.lng)) {
             for (const c of celulasDoSegmento(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)) {
               celulasCiclo.push({ cliente_id, celula: c });
-            }
-          }
-
-          // Perfil de rota (baseline por destino, ver rotaperfil.ts e
-          // PERFIL_ROTA_* em detectores.ts): fecha o outro lado do ponto
-          // cego do trajeto perpendicular — o teto fixo de 3km não pega uma
-          // rota que SEMPRE foi bem reta (ex.: ~50m de desvio) aparecer hoje
-          // com 500m, ainda bem abaixo do teto global. Só amostra na
-          // aproximação final (<=500m do pendente mais próximo): evita
-          // precisar rastrear "início/fim de perna" entre ciclos do motor.
-          let perfilRotaMedia: number | null = null;
-          let perfilRotaDesvioPadrao: number | null = null;
-          let perfilRotaAmostras = 0;
-          if (pos.fresco && pendentes.length > 0) {
-            const pendenteMaisProximo = pendentes.reduce<{ pt: PontoEntrega; dist: number } | null>(
-              (melhor, pt) => {
-                const dist = haversineM(pos.lat, pos.lng, pt.lat, pt.lng);
-                return !melhor || dist < melhor.dist ? { pt, dist } : melhor;
-              },
-              null
-            );
-            if (pendenteMaisProximo) {
-              const celula = celulaDe(pendenteMaisProximo.pt.lat, pendenteMaisProximo.pt.lng);
-              const perfilRotaCliente = await getPerfilRotaCliente(cliente_id);
-              const estadoAtual = perfilRotaCliente.get(celula) ?? null;
-              // Le o histórico ANTES de amostrar este ciclo — comparar contra
-              // uma média que já inclui a própria leitura atual enviesaria a
-              // checagem (sempre pareceria "normal").
-              //
-              // So APLICA o perfil (usa pra apertar o limiar em detectarDesvio)
-              // quando o veiculo esta na MESMA janela de proximidade em que ele
-              // foi amostrado (<=500m do pendente, ver escrita abaixo) — bug
-              // real corrigido: antes o perfil era lido e aplicado SEMPRE que
-              // havia pendentes, mesmo com o veiculo a 10-20km de distancia no
-              // meio do trajeto. Como o perfil so aprende o desvio da
-              // APROXIMACAO FINAL (tipicamente dezenas de metros, sempre
-              // pequeno por construcao), aplicar esse limiar apertado num
-              // veiculo ainda longe de qualquer destino disparava falso
-              // positivo direto (visto ao vivo 08/07: veiculo a 23km do
-              // pendente mais proximo, streak comportamental zerado, mas
-              // "critico" so porque o perfil daquele destino tem media de
-              // ~100m). Fora da janela de proximidade, cai pro teto fixo
-              // global (TRAJETO_PERPENDICULAR_LIMIAR_M).
-              if (estadoAtual && pendenteMaisProximo.dist <= PERFIL_ROTA_PROXIMIDADE_M) {
-                perfilRotaMedia = estadoAtual.mediaM;
-                perfilRotaDesvioPadrao = desvioPadraoDe(estadoAtual);
-                perfilRotaAmostras = estadoAtual.nAmostras;
-              }
-              if (
-                !saltoImplausivel &&
-                desvioTrajetoM !== null &&
-                pendenteMaisProximo.dist <= PERFIL_ROTA_PROXIMIDADE_M
-              ) {
-                const novoEstado = atualizarPerfilRota(estadoAtual, desvioTrajetoM);
-                perfilRotaCliente.set(celula, novoEstado);
-                perfilRotaTocadoCiclo.set(`${cliente_id}:${celula}`, { cliente_id, celula, estado: novoEstado });
-              }
             }
           }
 
@@ -1216,11 +1108,7 @@ export async function POST(request: Request) {
                   afastamentoAcumuladoM,
                   dentroTapete,
                   riscoAreaAtual,
-                  desvioTrajetoM,
-                  desvioTrajetoAnteriorM,
-                  perfilRotaMedia,
-                  perfilRotaDesvioPadrao,
-                  perfilRotaAmostras,
+                  foraTapeteStreak,
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
@@ -1327,6 +1215,7 @@ export async function POST(request: Request) {
             rumo: rumoMovimento !== null ? Math.round(rumoMovimento) : null,
             ultimo_evento: pos.evento,
             desvio_inicio: desvioInicio ? JSON.stringify(desvioInicio) : null,
+            fora_tapete_streak: foraTapeteStreak,
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -1424,7 +1313,7 @@ export async function POST(request: Request) {
              (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
               panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
               entregas_feitas, entregas_total, local, desvio_streak, rumo,
-              ultimo_evento, ultimo_evento_em, desvio_inicio)
+              ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -1432,16 +1321,17 @@ export async function POST(request: Request) {
              c.nivel, c.motivo, c.datagps::timestamptz, c.parado_desde::timestamptz,
              c.updated_at::timestamptz, c.entregas_feitas, c.entregas_total, c.local,
              c.desvio_streak, c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
-             c.desvio_inicio::jsonb
+             c.desvio_inicio::jsonb, c.fora_tapete_streak
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
-             $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[]
+             $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
+             $21::integer[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
-                  ultimo_evento, desvio_inicio)
+                  ultimo_evento, desvio_inicio, fora_tapete_streak)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -1464,7 +1354,8 @@ export async function POST(request: Request) {
              rumo             = EXCLUDED.rumo,
              ultimo_evento    = EXCLUDED.ultimo_evento,
              ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
-                                  THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END`,
+                                  THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END,
+             fora_tapete_streak = EXCLUDED.fora_tapete_streak`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -1486,6 +1377,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.rumo),
             posicoesCiclo.map((p) => p.ultimo_evento),
             posicoesCiclo.map((p) => p.desvio_inicio),
+            posicoesCiclo.map((p) => p.fora_tapete_streak),
           ]
         );
       } catch (errPosicoes) {
@@ -1576,40 +1468,6 @@ export async function POST(request: Request) {
         erros.push(msg);
       } finally {
         pgCelulas.release();
-      }
-    }
-
-    // Upsert batch do perfil de rota (1 statement por ciclo, so quando algum
-    // veiculo amostrou aproximacao final neste ciclo). Grava o estado JA
-    // atualizado (EWMA calculado em JS, ver rotaperfil.ts) -- sem aritmetica
-    // no SQL, so overwrite.
-    if (perfilRotaTocadoCiclo.size > 0) {
-      const linhas = [...perfilRotaTocadoCiclo.values()];
-      const pgPerfilRota = await pool.connect();
-      try {
-        await pgPerfilRota.query(
-          `INSERT INTO rota_perfil (cliente_id, celula, n_amostras, media_m, variancia_m2, atualizado_em)
-           SELECT c.cid::uuid, c.cel, c.na::integer, c.med::float8, c.var::float8, now()
-           FROM unnest($1::uuid[], $2::text[], $3::integer[], $4::float8[], $5::float8[]) AS c(cid, cel, na, med, var)
-           ON CONFLICT (cliente_id, celula) DO UPDATE SET
-             n_amostras = EXCLUDED.n_amostras,
-             media_m = EXCLUDED.media_m,
-             variancia_m2 = EXCLUDED.variancia_m2,
-             atualizado_em = EXCLUDED.atualizado_em`,
-          [
-            linhas.map((l) => l.cliente_id),
-            linhas.map((l) => l.celula),
-            linhas.map((l) => l.estado.nAmostras),
-            linhas.map((l) => l.estado.mediaM),
-            linhas.map((l) => l.estado.varianciaM2),
-          ]
-        );
-      } catch (errPerfilRota) {
-        const msg = `Aviso: erro ao salvar rota_perfil: ${String(errPerfilRota)}`;
-        console.warn(msg);
-        erros.push(msg);
-      } finally {
-        pgPerfilRota.release();
       }
     }
 

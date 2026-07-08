@@ -3,7 +3,6 @@
 // Nunca importe nada de 'next' aqui — lib pura TypeScript.
 
 import type { PosicaoNormalizada } from "./unitrac";
-import { distanciaAoSegmentoM } from "./unitrac";
 
 export type Alerta = {
   nivel: "critico" | "atencao";
@@ -298,25 +297,15 @@ const DESVIO_GATILHO_TETO_M = 25000;
 const DESVIO_RESOLVE_M = 2500;
 // Crescimento mínimo por ciclo pra contar como afastamento real (ruído de GPS).
 const AFASTAMENTO_MARGEM_M = 50;
-// Distância perpendicular (m) a qualquer segmento base->destino acima da
-// qual um trajeto é considerado "fora de qualquer caminho direto plausível",
-// mesmo que a distância bruta ao destino esteja caindo (ver desvioTrajetoM
-// em CtxDesvio). A frota opera em região serrana (Nova Friburgo/RJ): estradas
-// reais contornam morro e vale, então mesmo uma entrega legítima de médio
-// curso ("linha reta" à base de dezenas de km) pode desviar vários km da reta
-// sem ser desvio nenhum — 3000m gerava falso positivo ao vivo (08/07,
-// 4,4km reais de estrada de serra virando "crítico"). 5000m ainda pega
-// desvio grosseiro; a rede de segurança principal contra sequestro/roubo
-// continua sendo o gatilho comportamental (afastouDeTudo), não este.
-export const TRAJETO_PERPENDICULAR_LIMIAR_M = 5000;
-// Perfil de rota (ver PerfilRotaEstado em rotaperfil.ts): quando há histórico
-// confiável do desvio NORMAL desse destino específico, o limiar acima vira um
-// TETO (nunca fica mais leniente) e o limiar efetivo pode ficar bem menor —
-// ex.: uma entrega que sempre teve ~50m de desvio ficando com 500m hoje é
-// muito anômalo PRA ELA, mesmo bem abaixo do teto fixo global.
-export const PERFIL_ROTA_MIN_AMOSTRAS = 8;
-export const PERFIL_ROTA_Z = 4;
-export const PERFIL_ROTA_LIMIAR_MIN_M = 200;
+// Ciclos consecutivos (aproximando de algum destino, mas fora do tapete
+// conhecido) antes de disparar a Camada 3. 2 ciclos (~2min), mesmo padrão de
+// persistência mínima da Camada 1 — filtra ruído de 1 leitura de GPS.
+// Substituiu o cálculo por linha reta base->destino (TRAJETO_PERPENDICULAR_
+// LIMIAR_M + perfil de rota): achado real (TUK-0H45, 08/07/2026) mostrou que
+// essa métrica degenera pra "distância crua até a entrega" quando a base
+// fica dezenas de km distante e o veículo chega por um ângulo fora da reta
+// base->destino, disparando em aproximação 100% normal.
+export const FORA_TAPETE_STREAK_MIN = 2;
 
 // A Unitrac NÃO fornece rota planejada nem ordem confiável de entregas.
 // Desvio aqui é comportamento: o veículo se afastando de TODOS os destinos
@@ -373,20 +362,13 @@ export type CtxDesvio = {
   // Ponto cego identificado (comparação com iBOAT, pesquisa 07/07): o
   // gatilho principal cancela a suspeita assim que o veículo se aproxima de
   // QUALQUER destino — um trajeto raro que ainda assim vai "na direção"
-  // certa nunca dispara. Este par (ciclo atual + anterior) mede a menor
-  // distância perpendicular do veículo a qualquer segmento base->destino
-  // plausível (ver distanciaAoSegmentoM) — pega desvio grande mesmo quando
-  // tecnicamente aproximando. null = sem base/destino suficiente pra
-  // calcular (não modula, nunca dispara só por isso).
-  desvioTrajetoM: number | null;
-  desvioTrajetoAnteriorM: number | null;
-  // Perfil estatístico (EWMA) do desvio perpendicular normal PRA ESSE destino
-  // específico (ver rotaperfil.ts), amostrado pelo motor na aproximação
-  // final de entregas passadas. null/0 amostras = sem histórico confiável
-  // ainda (usa só o teto fixo global, comportamento idêntico a antes).
-  perfilRotaMedia: number | null;
-  perfilRotaDesvioPadrao: number | null;
-  perfilRotaAmostras: number;
+  // certa nunca dispara. Ciclos consecutivos (aproximando de algum destino,
+  // MAS fora do tapete conhecido, com cobertura mínima confirmada) — motor
+  // só incrementa quando afastouDeTudo=false E dentroTapete=false (ver
+  // TAPETE_MIN_CELULAS no motor). Substituiu o cálculo por linha reta
+  // (ver FORA_TAPETE_STREAK_MIN acima) — pega desvio grande mesmo quando
+  // tecnicamente aproximando, sem o defeito de degenerar em distância crua.
+  foraTapeteStreak: number;
 };
 
 // Pesos do score de risco de área (0-100). Cada camada contribui
@@ -478,45 +460,16 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   const afastandoDeTudo = afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM);
 
   // Ponto cego do gatilho principal: aproximar de QUALQUER destino cancela a
-  // suspeita, mesmo que o caminho até lá seja um desvio enorme (ex.:
-  // sequestro que ainda assim segue "na direção" de uma entrega). Checa 2
-  // leituras (atual + anterior, sem precisar de streak persistido) de
-  // distância perpendicular a qualquer segmento base->destino plausível —
-  // se as DUAS estão muito longe de qualquer caminho direto, dispara mesmo
-  // aproximando. Só entra em jogo quando o gatilho normal NÃO disparou.
-  //
-  // Limiar por-rota (ver PERFIL_ROTA_* acima): com histórico confiável desse
-  // destino específico, o limiar efetivo pode ficar bem MENOR que o teto
-  // fixo (nunca maior — Math.min garante que o teto global continua sendo o
-  // pior caso). Piso de PERFIL_ROTA_LIMIAR_MIN_M evita virar hipersensível
-  // numa rota historicamente perfeita (ruído de GPS puro já soma ~dezenas de
-  // metros).
-  const temPerfilConfiavel =
-    ctx.perfilRotaAmostras >= PERFIL_ROTA_MIN_AMOSTRAS &&
-    ctx.perfilRotaMedia !== null &&
-    ctx.perfilRotaDesvioPadrao !== null;
-  const limiarTrajetoEfetivo = temPerfilConfiavel
-    ? Math.min(
-        TRAJETO_PERPENDICULAR_LIMIAR_M,
-        Math.max(PERFIL_ROTA_LIMIAR_MIN_M, ctx.perfilRotaMedia! + PERFIL_ROTA_Z * ctx.perfilRotaDesvioPadrao!)
-      )
-    : TRAJETO_PERPENDICULAR_LIMIAR_M;
-
-  if (
-    !afastandoDeTudo &&
-    ctx.desvioTrajetoM !== null &&
-    ctx.desvioTrajetoAnteriorM !== null &&
-    ctx.desvioTrajetoM >= limiarTrajetoEfetivo &&
-    ctx.desvioTrajetoAnteriorM >= limiarTrajetoEfetivo
-  ) {
-    const kmFora = (ctx.desvioTrajetoM / 1000).toFixed(1).replace(".", ",");
-    const motivoPerfil = temPerfilConfiavel
-      ? ` (rota costuma ter só ~${Math.round(ctx.perfilRotaMedia!)}m de desvio)`
-      : "";
+  // suspeita, mesmo que o caminho até lá nunca tenha sido percorrido pela
+  // frota antes (ex.: sequestro que ainda assim segue "na direção" de uma
+  // entrega). ctx.foraTapeteStreak conta ciclos consecutivos assim — o
+  // motor só incrementa quando afastandoDeTudo=false E dentroTapete=false
+  // (cobertura mínima confirmada, ver TAPETE_MIN_CELULAS no motor).
+  if (!afastandoDeTudo && ctx.foraTapeteStreak >= FORA_TAPETE_STREAK_MIN) {
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Trajeto ${kmFora}km fora de qualquer caminho direto plausível até os destinos, mesmo aproximando${motivoPerfil}`,
+      motivo: `Aproximando de um destino, mas por caminho que a frota nunca percorreu antes (fora de via conhecida há ${ctx.foraTapeteStreak} leituras)`,
       score: 65,
     };
   }
@@ -762,11 +715,7 @@ export function avaliarTodos(
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
-          desvioTrajetoM: ctx.desvioTrajetoM ?? null,
-          desvioTrajetoAnteriorM: ctx.desvioTrajetoAnteriorM ?? null,
-          perfilRotaMedia: ctx.perfilRotaMedia ?? null,
-          perfilRotaDesvioPadrao: ctx.perfilRotaDesvioPadrao ?? null,
-          perfilRotaAmostras: ctx.perfilRotaAmostras ?? 0,
+          foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
@@ -792,11 +741,7 @@ export function avaliar(
     afastamentoAcumuladoM?: number;
     dentroTapete?: boolean | null;
     riscoAreaAtual?: number;
-    desvioTrajetoM?: number | null;
-    desvioTrajetoAnteriorM?: number | null;
-    perfilRotaMedia?: number | null;
-    perfilRotaDesvioPadrao?: number | null;
-    perfilRotaAmostras?: number;
+    foraTapeteStreak?: number;
     temPendentes?: boolean;
     entregasTotal?: number;
     entregasFeitas?: number;
@@ -872,11 +817,7 @@ export function avaliar(
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
-          desvioTrajetoM: ctx.desvioTrajetoM ?? null,
-          desvioTrajetoAnteriorM: ctx.desvioTrajetoAnteriorM ?? null,
-          perfilRotaMedia: ctx.perfilRotaMedia ?? null,
-          perfilRotaDesvioPadrao: ctx.perfilRotaDesvioPadrao ?? null,
-          perfilRotaAmostras: ctx.perfilRotaAmostras ?? 0,
+          foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
         })
       : null,
   ].filter((a): a is Alerta => a !== null);

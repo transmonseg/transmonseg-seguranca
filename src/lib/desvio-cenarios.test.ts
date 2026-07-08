@@ -30,8 +30,7 @@ const BASE_NUTRY = { lat: -22.9256, lng: -43.2311 }; // ponto de partida generic
 type Ciclo = {
   lat: number; lng: number; velocidade?: number;
   dentroTapete?: boolean | null; riscoAreaAtual?: number;
-  desvioTrajetoM?: number | null;
-  perfilRotaMedia?: number | null; perfilRotaDesvioPadrao?: number | null; perfilRotaAmostras?: number;
+  foraTapeteStreak?: number;
 };
 
 // Ponto a "passo" graus de distancia de origem, na direcao que se AFASTA de
@@ -58,7 +57,6 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
   let streak = 0;
   let menorDistInicio = 0;
   let anteriorDist: number[] | null = null;
-  let desvioTrajetoAnteriorM: number | null = null;
   const resultados: ReturnType<typeof detectarDesvio>[] = [];
 
   for (const c of ciclos) {
@@ -75,7 +73,6 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
     }
     const menorAgora = Math.min(...distDestinosM);
     const afastamentoAcumuladoM = streak > 0 ? menorAgora - menorDistInicio : 0;
-    const desvioTrajetoM = c.desvioTrajetoM ?? null;
 
     const ctx: CtxDesvio = {
       distDestinosM,
@@ -88,15 +85,10 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
       afastamentoAcumuladoM,
       dentroTapete: c.dentroTapete ?? null,
       riscoAreaAtual: c.riscoAreaAtual ?? 0,
-      desvioTrajetoM,
-      desvioTrajetoAnteriorM,
-      perfilRotaMedia: c.perfilRotaMedia ?? null,
-      perfilRotaDesvioPadrao: c.perfilRotaDesvioPadrao ?? null,
-      perfilRotaAmostras: c.perfilRotaAmostras ?? 0,
+      foraTapeteStreak: c.foraTapeteStreak ?? 0,
     };
     resultados.push(detectarDesvio(posicaoBase({ velocidade }), ctx));
     anteriorDist = distDestinosM;
-    desvioTrajetoAnteriorM = desvioTrajetoM;
   }
   return resultados;
 }
@@ -160,10 +152,10 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     // fica estritamente mais perto do destino que o anterior (verificado
     // abaixo), mesmo com dentroTapete=false no meio do caminho — o gatilho
     // por afastamento (v4) nao pega isso por design (so reage a quem se
-    // afasta de TUDO). Este cenario nao passa desvioTrajetoM (fica null),
-    // entao a checagem complementar de trajeto perpendicular (ver describe
-    // "desvioTrajetoM" abaixo) tambem fica inativa aqui de proposito — o
-    // objetivo deste teste e isolar so o mecanismo de afastamento.
+    // afasta de TUDO). Este cenario nao passa foraTapeteStreak (fica 0),
+    // entao a Camada 3 (ver describe "foraTapeteStreak" abaixo) tambem fica
+    // inativa aqui de proposito — o objetivo deste teste e isolar so o
+    // mecanismo de afastamento.
     const fracoes = [0, 0.3, 0.6, 1.0];
     const pontos = fracoes.map(f => aproximarDe(MANGUINHOS, REALENGO, f));
     // Confirma a premissa do cenario antes de testar o detector: cada ponto
@@ -254,8 +246,7 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
         temPendentes: true, emOperacao: true, foraDaBase: true,
         entregasFeitas: 0, // 0 feitas ainda, com pendentes -> sem referencia de comportamento
         streak, afastamentoAcumuladoM: 0, dentroTapete: false, riscoAreaAtual: 100,
-        desvioTrajetoM: null, desvioTrajetoAnteriorM: null,
-        perfilRotaMedia: null, perfilRotaDesvioPadrao: null, perfilRotaAmostras: 0,
+        foraTapeteStreak: 5,
       }));
       anteriorDist = distDestinosM;
     }
@@ -272,51 +263,50 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
   });
 });
 
-describe("desvioTrajetoM — fecha parte do ponto cego (aproxima do destino mas por caminho implausivel)", () => {
-  it("aproximando do destino mas trajeto fica >=5km fora de qualquer caminho direto por 2 leituras seguidas: dispara score 65 SEM esperar streak", () => {
+describe("foraTapeteStreak — Camada 3, fecha o ponto cego (aproxima do destino mas por via nunca percorrida)", () => {
+  // Regressao do caso real TUK-0H45 (08/07/2026): veiculo a ~4,2km de uma
+  // entrega pendente real, indo na direcao dela (Camada 1 nao dispara), mas
+  // chegando por uma via que a frota nunca usou antes — o antigo calculo por
+  // linha reta base->destino degenerava pra "distancia crua ate a entrega"
+  // (base ficava a 45km, ver design doc) e disparava em toda aproximacao
+  // fora do eixo perfeito. A Camada 3 nova usa o tapete real em vez da reta.
+  it("aproximando do destino mas fora do tapete por 2 leituras seguidas: dispara score 65 SEM esperar o streak comportamental", () => {
     const fracoes = [0, 0.3, 0.6];
-    const ciclos: Ciclo[] = fracoes.map((f) => ({
+    const ciclos: Ciclo[] = fracoes.map((f, i) => ({
       ...aproximarDe(MANGUINHOS, REALENGO, f),
-      desvioTrajetoM: 6000,
+      foraTapeteStreak: i,
     }));
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados[0]).toBeNull(); // 1o ciclo: ainda sem leitura anterior
-    expect(resultados[1]?.score).toBe(65); // 2a leitura ruim seguida: dispara na hora, nao espera streak>=2
-    expect(resultados[1]?.motivo).toContain("6,0km fora de qualquer caminho direto plausível");
+    expect(resultados[0]).toBeNull(); // streak 0: ainda nao acumulou
+    expect(resultados[1]).toBeNull(); // streak 1: abaixo do minimo (2)
+    expect(resultados[2]?.score).toBe(65); // streak 2: dispara na hora, nao espera streak comportamental
+    expect(resultados[2]?.motivo).toContain("fora de via conhecida há 2 leituras");
   });
 
-  it("aproximando por caminho plausivel (desvioTrajetoM abaixo do limiar de 5km): nao dispara", () => {
+  it("aproximando e DENTRO do tapete (foraTapeteStreak sempre 0): nao dispara — caso real TUK-0H45/TTM-2G01 corrigido", () => {
     const fracoes = [0, 0.3, 0.6];
     const ciclos: Ciclo[] = fracoes.map((f) => ({
       ...aproximarDe(MANGUINHOS, REALENGO, f),
-      desvioTrajetoM: 500,
+      dentroTapete: true,
+      foraTapeteStreak: 0,
     }));
     const resultados = simular(REALENGO, ciclos);
     expect(resultados.every(r => r === null)).toBe(true);
   });
 
-  it("so a leitura ATUAL esta ruim, a anterior nao foi calculada ainda (null): exige 2 leituras, nao dispara", () => {
-    const ciclos: Ciclo[] = [
-      { ...aproximarDe(MANGUINHOS, REALENGO, 0) }, // desvioTrajetoM null (nao calculado)
-      { ...aproximarDe(MANGUINHOS, REALENGO, 0.3), desvioTrajetoM: 5000 }, // so essa e ruim
-    ];
-    const resultados = simular(REALENGO, ciclos);
-    expect(resultados.every(r => r === null)).toBe(true);
-  });
-
-  it("desvioTrajetoM nunca calculado (null, ex.: sem base/destino valido pra tracar segmento): fluxo normal, sem crash", () => {
+  it("foraTapeteStreak nunca setado (0, default): fluxo normal, sem crash", () => {
     const fracoes = [0, 0.3, 0.6];
     const ciclos: Ciclo[] = fracoes.map((f) => ({ ...aproximarDe(MANGUINHOS, REALENGO, f) }));
     const resultados = simular(REALENGO, ciclos);
     expect(resultados.every(r => r === null)).toBe(true);
   });
 
-  it("gatilho normal por AFASTAMENTO continua funcionando normalmente mesmo com desvioTrajetoM baixo (nao interfere)", () => {
+  it("gatilho normal por AFASTAMENTO continua funcionando normalmente mesmo com foraTapeteStreak baixo (nao interfere)", () => {
     const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
       ...afastarDe(MANGUINHOS, REALENGO, i * 0.01),
       dentroTapete: true,
       riscoAreaAtual: 0,
-      desvioTrajetoM: 100,
+      foraTapeteStreak: 1,
     }));
     const resultados = simular(REALENGO, ciclos);
     expect(resultados[2]?.score).toBe(45); // streak 2, via conhecida, sem risco de area — fluxo normal intacto
