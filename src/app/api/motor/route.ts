@@ -159,31 +159,56 @@ async function buscarAlvosComTimeout(cvs: string[]): Promise<{
   }
 }
 
-// ─── Geocode reverso via Nominatim com cache em banco ─────────────────────
+// ─── Cache em memoria de geocode_cache (tabela inteira, ~45k linhas/6MB) ───
+// Achado 07/07/2026 investigando estouro de CPU da Vercel: geocodeReverso
+// fazia 1 pool.connect()+SELECT por veiculo parado/em alerta -- num ciclo
+// tipico isso e ~170 dos ~300 veiculos (maioria da frota parada fazendo
+// entrega). Igual ao tapete/perfil de rota: 1 busca da tabela inteira,
+// cacheada por CACHE_GEOCODE_MS, em vez de 1 query por veiculo.
+type GeocodeCacheGlobal = { mapa: Map<string, string>; expiraEm: number };
+const CACHE_GEOCODE_MS = 3 * 60_000;
+let cacheGeocodeGlobal: GeocodeCacheGlobal | null = null;
+
+function chaveGeocode(lat: number, lng: number): string {
+  const latR = Math.round(lat * 10000) / 10000;
+  const lngR = Math.round(lng * 10000) / 10000;
+  return `${latR}:${lngR}`;
+}
+
+async function getGeocodeCacheGlobal(pool: pg.Pool): Promise<Map<string, string>> {
+  if (cacheGeocodeGlobal && cacheGeocodeGlobal.expiraEm > Date.now()) {
+    return cacheGeocodeGlobal.mapa;
+  }
+  const pgClient = await pool.connect();
+  try {
+    const { rows } = await pgClient.query<{ lat: number; lng: number; endereco: string }>(
+      `SELECT lat, lng, endereco FROM geocode_cache`
+    );
+    const mapa = new Map(rows.map((r) => [chaveGeocode(r.lat, r.lng), r.endereco]));
+    cacheGeocodeGlobal = { mapa, expiraEm: Date.now() + CACHE_GEOCODE_MS };
+    return mapa;
+  } catch {
+    return cacheGeocodeGlobal?.mapa ?? new Map();
+  } finally {
+    pgClient.release();
+  }
+}
+
+// ─── Geocode reverso via Nominatim com cache em memoria + banco ───────────
 // Retorna o endereco formatado (3 primeiras partes do display_name) ou null.
 async function geocodeReverso(
   lat: number,
   lng: number,
   pool: pg.Pool,
-  contadorNovos: { valor: number }
+  contadorNovos: { valor: number },
+  cacheGeocode: Map<string, string>
 ): Promise<string | null> {
-  // Arredondar a 4 casas para usar como chave de cache
+  const chave = chaveGeocode(lat, lng);
   const latR = Math.round(lat * 10000) / 10000;
   const lngR = Math.round(lng * 10000) / 10000;
 
-  // Consultar cache no banco
-  const pgClient = await pool.connect();
-  try {
-    const { rows } = await pgClient.query<{ endereco: string }>(
-      `SELECT endereco FROM geocode_cache WHERE lat = $1 AND lng = $2 LIMIT 1`,
-      [latR, lngR]
-    );
-    if (rows.length > 0) {
-      return rows[0].endereco;
-    }
-  } finally {
-    pgClient.release();
-  }
+  const doCache = cacheGeocode.get(chave);
+  if (doCache !== undefined) return doCache;
 
   // Cache miss: verificar orçamento antes de chamar Nominatim
   if (contadorNovos.valor >= LIMITE_GEOCODES_NOVOS) {
@@ -218,7 +243,9 @@ async function geocodeReverso(
     }
     if (!endereco) return null;
 
-    // Salvar no cache
+    // Salvar no cache (banco + memoria, pra outro veiculo no MESMO ciclo e
+    // mesma celula ~11m nao repetir a chamada externa).
+    cacheGeocode.set(chave, endereco);
     const pgSave = await pool.connect();
     try {
       await pgSave.query(
@@ -284,6 +311,9 @@ export async function POST(request: Request) {
 
   // Contador de geocodes novos consumidos neste ciclo
   const contadorGeocodesNovos = { valor: 0 };
+  // Cache em memoria da tabela geocode_cache inteira (ver getGeocodeCacheGlobal
+  // acima) — elimina 1 SELECT por veiculo parado/em alerta (era ~170/ciclo).
+  const cacheGeocode = await getGeocodeCacheGlobal(pool);
 
   // Keep-alive da sessao do portal Unitrac (sirene/bloqueio) — pinga pra
   // evitar expirar por inatividade. Nao-critico: falha aqui nunca derruba o
@@ -501,6 +531,22 @@ export async function POST(request: Request) {
     // Celulas do tapete cobertas pelo trajeto de cada veiculo neste ciclo —
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
     const celulasCiclo: { cliente_id: string; celula: string }[] = [];
+
+    // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
+    // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
+    // pool.connect()+query POR VEICULO dentro do loop. Achado 07/07/2026
+    // investigando estouro de cota de CPU da Vercel (Fluid Active): esse era
+    // o maior gargalo real do motor -- ~300 round-trips de rede+conexao por
+    // ciclo, incondicional, todo santo ciclo. Nao muda nenhuma logica de
+    // deteccao, so a mecanica de escrever no banco.
+    type LinhaPosicaoCiclo = {
+      veiculo_id: string; lat: number; lng: number; velocidade: number; ignicao: boolean;
+      atraso_min: number; panico: boolean; bau_aberto: boolean; nivel: string; motivo: string | null;
+      datagps: string; parado_desde: string | null; updated_at: string; entregas_feitas: number;
+      entregas_total: number; local: string | null; desvio_streak: number; rumo: number | null;
+      ultimo_evento: string | null; desvio_inicio: string | null;
+    };
+    const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
     // Tapete por cliente: busca TODAS as celulas de uma vez (via pool, sem o
     // limite de linhas do PostgREST) e cacheia em memoria por CACHE_TAPETE_MS.
@@ -1074,7 +1120,7 @@ export async function POST(request: Request) {
           } else if (pos.fresco) {
             const emAlerta = nivel === "vermelho" || nivel === "amarelo";
             if (pos.velocidade === 0 || emAlerta) {
-              localVeiculo = await geocodeReverso(pos.lat, pos.lng, pool, contadorGeocodesNovos);
+              localVeiculo = await geocodeReverso(pos.lat, pos.lng, pool, contadorGeocodesNovos, cacheGeocode);
             } else {
               localVeiculo = "Em deslocamento";
             }
@@ -1097,71 +1143,30 @@ export async function POST(request: Request) {
               ? `Sem comunicacao ha ${pos.atraso}min`
               : (alerta?.motivo ?? null);
 
-          // 5. Upsert em posicoes_atuais via pg (para ST_MakePoint)
-          const pgClient = await pool.connect();
-          try {
-            await pgClient.query(
-              `INSERT INTO posicoes_atuais
-                (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
-                 panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
-                 entregas_feitas, entregas_total, local, desvio_streak, rumo,
-                 ultimo_evento, ultimo_evento_em, desvio_inicio)
-               VALUES
-                ($1, $2, $3,
-                 ST_SetSRID(ST_MakePoint($4, $2), 4326)::geography,
-                 $5, $6, $7, $8, $9, $10, $11,
-                 $12::timestamptz, $13::timestamptz, $14::timestamptz,
-                 $15, $16, $17, $18, $19, $20, $14::timestamptz, $21::jsonb)
-               ON CONFLICT (veiculo_id) DO UPDATE SET
-                 lat              = EXCLUDED.lat,
-                 lng              = EXCLUDED.lng,
-                 geom             = EXCLUDED.geom,
-                 velocidade       = EXCLUDED.velocidade,
-                 ignicao          = EXCLUDED.ignicao,
-                 atraso_min       = EXCLUDED.atraso_min,
-                 panico           = EXCLUDED.panico,
-                 bau_aberto       = EXCLUDED.bau_aberto,
-                 nivel            = EXCLUDED.nivel,
-                 motivo           = EXCLUDED.motivo,
-                 datagps          = EXCLUDED.datagps,
-                 parado_desde     = EXCLUDED.parado_desde,
-                 updated_at       = EXCLUDED.updated_at,
-                 entregas_feitas  = EXCLUDED.entregas_feitas,
-                 entregas_total   = EXCLUDED.entregas_total,
-                 local            = COALESCE(EXCLUDED.local, posicoes_atuais.local),
-                 desvio_streak    = EXCLUDED.desvio_streak,
-                 desvio_inicio    = EXCLUDED.desvio_inicio,
-                 rumo             = EXCLUDED.rumo,
-                 ultimo_evento    = EXCLUDED.ultimo_evento,
-                 ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
-                                      THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END`,
-              [
-                veiculo_id,
-                pos.lat,
-                pos.lng,
-                pos.lng, // $4 = lng para ST_MakePoint(lng, lat)
-                pos.velocidade,
-                pos.ignicao,
-                pos.atraso,
-                pos.panico,
-                pos.bau,
-                nivel,
-                motivo,
-                parseDatagps(pos.datagps) ?? agora.toISOString(),
-                parado_desde,
-                agora.toISOString(),
-                entregas_feitas,
-                entregas_total,
-                localVeiculo,
-                desvioStreak,
-                rumoMovimento !== null ? Math.round(rumoMovimento) : null,
-                pos.evento,
-                desvioInicio ? JSON.stringify(desvioInicio) : null,
-              ]
-            );
-          } finally {
-            pgClient.release();
-          }
+          // 5. Posicao acumulada pro batch de fim de ciclo (ver posicoesCiclo
+          // acima) — nao escreve no banco aqui, so guarda em memoria.
+          posicoesCiclo.push({
+            veiculo_id,
+            lat: pos.lat,
+            lng: pos.lng,
+            velocidade: pos.velocidade,
+            ignicao: pos.ignicao,
+            atraso_min: pos.atraso,
+            panico: pos.panico,
+            bau_aberto: pos.bau,
+            nivel,
+            motivo,
+            datagps: parseDatagps(pos.datagps) ?? agora.toISOString(),
+            parado_desde,
+            updated_at: agora.toISOString(),
+            entregas_feitas,
+            entregas_total,
+            local: localVeiculo,
+            desvio_streak: desvioStreak,
+            rumo: rumoMovimento !== null ? Math.round(rumoMovimento) : null,
+            ultimo_evento: pos.evento,
+            desvio_inicio: desvioInicio ? JSON.stringify(desvioInicio) : null,
+          });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
           // (jammer pode ocorrer com atraso > 60, portanto !fresco, mas e critico)
@@ -1243,6 +1248,91 @@ export async function POST(request: Request) {
           erros.push(msg);
           // Continua para o proximo veiculo
         }
+      }
+    }
+
+    // Upsert batch de posicoes_atuais (1 statement pro ciclo inteiro, em vez
+    // de 1 round-trip por veiculo — ver posicoesCiclo acima). Tem que rodar
+    // ANTES do detector de favela e da auto-resolucao sem-comunicacao logo
+    // abaixo, que dependem de posicoes_atuais ja refletir este ciclo.
+    if (posicoesCiclo.length > 0) {
+      const pgPosicoes = await pool.connect();
+      try {
+        await pgPosicoes.query(
+          `INSERT INTO posicoes_atuais
+             (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
+              panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
+              entregas_feitas, entregas_total, local, desvio_streak, rumo,
+              ultimo_evento, ultimo_evento_em, desvio_inicio)
+           SELECT
+             c.veiculo_id, c.lat, c.lng,
+             ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
+             c.velocidade, c.ignicao, c.atraso_min, c.panico, c.bau_aberto,
+             c.nivel, c.motivo, c.datagps::timestamptz, c.parado_desde::timestamptz,
+             c.updated_at::timestamptz, c.entregas_feitas, c.entregas_total, c.local,
+             c.desvio_streak, c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
+             c.desvio_inicio::jsonb
+           FROM unnest(
+             $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
+             $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
+             $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
+             $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[]
+           ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
+                  bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
+                  entregas_feitas, entregas_total, local, desvio_streak, rumo,
+                  ultimo_evento, desvio_inicio)
+           ON CONFLICT (veiculo_id) DO UPDATE SET
+             lat              = EXCLUDED.lat,
+             lng              = EXCLUDED.lng,
+             geom             = EXCLUDED.geom,
+             velocidade       = EXCLUDED.velocidade,
+             ignicao          = EXCLUDED.ignicao,
+             atraso_min       = EXCLUDED.atraso_min,
+             panico           = EXCLUDED.panico,
+             bau_aberto       = EXCLUDED.bau_aberto,
+             nivel            = EXCLUDED.nivel,
+             motivo           = EXCLUDED.motivo,
+             datagps          = EXCLUDED.datagps,
+             parado_desde     = EXCLUDED.parado_desde,
+             updated_at       = EXCLUDED.updated_at,
+             entregas_feitas  = EXCLUDED.entregas_feitas,
+             entregas_total   = EXCLUDED.entregas_total,
+             local            = COALESCE(EXCLUDED.local, posicoes_atuais.local),
+             desvio_streak    = EXCLUDED.desvio_streak,
+             desvio_inicio    = EXCLUDED.desvio_inicio,
+             rumo             = EXCLUDED.rumo,
+             ultimo_evento    = EXCLUDED.ultimo_evento,
+             ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
+                                  THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END`,
+          [
+            posicoesCiclo.map((p) => p.veiculo_id),
+            posicoesCiclo.map((p) => p.lat),
+            posicoesCiclo.map((p) => p.lng),
+            posicoesCiclo.map((p) => p.velocidade),
+            posicoesCiclo.map((p) => p.ignicao),
+            posicoesCiclo.map((p) => p.atraso_min),
+            posicoesCiclo.map((p) => p.panico),
+            posicoesCiclo.map((p) => p.bau_aberto),
+            posicoesCiclo.map((p) => p.nivel),
+            posicoesCiclo.map((p) => p.motivo),
+            posicoesCiclo.map((p) => p.datagps),
+            posicoesCiclo.map((p) => p.parado_desde),
+            posicoesCiclo.map((p) => p.updated_at),
+            posicoesCiclo.map((p) => p.entregas_feitas),
+            posicoesCiclo.map((p) => p.entregas_total),
+            posicoesCiclo.map((p) => p.local),
+            posicoesCiclo.map((p) => p.desvio_streak),
+            posicoesCiclo.map((p) => p.rumo),
+            posicoesCiclo.map((p) => p.ultimo_evento),
+            posicoesCiclo.map((p) => p.desvio_inicio),
+          ]
+        );
+      } catch (errPosicoes) {
+        const msg = `Erro ao salvar posicoes_atuais em lote: ${String(errPosicoes)}`;
+        console.error(msg);
+        erros.push(msg);
+      } finally {
+        pgPosicoes.release();
       }
     }
 
@@ -1370,6 +1460,22 @@ export async function POST(request: Request) {
            WHERE p.atraso_min <= 60`
         );
 
+        // Alertas de favela ATIVOS de uma vez (1 query pra todo mundo, nao 1
+        // maybeSingle() por veiculo em favela) — achado 07/07/2026 junto com
+        // o resto da investigacao de CPU da Vercel. Reaproveitado tambem no
+        // passo de resolucao logo abaixo.
+        const { data: alertasFavelaAtivosPre } = clientesComSucesso.size > 0
+          ? await supabase
+              .from("alertas")
+              .select("id, veiculo_id")
+              .eq("tipo", "favela")
+              .eq("status", "ativo")
+              .in("cliente_id", [...clientesComSucesso])
+          : { data: [] as { id: string; veiculo_id: string }[] };
+        const alertaFavelaPorVeiculo = new Map(
+          (alertasFavelaAtivosPre ?? []).map((a) => [a.veiculo_id, a.id])
+        );
+
         for (const vf of veiculosEmFavela) {
           try {
             // Suprimir alerta se o proprio ponto de entrega pendente esta dentro
@@ -1402,13 +1508,7 @@ export async function POST(request: Request) {
             );
 
             // Idempotente: so inserir alerta favela se nao houver um ativo
-            const { data: alertaFavelaAtivo } = await supabase
-              .from("alertas")
-              .select("id")
-              .eq("veiculo_id", vf.veiculo_id)
-              .eq("tipo", "favela")
-              .eq("status", "ativo")
-              .maybeSingle();
+            const alertaFavelaAtivo = alertaFavelaPorVeiculo.has(vf.veiculo_id);
 
             if (!alertaFavelaAtivo) {
               await supabase.from("alertas").insert({
@@ -1432,24 +1532,19 @@ export async function POST(request: Request) {
         }
 
         // Resolver alertas favela de veiculos que saíram da area de risco.
-        // Filtra por clientesComSucesso: nao resolve alertas de clientes cujo
-        // fetch falhou neste ciclo (evita resolver alertas reais por timeout pontual).
+        // Reaproveita o snapshot de alertaFavelaPorVeiculo buscado ANTES do
+        // loop (ver acima) -- ja e o mesmo escopo de clientesComSucesso, e um
+        // alerta novo criado neste ciclo pra um veiculo que segue em favela
+        // nunca entraria aqui de qualquer forma (idsEmFavela ja exclui ele).
         if (clientesComSucesso.size > 0) {
-          const idsEmFavela = veiculosEmFavela.map((vf) => vf.veiculo_id);
+          const idsEmFavela = new Set(veiculosEmFavela.map((vf) => vf.veiculo_id));
 
-          const { data: alertasFavelaAtivos } = await supabase
-            .from("alertas")
-            .select("id, veiculo_id")
-            .eq("tipo", "favela")
-            .eq("status", "ativo")
-            .in("cliente_id", [...clientesComSucesso]);
-
-          const parasResolver = (alertasFavelaAtivos ?? []).filter(
-            (a) => !idsEmFavela.includes(a.veiculo_id)
+          const parasResolver = [...alertaFavelaPorVeiculo.entries()].filter(
+            ([veiculoId]) => !idsEmFavela.has(veiculoId)
           );
 
           if (parasResolver.length > 0) {
-            const ids = parasResolver.map((a) => a.id);
+            const ids = parasResolver.map(([, id]) => id);
             await supabase
               .from("alertas")
               .update({ status: "resolvido", resolvido_em: agora.toISOString() })
