@@ -1,13 +1,15 @@
 "use client";
 
-// Alternador "TODOS" x "SELECIONADOS" do mapa — clique direto num rotulo OU
-// arraste o thumb (estilo iPad Split View / segmented control da Apple).
+// Alternador TODOS / AMBOS (lado a lado) / SELECIONADOS do mapa — clique
+// direto num rotulo OU arraste o thumb pelos 3 estados (estilo iPad Split
+// View / segmented control da Apple: extremo esquerdo = so "todos", extremo
+// direito = so "selecionados", meio = os dois lado a lado).
 // Reaproveita o estado ja existente de veiculosSelecionados/modoSelecionados
-// do MonitorV2 — este componente e so a interacao visual, nao dono do estado.
+// + o novo splitView do MonitorV2 — este componente e so a interacao visual.
 import { useEffect, useRef } from "react";
 import { motion, useMotionValue, useTransform, animate as animateValue } from "framer-motion";
 
-export type EscopoMapa = "todos" | "selecionados";
+export type EscopoMapa = "todos" | "ambos" | "selecionados";
 
 type Props = {
   modo: EscopoMapa;
@@ -21,36 +23,40 @@ type Props = {
   muted: string;
 };
 
-const LARGURA = 252;
+const LARGURA = 320;
 const ALTURA = 34;
 const PAD = 3;
-const METADE = (LARGURA - PAD * 2) / 2;
+const TERCO = (LARGURA - PAD * 2) / 3;
 const SPRING = { type: "spring" as const, stiffness: 520, damping: 40 };
+
+const POSICAO: Record<EscopoMapa, number> = { todos: 0, ambos: TERCO, selecionados: TERCO * 2 };
 
 export default function EscopoMapaSwitcher({
   modo, totalSelecionados, temSelecao, onEscolher, onAbrirSeletor,
   tema, accent, border, muted,
 }: Props) {
-  const x = useMotionValue(modo === "todos" ? 0 : METADE);
+  const x = useMotionValue(POSICAO[modo]);
   const arrastandoRef = useRef(false);
   // Cor dos rotulos reage CONTINUAMENTE a posicao do thumb durante o arrasto
   // (nao so no fim) — o toque "vivo" que faz a interacao parecer boa.
-  const corTodos = useTransform(x, [0, METADE], ["#ffffff", muted]);
-  const corSelecionados = useTransform(x, [0, METADE], [muted, "#ffffff"]);
+  const corTodos = useTransform(x, [0, TERCO], ["#ffffff", muted]);
+  const corAmbosEsq = useTransform(x, [0, TERCO], [muted, "#ffffff"]);
+  const corAmbosDir = useTransform(x, [TERCO, TERCO * 2], ["#ffffff", muted]);
+  const corSelecionados = useTransform(x, [TERCO, TERCO * 2], [muted, "#ffffff"]);
 
   useEffect(() => {
     if (arrastandoRef.current) return;
-    animateValue(x, modo === "todos" ? 0 : METADE, SPRING);
+    animateValue(x, POSICAO[modo], SPRING);
   }, [modo, x]);
 
   function escolher(next: EscopoMapa) {
-    if (next === "selecionados" && !temSelecao) {
+    if (next !== "todos" && !temSelecao) {
       onAbrirSeletor();
-      animateValue(x, 0, SPRING); // nada selecionado ainda: thumb volta pra "todos"
+      animateValue(x, POSICAO.todos, SPRING); // nada selecionado ainda: thumb volta pra "todos"
       return;
     }
     if (next !== modo) onEscolher(next);
-    animateValue(x, next === "todos" ? 0 : METADE, SPRING);
+    animateValue(x, POSICAO[next], SPRING);
   }
 
   return (
@@ -70,21 +76,25 @@ export default function EscopoMapaSwitcher({
         drag="x"
         style={{
           x, position: "absolute", top: PAD, left: 0,
-          width: METADE, height: ALTURA - PAD * 2,
+          width: TERCO, height: ALTURA - PAD * 2,
           borderRadius: (ALTURA - PAD * 2) / 2,
           background: accent, cursor: "grab", zIndex: 2,
         }}
-        dragConstraints={{ left: 0, right: METADE }}
-        dragElastic={0.1}
+        dragConstraints={{ left: 0, right: TERCO * 2 }}
+        dragElastic={0.06}
         dragMomentum={false}
         whileDrag={{ cursor: "grabbing" }}
         onDragStart={() => { arrastandoRef.current = true; }}
         onDragEnd={(_, info) => {
           arrastandoRef.current = false;
-          // Lado mais proximo + um empurrao de velocidade (flick rapido tambem
-          // completa a troca mesmo sem arrastar ate a metade — feel Apple).
+          // Lado mais proximo (das 3 posicoes) + um empurrao de velocidade
+          // (flick rapido tambem completa a troca — feel Apple).
           const posComVelocidade = x.get() + info.velocity.x * 0.12;
-          escolher(posComVelocidade > METADE / 2 ? "selecionados" : "todos");
+          const alvo: EscopoMapa =
+            posComVelocidade < TERCO / 2 ? "todos"
+            : posComVelocidade < TERCO * 1.5 ? "ambos"
+            : "selecionados";
+          escolher(alvo);
         }}
       />
 
@@ -95,11 +105,26 @@ export default function EscopoMapaSwitcher({
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center",
           color: corTodos,
-          fontSize: 11, fontWeight: 700, letterSpacing: ".04em",
+          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}
       >
         TODOS
+      </motion.button>
+
+      <motion.button
+        onClick={() => escolher("ambos")}
+        style={{
+          position: "relative", zIndex: 1, flex: 1, height: "100%",
+          background: "transparent", border: "none", cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
+          fontFamily: "var(--font-geist), system-ui, sans-serif",
+        }}
+      >
+        <motion.span style={{ color: corAmbosEsq }}>◧</motion.span>
+        <span style={{ color: modo === "ambos" ? "#fff" : muted }}>AMBOS</span>
+        <motion.span style={{ color: corAmbosDir }}>◨</motion.span>
       </motion.button>
 
       <motion.button
@@ -109,7 +134,7 @@ export default function EscopoMapaSwitcher({
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
           color: corSelecionados,
-          fontSize: 11, fontWeight: 700, letterSpacing: ".04em",
+          fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}
       >

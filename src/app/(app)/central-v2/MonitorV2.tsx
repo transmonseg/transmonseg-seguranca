@@ -10,7 +10,9 @@ import { createClient as createSupabaseBrowser } from "@/lib/supabase/browser";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
-import EscopoMapaSwitcher from "./EscopoMapaSwitcher";
+import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
+import SplitDivider from "./SplitDivider";
+import { motion, AnimatePresence } from "framer-motion";
 
 const MapaLeafletV2 = dynamic(() => import("./MapaLeafletV2"), { ssr: false });
 
@@ -126,6 +128,23 @@ function tinyBtn(color: string): React.CSSProperties {
   };
 }
 
+// Rotulo "TODOS · N" / "SELECIONADOS · N" no canto de cada painel do split
+// view — sem isso os 2 mapas lado a lado ficam indistinguiveis a primeira vista.
+function rotuloPainelStyle(
+  lado: "left" | "right",
+  T: { text: string; border: string },
+  tema: "dark" | "light"
+): React.CSSProperties {
+  return {
+    position: "absolute", top: 10, [lado]: 10,
+    zIndex: 40, fontSize: 10, fontWeight: 700, letterSpacing: ".04em",
+    color: T.text, fontFamily: FONT_MONO,
+    background: tema === "dark" ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.85)",
+    backdropFilter: "blur(6px)", border: `1px solid ${T.border}`,
+    borderRadius: 6, padding: "3px 8px", pointerEvents: "none",
+  };
+}
+
 const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, settings: 900 } as const;
 
 // ── Main Component ────────────────────────────────────────────────────
@@ -210,6 +229,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [modoSelecionados, setModoSelecionados] = useState(false);
   const [seletorAberto, setSeletorAberto] = useState(false);
   const [buscaSeletor, setBuscaSeletor] = useState("");
+
+  // Split view: mapa "TODOS" e "SELECIONADOS" lado a lado, ao mesmo tempo.
+  // splitRatio = largura (0..1) do painel esquerdo ("todos"); arrastavel
+  // via SplitDivider. Igual modoSelecionados, NUNCA persiste entre sessoes
+  // (mesmo motivo: evita ficar "preso" num layout que esconde parte da frota
+  // sem o operador perceber ao reabrir a tela dias depois).
+  const [splitView, setSplitView] = useState(false);
+  const [splitRatio, setSplitRatio] = useState(0.5);
+  const mapAreaRef = useRef<HTMLDivElement>(null);
 
   // Theme + satellite (satélite padrão = true)
   const [tema, setTema] = useState<"dark" | "light">("dark");
@@ -347,6 +375,18 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const setModoSelecionadosSessao = useCallback((v: boolean) => {
     setModoSelecionados(v);
   }, []);
+
+  // Traduz a escolha de 3 estados do EscopoMapaSwitcher pros 2 booleans que
+  // ja existiam (modoSelecionados + o novo splitView) — nao substitui nada,
+  // so orquestra os dois.
+  const escolherEscopoMapa = useCallback((modo: EscopoMapa) => {
+    if (modo === "ambos") {
+      setSplitView(true);
+      return;
+    }
+    setSplitView(false);
+    setModoSelecionadosSessao(modo === "selecionados");
+  }, [setModoSelecionadosSessao]);
 
   const tocarPanico = useCallback(() => {
     try {
@@ -763,9 +803,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     return m;
   }, [grupos]);
 
-  const vmFiltrado: VeiculoMapa[] = useMemo(() => {
+  // Extraido de proposito (nao so um useMemo): o split view precisa das DUAS
+  // variantes (com e sem o filtro de selecionados) simultaneamente, pros 2
+  // paineis lado a lado — ver vmTodos/vmSelecionados abaixo.
+  const aplicarFiltrosVeiculos = useCallback((comSelecao: boolean): VeiculoMapa[] => {
     let base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
-    if (modoSelecionados && veiculosSelecionados.size > 0) {
+    if (comSelecao && veiculosSelecionados.size > 0) {
       // Veículo selecionado sempre permanece visível, mesmo fora da lista escolhida
       base = base.filter(v => veiculosSelecionados.has(v.cv) || v.cv === cvSelecionado);
     }
@@ -793,7 +836,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       lat: al.lat, lng: al.lng, local: al.local, rumo: null,
     };
     return [...base, sintetico];
-  }, [veiculosMapa, filtroComm, filtroTipos, gruposOcultos, cvParaGrupo, cvSelecionado, alertas, modoSelecionados, veiculosSelecionados]);
+  }, [veiculosMapa, filtroComm, veiculosSelecionados, gruposOcultos, cvParaGrupo, filtroTipos, alertas, cvSelecionado]);
+
+  const vmFiltrado: VeiculoMapa[] = useMemo(
+    () => aplicarFiltrosVeiculos(modoSelecionados),
+    [aplicarFiltrosVeiculos, modoSelecionados]
+  );
+  // Paineis do split view: "todos" ignora o filtro de selecionados sempre;
+  // "selecionados" aplica ele sempre — independente do modoSelecionados
+  // usado pelo mapa unico (fora do split).
+  const vmTodos: VeiculoMapa[] = useMemo(() => aplicarFiltrosVeiculos(false), [aplicarFiltrosVeiculos]);
+  const vmSelecionados: VeiculoMapa[] = useMemo(() => aplicarFiltrosVeiculos(true), [aplicarFiltrosVeiculos]);
 
   const vmAtual = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
 
@@ -908,6 +961,19 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const placaColor = vmAtual
     ? (vmAtual.ignicao && vmAtual.velocidade > 0 ? T.green : vmAtual.ignicao ? T.accent : T.muted)
     : T.text;
+
+  // Props compartilhadas pelos paineis de mapa — so `veiculosMapa` muda entre
+  // o modo unico e os 2 paineis do split view (ver MAP AREA abaixo).
+  const propsMapaComuns = {
+    cvSelecionado, mostrarRastro, mostrarParadas, rastro, paradas,
+    alvos: alvosEfetivos, alvosGlobais: alvosGlobaisMapa, bases,
+    favelas: camFavelas ? favelas : null,
+    tiroteios: camTiroteios ? tiroteios : [],
+    rouboCarga: camRouboCarga ? rouboCarga : null,
+    desvioInicio: desvioSelecionado, seguir, gatilhoFrota, flyPara, zoomCmd,
+    onVeiculoClick: handleVeiculoClick, onMapaVazioClick: stableHandleMapaVazio,
+    mapTokens, tema, satelite, trafego: camTrafego, onZoomChange: setZoomAtual,
+  };
 
   // ── Render ────────────────────────────────────────────────────────────
   return (
@@ -1232,16 +1298,21 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           <div style={{ display: "flex", padding: "5px 6px", gap: 3, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
             {(labelFoco ? (["tudo", "foco"] as const) : (["tudo"] as const)).map(v => {
               const color = v === "tudo" ? T.accent : T.red;
+              const ativo = vista === v;
               return (
-                <button key={v} onClick={() => setVistaComPersistencia(v)} style={{
-                  flex: 1, height: 27, borderRadius: 6, border: "none", cursor: "pointer",
-                  background: vista === v ? `${color}18` : "transparent",
-                  color: vista === v ? color : T.muted,
+                <motion.button key={v} whileTap={{ scale: 0.96 }} onClick={() => setVistaComPersistencia(v)} style={{
+                  position: "relative", flex: 1, height: 27, borderRadius: 6, border: "none", cursor: "pointer",
+                  background: "transparent", overflow: "hidden",
+                  color: ativo ? color : T.muted,
                   fontSize: 10, fontWeight: 700, letterSpacing: ".06em",
-                  fontFamily: FONT_SANS, transition: "all .12s",
+                  fontFamily: FONT_SANS, transition: "color .12s",
                 }}>
-                  {v === "tudo" ? "TUDO" : labelFoco}
-                </button>
+                  {ativo && (
+                    <motion.div layoutId="pillVista" transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                      style={{ position: "absolute", inset: 0, borderRadius: 6, background: `${color}18`, zIndex: 0 }} />
+                  )}
+                  <span style={{ position: "relative", zIndex: 1 }}>{v === "tudo" ? "TUDO" : labelFoco}</span>
+                </motion.button>
               );
             })}
           </div>
@@ -1395,12 +1466,18 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 Nenhum alerta ativo
               </div>
             )}
+            <AnimatePresence initial={false}>
             {alertasOrdenados.map(a => {
               const cor = a.nivel === "critico" ? T.red : T.yellow;
               const ativo = alertaAtivoId === a.id;
               const doCarro = cvSelecionado === a.cv;
               return (
-                <div key={a.id}
+                <motion.div key={a.id}
+                  layout="position"
+                  initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
+                  transition={{ type: "spring", stiffness: 500, damping: 34 }}
                   onClick={() => {
                     setAlertaAtivoId(a.id);
                     selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
@@ -1471,68 +1548,65 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                       );
                     })()}
                     <div style={{ display: "flex", gap: 4 }}>
-                      <button onMouseDown={e => { e.stopPropagation(); selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined); }}
+                      <motion.button whileTap={{ scale: 0.92 }}
+                        onMouseDown={e => { e.stopPropagation(); selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined); }}
                         className="v2-btn-tiny" style={tinyBtn(T.accent)}>
                         Focar
-                      </button>
-                      <button onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
+                      </motion.button>
+                      <motion.button whileTap={{ scale: 0.92 }}
+                        onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
                         className="v2-btn-tiny" style={tinyBtn(T.green)}>
                         Resolver
-                      </button>
-                      <button onMouseDown={e => { e.stopPropagation(); handleFalso(a.id); }}
+                      </motion.button>
+                      <motion.button whileTap={{ scale: 0.92 }}
+                        onMouseDown={e => { e.stopPropagation(); handleFalso(a.id); }}
                         className="v2-btn-tiny" style={tinyBtn(T.muted)}>
                         Falso
-                      </button>
+                      </motion.button>
                     </div>
                   </div>
-                </div>
+                </motion.div>
               );
             })}
+            </AnimatePresence>
           </div>
         </div>
 
         {/* ============================================================
             MAP AREA
         ============================================================ */}
-        <div style={{ flex: 1, position: "relative", overflow: "hidden", minWidth: 0 }}>
+        <div ref={mapAreaRef} style={{ flex: 1, position: "relative", overflow: "hidden", minWidth: 0 }}>
 
-          <MapaLeafletV2
-            veiculosMapa={vmFiltrado}
-            cvSelecionado={cvSelecionado}
-            mostrarRastro={mostrarRastro}
-            mostrarParadas={mostrarParadas}
-            rastro={rastro}
-            paradas={paradas}
-            alvos={alvosEfetivos}
-            alvosGlobais={alvosGlobaisMapa}
-            bases={bases}
-            favelas={camFavelas ? favelas : null}
-            tiroteios={camTiroteios ? tiroteios : []}
-            rouboCarga={camRouboCarga ? rouboCarga : null}
-            desvioInicio={desvioSelecionado}
-            seguir={seguir}
-            gatilhoFrota={gatilhoFrota}
-            flyPara={flyPara}
-            zoomCmd={zoomCmd}
-            onVeiculoClick={handleVeiculoClick}
-            onMapaVazioClick={stableHandleMapaVazio}
-            mapTokens={mapTokens}
-            tema={tema}
-            satelite={satelite}
-            trafego={camTrafego}
-            onZoomChange={setZoomAtual}
-          />
+          {splitView ? (
+            <div style={{ display: "flex", width: "100%", height: "100%" }}>
+              <div style={{ width: `${splitRatio * 100}%`, height: "100%", position: "relative", overflow: "hidden", flexShrink: 0 }}>
+                <MapaLeafletV2 veiculosMapa={vmTodos} {...propsMapaComuns} />
+                <div style={rotuloPainelStyle("left", T, tema)}>TODOS · {vmTodos.length}</div>
+              </div>
 
-          {/* Alternador TODOS x SELECIONADOS — topo central do mapa. Clique
-              direto num rotulo OU arraste o thumb (estilo iPad Split View).
+              <SplitDivider containerRef={mapAreaRef} ratio={splitRatio} onChange={setSplitRatio} accent={T.accent} />
+
+              <div style={{ width: `${(1 - splitRatio) * 100}%`, height: "100%", position: "relative", overflow: "hidden", flexShrink: 0 }}>
+                <MapaLeafletV2 veiculosMapa={vmSelecionados} {...propsMapaComuns} />
+                <div style={rotuloPainelStyle("right", T, tema)}>SELECIONADOS · {vmSelecionados.length}</div>
+              </div>
+            </div>
+          ) : (
+            <MapaLeafletV2 veiculosMapa={vmFiltrado} {...propsMapaComuns} />
+          )}
+
+          {/* Alternador TODOS / AMBOS / SELECIONADOS — topo central do mapa.
+              Clique direto num rotulo OU arraste o thumb pelos 3 estados
+              (estilo iPad Split View: extremos = tela cheia de um lado,
+              meio = os dois lado a lado, divisor arrastavel via SplitDivider).
               Reaproveita modoSelecionados/veiculosSelecionados que ja existiam
               (antes so acessivel via checkbox enterrado em Configurações). */}
           <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: Z.badge }}>
             <EscopoMapaSwitcher
-              modo={modoSelecionados ? "selecionados" : "todos"}
+              modo={splitView ? "ambos" : (modoSelecionados ? "selecionados" : "todos")}
               totalSelecionados={veiculosSelecionados.size}
               temSelecao={veiculosSelecionados.size > 0}
-              onEscolher={(m) => setModoSelecionadosSessao(m === "selecionados")}
+              onEscolher={escolherEscopoMapa}
               onAbrirSeletor={() => setSeletorAberto(true)}
               tema={tema}
               accent={T.accent}
@@ -1672,14 +1746,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {/* ================================================================
               BOTTOM DRAWER
           ================================================================ */}
-          <div style={{
-            position: "absolute", bottom: 0, left: 0, right: 0, zIndex: Z.drawer,
-            transform: cvSelecionado ? "translateY(0)" : "translateY(108%)",
-            transition: "transform .22s cubic-bezier(.4,0,.2,1)",
-            background: T.drawerBg, backdropFilter: "blur(16px)",
-            borderTop: `2px solid ${T.accent}22`,
-            boxShadow: tema === "dark" ? "0 -10px 40px rgba(0,0,0,0.65)" : "0 -8px 32px rgba(0,0,0,0.10)",
-          }}>
+          <motion.div
+            animate={{ y: cvSelecionado ? "0%" : "108%" }}
+            transition={{ type: "spring", stiffness: 420, damping: 38 }}
+            style={{
+              position: "absolute", bottom: 0, left: 0, right: 0, zIndex: Z.drawer,
+              background: T.drawerBg, backdropFilter: "blur(16px)",
+              borderTop: `2px solid ${T.accent}22`,
+              boxShadow: tema === "dark" ? "0 -10px 40px rgba(0,0,0,0.65)" : "0 -8px 32px rgba(0,0,0,0.10)",
+            }}>
 
             {/* Header */}
             <div style={{
@@ -1900,7 +1975,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </div>
             )}
 
-          </div>
+          </motion.div>
 
         </div>{/* MAP AREA end */}
       </div>{/* MAIN BODY end */}
