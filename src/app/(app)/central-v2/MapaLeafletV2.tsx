@@ -358,6 +358,37 @@ function criarIconeAlvo(situacao: number, proximo: boolean, qtd: number = 1): go
   };
 }
 
+// Marcador de parada no estilo hexágono "STOP" (pedido do cliente 08/07,
+// referência ao ícone de parada do próprio Unitrac). Hexágono flat-top (topo
+// e base retos, vértices nas laterais) — sobra espaço horizontal pro texto.
+function hexagonoPontos(cx: number, cy: number, r: number): string {
+  const pontos: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const angulo = (Math.PI / 180) * (60 * i);
+    pontos.push(`${(cx + r * Math.cos(angulo)).toFixed(2)},${(cy + r * Math.sin(angulo)).toFixed(2)}`);
+  }
+  return pontos.join(" ");
+}
+
+function criarIconeParada(grande: boolean): google.maps.Icon {
+  const cor = grande ? "#ef4444" : "#f87171";
+  const w = grande ? 26 : 20;
+  const h = grande ? 24 : 18;
+  const cx = w / 2;
+  const cy = h / 2;
+  const r = grande ? 12 : 9;
+  const fonte = grande ? 6.5 : 5.5;
+  const svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">
+    <polygon points="${hexagonoPontos(cx, cy, r)}" fill="${cor}" stroke="white" stroke-width="1.3"/>
+    <text x="${cx}" y="${cy + fonte / 3}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fonte}" font-weight="800" fill="white" letter-spacing="0.2">STOP</text>
+  </svg>`;
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new window.google.maps.Size(w, h),
+    anchor: new window.google.maps.Point(cx, cy),
+  };
+}
+
 // Chave de agrupamento — mesmo ponto/endereco (varias NFs entregues juntas).
 function chaveDoPonto(a: PontoEntrega): string {
   return a.pontoCodigo != null ? `pc:${a.pontoCodigo}` : `xy:${a.lat.toFixed(5)},${a.lng.toFixed(5)}`;
@@ -699,28 +730,17 @@ export default function MapaLeafletV2({
         />
       )}
 
-      {/* ── Paradas de tempo (SVG dot pixel-size, igual ao CircleMarker do V1) ──
-          Pedido do cliente (06/07): vermelho em vez de roxo, um pouco menor.
-          Nao mexe nos marcadores de ponto de entrega (criarIconeAlvo) — esses
-          continuam com a paleta pendente/entregue/outro de sempre. */}
+      {/* ── Paradas de tempo (hexágono "STOP", ref. ícone de parada do Unitrac) ──
+          Pedido do cliente (08/07). Nao mexe nos marcadores de ponto de
+          entrega (criarIconeAlvo) — esses continuam com a paleta
+          pendente/entregue/outro de sempre. */}
       {cvSelecionado && mostrarParadas && paradas.map(p => {
         const grande = p.tempoMin >= 30;
-        const cor    = grande ? "#ef4444" : "#f87171";
-        const fill   = grande ? "#ef4444" : "#fecaca";
-        const size   = grande ? 15 : 10;
-        const r      = size / 2;
-        const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="${r}" cy="${r}" r="${r - 1}" fill="${fill}" stroke="${cor}" stroke-width="2" opacity="0.85"/>
-        </svg>`;
         return (
           <Marker
             key={`${p.lat.toFixed(5)},${p.lng.toFixed(5)},${p.data}`}
             position={{ lat: p.lat, lng: p.lng }}
-            icon={{
-              url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-              scaledSize: new window.google.maps.Size(size, size),
-              anchor: new window.google.maps.Point(r, r),
-            }}
+            icon={criarIconeParada(grande)}
             title={`Parada: ${formatarDuracaoParada(p.tempoMin)}`}
             clickable={true}
             zIndex={8}
