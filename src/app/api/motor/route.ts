@@ -34,6 +34,7 @@ import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarPerfilRota, desvioPadraoDe } from "@/lib/rotaperfil";
 import type { PerfilRotaEstado } from "@/lib/rotaperfil";
+import { candidatoEntregaProximidade } from "@/lib/entrega-proximidade";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -583,6 +584,15 @@ export async function POST(request: Request) {
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
     const celulasCiclo: { cliente_id: string; celula: string }[] = [];
 
+    // Candidatos a entrega por proximidade detectados neste ciclo (ver
+    // lib/entrega-proximidade.ts), insert em batch ao final, mesmo padrao
+    // de celulasCiclo.
+    const candidatosEntregaCiclo: {
+      cliente_id: string; veiculo_id: string; alvo_codigo: number;
+      ponto_codigo: number | null; lat: number; lng: number;
+      distancia_m: number; parado_min: number;
+    }[] = [];
+
     // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
     // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
     // pool.connect()+query POR VEICULO dentro do loop. Achado 07/07/2026
@@ -871,6 +881,29 @@ export async function POST(request: Request) {
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
           const temPendentes = pendentes.length > 0;
+
+          // Candidato a entrega por proximidade (compensa bug de perimetro
+          // do Unitrac), so registra, nunca confirma sozinho (ver
+          // lib/entrega-proximidade.ts).
+          if (pos.fresco && pos.velocidade === 0 && paradoMin >= 5) {
+            const candidato = candidatoEntregaProximidade(
+              { lat: pos.lat, lng: pos.lng },
+              paradoMin,
+              pendentes
+            );
+            if (candidato && candidato.codigo != null) {
+              candidatosEntregaCiclo.push({
+                cliente_id,
+                veiculo_id,
+                alvo_codigo: candidato.codigo,
+                ponto_codigo: candidato.pontoCodigo,
+                lat: pos.lat,
+                lng: pos.lng,
+                distancia_m: Math.round(haversineM(pos.lat, pos.lng, candidato.lat, candidato.lng)),
+                parado_min: paradoMin,
+              });
+            }
+          }
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))
             .filter((c): c is { lat: number; lng: number } => c !== null);
@@ -1442,6 +1475,40 @@ export async function POST(request: Request) {
         erros.push(msg);
       } finally {
         pgPosicoes.release();
+      }
+    }
+
+    // Candidatos a entrega por proximidade: insert, ignora se ja existe
+    // (unique cliente_id+alvo_codigo: so vira candidato 1 vez).
+    if (candidatosEntregaCiclo.length > 0) {
+      const pgEntregas = await pool.connect();
+      try {
+        await pgEntregas.query(
+          `INSERT INTO entregas_confirmacao_manual
+             (cliente_id, veiculo_id, alvo_codigo, ponto_codigo, lat, lng, distancia_m, parado_min)
+           SELECT c.cid::uuid, c.vid::uuid, c.ac::bigint, c.pc::bigint, c.lat::float8, c.lng::float8, c.dm::integer, c.pm::integer
+           FROM unnest(
+             $1::uuid[], $2::uuid[], $3::bigint[], $4::bigint[],
+             $5::float8[], $6::float8[], $7::integer[], $8::integer[]
+           ) AS c(cid, vid, ac, pc, lat, lng, dm, pm)
+           ON CONFLICT (cliente_id, alvo_codigo) DO NOTHING`,
+          [
+            candidatosEntregaCiclo.map((c) => c.cliente_id),
+            candidatosEntregaCiclo.map((c) => c.veiculo_id),
+            candidatosEntregaCiclo.map((c) => c.alvo_codigo),
+            candidatosEntregaCiclo.map((c) => c.ponto_codigo),
+            candidatosEntregaCiclo.map((c) => c.lat),
+            candidatosEntregaCiclo.map((c) => c.lng),
+            candidatosEntregaCiclo.map((c) => c.distancia_m),
+            candidatosEntregaCiclo.map((c) => c.parado_min),
+          ]
+        );
+      } catch (errEntregas) {
+        const msg = `Erro ao gravar candidatos de entrega: ${String(errEntregas)}`;
+        console.error(msg);
+        erros.push(msg);
+      } finally {
+        pgEntregas.release();
       }
     }
 
