@@ -147,6 +147,10 @@ function rotuloPainelStyle(
 
 const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, settings: 900 } as const;
 
+// Chips visiveis por padrao na faixa de desvios do topo do mapa antes de
+// colapsar num contador "+N" (poluicao visual quando ha muitos simultaneos).
+const MAX_CHIPS_DESVIO = 6;
+
 // ── Main Component ────────────────────────────────────────────────────
 export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais }: Props) {
   const [alertas, setAlertas] = useState<AlertaEnriquecido[]>(alertasIniciais);
@@ -208,6 +212,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [busca, setBusca] = useState("");
   const [comboAberto, setComboAberto] = useState(false);
   const [novosIdsArr, setNovosIdsArr] = useState<string[]>([]);
+  const [mostrarTodosDesvios, setMostrarTodosDesvios] = useState(false);
   const [confirmarResolver, setConfirmarResolver] = useState(false);
   const [resolvendoTodos, startResolver] = useTransition();
 
@@ -1633,7 +1638,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               achado ao vivo 07/07: a faixa aparecia pra QUALQUER cliente com
               desvio ativo, mesmo a Benassi (que so deveria ser notificada por
               parada_cliente >1h). A faixa pulsante e uma forma de notificacao
-              visual tanto quanto o apito - tem que respeitar o mesmo mapa. */}
+              visual tanto quanto o apito - tem que respeitar o mesmo mapa.
+              Limite de chips visiveis (poluicao visual quando ha muitos
+              desvios simultaneos): mostra os mais recentes + contador "+N"
+              que expande a lista inteira sob demanda. Nunca ESCONDE um
+              desvio ativo do sistema, so limita quantos chips aparecem de
+              uma vez na faixa. */}
           {tiposFoco.includes("desvio") && desviosAtivos.length > 0 && (
             <div style={{
               // top: 56 (nao 12) pra nao empilhar em cima do EscopoMapaSwitcher acima.
@@ -1641,7 +1651,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               zIndex: Z.toasts, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6,
               maxWidth: "calc(100% - 24px)", maxHeight: 150, overflowY: "auto", padding: 2,
             }}>
-              {desviosAtivos.map(a => {
+              {(mostrarTodosDesvios ? desviosAtivos : desviosAtivos.slice(0, MAX_CHIPS_DESVIO)).map(a => {
                 const cor = a.nivel === "critico" ? T.red : T.yellow;
                 const ativo = alertaAtivoId === a.id;
                 return (
@@ -1675,6 +1685,40 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   </button>
                 );
               })}
+              {!mostrarTodosDesvios && desviosAtivos.length > MAX_CHIPS_DESVIO && (
+                <button
+                  onClick={() => setMostrarTodosDesvios(true)}
+                  style={{
+                    ...BASE_BTN, flexShrink: 0,
+                    padding: "7px 13px", borderRadius: 8,
+                    background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
+                    backdropFilter: "blur(6px)",
+                    border: `1px solid ${T.border}`,
+                    boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+                    fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
+                  }}
+                  title="Mostrar todos os desvios ativos"
+                >
+                  +{desviosAtivos.length - MAX_CHIPS_DESVIO}
+                </button>
+              )}
+              {mostrarTodosDesvios && desviosAtivos.length > MAX_CHIPS_DESVIO && (
+                <button
+                  onClick={() => setMostrarTodosDesvios(false)}
+                  style={{
+                    ...BASE_BTN, flexShrink: 0,
+                    padding: "7px 13px", borderRadius: 8,
+                    background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
+                    backdropFilter: "blur(6px)",
+                    border: `1px solid ${T.border}`,
+                    boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+                    fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
+                  }}
+                  title="Recolher"
+                >
+                  ver menos
+                </button>
+              )}
             </div>
           )}
 
