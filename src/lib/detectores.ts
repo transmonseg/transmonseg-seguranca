@@ -489,7 +489,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras, fora de via conhecida da frota (+${kmAcum}km)`,
+      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, fora de via conhecida da frota`,
       score: 80,
     };
   }
@@ -504,7 +504,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras, em área de risco elevado (+${kmAcum}km)`,
+      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, em área de risco elevado`,
       score: 80,
     };
   }
@@ -515,7 +515,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
-      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (+${kmAcum}km)`,
+      motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
       score: 68,
     };
   }
@@ -523,7 +523,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   return {
     nivel: "critico",
     tipo: "desvio",
-    motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras (+${kmAcum}km)`,
+    motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
     score: 45,
   };
 }
