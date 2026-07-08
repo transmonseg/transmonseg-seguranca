@@ -102,6 +102,19 @@ function criaPgPool() {
   });
 }
 
+// Trava de execução única do ciclo do motor. O cron dispara o POST a cada 30s
+// via pg_net com timeout de 5000ms (default) — pg_net desiste de esperar a
+// resposta bem antes do ciclo terminar (maxDuration=60), mas a execução na
+// Vercel continua rodando. Sem essa trava, um ciclo lento (Unitrac + Google
+// Geocode + OSRM + Fogo Cruzado) ainda em andamento aos 30s colide com o
+// próximo disparo: as duas execuções leem o mesmo snapshot de alertas abertos
+// e de desvio_streak/desvio_inicio, cada uma insere seu próprio alerta de
+// desvio (duplicado, "desde" a poucos ms de diferença) e o upsert em lote de
+// posicoes_atuais no fim de cada execução se sobrescreve (last-write-wins),
+// corrompendo o streak e disparando o ciclo criar/resolver repetidas vezes por
+// veículo (visto em produção: até 34 alertas de desvio/dia pro mesmo veículo).
+const MOTOR_LOCK_KEY = 91827364;
+
 // ─── buscarPosicoes com timeout por AbortController ───────────────────────
 async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
   const controller = new AbortController();
@@ -304,6 +317,22 @@ export async function POST(request: Request) {
 
   const supabase = createAdminClient();
   const pool = criaPgPool();
+
+  // 2. Trava: só um ciclo do motor roda por vez (ver MOTOR_LOCK_KEY acima).
+  const lockClient = await pool.connect();
+  const { rows: lockRows } = await lockClient.query<{ ok: boolean }>(
+    "select pg_try_advisory_lock($1) as ok",
+    [MOTOR_LOCK_KEY]
+  );
+  if (!lockRows[0].ok) {
+    lockClient.release();
+    await pool.end();
+    return Response.json({
+      pulado: true,
+      motivo: "ciclo anterior do motor ainda em execucao",
+    });
+  }
+
   const agora = new Date();
   const erros: string[] = [];
   const emOperacao = emHorarioOperacao(agora);
@@ -1671,6 +1700,8 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
+    await lockClient.query("select pg_advisory_unlock($1)", [MOTOR_LOCK_KEY]).catch(() => {});
+    lockClient.release();
     await pool.end();
   }
 }
