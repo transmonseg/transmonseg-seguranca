@@ -20,10 +20,14 @@ const GAP_MINIMO_M = 400;
 // do rastro sem corrigir (achado real 08/07: veiculo com 24h de rastro tinha
 // 122 saltos grandes — só os 40 primeiros por ordem cronológica eram
 // corrigidos, os outros ~80 ficavam retos, exatamente os "tiros" cortando
-// morro reportados). Medido ao vivo: 122 chamadas reais (concorrência 6)
-// levam ~5,6s, bem dentro do tempo que a tela já mostra "carregando..." —
-// o teto nunca foi sobre latência, era baixo demais por precaução excessiva.
-const MAX_CHAMADAS = 200;
+// morro reportados). Depois subiu pra 200 -- ainda insuficiente pra janela
+// de 48h (achado real 09/07: TTM-2G01 tinha 314 saltos em 48h, 464 em 96h,
+// contra 0 falhas de rede na amostra testada). Rede/OSRM nunca foi o
+// gargalo -- 200 chamadas reais (concorrência 6) levam ~5,6s, entao 350
+// ainda cabe folgado no maxDuration=30 da rota. Mesmo assim, ver
+// priorizarIndices() abaixo: se algum veiculo/janela ainda estourar o
+// teto, corrige os saltos mais RECENTES primeiro, nao os mais antigos.
+const MAX_CHAMADAS = 350;
 // Quantas chamadas em voo ao mesmo tempo — rapido, mas educado com o
 // servidor publico (nao e dimensionado pra rajada alta).
 const CONCORRENCIA = 6;
@@ -84,6 +88,17 @@ export function indicesDeSaltosGrandes(pontos: Ponto[]): number[] {
   return indices;
 }
 
+// Quando os saltos grandes excedem o teto de chamadas, prioriza os MAIS
+// RECENTES (indices maiores), nao os cronologicamente primeiros. Achado real
+// (09/07/2026): em janelas longas (48h+) o teto estourava (ex.: TTM-2G01,
+// 314 saltos contra teto de 200) e o slice cronologico simples deixava
+// exatamente o trecho MAIS RECENTE do rastro sem corrigir -- justo o que o
+// operador olha ao investigar um desvio recem-disparado.
+export function priorizarIndices(indices: number[], max: number): number[] {
+  if (max <= 0) return [];
+  return [...indices].sort((a, b) => b - a).slice(0, max).sort((a, b) => a - b);
+}
+
 // Ajusta o rastro: para cada salto grande entre pontos consecutivos, busca o
 // caminho real na rua e o insere no lugar da reta. Processa em lotes com
 // concorrência limitada; teto de chamadas evita travar em trajetos muito
@@ -92,7 +107,7 @@ export function indicesDeSaltosGrandes(pontos: Ponto[]): number[] {
 export async function ajustarRastroParaRuas(pontos: Ponto[]): Promise<Ponto[]> {
   if (pontos.length < 2) return pontos;
 
-  const indices = indicesDeSaltosGrandes(pontos).slice(0, MAX_CHAMADAS);
+  const indices = priorizarIndices(indicesDeSaltosGrandes(pontos), MAX_CHAMADAS);
   if (indices.length === 0) return pontos;
 
   const caminhos = new Map<number, Ponto[]>();

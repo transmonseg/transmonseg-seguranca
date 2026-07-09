@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { indicesDeSaltosGrandes, ajustarRastroParaRuas } from "./rastro-matching";
+import { indicesDeSaltosGrandes, ajustarRastroParaRuas, priorizarIndices } from "./rastro-matching";
 
 function mockOsrmRoute(distance: number) {
   return {
@@ -43,6 +43,22 @@ describe("indicesDeSaltosGrandes", () => {
   it("lista curta (< 2 pontos) nao gera indices", () => {
     expect(indicesDeSaltosGrandes([{ lat: -22.9, lng: -43.2 }])).toEqual([]);
     expect(indicesDeSaltosGrandes([])).toEqual([]);
+  });
+});
+
+describe("priorizarIndices (prioriza saltos recentes quando excede o teto)", () => {
+  it("dentro do teto: retorna todos, sem descartar nenhum", () => {
+    expect(priorizarIndices([0, 5, 10], 5)).toEqual([0, 5, 10]);
+  });
+
+  it("acima do teto: mantem os MAIS RECENTES (indices maiores), nao os cronologicamente primeiros -- achado real 09/07: janela de 48h com 314 saltos e teto de 200 deixava exatamente o trecho mais recente sem corrigir", () => {
+    const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    expect(priorizarIndices(indices, 4)).toEqual([6, 7, 8, 9]);
+  });
+
+  it("lista vazia ou teto zero nao quebra", () => {
+    expect(priorizarIndices([], 5)).toEqual([]);
+    expect(priorizarIndices([1, 2, 3], 0)).toEqual([]);
   });
 });
 

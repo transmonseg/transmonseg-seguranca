@@ -4,9 +4,10 @@ import { ajustarRastroParaRuas } from "@/lib/rastro-matching";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
-// MAX_CHAMADAS subiu de 40 pra 200 (ver rastro-matching.ts) — margem de
-// segurança pra janelas de 96h bem esparsas, medido em ~5,6s pra 122
-// chamadas reais; o default de maxDuration da Vercel seria curto demais.
+// MAX_CHAMADAS subiu de 40 pra 200, depois pra 350 (ver rastro-matching.ts)
+// — margem de segurança pra janelas de 48h bem esparsas (achado real 09/07:
+// até 314 saltos), medido em ~5,6s pra 200 chamadas reais; o default de
+// maxDuration da Vercel seria curto demais.
 export const maxDuration = 30;
 
 // Cache EM MEMORIA (nao e tabela no banco — nao pesa o Supabase, nao precisa
