@@ -263,24 +263,23 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
   });
 });
 
-describe("foraTapeteStreak — Camada 3, fecha o ponto cego (aproxima do destino mas por via nunca percorrida)", () => {
+describe("foraTapeteStreak — Camada 3, DESATIVADA em 09/07/2026 (ver CAMADA3_TAPETE_ATIVA)", () => {
   // Regressao do caso real TUK-0H45 (08/07/2026): veiculo a ~4,2km de uma
   // entrega pendente real, indo na direcao dela (Camada 1 nao dispara), mas
   // chegando por uma via que a frota nunca usou antes — o antigo calculo por
   // linha reta base->destino degenerava pra "distancia crua ate a entrega"
   // (base ficava a 45km, ver design doc) e disparava em toda aproximacao
-  // fora do eixo perfeito. A Camada 3 nova usa o tapete real em vez da reta.
-  it("aproximando do destino mas fora do tapete por 2 leituras seguidas: dispara score 65 SEM esperar o streak comportamental", () => {
+  // fora do eixo perfeito. A Camada 3 (tapete) resolveria isso, mas foi
+  // DESATIVADA no mesmo dia: virou metade do ruido de desvio em rotas rurais
+  // com tapete pouco coberto (TTM-7C14/TTM-2G01/TUS-1A47, achado ao vivo).
+  it("mesmo fora do tapete por varias leituras seguidas: NAO dispara enquanto CAMADA3_TAPETE_ATIVA=false", () => {
     const fracoes = [0, 0.3, 0.6];
     const ciclos: Ciclo[] = fracoes.map((f, i) => ({
       ...aproximarDe(MANGUINHOS, REALENGO, f),
       foraTapeteStreak: i,
     }));
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados[0]).toBeNull(); // streak 0: ainda nao acumulou
-    expect(resultados[1]).toBeNull(); // streak 1: abaixo do minimo (2)
-    expect(resultados[2]?.score).toBe(65); // streak 2: dispara na hora, nao espera streak comportamental
-    expect(resultados[2]?.motivo).toContain("fora de via conhecida há 2 leituras");
+    expect(resultados.every(r => r === null)).toBe(true);
   });
 
   it("aproximando e DENTRO do tapete (foraTapeteStreak sempre 0): nao dispara — caso real TUK-0H45/TTM-2G01 corrigido", () => {

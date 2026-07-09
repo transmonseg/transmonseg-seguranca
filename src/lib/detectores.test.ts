@@ -365,8 +365,8 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
   });
 });
 
-describe("detectarDesvio + Camada 3 (fora do tapete, ponto cego do afastamento)", () => {
-  // Aproximando (nao afastando de tudo) -- so assim a Camada 3 entra em jogo.
+describe("detectarDesvio + Camada 3 (fora do tapete, DESATIVADA em 09/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
+  // Aproximando (nao afastando de tudo) -- so assim a Camada 3 entraria em jogo.
   const baseAproximando = {
     distDestinosM: [4000],
     distDestinosAnteriorM: [4500],
@@ -381,13 +381,12 @@ describe("detectarDesvio + Camada 3 (fora do tapete, ponto cego do afastamento)"
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
 
-  it("aproximando de destino real MAS fora do tapete por 2 leituras: dispara (caso real TUK-0H45)", () => {
-    const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 2 });
-    expect(a?.nivel).toBe("critico");
-    expect(a?.motivo).toContain("fora de via conhecida há 2 leituras");
+  it("mesmo fora do tapete por varias leituras: NAO dispara enquanto CAMADA3_TAPETE_ATIVA=false", () => {
+    const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 8 });
+    expect(a).toBeNull();
   });
 
-  it("aproximando e DENTRO do tapete (streak 0): nao dispara -- caso real TUK-0H45/TTM-2G01 corrigido", () => {
+  it("aproximando e DENTRO do tapete (streak 0): nao dispara", () => {
     const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 0 });
     expect(a).toBeNull();
   });

@@ -306,6 +306,16 @@ const AFASTAMENTO_MARGEM_M = 50;
 // fica dezenas de km distante e o veículo chega por um ângulo fora da reta
 // base->destino, disparando em aproximação 100% normal.
 export const FORA_TAPETE_STREAK_MIN = 2;
+// DESATIVADA em 09/07/2026 (achado ao vivo, mesmo dia do deploy): virou
+// quase metade de todo o ruído de desvio (74 Camada 1 vs 75 Camada 3 em 6h),
+// disparando e resolvendo a cada 2min nas MESMAS placas (TTM-7C14, TTM-2G01,
+// TUS-1A47) que rodam rotas rurais/serra (Nova Friburgo/Teresópolis/
+// Saquarema) — o tapete dessas regiões ainda não tem cobertura suficiente,
+// então qualquer variação legítima de caminho (trânsito, GPS, entrega nova)
+// virava "via nunca percorrida". motor continua computando e persistindo
+// foraTapeteStreak normalmente (dado útil pra redesenhar o limiar com calma,
+// ex.: exigir cobertura mínima por REGIÃO, não só por cliente).
+const CAMADA3_TAPETE_ATIVA = false;
 
 // A Unitrac NÃO fornece rota planejada nem ordem confiável de entregas.
 // Desvio aqui é comportamento: o veículo se afastando de TODOS os destinos
@@ -465,7 +475,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // entrega). ctx.foraTapeteStreak conta ciclos consecutivos assim — o
   // motor só incrementa quando afastandoDeTudo=false E dentroTapete=false
   // (cobertura mínima confirmada, ver TAPETE_MIN_CELULAS no motor).
-  if (!afastandoDeTudo && ctx.foraTapeteStreak >= FORA_TAPETE_STREAK_MIN) {
+  if (CAMADA3_TAPETE_ATIVA && !afastandoDeTudo && ctx.foraTapeteStreak >= FORA_TAPETE_STREAK_MIN) {
     return {
       nivel: "critico",
       tipo: "desvio",
