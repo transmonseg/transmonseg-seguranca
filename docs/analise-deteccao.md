@@ -5,6 +5,11 @@ rota, parada indevida e sinais correlatos, aplicado à nossa realidade (dados da
 Unitrac, frota Nutry/Benassi, Rio de Janeiro). Não é teoria solta: cada método
 vem marcado com o que já está no ar, o que falta e onde dá mais retorno.
 
+**Atualizado em 09/07/2026** após um dia de investigação ao vivo (grupo de
+WhatsApp da operação + dados reais do banco) que achou 3 problemas concretos
+na identificação do desvio. Ver seção 7 — é a parte mais importante pra ler
+agora, o resto do documento é contexto histórico.
+
 ---
 
 ## 0. O problema central (a base de tudo)
@@ -28,177 +33,311 @@ Três pilares atravessam o documento inteiro:
 2. **Persistência:** nada dispara em 1 ciclo. Sinal verdadeiro se sustenta por N leituras (mata o ruído de GPS).
 3. **Contexto perdoa:** posto, restaurante, trânsito, parada recorrente, vários veículos parados juntos. O contexto SUBTRAI suspeita.
 
+Um quarto pilar, que o achado de hoje (seção 7.2) deixou claro que faltava:
+4. **Disparar e resolver têm que usar a MESMA régua.** Se "aproximar de qualquer
+   destino cancela a suspeita" é o critério pra não disparar, tem que ser
+   também o critério pra encerrar o que já disparou — senão o alerta fica
+   "ativo" muito depois do comportamento suspeito ter acabado.
+
 ---
 
-## 1. DESVIO DE ROTA
+## 1. DESVIO DE ROTA — como funciona HOJE (real, não o histórico)
 
 ### 1.1 Definição operacional
 O veículo está indo (ou sendo levado) para onde não deveria. Sem rota traçada,
-"deveria" = em direção a um dos pontos pendentes, ou dentro do corredor habitual
-daquele trajeto.
+"deveria" = em direção a um dos pontos pendentes ou a uma base.
 
-### 1.2 Métodos, do mais simples ao mais robusto
+### 1.2 As camadas implementadas
 
-**A. Afastamento do alvo (IMPLEMENTADO hoje).**
-Distância ao ponto pendente mais próximo cresce desde o ciclo anterior + rumo do
-movimento oposto ao alvo + faixa local (2,5km a 25km).
-- Força: funciona sem rota traçada, barato, roda a cada minuto.
-- Fraqueza: usa linha reta (não a estrada real); é um proxy, não a rota.
+**Camada 1 — Comportamental (afastamento de TODOS os destinos), IMPLEMENTADA.**
+O veículo se afasta de TODOS os destinos legítimos (alvos pendentes + bases) em
+vez de progredir rumo a pelo menos um deles — aproximar de QUALQUER um cancela a
+suspeita na hora. Streak mínimo de 2 leituras (~2min) pra disparar. Faixa local
+2,5-25km (acima disso é deslocamento interurbano legítimo, a frota atende o
+estado todo). Escalona: score 45 (streak 2) → 68 (streak 4) → 80 (fora do
+tapete OU área de risco elevado).
+- Força: funciona sem rota traçada, barato, roda a cada 30s.
+- Fraqueza (achado 09/07, ver 7.2): o critério de RESOLVER o alerta não é o
+  mesmo de disparar — ver mais abaixo.
 
-**B. Corredor de rota real (OSRM / Google Routes) — PRÓXIMO PASSO de maior precisão.**
+**Camada 2 — Tapete histórico (`corredor_celulas`), IMPLEMENTADA.**
+Grade de células ~100m por cliente, populada todo ciclo do motor (interpolação
+a cada ~80m). Alimenta: (a) o score de risco de área quando "fora de via
+conhecida", (b) o piso de cobertura mínima (`TAPETE_MIN_CELULAS`) que evita
+cold-start (tapete vazio parecendo suspeito). Em produção: 150k+ células
+acumuladas.
+
+**Camada 3 — "Fora do tapete mesmo aproximando", DESATIVADA em 09/07/2026.**
+Tentativa de fechar o ponto cego "aproximando de um destino mas por caminho
+nunca percorrido antes" — substituiu um cálculo por linha reta base→destino que
+tinha o mesmo problema (ver 7.1 pra história completa). Motivo real da
+desativação: em rotas rurais/serra (Nova Friburgo, Teresópolis, Saquarema) o
+tapete não tem cobertura suficiente, e qualquer variação legítima de caminho
+(trânsito, GPS, entrega nova) virava "via nunca percorrida" — virou metade do
+ruído de desvio do dia. `CAMADA3_TAPETE_ATIVA = false` em `detectores.ts`; o
+motor continua computando e persistindo `fora_tapete_streak` (dado útil pra
+redesenhar com calma — ver 7.1 pra ideias de correção).
+
+**Score de risco de área (`calcularRiscoArea`), IMPLEMENTADA.**
+Favela + tiroteio recente (Fogo Cruzado, <1,5km) + roubo de carga do CISP +
+corredor rodoviário de risco + fator horário multiplicativo — nunca dispara
+sozinho, só acelera a escalada do gatilho comportamental (Camada 1).
+
+### 1.3 O que NÃO está implementado (próximos passos de maior precisão)
+
+**Corredor de rota real (OSRM / Google Routes).**
 Traça a rota base→alvos pendentes na estrada, cria um "tubo" (buffer de 300 a
-500m) em volta. Veículo fora do tubo = desvio, independente da distância ao alvo.
-- É o padrão da indústria (gerenciadoras usam corredor + geocerca).
-- Custo: calcular rota gasta cota de API. Mitigação: calcular a rota 1x por viagem
-  (não a cada ping); a comparação posição×tubo é cálculo local de graça.
-- Pré-requisito: saber a ORDEM dos alvos (a Unitrac dá `alvoordem`).
+500m) em volta. Veículo fora do tubo = desvio, independente da distância ao
+alvo. É o padrão da indústria (gerenciadoras usam corredor + geocerca).
+Pré-requisito: saber a ORDEM dos alvos (a Unitrac dá `alvoordem`, não usado
+ainda). Custo: calcular rota 1x por viagem (não a cada ping).
 
-**C. Map matching / snap-to-road (HMM, ex OSRM `/match`).**
-Cola a posição na via mais provável. Resolve o falso desvio causado por GPS ruim
-em área urbana (prédio, viaduto) e permite comparar a SEQUÊNCIA de vias com a
-esperada. Camada de limpeza antes de qualquer comparação geográfica.
+**Map matching / snap-to-road pro RASTRO (não pro desvio) — parcialmente feito.**
+`rastro-matching.ts` já cola saltos grandes de GPS na rua real via OSRM
+`/route` (não `/match` — teto de tamanho do servidor público inviabiliza
+`/match` pra trace de centenas de pontos). Corrigido hoje (ver 7.3): prioriza
+saltos mais recentes quando excede o teto de chamadas, e o teto subiu de 200
+pra 350.
 
-**D. Corredor histórico (tubo aprendido) — melhor que a rota teórica.**
-Em vez da rota que o roteirizador acha "ótima", usar o caminho que aquela placa
-REALMENTE faz nesse trajeto (alpha-shape / casco côncavo dos rastros históricos).
-Captura o jeito real de dirigir do motorista. Fora do tubo histórico = anomalia.
-Depende de acumular histórico (semanas).
-
-**E. Heading / rumo.**
-Mudança brusca de direção, retorno (U-turn), sentido oposto sustentado ao destino.
-Já usamos rumo como corroboração no método A; pode virar sinal próprio.
-
-**F. Along-track progress travado.**
-Ao longo de uma rota, o veículo deveria PROGREDIR (avançar na polilinha). Se o
-progresso para mas ele continua se movendo lateralmente, é desvio mesmo sem se
-afastar muito em linha reta. Requer o corredor (B).
-
-**G. Saída de perímetro / cruzamento de fronteira.**
-Sair de zona urbana para rodovia inesperada, ou cruzar a borda de um corredor
-conhecido. Geocerca de corredor.
-
-### 1.3 Nossa receita de evolução
-- **Hoje:** gatilho local (afastando + rumo oposto + faixa 2,5 a 25km), persistência via "fora de rota" que mantém o alerta sem piscar.
-- **Próximo nível:** corredor OSRM (tubo 300 a 500m). Mais preciso, menos dependente de distância ao alvo. Resolve os casos em que o veículo desvia mas continua "tecnicamente perto" de um ponto.
-- **Maduro:** corredor histórico + along-track + score contextual.
+**Along-track progress travado.**
+Ao longo de uma rota, o veículo deveria PROGREDIR. Se o progresso para mas ele
+continua se movendo lateralmente, é desvio mesmo sem se afastar muito em linha
+reta. Requer o corredor real (item acima).
 
 ### 1.4 Falsos positivos clássicos e como matar
 | Falso positivo | Por que acontece | Antídoto |
 |---|---|---|
-| Deslocamento interurbano | Frota atende o estado todo; fica longe de tudo legitimamente | Teto de distância + corredor + checar se vai para a base |
-| GPS ruim na cidade | Prédio/viaduto joga o ponto na rua errada | Map matching (snap-to-road) |
-| Volta para a base no fim da rota | Afasta dos alvos restantes, mas é legítimo | Checar rumo para a base (indo para casa, não desviando) |
-| Trânsito / congestionamento | Para ou desvia por causa de obra/acidente | Google traffic (futuro), comparação entre veículos |
+| Deslocamento interurbano | Frota atende o estado todo; fica longe de tudo legitimamente | Teto de 25km (implementado) |
+| Rota rural/serra sem tapete | Tapete não cobre a via ainda, caminho legítimo vira "desconhecido" | Camada 3 desativada até redesenhar (ver 7.1) |
+| Volta para a base no fim da rota | Resolve só por distância absoluta (2,5km), não por comportamento | Achado 09/07 (ver 7.2), correção pendente |
+| Rota já terminada, parado longe da base | Nada resta pra comparar, alerta antigo nunca resolve | Achado 09/07 (ver 7.2), correção pendente |
+| Entrega feita mas Unitrac não confirmou | Perímetro exato da Unitrac não bate com onde o caminhão realmente para | Info de "parado no cliente" implementada (ver 7.4); confirmação automática tentada e revertida (ver 7.1) |
 
 ---
 
 ## 2. PARADA INDEVIDA
 
-A parte que o cliente mais sente, porque hoje só avisamos parada de 90 minutos.
-Uma parada SUSPEITA de 15 minutos num lugar ermo passa batido. É a maior lacuna.
-
 ### 2.1 Definição
 Parada que NÃO é entrega (alvo), NÃO é base, e NÃO é parada legítima (posto, comida,
 trânsito), em local e hora que não fazem sentido.
 
-### 2.2 Anatomia de uma parada (as 4 perguntas)
+### 2.2 Anatomia de uma parada (as 4 perguntas) — IMPLEMENTADO
+1. **Está realmente parado?** Velocidade 0 sustentada, `parado_desde` (reseta com >~50m de movimento).
+2. **ONDE parou?** Base → ok. Raio de alvo → entrega, ok. POI legítimo (Overpass) → perdoa. Via de fluxo/zona de risco → soma suspeita.
+3. **HÁ QUANTO tempo?** Limiar por contexto (cidade vs estrada).
+4. **QUE HORA é?** Madrugada/fora de operação pesa mais.
 
-**1) Está realmente parado?**
-Velocidade 0 sustentada. Rastrear `parado_desde` (reseta quando move mais de ~50m).
-Persistência: ignorar semáforo/trânsito curto.
+`detectarParadaAnomala` e o POI check via Overpass (`temPOIProximo`) já estão
+no ar — o que a versão anterior deste documento listava como "maior lacuna"
+já foi implementado numa sessão anterior.
 
-**2) ONDE parou?** (a pergunta que mais decide)
-- Na base → ok (só `parada_longa` avisa acima de 90min).
-- No raio de um alvo (`pontoraio`) → entrega, ok.
-- Perto de POI legítimo (posto/restaurante/lanchonete/borracharia, via Overpass num raio ~80m) → **perdoa**. Cachear por coordenada.
-- Parado em via de FLUXO (rodovia/avenida expressa) → suspeito (ninguém para numa rodovia sem motivo).
-- Dentro de zona de risco (favela / hotspot de roubo de carga) → forte.
-- Na residência do motorista (os "endereços" do `area/722` da Unitrac) → uso indevido / desvio.
-- Lugar ermo nunca visitado → suspeito.
+### 2.3 Classificação urbano × estrada — IMPLEMENTADO
+Velocidade sustentada + distância da base nas últimas ~2h decide o limiar de tempo.
 
-**3) HÁ QUANTO tempo?** (limiar por contexto)
-- Cidade: ~12min. Estrada: ~25min (sugeridos pelo fundador).
-- `parada_longa` 90min em qualquer lugar (já existe) para a equipe contatar.
+### 2.4 Clusters de parada (DBSCAN) — NÃO IMPLEMENTADO
+Paradas recorrentes no mesmo ponto deveriam subtrair suspeita automaticamente
+(aprendizado sem cadastro manual). Ainda depende de acumular histórico
+suficiente por placa.
 
-**4) QUE HORA é?**
-Madrugada e fora de operação pesam mais (57% dos roubos no RJ são noite/madrugada).
-
-### 2.3 Classificação urbano × estrada (sem cadastro manual)
-Velocidade sustentada + distância da base nas últimas ~2h. Acima de 80km/h
-sustentado ou mais de 60km da base = ESTRADA (limiar de tempo maior). Senão CIDADE.
-Necessário porque parar 15min é normal numa rua de entrega e MUITO suspeito numa rodovia.
-
-### 2.4 Clusters de parada (DBSCAN) — aprendizado barato
-Paradas RECORRENTES no mesmo ponto (um cliente, um pátio, a casa de apoio) são
-legítimas: o sistema aprende e SUBTRAI suspeita. Parada NOVA num lugar nunca visto
-pela placa = sobe a suspeita. Distingue rotina de anomalia sem cadastro.
-
-### 2.5 Escalada (parada anômala vira crítico)
-Uma parada de atenção vira crítica se: o tempo dobrou, OU o baú abriu ali, OU o
-sinal caiu ali (jammer), OU está dentro de zona vermelha, OU houve tiroteio recente
-no trecho.
+### 2.5 Escalada — IMPLEMENTADO
+Parada de atenção vira crítica se: tempo dobrou, OU baú abriu ali, OU sinal
+caiu ali (jammer), OU zona vermelha, OU tiroteio recente no trecho.
 
 ---
 
-## 3. SINAIS CORRELATOS (o "esse tipo de coisa")
+## 3. SINAIS CORRELATOS
 
-- **Jammer (bloqueador):** salto súbito de `atraso` com ignição ainda ligada. Confirmação forte por correlação MULTI-VEÍCULO: 2+ placas perdem sinal no mesmo trecho/hora = jammer ativo na via (não falha individual). IMPLEMENTADO o básico; falta a correlação multi-veículo.
-- **Coação vs conluio (assinatura de ruído):** roubo real = perda ABRUPTA de sinal + ignição ligada + brusquidão. Conluio (motorista combinado) = queda LIMPA + parada calma + sem pânico + reincidência histórica. Mesma "perda de sinal", intenções opostas; a assinatura separa.
-- **Baú aberto fora de ponto** (IMPLEMENTADO): abertura longe de alvo/base.
-- **Pânico** (IMPLEMENTADO): botão acionado.
+- **Jammer** (IMPLEMENTADO o básico): salto súbito de `atraso` com ignição ligada. Falta correlação MULTI-VEÍCULO (2+ placas perdendo sinal no mesmo trecho/hora = jammer na via, não falha individual).
+- **Baú aberto fora de ponto** (IMPLEMENTADO).
+- **Pânico** (IMPLEMENTADO).
 - **Excesso de velocidade** (IMPLEMENTADO).
-- **Tiroteio / operação próxima** (IMPLEMENTADO): cruzamento com Fogo Cruzado ao vivo.
-- **Entrega fantasma:** alvo marcado feito (`situacao=1`, NF baixada) SEM o veículo ter passado no raio = conluio. Inverso do positivo normal; aqui suspeitar é legítimo.
-- **Isca eletrônica** (se a operação usar): afastamento isca↔veículo = transbordo de carga.
+- **Tiroteio / operação próxima** (IMPLEMENTADO, Fogo Cruzado ao vivo).
+- **Entrega fantasma** (NÃO IMPLEMENTADO): alvo marcado feito pela Unitrac SEM o veículo ter passado no raio = possível conluio. Inverso do problema de "entrega feita mas não confirmada" (ver 1.4/7.1) — aqui é a Unitrac confirmando de menos, lá é confirmando sem o veículo ter ido.
+- **Isca eletrônica** (NÃO IMPLEMENTADO, depende de a operação usar).
 
 ---
 
 ## 4. FUSÃO: de sinais para decisão
 
-Detectar é metade. A outra metade é COMBINAR sem afogar o operador.
-
-- **Hierarquia:** sinal físico (pânico, baú, jammer) > geográfico (desvio, parada) > contextual. Físico é quase certeza; geográfico é suspeita; contextual ajusta o peso.
+- **Hierarquia:** físico (pânico, baú, jammer) > geográfico (desvio, parada) > contextual.
 - **Frescor antes de tudo.**
-- **Contexto perdoa (subtrai score):** POI por perto, trânsito real (Google), parada recorrente, e a comparação entre veículos (vários parados na mesma via = trânsito, ignora; um só parado em local ermo = suspeito).
+- **Contexto perdoa:** POI por perto, parada recorrente, comparação entre veículos.
 - **Persistência N-pings obrigatória.**
-- **Score contextual com números reais do RJ:** Baixada Fluminense concentra ~52% dos roubos, Duque de Caxias ~36%; noite/madrugada ~57%; segunda-feira ~40%. Corredores quentes: Av. Brasil/BR-101, BR-040, Dutra/BR-116, Arco Metropolitano, Linha Vermelha, Zona Oeste. O MESMO evento pesa mais na Baixada às 3h de uma segunda.
-- **Encadeamento > evento isolado:** jammer → fora de rota → zona vermelha é uma CADEIA de alta confiança. Detectar sequências vale mais que somar eventos soltos.
-- **Human-in-the-loop:** cada alerta que o operador trata (reconhecer / resolver / falso positivo, JÁ IMPLEMENTADO) vira rótulo. É o combustível do ML futuro e o que afina os limiares.
+- **Score contextual RJ:** Baixada Fluminense ~52% dos roubos, Duque de Caxias ~36%; noite/madrugada ~57%; segunda-feira ~40%. Corredores quentes: Av. Brasil/BR-101, BR-040, Dutra/BR-116, Arco Metropolitano, Linha Vermelha, Zona Oeste.
+- **Encadeamento > evento isolado:** jammer → fora de rota → zona vermelha é uma cadeia de alta confiança.
+- **Human-in-the-loop** (IMPLEMENTADO): reconhecer/resolver/falso positivo vira rótulo.
 
 ---
 
-## 5. Onde estamos e o que falta (mapa de fogo)
+## 5. Onde estamos de verdade (09/07/2026)
 
 **JÁ NO AR:**
-- Desvio por afastamento + rumo oposto + faixa local (com anti-pisca).
-- `parada_longa` (90min, qualquer lugar) para contato.
-- Favela (point-in-polygon) e tiroteio próximo ao vivo (Fogo Cruzado).
-- Jammer, pânico, baú, excesso de velocidade.
-- Roubo de carga por município (ISP-RJ) como camada de risco.
+- Desvio Camada 1 (comportamental) + Camada 2 (tapete, alimenta risco de área) + score de risco de área.
+- Parada anômala completa (4 perguntas, POI check, classificação urbano/estrada, escalada).
+- Jammer, pânico, baú, excesso de velocidade, tiroteio próximo, roubo de carga por CISP.
 - Fluxo do operador (gera rótulos).
+- Rastro corrigido pra rua real via OSRM, priorizando os saltos mais recentes quando excede o teto (hoje).
+- Info de "parado no cliente" (tempo parado + distância ao ponto mais próximo + perímetro visual) — hoje, puramente informativo.
 
-**PRÓXIMO, alto valor e barato (ordem de retorno):**
-1. **Parada anômala de verdade** (12/25min, fora de POI/base/alvo, com peso por zona e hora). É a maior lacuna: hoje uma parada suspeita curta não dispara nada.
-2. **POI check via Overpass** (perdoa posto/comida) para a parada não virar alarme falso.
-3. **Score contextual RJ** (peso por Baixada/corredor/madrugada/segunda).
-4. **Corredor OSRM** (tubo) para o desvio ficar preciso de verdade.
-5. **Persistência N-pings explícita** e **correlação multi-veículo do jammer**.
+**DESATIVADO, aguardando redesenho:**
+- Camada 3 do desvio (fora do tapete) — ver 7.1.
+
+**REVERTIDO (implementado e removido no mesmo dia):**
+- Confirmação de entrega por proximidade — ver 7.1. Migration fica no banco, código removido.
+
+**PRÓXIMO, alto valor (ordem de retorno):**
+1. **Unificar resolver e disparar do desvio** (ver 7.2) — provavelmente o de maior retorno agora, acabou de ser encontrado com evidência clara e concreta (TUL-1C38).
+2. **Tratar "rota já terminada" como estado próprio** do desvio, não deixar o alerta antigo pendurado (ver 7.2).
+3. Redesenhar a Camada 3 com cobertura mínima POR REGIÃO (não só por cliente) — rural precisa de um piso bem mais alto que urbano.
+4. Corredor OSRM real (item 1.3) pra elevar o desvio de "proxy bom" pra "rastreamento preciso".
+5. Correlação multi-veículo do jammer.
 
 **DEPOIS (aprendizado, exige histórico):**
-- Corredor histórico (alpha-shape), clusters DBSCAN de parada, perfil de horário por placa, ML de sequência (LSTM autoencoder / change-point) para o score de anomalia.
+- Corredor histórico (alpha-shape), clusters DBSCAN de parada, entrega fantasma, ML de sequência.
 
 ---
 
-## 6. Recomendação
+## 6. Recomendação de fundo
 
-A maior alavanca AGORA não é mais sofisticação no desvio (que já está bom), e sim
-fechar o buraco da **parada anômala**: detectar a parada curta e suspeita (fora de
-ponto, fora de POI, em hora/zona ruim), com o POI check para não encher de falso
-positivo, e o score contextual do RJ para priorizar. Isso é barato (Overpass é
-grátis, os números do RJ já temos) e transforma o sistema de "avisa quem parou 1h30"
-para "avisa quem parou onde e quando não devia". Depois disso, o corredor OSRM eleva
-o desvio do nível "proxy bom" para "rastreamento preciso".
+Interpretável e barato primeiro, com fusão e human-in-the-loop maduros, só
+então ML. Isso vale ainda mais depois do dia de hoje: a Camada 3 foi uma
+mudança bem-intencionada, testada com unitário e cenário sintético, mas que
+não tinha dado real suficiente da operação rural pra validar antes do deploy
+— e virou metade do ruído do dia. Regra prática daqui pra frente: qualquer
+mudança em desvio que reduz o limiar de disparo (mais sensível) precisa ser
+validada contra pelo menos 24h de dado real da frota INTEIRA (não só o caso
+que motivou a mudança) antes de ir pro ar, dado o histórico de 2 incidentes
+no mesmo dia (Camada 3 e a tentativa de auto-resolver ao parar).
 
-Princípio que vale para tudo: começar interpretável e barato, com fusão e human-in-
-the-loop maduros, e só então subir para ML. Modelo complexo sem baseline limpo é
-caixa-preta que ninguém confia numa central.
+---
+
+## 7. Achados ao vivo de 09/07/2026 (o mais importante do documento)
+
+### 7.1 Camada 3 (tapete) — implementada, causou incidente, desativada
+
+Contexto: o cliente reportou "muito falso positivo de nível absurdo" com
+prints/vídeos/áudios reais do grupo de WhatsApp da operação (Erica e Elloisy).
+Cruzando com o banco:
+- **74 alertas Camada 1 vs 75 Camada 3 nas últimas 6h** — quase metade do
+  ruído total vinha da Camada 3, lançada na mesma manhã.
+- TTM-7C14, TTM-2G01 e TUS-1A47 disparavam e resolviam "fora de via conhecida"
+  **a cada 2 minutos, o dia inteiro** — essas placas rodam rotas rurais/serra
+  (Nova Friburgo, Teresópolis, Saquarema) onde o tapete não tinha cobertura
+  suficiente pra distinguir "via nova" de "via desconhecida de verdade".
+
+**Ação tomada:** `CAMADA3_TAPETE_ATIVA = false`. O motor não parou de
+COLETAR o dado (`fora_tapete_streak` continua sendo computado e persistido) —
+só parou de usá-lo pra disparar alerta. Isso significa que quando formos
+redesenhar, já vamos ter semanas de dado real de cobertura pra calibrar o
+limiar certo, em vez de adivinhar de novo.
+
+**Ideias pra quando redesenhar** (nenhuma implementada ainda):
+- Cobertura mínima (`TAPETE_MIN_CELULAS`) POR REGIÃO/cliente, não um número
+  fixo global — uma operação 100% urbana pode confiar no tapete com bem menos
+  histórico que uma rural/serra.
+- Em vez de "fora do tapete = crítico", considerar "fora do tapete" como mais
+  um fator do SCORE DE RISCO DE ÁREA (que já existe e já é multiplicativo),
+  não um gatilho binário próprio.
+- Olhar pro streak em MINUTOS de estrada nova percorrida, não em número de
+  leituras — 2 leituras (~2min) numa rodovia a 80km/h é 2,6km de estrada
+  "nova"; 2 leituras numa rua de bairro a 20km/h é 660m. A mesma contagem de
+  leituras significa coisas bem diferentes dependendo da velocidade.
+
+**Confirmação de entrega por proximidade** (Feature A do plano original, ver
+`docs/plans/2026-07-08-entrega-proximidade-e-desvio-tapete-*.md`): motor
+detectava veículo parado ≥5min a ≤500m de um pendente não confirmado pela
+Unitrac, e mostrava uma faixa "Confirmar/Descartar" pro operador. Foi
+implementada, colocada no ar, e **revertida no mesmo dia a pedido do
+cliente** — código removido (não só desativado), migration 012 continua no
+banco (tabela `entregas_confirmacao_manual`, aditiva, não destrutiva). O
+motivo exato da reversão não ficou claro na conversa (o cliente pediu
+"reverter tudo" sem detalhar um bug específico), mas o PROBLEMA que ela
+tentava resolver continua real e foi confirmado de novo mais tarde no mesmo
+dia (ver 7.4) — só que a solução que o cliente descreveu de próprio punho
+("criar um perímetro, falar quanto tempo ele tá no cliente") pedia
+INFORMAÇÃO pro operador decidir, não confirmação automática. Isso é
+exatamente o que foi implementado em 7.4, sem repetir a mesma forma que foi
+revertida.
+
+### 7.2 Resolver do desvio desconectado do disparo — achado novo, não corrigido ainda
+
+Puxando os 11 alertas de desvio ativos no momento (`status IN ('ativo',
+'reconhecido')`) e cruzando com a posição/alvos reais:
+
+**Padrão 1 — rota já terminada:** 6 de 8 veículos PARADOS mostrando "desvio
+ativo" já tinham TODOS os alvos com `situacao=1` (feito) e estavam parados a
+**15-28km** de qualquer ponto conhecido (não perto de nada, nem cliente nem
+base). Exemplo: MSK-3752 parado 27min, ponto mais próximo (já entregue) a
+17,3km; GSK-0G53 parado 49min, ponto mais próximo a 28,5km.
+
+Explicação: quando `temPendentes=false`, o único "destino" que sobra pro
+sistema comparar é a base. O alerta só resolve (`foraDeRota`) quando fica a
+menos de 2.500m de ALGUM destino. Motorista que termina a rota e para longe
+da base (almoço, descanso, esperando próxima rota — tudo legítimo) fica com
+"desvio ativo" travado indefinidamente, mesmo sem fazer nada de errado.
+
+**Padrão 2 — voltando pra base de verdade, resolve não acompanha:** caso
+mais claro, **TUL-1C38** — reconstruí o rastro (últimas 2h) e a distância até
+a base caiu **monotonicamente em 10 leituras seguidas: 8,26km → 8,26 → 8,25
+→ 8,25 → 7,05 → 5,82 → 4,82 → 3,94 → 3,12 → 2,12km**, ao longo de uns 20min
+de trajeto. Ou seja: o veículo estava indo em linha reta pra base o tempo
+todo. Mesmo assim, o alerta de desvio ficou "ativo" (motivo: "Afastando-se de
+todos os 2 destinos... fora de via conhecida da frota") durante TODO esse
+trajeto, só porque a distância absoluta não tinha cruzado a linha dos 2.500m
+ainda.
+
+**Por que isso acontece:** o critério de DISPARAR (Camada 1) é comportamental
+— "aproximar de QUALQUER destino cancela a suspeita". Mas o critério de
+RESOLVER um alerta já ativo (`foraDeRota`, em `detectores.ts`) é puramente
+geográfico — "só some quando ficar a menos de 2.500m de algo". São duas
+réguas diferentes pro mesmo conceito. Resultado: um veículo pode estar
+100% comportado (aproximando sustentado de um destino legítimo há 20 minutos)
+e MESMO ASSIM aparecer com alerta crítico ativo o tempo todo, só porque a
+base fica longe.
+
+**Por que NÃO dá pra simplesmente "resolver quando aproximar" (already
+tentado e corrigido pelo cliente nesta mesma conversa):** um veículo PARADO
+pode ser um roubo em andamento (parou pra transferir carga) — resolver ao
+parar esconderia exatamente o pior cenário. O mesmo raciocínio se aplica aqui
+com mais nuance: resolver no PRIMEIRO sinal de aproximação também seria
+arriscado (sequestro pode fingir se aproximar de um destino por 1-2 leituras
+pra "limpar" o alerta e depois desviar de novo).
+
+**Direção de correção recomendada (não implementada ainda, pra decidir com o
+cliente antes de mexer, dado o histórico de hoje):** exigir aproximação
+SUSTENTADA — N leituras CONSECUTIVAS de distância decrescente ao MESMO
+destino (mirando a mesma lógica de streak/persistência já usada pra
+disparar), não só "está short e < 2.500m". Um sequestro que finge aproximar
+por 1-2 leituras não teria persistência suficiente pra resolver; um
+retorno real e sustentado à base (como o TUL-1C38, 10 leituras seguidas)
+resolveria muito antes de fisicamente chegar. Isso não muda NADA da Camada 1
+(que já está calibrada); só conserta a lógica de "quando parar de mostrar
+como ativo".
+
+**Padrão "rota terminada" (item 1 acima) precisa de tratamento próprio**,
+distinto do padrão 2: talvez um estado "fim de rota" que suprime NOVOS
+disparos de desvio (não tem mais destino real pra desviar de/pra) e resolve
+alertas antigos automaticamente quando `temPendentes` vira `false` — desde
+que a suspeita SEGUINTE (parada em local ruim, tempo excessivo) continue
+sendo coberta por `detectarParadaAnomala`/`detectarParadaLonga`, que já
+existem e são detectores separados e adequados pra esse julgamento.
+
+### 7.3 Rastro — corrigido
+
+Achado: em janela de 48h (opção real da UI), TTM-2G01 tinha **314 saltos
+grandes** de GPS contra um teto de 200 chamadas de correção — e como a
+seleção era cronológica (mais antigos primeiro), sobravam sem corrigir
+exatamente os saltos MAIS RECENTES, o trecho que o operador olha ao investigar
+um desvio recém-disparado. `priorizarIndices()` agora ordena por recência
+antes de aplicar o teto; teto também subiu de 200 pra 350 (rede/OSRM não é o
+gargalo — 0 falhas numa amostra real testada).
+
+### 7.4 "Parado no cliente" — informação, sem decisão automática
+
+Em vez de recriar a confirmação automática de entrega (revertida em 7.1),
+implementado: no card do veículo parado, mostra "Parado há Xmin" e, se
+houver ponto de entrega conhecido a ≤3km, a distância e o nome dele + um
+círculo do raio real da Unitrac no mapa. Reaproveita dado já buscado
+(`parado_desde`, alvos já carregados no drawer) — zero fetch novo, zero
+mudança de detecção. Puramente pra dar contexto visual rápido pro operador
+decidir, sem o sistema confirmar nada sozinho.
