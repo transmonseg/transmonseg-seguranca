@@ -178,6 +178,7 @@ caiu ali (jammer), OU zona vermelha, OU tiroteio recente no trecho.
 - Fluxo do operador (gera rótulos).
 - Rastro corrigido pra rua real via OSRM, priorizando os saltos mais recentes quando excede o teto (hoje).
 - Info de "parado no cliente" (tempo parado + distância ao ponto mais próximo + perímetro visual) — hoje, puramente informativo.
+- Resolver do desvio com aproximação sustentada (`aproximando_streak`, migration 013) — ver 7.2, implementado e no ar.
 
 **DESATIVADO, aguardando redesenho:**
 - Camada 3 do desvio (fora do tapete) — ver 7.1.
@@ -186,11 +187,10 @@ caiu ali (jammer), OU zona vermelha, OU tiroteio recente no trecho.
 - Confirmação de entrega por proximidade — ver 7.1. Migration fica no banco, código removido.
 
 **PRÓXIMO, alto valor (ordem de retorno):**
-1. **Unificar resolver e disparar do desvio** (ver 7.2) — provavelmente o de maior retorno agora, acabou de ser encontrado com evidência clara e concreta (TUL-1C38).
-2. **Tratar "rota já terminada" como estado próprio** do desvio, não deixar o alerta antigo pendurado (ver 7.2).
-3. Redesenhar a Camada 3 com cobertura mínima POR REGIÃO (não só por cliente) — rural precisa de um piso bem mais alto que urbano.
-4. Corredor OSRM real (item 1.3) pra elevar o desvio de "proxy bom" pra "rastreamento preciso".
-5. Correlação multi-veículo do jammer.
+1. **Tratar "rota já terminada" como estado próprio** do desvio (padrão 1 da seção 7.2) — o resolver por aproximação sustentada já ajuda quando o veículo volta a se mover em direção a algo, mas um veículo que termina a rota e fica parado sem nunca retomar não resolve sozinho (intencional, por segurança — mas ainda precisa de um tratamento explícito pro operador não ficar com alertas antigos acumulados sem contexto).
+2. Redesenhar a Camada 3 com cobertura mínima POR REGIÃO (não só por cliente) — rural precisa de um piso bem mais alto que urbano.
+3. Corredor OSRM real (item 1.3) pra elevar o desvio de "proxy bom" pra "rastreamento preciso".
+4. Correlação multi-veículo do jammer.
 
 **DEPOIS (aprendizado, exige histórico):**
 - Corredor histórico (alpha-shape), clusters DBSCAN de parada, entrega fantasma, ML de sequência.
@@ -259,7 +259,7 @@ INFORMAÇÃO pro operador decidir, não confirmação automática. Isso é
 exatamente o que foi implementado em 7.4, sem repetir a mesma forma que foi
 revertida.
 
-### 7.2 Resolver do desvio desconectado do disparo — achado novo, não corrigido ainda
+### 7.2 Resolver do desvio desconectado do disparo — CORRIGIDO (padrão 2)
 
 Puxando os 11 alertas de desvio ativos no momento (`status IN ('ativo',
 'reconhecido')`) e cruzando com a posição/alvos reais:
@@ -303,24 +303,26 @@ com mais nuance: resolver no PRIMEIRO sinal de aproximação também seria
 arriscado (sequestro pode fingir se aproximar de um destino por 1-2 leituras
 pra "limpar" o alerta e depois desviar de novo).
 
-**Direção de correção recomendada (não implementada ainda, pra decidir com o
-cliente antes de mexer, dado o histórico de hoje):** exigir aproximação
-SUSTENTADA — N leituras CONSECUTIVAS de distância decrescente ao MESMO
-destino (mirando a mesma lógica de streak/persistência já usada pra
-disparar), não só "está short e < 2.500m". Um sequestro que finge aproximar
-por 1-2 leituras não teria persistência suficiente pra resolver; um
-retorno real e sustentado à base (como o TUL-1C38, 10 leituras seguidas)
-resolveria muito antes de fisicamente chegar. Isso não muda NADA da Camada 1
-(que já está calibrada); só conserta a lógica de "quando parar de mostrar
-como ativo".
+**Correção implementada (mesmo dia, `aproximando_streak`, migration 013):**
+exige aproximação SUSTENTADA — 2 leituras CONSECUTIVAS sem afastar de tudo
+(mesmo mínimo já usado pra disparar), não só "está a menos de 2.500m". Um
+sequestro que finge aproximar por 1 leitura não tem persistência suficiente
+pra resolver; um retorno real e sustentado à base (como o TUL-1C38, 10
+leituras seguidas) agora resolve logo nas 2 primeiras leituras de
+aproximação, muito antes de fisicamente chegar perto. Não muda nada da
+Camada 1 (permanece calibrada como estava); só conserta a lógica de "quando
+parar de mostrar como ativo". `foraDeRota()` em `detectores.ts` — testado
+(unitário) contra o cenário exato do TUL-1C38.
 
-**Padrão "rota terminada" (item 1 acima) precisa de tratamento próprio**,
-distinto do padrão 2: talvez um estado "fim de rota" que suprime NOVOS
-disparos de desvio (não tem mais destino real pra desviar de/pra) e resolve
-alertas antigos automaticamente quando `temPendentes` vira `false` — desde
-que a suspeita SEGUINTE (parada em local ruim, tempo excessivo) continue
-sendo coberta por `detectarParadaAnomala`/`detectarParadaLonga`, que já
-existem e são detectores separados e adequados pra esse julgamento.
+**Padrão "rota terminada" (item 1 acima) continua SEM correção própria.** A
+aproximação sustentada ajuda quando o veículo volta a se mover em direção a
+algo, mas um veículo que termina a rota e fica parado sem nunca retomar
+movimento não resolve sozinho — **intencional**: parado pode ser um roubo em
+andamento, e o cliente já rejeitou explicitamente qualquer auto-resolve
+baseado só em estar parado. Fica como um estado que precisa de julgamento do
+operador (a info de "parado no cliente", seção 7.4, ajuda nisso); um
+tratamento mais elaborado (ex.: estado "fim de rota" explícito) continua como
+próximo passo, não implementado.
 
 ### 7.3 Rastro — corrigido
 
