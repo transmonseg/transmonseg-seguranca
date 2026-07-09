@@ -61,7 +61,7 @@ export async function GET(request: Request) {
         await client.query<{ cv: string }>(
           `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
                   p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
-                  p.rumo, al.tipo
+                  p.rumo, p.parado_desde, al.tipo
            from posicoes_atuais p
            join veiculos v on v.id = p.veiculo_id
            left join lateral (

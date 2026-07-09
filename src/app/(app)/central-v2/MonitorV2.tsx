@@ -102,6 +102,10 @@ function tempoAtras(desde: string): string {
   return `${Math.floor(diff / 1440)}d`;
 }
 
+function minutosDesde(desde: string): number {
+  return Math.round((Date.now() - new Date(desde).getTime()) / 60000);
+}
+
 function formatarDist(m: number): string {
   if (m < 1000) return `${Math.round(m)}m`;
   return `${(m / 1000).toFixed(1)}km`;
@@ -150,6 +154,39 @@ const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, set
 // Chips visiveis por padrao na faixa de desvios do topo do mapa antes de
 // colapsar num contador "+N" (poluicao visual quando ha muitos simultaneos).
 const MAX_CHIPS_DESVIO = 6;
+
+// Duplicada de unitrac.ts (mesmo motivo do difAnguloGraus em detectores.ts:
+// modulo client-side, sem importar lib de servidor). So pra mostrar "parado
+// a Xm de [ponto]" no drawer -- nao alimenta nenhum detector.
+function haversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371000;
+  const toR = (d: number) => (d * Math.PI) / 180;
+  const dLat = toR(bLat - aLat);
+  const dLng = toR(bLng - aLng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function fmtDist(m: number): string {
+  if (m < 1000) return `${Math.round(m / 10) * 10}m`;
+  return `${(m / 1000).toFixed(1).replace(".", ",")}km`;
+}
+
+// Ponto de entrega (qualquer status -- pendente, feito ou "esteve no local")
+// mais proximo da posicao atual. So informativo (ver renderDrawer "Parado no
+// cliente"): pedido do cliente 09/07 apos investigar alertas de desvio
+// travados em veiculos parados -- ajuda o operador a ver rapido se o
+// veiculo esta perto de algum ponto conhecido, sem o sistema decidir nada.
+function pontoMaisProximoQualquer(
+  lat: number, lng: number, pontos: PontoEntrega[]
+): { ponto: PontoEntrega; distM: number } | null {
+  let melhor: { ponto: PontoEntrega; distM: number } | null = null;
+  for (const p of pontos) {
+    const d = haversineM(lat, lng, p.lat, p.lng);
+    if (!melhor || d < melhor.distM) melhor = { ponto: p, distM: d };
+  }
+  return melhor;
+}
 
 // ── Foco de veiculo (selecao + rastro/paradas/alvos + comandos + camera) ──
 // Encapsula TUDO relacionado a "qual veiculo esta selecionado e o que
@@ -373,6 +410,13 @@ function usePainelFoco(params: {
   const alvosFeitos = alvosEfetivos.filter(p => p.feito).length;
   const alvosTotal = alvosEfetivos.length;
 
+  // "Parado no cliente" -- so informativo, ver comentario em pontoMaisProximoQualquer.
+  const paradoMin = vmAtual?.parado_desde ? minutosDesde(vmAtual.parado_desde) : null;
+  const pontoMaisProximo = useMemo(() => {
+    if (!vmAtual || vmAtual.lat == null || vmAtual.lng == null || alvosEfetivos.length === 0) return null;
+    return pontoMaisProximoQualquer(vmAtual.lat, vmAtual.lng, alvosEfetivos);
+  }, [vmAtual, alvosEfetivos]);
+
   const placaColor = vmAtual
     ? (vmAtual.ignicao && vmAtual.velocidade > 0 ? "verde" : vmAtual.ignicao ? "accent" : "muted")
     : "texto";
@@ -386,6 +430,7 @@ function usePainelFoco(params: {
     selecionarVeiculo, limparSelecao, handleVeiculoClick, carregarVeiculo,
     acionar, centralizar,
     vmAtual, placaSelecionada, desvioSelecionado, alvosEfetivos, alvosFeitos, alvosTotal, placaColorKey: placaColor,
+    paradoMin, pontoMaisProximo,
   };
 }
 
@@ -1416,6 +1461,16 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               color: painel.vmAtual && painel.vmAtual.atraso_min > 30 ? T.yellow : undefined,
             },
             { label: "LOCAL", value: painel.vmAtual?.local || "—", wide: true },
+            ...(painel.vmAtual?.velocidade === 0 && painel.paradoMin != null
+              ? [{
+                  label: "PARADO",
+                  value: painel.pontoMaisProximo
+                    ? `${painel.paradoMin}min · ${fmtDist(painel.pontoMaisProximo.distM)} de ${painel.pontoMaisProximo.ponto.nome || "ponto"}`
+                    : `${painel.paradoMin}min`,
+                  wide: true,
+                  color: painel.pontoMaisProximo && painel.pontoMaisProximo.distM <= 500 ? T.green : undefined,
+                }]
+              : []),
           ].map((item, i, arr) => (
             <div key={i} style={{
               flex: item.wide ? 2 : 1, padding: "8px 14px",
@@ -1573,6 +1628,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     flyPara: painel1.flyPara,
     seguir: painel1.seguir,
     desvioInicio: painel1.desvioSelecionado,
+    pontoDestaque: painel1.vmAtual?.velocidade === 0 && painel1.pontoMaisProximo
+      ? { lat: painel1.pontoMaisProximo.ponto.lat, lng: painel1.pontoMaisProximo.ponto.lng, raio: painel1.pontoMaisProximo.ponto.raio, distM: painel1.pontoMaisProximo.distM }
+      : null,
     rastro: painel1.rastro,
     paradas: painel1.paradas,
     alvos: painel1.alvosEfetivos,
@@ -1587,6 +1645,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     flyPara: painel2.flyPara,
     seguir: painel2.seguir,
     desvioInicio: painel2.desvioSelecionado,
+    pontoDestaque: painel2.vmAtual?.velocidade === 0 && painel2.pontoMaisProximo
+      ? { lat: painel2.pontoMaisProximo.ponto.lat, lng: painel2.pontoMaisProximo.ponto.lng, raio: painel2.pontoMaisProximo.ponto.raio, distM: painel2.pontoMaisProximo.distM }
+      : null,
     rastro: painel2.rastro,
     paradas: painel2.paradas,
     alvos: painel2.alvosEfetivos,

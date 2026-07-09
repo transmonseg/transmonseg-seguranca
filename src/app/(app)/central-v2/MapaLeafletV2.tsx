@@ -16,6 +16,7 @@ export interface VeiculoMapa {
   lng: number | null;
   local: string | null;
   rumo?: number | null;
+  parado_desde?: string | null;
 }
 
 export interface Parada {
@@ -88,6 +89,11 @@ export interface Props {
   // Ponto de início do desvio ativo do veículo selecionado (lat/lng do
   // alerta). Desenha marcador de aviso + linha até a posição atual.
   desvioInicio?: { lat: number; lng: number } | null;
+  // Ponto de entrega mais próximo do veículo PARADO selecionado (qualquer
+  // status) — desenha um círculo do raio real da Unitrac ao redor, pra dar
+  // contexto visual de "ele tá mesmo perto de um cliente conhecido?" sem o
+  // sistema decidir nada (pedido do cliente 09/07).
+  pontoDestaque?: { lat: number; lng: number; raio: number; distM: number } | null;
   seguir: boolean;
   gatilhoFrota: number;
   flyPara: { lat: number; lng: number; gatilho: number } | null;
@@ -426,7 +432,7 @@ function agruparAlvosPorPonto(alvos: PontoEntrega[]): GrupoAlvo[] {
 export default function MapaLeafletV2({
   veiculosMapa, cvSelecionado, mostrarRastro, mostrarParadas,
   rastro, paradas, alvos, alvosGlobais, bases, favelas, tiroteios, rouboCarga,
-  desvioInicio,
+  desvioInicio, pontoDestaque,
   seguir, gatilhoFrota, flyPara, zoomCmd,
   onVeiculoClick, onMapaVazioClick, onAlvoClick,
   mapTokens, tema, satelite, trafego, onZoomChange,
@@ -778,6 +784,27 @@ export default function MapaLeafletV2({
             }}
           />
         </>
+      )}
+
+      {/* ── Perímetro do ponto de entrega mais próximo do veículo PARADO ──
+          Contexto visual: "ele tá mesmo perto de um cliente conhecido?" —
+          nunca decide nada, so ajuda o operador a ver de cara (pedido do
+          cliente 09/07). So desenha se estiver "perto o bastante" pra fazer
+          sentido (senao um circulo a 26km de distancia so polui o mapa). */}
+      {cvSelecionado && pontoDestaque && pontoDestaque.distM <= 3000 && (
+        <Circle
+          center={{ lat: pontoDestaque.lat, lng: pontoDestaque.lng }}
+          radius={pontoDestaque.raio}
+          options={{
+            fillColor: "#22c55e",
+            fillOpacity: 0.12,
+            strokeColor: "#22c55e",
+            strokeWeight: 1.5,
+            strokeOpacity: 0.7,
+            clickable: false,
+            zIndex: 4,
+          }}
+        />
       )}
 
       {/* ── Pontos de entrega (só quando há veículo selecionado) — agrupados por ponto ── */}
