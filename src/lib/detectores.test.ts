@@ -530,17 +530,31 @@ describe("detectarTiroteioProximo", () => {
   });
 });
 
-describe("foraDeRota (v2: menor distancia a qualquer destino)", () => {
+describe("foraDeRota (v2: menor distancia a qualquer destino OU aproximacao sustentada)", () => {
   const p = posicaoBase();
-  it("mantem alerta enquanto longe de todos os destinos", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 3000, emOperacao: true, foraDaBase: true })).toBe(true);
+  it("mantem alerta enquanto longe de todos os destinos e sem aproximacao sustentada", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 3000, emOperacao: true, foraDaBase: true, aproximandoStreak: 0 })).toBe(true);
   });
   it("resolve quando volta a menos de 2,5km de algum destino", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 1000, emOperacao: true, foraDaBase: true })).toBe(false);
+    expect(foraDeRota(p, { menorDistDestinoM: 1000, emOperacao: true, foraDaBase: true, aproximandoStreak: 0 })).toBe(false);
   });
   it("resolve dentro da base ou fora de operacao", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: true, foraDaBase: false })).toBe(false);
-    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: false, foraDaBase: true })).toBe(false);
+    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: true, foraDaBase: false, aproximandoStreak: 0 })).toBe(false);
+    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: false, foraDaBase: true, aproximandoStreak: 0 })).toBe(false);
+  });
+
+  // Achado real 09/07 (TUL-1C38, ver docs/analise-deteccao.md secao 7.2):
+  // veiculo aproximando MONOTONICAMENTE da base por 10 leituras (8,26km ->
+  // 2,12km) ficou com o alerta "ativo" o trajeto inteiro, porque o resolve
+  // so olhava distancia absoluta. Mesma regua do disparo (Camada 1: streak
+  // >=2 de comportamento) agora tambem resolve: aproximacao SUSTENTADA
+  // (>=2 leituras consecutivas sem afastar de tudo) encerra o alerta, nao
+  // precisa esperar chegar fisicamente perto.
+  it("resolve com aproximacao sustentada (streak>=2) mesmo longe de tudo", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 8260, emOperacao: true, foraDaBase: true, aproximandoStreak: 2 })).toBe(false);
+  });
+  it("NAO resolve com so 1 leitura de aproximacao (evita limpar alerta com 1 blip)", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 8260, emOperacao: true, foraDaBase: true, aproximandoStreak: 1 })).toBe(true);
   });
 });
 

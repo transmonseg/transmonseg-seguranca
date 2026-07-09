@@ -441,13 +441,33 @@ export function afastouDeTudo(
   );
 }
 
-// Condição FROUXA de permanência do alerta (anti-pisca): mantém enquanto o
-// veículo segue longe (>=2,5km) de TODOS os destinos, incluindo bases.
+// Ciclos consecutivos de aproximação (sem afastar de TUDO) que já bastam pra
+// encerrar o alerta — mesmo limiar mínimo usado pra disparar (Camada 1),
+// pelo mesmo motivo: 1 leitura pode ser ruído/blip (inclusive um sequestro
+// fingindo aproximar pra "limpar" o alerta); 2 leituras é comportamento
+// sustentado de verdade.
+const APROXIMANDO_RESOLVE_STREAK = 2;
+
+// Condição de permanência do alerta (anti-pisca). Duas formas de encerrar:
+// (a) ficou fisicamente perto (<2,5km) de algum destino -- critério antigo,
+// (b) aproximação SUSTENTADA de algum destino (>=2 leituras seguidas sem
+// afastar de tudo) -- acrescentado 09/07/2026, achado real (TUL-1C38, ver
+// docs/analise-deteccao.md secao 7.2): veículo aproximando monotonicamente
+// da base por 10 leituras (8,26km -> 2,12km) ficava com o alerta "ativo" o
+// trajeto INTEIRO, porque só (a) existia e a base ainda estava longe. Sem
+// (b), disparar e resolver usavam réguas diferentes pro mesmo conceito de
+// "aproximando cancela a suspeita".
 export function foraDeRota(
   p: PosicaoNormalizada,
-  ctx: { menorDistDestinoM: number | null; emOperacao: boolean; foraDaBase: boolean }
+  ctx: {
+    menorDistDestinoM: number | null;
+    emOperacao: boolean;
+    foraDaBase: boolean;
+    aproximandoStreak: number;
+  }
 ): boolean {
   if (!ctx.emOperacao || !ctx.foraDaBase) return false;
+  if (ctx.aproximandoStreak >= APROXIMANDO_RESOLVE_STREAK) return false;
   if (ctx.menorDistDestinoM === null) return false;
   return ctx.menorDistDestinoM >= DESVIO_RESOLVE_M;
 }
