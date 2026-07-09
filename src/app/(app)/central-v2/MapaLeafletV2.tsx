@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, TrafficLayer, useJsApiLoader } from "@react-google-maps/api";
 import { type MapTokens } from "./tokens";
 
@@ -810,19 +810,42 @@ export default function MapaLeafletV2({
       {/* ── Pontos de entrega (só quando há veículo selecionado) — agrupados por ponto ── */}
       {cvSelecionado && gruposAlvos.map(g => {
         const proximo = g.chave === chaveProximoPendente;
+        const corPerimetro = g.situacaoEfetiva === 1 ? COR_ENTREGUE
+          : g.situacaoEfetiva === 0 ? COR_PENDENTE
+          : COR_OUTRO;
         return (
-          <Marker
-            key={g.chave}
-            position={{ lat: g.representante.lat, lng: g.representante.lng }}
-            icon={criarIconeAlvo(g.situacaoEfetiva, proximo, g.qtd)}
-            title={
-              (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Esteve no local")) +
-              (g.qtd > 1 ? ` (${g.qtd} entregas)` : "")
-            }
-            zIndex={proximo ? 15 : 12}
-            clickable={true}
-            onClick={() => { setAlvoSelecionado(g.representante); setItensAlvoSelecionado(g.itens); setParadaSelecionada(null); }}
-          />
+          <Fragment key={g.chave}>
+            {/* Perímetro real (raio da Unitrac) — só a partir de um zoom
+                "de rua", senão fica um monte de círculo sobreposto zoom out.
+                Pedido do cliente (09/07): ver o raio de cada ponto de
+                entrega ao dar zoom, não só do mais próximo do veículo parado. */}
+            {zoomLocal >= 15 && (
+              <Circle
+                center={{ lat: g.representante.lat, lng: g.representante.lng }}
+                radius={g.representante.raio}
+                options={{
+                  fillColor: corPerimetro,
+                  fillOpacity: 0.1,
+                  strokeColor: corPerimetro,
+                  strokeWeight: 1.5,
+                  strokeOpacity: 0.6,
+                  clickable: false,
+                  zIndex: 5,
+                }}
+              />
+            )}
+            <Marker
+              position={{ lat: g.representante.lat, lng: g.representante.lng }}
+              icon={criarIconeAlvo(g.situacaoEfetiva, proximo, g.qtd)}
+              title={
+                (g.representante.nome || (g.situacaoEfetiva === 1 ? "Entregue" : g.situacaoEfetiva === 0 ? "Pendente" : "Esteve no local")) +
+                (g.qtd > 1 ? ` (${g.qtd} entregas)` : "")
+              }
+              zIndex={proximo ? 15 : 12}
+              clickable={true}
+              onClick={() => { setAlvoSelecionado(g.representante); setItensAlvoSelecionado(g.itens); setParadaSelecionada(null); }}
+            />
+          </Fragment>
         );
       })}
 

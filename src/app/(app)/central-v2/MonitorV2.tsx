@@ -242,23 +242,40 @@ function usePainelFoco(params: {
       // Cada fetch processa assim que a SUA resposta chega — antes, um
       // Promise.all fazia o rastro (rápido) esperar pelo mais lento dos 3
       // (às vezes stops/alvos demoravam bem mais), parecendo "rastro lento".
-      const rastroP = fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal })
+      //
+      // Rastro BRUTO primeiro (rápido — só remove picos de GPS, sem ajuste
+      // de rua): aparece na hora. O ajuste pra rua real (OSRM) pode levar
+      // vários segundos em rastros com muitos saltos de GPS (achado real
+      // 09/07: TTK-4D15, 322 saltos, ~12,7s só nessa etapa) — busca
+      // separada, substitui o rastro sozinha quando terminar, sem travar
+      // "carregando" nem os outros dados.
+      const aplicarRastro = (rd: { pontos?: { lat: number; lng: number }[] } | null) => {
+        if (signal.aborted || !rd) return;
+        const tuples = (rd.pontos ?? []).map(p => [p.lat, p.lng] as [number, number]);
+        setRastro(tuples);
+        // Voa para o último ponto do rastro só como FALLBACK, quando ainda
+        // não há posição ao vivo (ex.: veículo buscado por placa, fora de
+        // posicoes_atuais). Com posição ao vivo já conhecida, focar de novo
+        // no fim do rastro sobrescrevia com um ponto possivelmente mais
+        // antigo (rastro vem de outro endpoint, pode estar defasado).
+        if (!temPosicaoAoVivo && tuples.length > 0) {
+          const [lat, lng] = tuples[tuples.length - 1];
+          gatilhoRef.current += 1;
+          setFlyPara({ lat, lng, gatilho: gatilhoRef.current });
+        }
+      };
+
+      const rastroBrutoP = fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}&bruto=1`, { signal })
         .then(r => r.ok ? r.json() : null)
-        .then((rd: { pontos?: { lat: number; lng: number }[] } | null) => {
-          if (signal.aborted || !rd) return;
-          const tuples = (rd.pontos ?? []).map(p => [p.lat, p.lng] as [number, number]);
-          setRastro(tuples);
-          // Voa para o último ponto do rastro só como FALLBACK, quando ainda
-          // não há posição ao vivo (ex.: veículo buscado por placa, fora de
-          // posicoes_atuais). Com posição ao vivo já conhecida, focar de novo
-          // no fim do rastro sobrescrevia com um ponto possivelmente mais
-          // antigo (rastro vem de outro endpoint, pode estar defasado).
-          if (!temPosicaoAoVivo && tuples.length > 0) {
-            const [lat, lng] = tuples[tuples.length - 1];
-            gatilhoRef.current += 1;
-            setFlyPara({ lat, lng, gatilho: gatilhoRef.current });
-          }
-        })
+        .then(aplicarRastro)
+        .catch(() => {});
+
+      // Ajustado: NÃO entra no Promise.allSettled abaixo (não deve travar o
+      // "carregando") — roda em paralelo e troca o rastro sozinho quando
+      // terminar. O `signal` já garante que não aplica em veículo trocado.
+      fetch(`/api/rastro?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal })
+        .then(r => r.ok ? r.json() : null)
+        .then(aplicarRastro)
         .catch(() => {});
 
       const stopsP = fetch(`/api/stops?cv=${encodeURIComponent(cv)}&horas=${h}`, { signal })
@@ -271,7 +288,7 @@ function usePainelFoco(params: {
         .then((ad: { pontos?: PontoEntrega[] } | null) => { if (!signal.aborted && ad) setAlvos(ad.pontos ?? []); })
         .catch(() => {});
 
-      await Promise.allSettled([rastroP, stopsP, alvosP]);
+      await Promise.allSettled([rastroBrutoP, stopsP, alvosP]);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
     }

@@ -39,7 +39,15 @@ export async function GET(request: Request) {
     ? Math.min(96, Math.max(1, Math.round(horasRaw)))
     : 24;
 
-  const chave = `${cv}:${horas}`;
+  // ?bruto=1: pula o ajuste de rua (OSRM) — so remove picos de GPS e devolve
+  // na hora. Achado real 09/07: veiculo com muitos saltos grandes (ex.:
+  // TTK-4D15, 322 saltos em 24h) levava ~12,7s so no ajuste, deixando a
+  // sensacao de "demora muito" pro operador. O front busca o bruto PRIMEIRO
+  // (rapido, aparece na hora) e o ajustado depois (troca sozinho quando
+  // terminar) — ver usePainelFoco em MonitorV2.tsx.
+  const bruto = searchParams.get("bruto") === "1";
+
+  const chave = `${cv}:${horas}${bruto ? ":bruto" : ""}`;
   const cache = cacheRastroPorChave.get(chave);
   if (cache && cache.expiraEm > Date.now()) {
     return Response.json({ pontos: cache.pontos });
@@ -48,9 +56,9 @@ export async function GET(request: Request) {
   try {
     const pontos = await buscarRastro(cv, horas);
     const semPicos = removerPicosRastro(pontos);
-    const pontosAjustados = await ajustarRastroParaRuas(semPicos);
-    cacheRastroPorChave.set(chave, { pontos: pontosAjustados, expiraEm: Date.now() + RASTRO_CACHE_MS });
-    return Response.json({ pontos: pontosAjustados });
+    const pontosFinais = bruto ? semPicos : await ajustarRastroParaRuas(semPicos);
+    cacheRastroPorChave.set(chave, { pontos: pontosFinais, expiraEm: Date.now() + RASTRO_CACHE_MS });
+    return Response.json({ pontos: pontosFinais });
   } catch (e) {
     return Response.json({ erro: String(e) }, { status: 500 });
   }
