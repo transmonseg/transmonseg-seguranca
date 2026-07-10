@@ -32,6 +32,7 @@ import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
+import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade } from "@/lib/corredor-verificacao";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -75,6 +76,28 @@ const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
 type ContagemTapeteCache = { contagem: number; expiraEm: number };
 const CACHE_TAPETE_MS = 3 * 60_000;
 const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
+
+// ─── Verificação por corredor real (ver lib/corredor-verificacao.ts) ────
+// Desligável na hora, mesmo padrão do CAMADA3_TAPETE_ATIVA: pesquisa 09/07
+// não achou caso documentado de corredor multi-destino sem ordem conhecida
+// em produção — somos pioneiros, então flag + validação com dado real.
+const CAMADA_CORREDOR_ATIVA = true;
+// Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
+// suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
+// confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
+// confirmar — conserta o marcador de início errado reportado pela operação).
+type CorredorCache = {
+  polilinha: { lat: number; lng: number }[];
+  ultimoDentro: { lat: number; lng: number };
+  pendentesChave: string;
+  expiraEm: number;
+};
+const CORREDOR_CACHE_MS = 15 * 60_000;
+const cacheCorredorPorVeiculo = new Map<string, CorredorCache>();
+// Orçamento por CICLO: no máx 3 verificações com API (cada uma <= 5s).
+// Acima disso, os demais veículos disparam sem verificação (fail-open) e
+// tentam de novo no ciclo seguinte.
+const MAX_VERIFICACOES_POR_CICLO = 3;
 
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
@@ -571,6 +594,10 @@ export async function POST(request: Request) {
     // Celulas do tapete cobertas pelo trajeto de cada veiculo neste ciclo —
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
     const celulasCiclo: { cliente_id: string; celula: string }[] = [];
+
+    // Orçamento de verificações de corredor com API neste ciclo (ver
+    // MAX_VERIFICACOES_POR_CICLO no topo).
+    let verificacoesCorredorNoCiclo = 0;
 
     // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
     // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
@@ -1083,6 +1110,65 @@ export async function POST(request: Request) {
                   distBaseM,
                 })
               : null;
+
+          // ─── Verificação por corredor real (Camada 1 do desvio) ─────────
+          // Só intercepta desvio comportamental ("Afastando-se..."), nunca
+          // pânico/jammer/etc. Fluxo: cache primeiro (zero API); sem cache
+          // ou fora dele, verifica com OSRM/Valhalla (throttled, orçamento
+          // por ciclo). "dentro" = veículo está numa estrada que leva a um
+          // destino legítimo: suprime e zera o streak. "fora" = confirma, e
+          // o início real do desvio é onde saiu do corredor. "indisponivel"
+          // = comporta exatamente como hoje (fail-open).
+          if (
+            CAMADA_CORREDOR_ATIVA &&
+            alerta?.tipo === "desvio" &&
+            alerta.motivo.startsWith("Afastando-se") &&
+            pos.fresco
+          ) {
+            const pendentesChave = pendentes.map((pt) => pt.codigo ?? `${pt.lat},${pt.lng}`).sort().join(",");
+            const cache = cacheCorredorPorVeiculo.get(veiculo_id);
+            const cacheValido = cache && cache.expiraEm > Date.now() && cache.pendentesChave === pendentesChave;
+
+            if (cacheValido && cache && dentroDoCorredor(pos, cache.polilinha, bufferPorVelocidade(pos.velocidade))) {
+              // Continua na estrada já confirmada: suprime sem API.
+              cache.ultimoDentro = { lat: pos.lat, lng: pos.lng };
+              alerta = null;
+              desvioStreak = 0;
+              desvioInicio = null;
+            } else if (verificacoesCorredorNoCiclo < MAX_VERIFICACOES_POR_CICLO) {
+              verificacoesCorredorNoCiclo++;
+              const candidatos = [...destinos]
+                .map((d) => ({ d, dist: haversineM(pos.lat, pos.lng, d.lat, d.lng) }))
+                .sort((a, b) => a.dist - b.dist)
+                .slice(0, 3)
+                .map((x) => x.d);
+              const r = await verificarCorredor({ lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);
+              if (r.veredito === "dentro" && r.corredor) {
+                cacheCorredorPorVeiculo.set(veiculo_id, {
+                  polilinha: r.corredor,
+                  ultimoDentro: { lat: pos.lat, lng: pos.lng },
+                  pendentesChave,
+                  expiraEm: Date.now() + CORREDOR_CACHE_MS,
+                });
+                alerta = null;
+                desvioStreak = 0;
+                desvioInicio = null;
+              } else if (r.veredito === "fora") {
+                // Confirma o desvio. Início REAL: onde saiu do corredor.
+                if (cacheValido && cache) {
+                  desvioInicio = {
+                    lat: cache.ultimoDentro.lat,
+                    lng: cache.ultimoDentro.lng,
+                    ts: agora.toISOString(),
+                    menor_dist_m: desvioInicio?.menor_dist_m ?? 0,
+                  };
+                }
+                cacheCorredorPorVeiculo.delete(veiculo_id);
+              }
+              // "indisponivel": deixa o alerta seguir como hoje (fail-open).
+            }
+            // Orçamento estourado: deixa o alerta seguir como hoje.
+          }
 
           // Novos detectores: retorno_tardio, parada_noturna_ignicao, aceleracao_brusca.
           // Calculados separadamente e sobrepõem alerta principal se mais severos.
