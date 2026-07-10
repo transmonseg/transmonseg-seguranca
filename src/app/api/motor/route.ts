@@ -27,7 +27,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { celulasDoSegmento, vizinhanca3x3 } from "@/lib/celulas";
+import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
 import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
@@ -469,7 +469,7 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, aproximando_streak");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, aproximando_streak, origem_celula");
 
     const mapaPosAtual = new Map<
       string,
@@ -477,6 +477,7 @@ export async function POST(request: Request) {
         lat: number | null; lng: number | null; velocidade: number | null;
         parado_desde: string | null; desvio_streak: number; desvio_inicio: DesvioInicio | null;
         ultimo_evento: string | null; fora_tapete_streak: number; aproximando_streak: number;
+        origem_celula: string | null;
       }
     >();
 
@@ -491,6 +492,7 @@ export async function POST(request: Request) {
         ultimo_evento: row.ultimo_evento ?? null,
         fora_tapete_streak: row.fora_tapete_streak ?? 0,
         aproximando_streak: row.aproximando_streak ?? 0,
+        origem_celula: row.origem_celula ?? null,
       });
     }
 
@@ -593,7 +595,7 @@ export async function POST(request: Request) {
 
     // Celulas do tapete cobertas pelo trajeto de cada veiculo neste ciclo —
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
-    const celulasCiclo: { cliente_id: string; celula: string }[] = [];
+    const celulasCiclo: { cliente_id: string; celula: string; origem: string | null; destino: string | null }[] = [];
 
     // Orçamento de verificações de corredor com API neste ciclo (ver
     // MAX_VERIFICACOES_POR_CICLO no topo).
@@ -612,7 +614,7 @@ export async function POST(request: Request) {
       datagps: string; parado_desde: string | null; updated_at: string; entregas_feitas: number;
       entregas_total: number; local: string | null; desvio_streak: number; rumo: number | null;
       ultimo_evento: string | null; desvio_inicio: string | null; fora_tapete_streak: number;
-      aproximando_streak: number;
+      aproximando_streak: number; origem_celula: string | null;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -826,6 +828,14 @@ export async function POST(request: Request) {
             paradoMin = Math.round((agora.getTime() - new Date(parado_desde).getTime()) / 60000);
           }
 
+          // Origem pro par O-D do tapete (migration 014, so coleta): celula
+          // da ultima parada de 5+ min. Persistida em posicoes_atuais.
+          // origem_celula; carrega a anterior enquanto nao houver parada nova.
+          let origemCelula: string | null = anterior?.origem_celula ?? null;
+          if (pos.velocidade === 0 && paradoMin >= 5) {
+            origemCelula = celulaDe(pos.lat, pos.lng);
+          }
+
           // Calcular se o veiculo esta dentro de alguma base do cliente
           // (point-in-polygon contra o perímetro real da base).
           const basesCliente = mapaBasesCliente.get(cliente_id) ?? [];
@@ -941,9 +951,21 @@ export async function POST(request: Request) {
           }
 
           // Alimentar o tapete: células do trajeto desde o ciclo anterior.
+          // origem/destino: par O-D da migration 014 (só coleta, ver design)
+          // — destino = célula do pendente mais próximo no momento.
           if (pos.fresco && temAnterior && (anterior!.lat !== pos.lat || anterior!.lng !== pos.lng)) {
+            let destinoCelula: string | null = null;
+            if (pendentes.length > 0) {
+              let maisPerto = pendentes[0];
+              let menor = haversineM(pos.lat, pos.lng, maisPerto.lat, maisPerto.lng);
+              for (const pt of pendentes) {
+                const d = haversineM(pos.lat, pos.lng, pt.lat, pt.lng);
+                if (d < menor) { menor = d; maisPerto = pt; }
+              }
+              destinoCelula = celulaDe(maisPerto.lat, maisPerto.lng);
+            }
             for (const c of celulasDoSegmento(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)) {
-              celulasCiclo.push({ cliente_id, celula: c });
+              celulasCiclo.push({ cliente_id, celula: c, origem: origemCelula, destino: destinoCelula });
             }
           }
 
@@ -1261,6 +1283,7 @@ export async function POST(request: Request) {
             desvio_inicio: desvioInicio ? JSON.stringify(desvioInicio) : null,
             fora_tapete_streak: foraTapeteStreak,
             aproximando_streak: aproximandoStreak,
+            origem_celula: origemCelula,
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -1359,7 +1382,7 @@ export async function POST(request: Request) {
               panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
               entregas_feitas, entregas_total, local, desvio_streak, rumo,
               ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
-              aproximando_streak)
+              aproximando_streak, origem_celula)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -1367,17 +1390,19 @@ export async function POST(request: Request) {
              c.nivel, c.motivo, c.datagps::timestamptz, c.parado_desde::timestamptz,
              c.updated_at::timestamptz, c.entregas_feitas, c.entregas_total, c.local,
              c.desvio_streak, c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
-             c.desvio_inicio::jsonb, c.fora_tapete_streak, c.aproximando_streak
+             c.desvio_inicio::jsonb, c.fora_tapete_streak, c.aproximando_streak,
+             c.origem_celula
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
-             $21::integer[], $22::integer[]
+             $21::integer[], $22::integer[], $23::text[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
-                  ultimo_evento, desvio_inicio, fora_tapete_streak, aproximando_streak)
+                  ultimo_evento, desvio_inicio, fora_tapete_streak, aproximando_streak,
+                  origem_celula)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -1402,7 +1427,8 @@ export async function POST(request: Request) {
              ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
                                   THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END,
              fora_tapete_streak = EXCLUDED.fora_tapete_streak,
-             aproximando_streak = EXCLUDED.aproximando_streak`,
+             aproximando_streak = EXCLUDED.aproximando_streak,
+             origem_celula      = EXCLUDED.origem_celula`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -1426,6 +1452,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.desvio_inicio),
             posicoesCiclo.map((p) => p.fora_tapete_streak),
             posicoesCiclo.map((p) => p.aproximando_streak),
+            posicoesCiclo.map((p) => p.origem_celula),
           ]
         );
       } catch (errPosicoes) {
@@ -1468,13 +1495,21 @@ export async function POST(request: Request) {
       const pgCelulas = await pool.connect();
       try {
         await pgCelulas.query(
-          `INSERT INTO corredor_celulas (cliente_id, celula, ultimo_visto)
-           SELECT DISTINCT c.cid::uuid, c.cel, current_date
-           FROM unnest($1::uuid[], $2::text[]) AS c(cid, cel)
+          `INSERT INTO corredor_celulas (cliente_id, celula, ultimo_visto, origem_celula, destino_celula)
+           SELECT DISTINCT ON (c.cid, c.cel) c.cid::uuid, c.cel, current_date, c.ori, c.des
+           FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[]) AS c(cid, cel, ori, des)
+           ORDER BY c.cid, c.cel
            ON CONFLICT (cliente_id, celula) DO UPDATE
-             SET ultimo_visto = EXCLUDED.ultimo_visto
+             SET ultimo_visto = EXCLUDED.ultimo_visto,
+                 origem_celula = COALESCE(EXCLUDED.origem_celula, corredor_celulas.origem_celula),
+                 destino_celula = COALESCE(EXCLUDED.destino_celula, corredor_celulas.destino_celula)
              WHERE corredor_celulas.ultimo_visto < EXCLUDED.ultimo_visto`,
-          [celulasCiclo.map((c) => c.cliente_id), celulasCiclo.map((c) => c.celula)]
+          [
+            celulasCiclo.map((c) => c.cliente_id),
+            celulasCiclo.map((c) => c.celula),
+            celulasCiclo.map((c) => c.origem),
+            celulasCiclo.map((c) => c.destino),
+          ]
         );
       } catch (errCelulas) {
         const msg = `Aviso: erro ao salvar corredor_celulas: ${String(errCelulas)}`;
