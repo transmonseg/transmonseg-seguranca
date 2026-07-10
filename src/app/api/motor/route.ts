@@ -1528,7 +1528,9 @@ export async function POST(request: Request) {
           FROM posicoes_atuais p
           WHERE a.veiculo_id = p.veiculo_id
             AND a.status = 'ativo'
-            AND a.tipo NOT IN ('favela', 'jammer', 'panico')
+            -- desvio adicionado 10/07: cortar o sinal pode ser um roubo em
+            -- andamento, mesmo criterio ja usado pra favela/jammer/panico.
+            AND a.tipo NOT IN ('favela', 'jammer', 'panico', 'desvio')
             AND p.atraso_min > 120
             AND p.ignicao = false
         `);
@@ -1734,11 +1736,15 @@ export async function POST(request: Request) {
           }).format(agora), 10
         );
         if (horaSP_cleanup === 20) {
+          // desvio removido 10/07: fechava alertas reais so por bater 20h,
+          // sem checar comportamento (achado real: 210+ alertas de desvio
+          // fechados assim em 5 dias). Desvio agora so fecha por evidencia
+          // (foraDeRota/corredor) ou resolucao manual do operador.
           await pgClean.query(`
             UPDATE alertas SET status='resolvido', resolvido_em=now()
             WHERE status='ativo'
               AND tipo IN ('saida_nao_autorizada','parada_longa','parada_anomala',
-                           'parada_cliente','excesso','desvio')
+                           'parada_cliente','excesso')
               AND created_at < now() - interval '30 minutes'
           `);
         }
