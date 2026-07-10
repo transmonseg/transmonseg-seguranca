@@ -179,18 +179,20 @@ caiu ali (jammer), OU zona vermelha, OU tiroteio recente no trecho.
 - Rastro corrigido pra rua real via OSRM, priorizando os saltos mais recentes quando excede o teto (hoje).
 - Info de "parado no cliente" (tempo parado + distância ao ponto mais próximo + perímetro visual) — hoje, puramente informativo.
 - Resolver do desvio com aproximação sustentada (`aproximando_streak`, migration 013) — ver 7.2, implementado e no ar.
+- **Histerese no streak** (`avancarStreaksDesvio`): 1 leitura de aproximação congela em vez de zerar — detecção mais cedo em serra (ver design `docs/plans/2026-07-09-desvio-corredor-verificacao-design.md`).
+- **Verificação por corredor real antes de alertar** (`lib/corredor-verificacao.ts`): rota OSRM/Valhalla até os 3 pendentes mais próximos, buffer adaptativo, cache por veículo, throttle 1 req/s, fail-open, flag `CAMADA_CORREDOR_ATIVA`. `desvio_inicio` agora aponta o ponto real de saída do corredor quando conhecido.
+- **Coleta de par origem-destino no tapete** (migration 014) — só coleta, base pra religar a Camada 3 no formato iBOAT.
 
 **DESATIVADO, aguardando redesenho:**
-- Camada 3 do desvio (fora do tapete) — ver 7.1.
+- Camada 3 do desvio (fora do tapete) — ver 7.1. O dado de par O-D (migration 014) já está sendo acumulado pro redesenho.
 
 **REVERTIDO (implementado e removido no mesmo dia):**
 - Confirmação de entrega por proximidade — ver 7.1. Migration fica no banco, código removido.
 
 **PRÓXIMO, alto valor (ordem de retorno):**
 1. **Tratar "rota já terminada" como estado próprio** do desvio (padrão 1 da seção 7.2) — o resolver por aproximação sustentada já ajuda quando o veículo volta a se mover em direção a algo, mas um veículo que termina a rota e fica parado sem nunca retomar não resolve sozinho (intencional, por segurança — mas ainda precisa de um tratamento explícito pro operador não ficar com alertas antigos acumulados sem contexto).
-2. Redesenhar a Camada 3 com cobertura mínima POR REGIÃO (não só por cliente) — rural precisa de um piso bem mais alto que urbano.
-3. Corredor OSRM real (item 1.3) pra elevar o desvio de "proxy bom" pra "rastreamento preciso".
-4. Correlação multi-veículo do jammer.
+2. Religar a Camada 3 no formato iBOAT (por par O-D, com o dado da migration 014 acumulado) e cobertura mínima POR REGIÃO.
+3. Correlação multi-veículo do jammer.
 
 **DEPOIS (aprendizado, exige histórico):**
 - Corredor histórico (alpha-shape), clusters DBSCAN de parada, entrega fantasma, ML de sequência.
