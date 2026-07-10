@@ -78,10 +78,17 @@ const CACHE_TAPETE_MS = 3 * 60_000;
 const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
 
 // ─── Verificação por corredor real (ver lib/corredor-verificacao.ts) ────
-// Desligável na hora, mesmo padrão do CAMADA3_TAPETE_ATIVA: pesquisa 09/07
-// não achou caso documentado de corredor multi-destino sem ordem conhecida
-// em produção — somos pioneiros, então flag + validação com dado real.
-const CAMADA_CORREDOR_ATIVA = true;
+// DESATIVADA 10/07 (achado ao vivo, ver docs/analise-deteccao.md secao 7.6):
+// verificarCorredor tracava a rota da POSICAO ATUAL ate o destino e depois
+// checava se a posicao atual estava perto dessa mesma rota -- tautologico,
+// SEMPRE "dentro" (a rota comeca onde o veiculo esta). Suprimiu quase todo
+// desvio real do dia inteiro (108 veiculos/332 alertas em 09/07 sem o
+// corredor rodando full-day vs 15 alertas, todos num unico burst de ~3min,
+// em 10/07 com o corredor ativo o dia todo -- resto do dia zerado apesar
+// de frota em movimento). Precisa de redesenho (ancorar a rota num ponto
+// FIXO anterior -- ex. desvio_inicio ou origem_celula -- nao na posicao
+// atual) antes de reativar.
+const CAMADA_CORREDOR_ATIVA = false;
 // Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
 // suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
 // confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
