@@ -71,15 +71,16 @@ function mockOsrmGeojson(coords: [number, number][]) {
   };
 }
 
-describe("verificarCorredor (fetch mockado)", () => {
+describe("verificarCorredor (fetch mockado, origem FIXA != posicao atual)", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it("veiculo em cima da rota OSRM ate um destino: dentro + retorna o corredor", async () => {
+  it("veiculo em cima da rota (origem->destino) na posicao atual: dentro + retorna o corredor", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       mockOsrmGeojson([[-43.20, -22.90], [-43.20, -22.895], [-43.20, -22.89]])
     ));
     const r = await verificarCorredor(
-      { lat: -22.895, lng: -43.20, velocidade: 40 },
+      { lat: -22.90, lng: -43.20 }, // origem: ponto fixo anterior (ex. desvio_inicio)
+      { lat: -22.895, lng: -43.20, velocidade: 40 }, // posicao atual, em cima da rota
       [{ lat: -22.89, lng: -43.20 }]
     );
     expect(r.veredito).toBe("dentro");
@@ -91,8 +92,27 @@ describe("verificarCorredor (fetch mockado)", () => {
       mockOsrmGeojson([[-43.20, -22.90], [-43.20, -22.89]])
     ));
     const r = await verificarCorredor(
+      { lat: -22.90, lng: -43.20 },
       { lat: -22.895, lng: -43.15, velocidade: 40 }, // ~5km da rota
       [{ lat: -22.89, lng: -43.20 }]
+    );
+    expect(r.veredito).toBe("fora");
+  });
+
+  it("regressao do bug tautologico (10/07): origem != posicao atual, rota nao passa perto da posicao atual -> fora, mesmo com origem valida", async () => {
+    // Antes do fix, a rota era tracada DA posicao atual, entao qualquer
+    // posicao sempre "estava em cima" da propria rota (distancia 0 do
+    // primeiro ponto). Aqui a rota sai de uma origem fixa e vai para o
+    // destino SEM passar perto de onde o veiculo esta agora -- se o bug
+    // tivesse voltado (posAtual usado como origem por engano), este teste
+    // veria "dentro" errado em vez de "fora".
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      mockOsrmGeojson([[-43.30, -23.00], [-43.25, -22.95], [-43.20, -22.90]])
+    ));
+    const r = await verificarCorredor(
+      { lat: -23.00, lng: -43.30 }, // origem: onde o veiculo estava confirmado antes
+      { lat: -22.50, lng: -42.50, velocidade: 40 }, // posicao atual, longe da rota real
+      [{ lat: -22.90, lng: -43.20 }]
     );
     expect(r.veredito).toBe("fora");
   });
@@ -100,6 +120,7 @@ describe("verificarCorredor (fetch mockado)", () => {
   it("OSRM e Valhalla mortos: indisponivel (fail-open, quem chama dispara como hoje)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
     const r = await verificarCorredor(
+      { lat: -22.90, lng: -43.20 },
       { lat: -22.895, lng: -43.20, velocidade: 40 },
       [{ lat: -22.89, lng: -43.20 }]
     );
@@ -107,7 +128,7 @@ describe("verificarCorredor (fetch mockado)", () => {
   });
 
   it("sem destinos: indisponivel (nada pra verificar)", async () => {
-    const r = await verificarCorredor({ lat: -22.9, lng: -43.2, velocidade: 40 }, []);
+    const r = await verificarCorredor({ lat: -22.9, lng: -43.2 }, { lat: -22.9, lng: -43.2, velocidade: 40 }, []);
     expect(r.veredito).toBe("indisponivel");
   });
 });

@@ -100,16 +100,23 @@ async function rotaValhalla(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
   return pontos.length >= 2 ? pontos : null;
 }
 
-// Traça rota da posição atual até cada destino candidato (com throttle e
-// failover OSRM->Valhalla) e responde se o veículo está em cima de alguma
-// estrada que leva a um destino legítimo. destinos: até 3 mais próximos,
-// o CHAMADOR corta.
+// Traça rota de um PONTO FIXO ANTERIOR (origem — ex. onde o veículo estava
+// confirmado no trajeto antes da suspeita de desvio começar) até cada
+// destino candidato, e responde se a POSIÇÃO ATUAL do veículo está em cima
+// dessa estrada. CRÍTICO: origem precisa ser um ponto do PASSADO, nunca a
+// posição atual — se a rota fosse traçada a partir de onde o veículo está
+// agora, a checagem seria tautológica (toda rota começa no seu próprio
+// ponto de partida, então "estou perto da rota que sai de mim mesmo" dá
+// sempre verdadeiro, não importa o quão desviado o veículo esteja de
+// verdade). Achado ao vivo 10/07, ver docs/analise-deteccao.md secao 7.6.
+// destinos: até 3 mais próximos, o CHAMADOR corta.
 export async function verificarCorredor(
-  pos: Ponto & { velocidade: number },
+  origem: Ponto,
+  posAtual: Ponto & { velocidade: number },
   destinos: Ponto[]
 ): Promise<{ veredito: "dentro" | "fora" | "indisponivel"; corredor: Ponto[] | null }> {
   if (destinos.length === 0) return { veredito: "indisponivel", corredor: null };
-  const buffer = bufferPorVelocidade(pos.velocidade);
+  const buffer = bufferPorVelocidade(posAtual.velocidade);
   const inicio = Date.now();
   let alguma = false;
 
@@ -117,13 +124,13 @@ export async function verificarCorredor(
     if (Date.now() - inicio > DEADLINE_VERIFICACAO_MS) break;
     await esperarVaga();
     let rota: Ponto[] | null = null;
-    try { rota = await rotaOSRM(pos, destino); } catch { /* failover abaixo */ }
+    try { rota = await rotaOSRM(origem, destino); } catch { /* failover abaixo */ }
     if (!rota) {
-      try { rota = await rotaValhalla(pos, destino); } catch { /* segue */ }
+      try { rota = await rotaValhalla(origem, destino); } catch { /* segue */ }
     }
     if (!rota) continue;
     alguma = true;
-    if (dentroDoCorredor(pos, rota, buffer)) {
+    if (dentroDoCorredor(posAtual, rota, buffer)) {
       return { veredito: "dentro", corredor: rota };
     }
   }

@@ -78,25 +78,27 @@ const CACHE_TAPETE_MS = 3 * 60_000;
 const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
 
 // ─── Verificação por corredor real (ver lib/corredor-verificacao.ts) ────
-// DESATIVADA 10/07 (achado ao vivo, ver docs/analise-deteccao.md secao 7.6):
-// verificarCorredor tracava a rota da POSICAO ATUAL ate o destino e depois
+// REDESENHADA 10/07 apos incidente (ver docs/analise-deteccao.md secao 7.6):
+// versao original tracava a rota da POSICAO ATUAL ate o destino e depois
 // checava se a posicao atual estava perto dessa mesma rota -- tautologico,
 // SEMPRE "dentro" (a rota comeca onde o veiculo esta). Suprimiu quase todo
-// desvio real do dia inteiro (108 veiculos/332 alertas em 09/07 sem o
-// corredor rodando full-day vs 15 alertas, todos num unico burst de ~3min,
-// em 10/07 com o corredor ativo o dia todo -- resto do dia zerado apesar
-// de frota em movimento). Precisa de redesenho (ancorar a rota num ponto
-// FIXO anterior -- ex. desvio_inicio ou origem_celula -- nao na posicao
-// atual) antes de reativar.
-const CAMADA_CORREDOR_ATIVA = false;
+// desvio real por 11h+ (108 veiculos/332 alertas em 09/07 sem o corredor
+// rodando full-day vs so 15 alertas, todos num unico burst de ~3min, em
+// 10/07 com o corredor ativo o dia todo). Fix: a rota agora sai de
+// desvioInicio (ponto FIXO, ultima posicao confirmada ANTES da suspeita de
+// desvio comecar), nunca da posicao atual -- ver verificarCorredor().
+const CAMADA_CORREDOR_ATIVA = true;
 // Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
 // suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
 // confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
 // confirmar — conserta o marcador de início errado reportado pela operação).
+// origemTs amarra o cache a UM episodio de desvio (desvioInicio.ts) -- um
+// novo episodio (novo desvioInicio) nunca reaproveita a polilinha antiga.
 type CorredorCache = {
   polilinha: { lat: number; lng: number }[];
   ultimoDentro: { lat: number; lng: number };
   pendentesChave: string;
+  origemTs: string;
   expiraEm: number;
 };
 const CORREDOR_CACHE_MS = 15 * 60_000;
@@ -1142,9 +1144,14 @@ export async function POST(request: Request) {
 
           // ─── Verificação por corredor real (Camada 1 do desvio) ─────────
           // Só intercepta desvio comportamental ("Afastando-se..."), nunca
-          // pânico/jammer/etc. Fluxo: cache primeiro (zero API); sem cache
-          // ou fora dele, verifica com OSRM/Valhalla (throttled, orçamento
-          // por ciclo). "dentro" = veículo está numa estrada que leva a um
+          // pânico/jammer/etc. A rota SEMPRE sai de desvioInicio (ponto FIXO,
+          // anterior ao início da suspeita) até o destino -- NUNCA da posição
+          // atual (ver comentário em verificarCorredor sobre o incidente de
+          // 10/07). Sem desvioInicio ainda gravado, não dá pra verificar:
+          // deixa passar como hoje (fail-open). Fluxo: cache primeiro (zero
+          // API); sem cache ou fora dele, verifica com OSRM/Valhalla
+          // (throttled, orçamento por ciclo). "dentro" = a posição atual está
+          // numa estrada real que sai de onde o desvio começou e leva a um
           // destino legítimo: suprime e zera o streak. "fora" = confirma, e
           // o início real do desvio é onde saiu do corredor. "indisponivel"
           // = comporta exatamente como hoje (fail-open).
@@ -1152,11 +1159,17 @@ export async function POST(request: Request) {
             CAMADA_CORREDOR_ATIVA &&
             alerta?.tipo === "desvio" &&
             alerta.motivo.startsWith("Afastando-se") &&
-            pos.fresco
+            pos.fresco &&
+            desvioInicio
           ) {
+            const origem = { lat: desvioInicio.lat, lng: desvioInicio.lng };
             const pendentesChave = pendentes.map((pt) => pt.codigo ?? `${pt.lat},${pt.lng}`).sort().join(",");
             const cache = cacheCorredorPorVeiculo.get(veiculo_id);
-            const cacheValido = cache && cache.expiraEm > Date.now() && cache.pendentesChave === pendentesChave;
+            const cacheValido =
+              cache &&
+              cache.expiraEm > Date.now() &&
+              cache.pendentesChave === pendentesChave &&
+              cache.origemTs === desvioInicio.ts;
 
             if (cacheValido && cache && dentroDoCorredor(pos, cache.polilinha, bufferPorVelocidade(pos.velocidade))) {
               // Continua na estrada já confirmada: suprime sem API.
@@ -1171,12 +1184,13 @@ export async function POST(request: Request) {
                 .sort((a, b) => a.dist - b.dist)
                 .slice(0, 3)
                 .map((x) => x.d);
-              const r = await verificarCorredor({ lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);
+              const r = await verificarCorredor(origem, { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);
               if (r.veredito === "dentro" && r.corredor) {
                 cacheCorredorPorVeiculo.set(veiculo_id, {
                   polilinha: r.corredor,
                   ultimoDentro: { lat: pos.lat, lng: pos.lng },
                   pendentesChave,
+                  origemTs: desvioInicio.ts,
                   expiraEm: Date.now() + CORREDOR_CACHE_MS,
                 });
                 alerta = null;
