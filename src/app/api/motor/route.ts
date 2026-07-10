@@ -1162,6 +1162,7 @@ export async function POST(request: Request) {
           // destino legítimo: suprime e zera o streak. "fora" = confirma, e
           // o início real do desvio é onde saiu do corredor. "indisponivel"
           // = comporta exatamente como hoje (fail-open).
+          let corredorInfo: { veredito: "dentro" | "fora" | "indisponivel" | "orcamento_estourado"; bufferM: number } | null = null;
           if (
             CAMADA_CORREDOR_ATIVA &&
             alerta?.tipo === "desvio" &&
@@ -1181,17 +1182,20 @@ export async function POST(request: Request) {
             if (cacheValido && cache && dentroDoCorredor(pos, cache.polilinha, bufferPorVelocidade(pos.velocidade))) {
               // Continua na estrada já confirmada: suprime sem API.
               cache.ultimoDentro = { lat: pos.lat, lng: pos.lng };
+              corredorInfo = { veredito: "dentro", bufferM: bufferPorVelocidade(pos.velocidade) };
               alerta = null;
               desvioStreak = 0;
               desvioInicio = null;
             } else if (verificacoesCorredorNoCiclo < MAX_VERIFICACOES_POR_CICLO) {
               verificacoesCorredorNoCiclo++;
+              const bufferAtual = bufferPorVelocidade(pos.velocidade);
               const candidatos = [...destinos]
                 .map((d) => ({ d, dist: haversineM(pos.lat, pos.lng, d.lat, d.lng) }))
                 .sort((a, b) => a.dist - b.dist)
                 .slice(0, 3)
                 .map((x) => x.d);
               const r = await verificarCorredor(origem, { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);
+              corredorInfo = { veredito: r.veredito, bufferM: bufferAtual };
               if (r.veredito === "dentro" && r.corredor) {
                 cacheCorredorPorVeiculo.set(veiculo_id, {
                   polilinha: r.corredor,
@@ -1216,8 +1220,12 @@ export async function POST(request: Request) {
                 cacheCorredorPorVeiculo.delete(veiculo_id);
               }
               // "indisponivel": deixa o alerta seguir como hoje (fail-open).
+            } else {
+              // Orçamento estourado: deixa o alerta seguir como hoje (fail-open),
+              // so registra que aconteceu (achado real 10/07: antes disso nao
+              // ficava nenhum rastro de que o alerta passou sem verificacao).
+              corredorInfo = { veredito: "orcamento_estourado", bufferM: bufferPorVelocidade(pos.velocidade) };
             }
-            // Orçamento estourado: deixa o alerta seguir como hoje.
           }
 
           // Novos detectores: retorno_tardio, parada_noturna_ignicao, aceleracao_brusca.
@@ -1362,7 +1370,11 @@ export async function POST(request: Request) {
                   lat: ehDesvio ? desvioInicio!.lat : pos.lat,
                   lng: ehDesvio ? desvioInicio!.lng : pos.lng,
                   contexto: ehDesvio
-                    ? { inicio_ts: desvioInicio!.ts, fora_tapete: dentroTapete === false }
+                    ? {
+                        inicio_ts: desvioInicio!.ts,
+                        fora_tapete: dentroTapete === false,
+                        ...(corredorInfo ? { corredor: corredorInfo } : {}),
+                      }
                     : {},
                   desde: agora.toISOString(),
                 });
