@@ -8,7 +8,7 @@
 //
 // Nao mexe em banco de dados — funcoes puras, dado 100% sintetico.
 import { describe, it, expect } from "vitest";
-import { detectarDesvio, afastouDeTudo, calcularRiscoArea, type CtxDesvio } from "./detectores";
+import { detectarDesvio, afastouDeTudo, avancarStreaksDesvio, calcularRiscoArea, type CtxDesvio } from "./detectores";
 import { haversineM } from "./unitrac";
 import type { PosicaoNormalizada } from "./unitrac";
 
@@ -51,10 +51,16 @@ function aproximarDe(origem: { lat: number; lng: number }, destino: { lat: numbe
 }
 
 // Simula uma sequencia de ciclos do motor pra UM veiculo indo em direcao a
-// UM destino fixo, acumulando streak/afastamento exatamente como motor.ts
-// faz — mas aqui em memoria, sem tocar em banco nem em Supabase.
+// UM destino fixo, acumulando streak/afastamento com a HISTERESE REAL
+// (avancarStreaksDesvio) -- mesma funcao pura usada por route.ts, nao mais
+// uma reimplementacao simplificada. Achado real 10/07 (auditoria de teste):
+// a versao anterior zerava o streak na hora ao primeiro sinal de
+// aproximacao, diferente da producao (so 2 leituras CONSECUTIVAS zeram, 1
+// isolada congela) -- os "cenarios reais" deste arquivo nao validavam a
+// historese de verdade. Em memoria, sem tocar em banco nem em Supabase.
 function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (ReturnType<typeof detectarDesvio>)[] {
-  let streak = 0;
+  let desvioStreak = 0;
+  let aproximandoStreak = 0;
   let menorDistInicio = 0;
   let anteriorDist: number[] | null = null;
   const resultados: ReturnType<typeof detectarDesvio>[] = [];
@@ -64,15 +70,15 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
     const distDestinosM = [haversineM(c.lat, c.lng, destino.lat, destino.lng)];
 
     if (anteriorDist && velocidade > 0) {
-      if (afastouDeTudo(distDestinosM, anteriorDist)) {
-        streak += 1;
-        if (streak === 1) menorDistInicio = Math.min(...anteriorDist);
-      } else {
-        streak = 0;
+      const r = avancarStreaksDesvio(afastouDeTudo(distDestinosM, anteriorDist), { desvioStreak, aproximandoStreak });
+      if (r.desvioStreak === 1 && desvioStreak === 0) {
+        menorDistInicio = Math.min(...anteriorDist);
       }
+      desvioStreak = r.desvioStreak;
+      aproximandoStreak = r.aproximandoStreak;
     }
     const menorAgora = Math.min(...distDestinosM);
-    const afastamentoAcumuladoM = streak > 0 ? menorAgora - menorDistInicio : 0;
+    const afastamentoAcumuladoM = desvioStreak > 0 ? menorAgora - menorDistInicio : 0;
 
     const ctx: CtxDesvio = {
       distDestinosM,
@@ -81,7 +87,7 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
       emOperacao: true,
       foraDaBase: true,
       entregasFeitas: 2,
-      streak,
+      streak: desvioStreak,
       afastamentoAcumuladoM,
       dentroTapete: c.dentroTapete ?? null,
       riscoAreaAtual: c.riscoAreaAtual ?? 0,
@@ -173,14 +179,38 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados.every(r => r === null)).toBe(true);
   });
 
-  it("CORRECAO DE ROTA: ciclo se afastando, depois volta a se aproximar — streak zera e NAO dispara", () => {
+  it("CORRECAO DE ROTA: ciclo se afastando, depois volta a se aproximar — streak nao dispara (poucos ciclos pra completar a historese)", () => {
+    // Com a historese real (avancarStreaksDesvio), 1 aproximacao isolada
+    // CONGELA o streak em vez de zerar -- mas com so 3 ciclos aqui, o streak
+    // nunca chega a 2 de qualquer forma (congelado em 1). O teste dedicado
+    // de historese abaixo ("cenario de serra via simular()") e o que prova
+    // a diferenca de comportamento com mais ciclos.
     const ciclos: Ciclo[] = [
       { ...MANGUINHOS, dentroTapete: true },
       { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true }, // afasta (streak=1, ainda nao dispara)
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.005), dentroTapete: true }, // se aproxima de novo (metade do afastamento anterior) -> reseta
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.005), dentroTapete: true }, // se aproxima de novo (metade do afastamento anterior) -> congela em 1
     ];
     const resultados = simular(REALENGO, ciclos);
     expect(resultados.every(r => r === null)).toBe(true);
+  });
+
+  it("cenario de serra via simular(): 1 aproximacao isolada (curva) NAO reseta o streak -- dispara 1 ciclo mais cedo do que a reimplementacao simplificada disparava", () => {
+    // Achado real 09/07 (docs/analise-deteccao.md secao 5): em estrada de
+    // serra a distancia em linha reta oscila a cada curva. A reimplementacao
+    // simplificada que este arquivo usava ate 10/07 zerava o streak nesse
+    // ciclo 2, exigindo 2 ciclos NOVOS de afastamento pra disparar de novo
+    // (so no ciclo 4). Com a historese real, o streak congela no ciclo 2 e
+    // so precisa de MAIS 1 ciclo de afastamento pra disparar -- no ciclo 3.
+    const ciclos: Ciclo[] = [
+      { ...MANGUINHOS, dentroTapete: true },                              // 0: baseline
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true },   // 1: afasta -> streak 1
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.007), dentroTapete: true },  // 2: curva (mais perto que o ciclo 1) -> congela em 1, NAO zera
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true },   // 3: afasta de novo -> streak 2, DISPARA aqui
+    ];
+    const resultados = simular(REALENGO, ciclos);
+    expect(resultados[1]).toBeNull();
+    expect(resultados[2]).toBeNull(); // congelado em 1, ainda nao dispara
+    expect(resultados[3]?.score).toBe(45); // streak chegou a 2 -- deteccao rapida, nao atrasada
   });
 
   it("RUIDO DE GPS de 1 ciclo isolado (jitter): nao acumula streak suficiente, nao dispara", () => {
