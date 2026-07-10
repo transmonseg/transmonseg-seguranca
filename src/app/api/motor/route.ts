@@ -688,11 +688,25 @@ export async function POST(request: Request) {
         .filter(([, v]) => v.cliente_id === cliente.id && !(v.grupo && GRUPOS_SEM_GPS.has(v.grupo)))
         .map(([cv]) => cv);
 
-      // 4a. Buscar posicoes do cliente
+      // 4a/4b. Buscar posicoes E alvos do cliente EM PARALELO -- achado real
+      // 10/07 (investigacao de lentidao do ciclo): as duas chamadas sao
+      // independentes uma da outra, mas rodavam em sequencia (ate 20s de
+      // timeout CADA uma), contribuindo pro ciclo estourar 30s e o proximo
+      // disparo ser pulado ("ciclo anterior ainda em execucao"). Promise.
+      // allSettled roda as duas ao mesmo tempo -- corta essa parte do ciclo
+      // por cliente pela metade no pior caso, sem mudar nenhuma logica de
+      // deteccao. NAO mexe no throttle do corredor (esse e limite real da
+      // politica publica do OSRM, 1 req/s -- acelerar quebraria o servico).
+      const [posicoesResultado, alvosResultado] = await Promise.allSettled([
+        buscarPosicoesComTimeout(cvsParaPosicoes),
+        buscarAlvosComTimeout(cvsCliente),
+      ]);
+
       let posicoesRaw: unknown[];
-      try {
-        posicoesRaw = await buscarPosicoesComTimeout(cvsParaPosicoes);
-      } catch (err) {
+      if (posicoesResultado.status === "fulfilled") {
+        posicoesRaw = posicoesResultado.value;
+      } else {
+        const err = posicoesResultado.reason;
         const isTimeout = err instanceof Error && err.name === "AbortError";
         const msg = isTimeout
           ? `Timeout (${TIMEOUT_UNITRAC_MS / 1000}s) ao buscar posicoes do cliente ${cliente.id}`
@@ -705,19 +719,17 @@ export async function POST(request: Request) {
       // Cliente processou posicoes com sucesso — marcar para filtro de favela.
       clientesComSucesso.add(cliente.id);
 
-      // 4b. Buscar alvos (entregas + pontos da rota) deste cliente
       let entregasPorPlaca = new Map<string, EntregasPlaca>();
       let pontosPorPlaca = new Map<string, PontoEntrega[]>();
       let alvosApiOk = false;
-      try {
-        const res = await buscarAlvosComTimeout(cvsCliente);
-        entregasPorPlaca = res.entregas;
-        pontosPorPlaca = res.pontos;
+      if (alvosResultado.status === "fulfilled") {
+        entregasPorPlaca = alvosResultado.value.entregas;
+        pontosPorPlaca = alvosResultado.value.pontos;
         alvosApiOk = true;
-      } catch (err) {
+      } else {
         // Nao-critico: mantemos os mapas vazios; alvosApiOk=false impede o
         // detector saida_nao_autorizada de disparar (evita falsos criticos em massa).
-        const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${String(err)}`;
+        const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${String(alvosResultado.reason)}`;
         console.warn(msg);
         erros.push(msg);
       }
