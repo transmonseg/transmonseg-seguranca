@@ -1003,7 +1003,7 @@ export async function POST(request: Request) {
           // fechava qualquer desvio ativo so por bater fora do horario
           // 6h-20h seg-sex, sem checar comportamento. emOperacao continua
           // controlando CRIACAO de alerta (detectarDesvio), nunca o fechamento.
-          const estaForaDeRota =
+          let estaForaDeRota =
             pos.fresco && foraDeRota(pos, { menorDistDestinoM, foraDaBase, aproximandoStreak });
 
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
@@ -1190,6 +1190,11 @@ export async function POST(request: Request) {
               alerta = null;
               desvioStreak = 0;
               desvioInicio = null;
+              // Achado real 10/07: antes disso, "dentro" so afetava o PROXIMO
+              // ciclo (via streak/desvioInicio zerados) -- o alerta ja aberto
+              // no banco continuava ativo ate bater alguma OUTRA regua de
+              // resolucao. Agora fecha no MESMO ciclo em que o corredor confirma.
+              estaForaDeRota = false;
             } else if (verificacoesCorredorNoCiclo < MAX_VERIFICACOES_POR_CICLO) {
               verificacoesCorredorNoCiclo++;
               const bufferAtual = bufferPorVelocidade(pos.velocidade);
@@ -1211,6 +1216,7 @@ export async function POST(request: Request) {
                 alerta = null;
                 desvioStreak = 0;
                 desvioInicio = null;
+                estaForaDeRota = false; // idem: fecha ja neste ciclo
               } else if (r.veredito === "fora") {
                 // Confirma o desvio. Início REAL: onde saiu do corredor.
                 if (cacheValido && cache) {
