@@ -441,6 +441,27 @@ export function afastouDeTudo(
   );
 }
 
+// Avanço dos streaks do desvio com HISTERESE (achado real 09/07, vídeo da
+// operação: desvio pra Xerém só pontuou lá em cima). Em estrada de serra a
+// distância em linha reta a um destino oscila a cada curva — zerar o streak
+// na primeira leitura de aproximação apagava a suspeita acumulada e o
+// alerta saía km depois do desvio começar. Agora: 1 leitura de aproximação
+// isolada CONGELA o streak (não zera, não incrementa); só 2 consecutivas
+// zeram — mesma régua de persistência usada pra disparar e pra resolver.
+export function avancarStreaksDesvio(
+  afastando: boolean,
+  atual: { desvioStreak: number; aproximandoStreak: number }
+): { desvioStreak: number; aproximandoStreak: number; zerou: boolean } {
+  if (afastando) {
+    return { desvioStreak: atual.desvioStreak + 1, aproximandoStreak: 0, zerou: false };
+  }
+  const aproximandoStreak = atual.aproximandoStreak + 1;
+  if (aproximandoStreak >= 2) {
+    return { desvioStreak: 0, aproximandoStreak, zerou: true };
+  }
+  return { desvioStreak: atual.desvioStreak, aproximandoStreak, zerou: false };
+}
+
 // Ciclos consecutivos de aproximação (sem afastar de TUDO) que já bastam pra
 // encerrar o alerta — mesmo limiar mínimo usado pra disparar (Camada 1),
 // pelo mesmo motivo: 1 leitura pode ser ruído/blip (inclusive um sequestro

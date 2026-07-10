@@ -12,6 +12,7 @@ import {
   calcularRiscoArea,
   RISCO_AREA_LIMIAR,
   afastouDeTudo,
+  avancarStreaksDesvio,
   detectarTiroteioProximo,
   detectarSaidaNaoAutorizada,
   foraDeRota,
@@ -527,6 +528,32 @@ describe("detectarTiroteioProximo", () => {
   });
   it("posicao nao fresca nao aciona (sem posicao confiavel)", () => {
     expect(detectarTiroteioProximo(posicaoBase({ fresco: false }), { distTiroteioM: 500, tiroteioIdadeMin: 5 })).toBeNull();
+  });
+});
+
+describe("avancarStreaksDesvio (histerese: 1 aproximacao congela, 2 zeram)", () => {
+  it("afastando: incrementa desvioStreak e zera aproximandoStreak", () => {
+    expect(avancarStreaksDesvio(true, { desvioStreak: 2, aproximandoStreak: 1 }))
+      .toEqual({ desvioStreak: 3, aproximandoStreak: 0, zerou: false });
+  });
+
+  it("1 leitura de aproximacao isolada: CONGELA o desvioStreak (nao zera, nao incrementa)", () => {
+    expect(avancarStreaksDesvio(false, { desvioStreak: 3, aproximandoStreak: 0 }))
+      .toEqual({ desvioStreak: 3, aproximandoStreak: 1, zerou: false });
+  });
+
+  it("2 leituras consecutivas de aproximacao: zera o desvioStreak", () => {
+    expect(avancarStreaksDesvio(false, { desvioStreak: 3, aproximandoStreak: 1 }))
+      .toEqual({ desvioStreak: 0, aproximandoStreak: 2, zerou: true });
+  });
+
+  it("cenario de serra (afasta, afasta, aproxima 1x por curva, afasta): acumula em vez de recomecar", () => {
+    let s: { desvioStreak: number; aproximandoStreak: number } = { desvioStreak: 0, aproximandoStreak: 0 };
+    s = avancarStreaksDesvio(true, s);   // 1
+    s = avancarStreaksDesvio(true, s);   // 2
+    s = avancarStreaksDesvio(false, s);  // curva: congela em 2
+    s = avancarStreaksDesvio(true, s);   // 3 -- antes da histerese seria 1
+    expect(s.desvioStreak).toBe(3);
   });
 });
 
