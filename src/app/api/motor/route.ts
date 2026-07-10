@@ -18,6 +18,7 @@ import {
   detectarJammer,
   foraDeRota,
   afastouDeTudo,
+  avancarStreaksDesvio,
   emHorarioOperacao,
   detectarRetornoTardio,
   detectarParadaNoturnaIgnicaoAtiva,
@@ -851,27 +852,28 @@ export async function POST(request: Request) {
 
           let desvioStreak: number = anterior?.desvio_streak ?? 0;
           let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
-          // Ciclos consecutivos aproximando (sem afastar de tudo) — mesma
-          // régua do disparo, usada agora tambem pra RESOLVER o alerta (ver
-          // foraDeRota em detectores.ts, achado real TUL-1C38 09/07/2026).
+          // aproximandoStreak: ciclos consecutivos aproximando (sem afastar
+          // de tudo) — usado pra RESOLVER o alerta (foraDeRota, TUL-1C38) e
+          // pra HISTERESE do streak (avancarStreaksDesvio: 1 aproximação
+          // isolada congela a suspeita em vez de apagar, 2 zeram — mata a
+          // detecção tardia em estrada de serra onde a linha reta oscila).
           let aproximandoStreak: number = anterior?.aproximando_streak ?? 0;
           if (pos.fresco && !saltoImplausivel && pos.velocidade > 0 && temAnterior) {
-            if (afastouDeTudo(distDestinosM, distDestinosAnteriorM)) {
-              desvioStreak += 1;
-              if (desvioStreak === 1) {
-                desvioInicio = {
-                  lat: anterior!.lat!,
-                  lng: anterior!.lng!,
-                  ts: agora.toISOString(),
-                  menor_dist_m: distDestinosAnteriorM.length > 0 ? Math.min(...distDestinosAnteriorM) : 0,
-                };
-              }
-              aproximandoStreak = 0;
-            } else {
-              desvioStreak = 0;
-              desvioInicio = null;
-              aproximandoStreak += 1;
+            const r = avancarStreaksDesvio(
+              afastouDeTudo(distDestinosM, distDestinosAnteriorM),
+              { desvioStreak, aproximandoStreak }
+            );
+            if (r.desvioStreak === 1 && desvioStreak === 0) {
+              desvioInicio = {
+                lat: anterior!.lat!,
+                lng: anterior!.lng!,
+                ts: agora.toISOString(),
+                menor_dist_m: distDestinosAnteriorM.length > 0 ? Math.min(...distDestinosAnteriorM) : 0,
+              };
             }
+            if (r.zerou) desvioInicio = null;
+            desvioStreak = r.desvioStreak;
+            aproximandoStreak = r.aproximandoStreak;
           }
           const afastamentoAcumuladoM =
             desvioInicio && menorDistDestinoM !== null
