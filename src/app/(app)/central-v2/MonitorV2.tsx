@@ -172,20 +172,44 @@ function fmtDist(m: number): string {
   return `${(m / 1000).toFixed(1).replace(".", ",")}km`;
 }
 
-// Ponto de entrega (qualquer status -- pendente, feito ou "esteve no local")
-// mais proximo da posicao atual. So informativo (ver renderDrawer "Parado no
-// cliente"): pedido do cliente 09/07 apos investigar alertas de desvio
-// travados em veiculos parados -- ajuda o operador a ver rapido se o
-// veiculo esta perto de algum ponto conhecido, sem o sistema decidir nada.
+// Acima disso (m), dois pontos com distancia parecida à posição não contam
+// como "poderia ser qualquer um dos dois" — GPS comum tem uns 10-15m de
+// erro; o dobro dá folga sem soar ambíguo à toa. Achado real (09/07,
+// pesquisado a pedido do cliente): raro (2 de 309 pares de pontos
+// comparados), mas quando acontece é grave — dois clientes a só 2m um do
+// outro, GPS não distingue de jeito nenhum.
+const MARGEM_AMBIGUIDADE_M = 30;
+
+// Ponto(s) de entrega (qualquer status -- pendente, feito ou "esteve no
+// local") mais próximo(s) da posição atual. So informativo (ver
+// renderDrawer "Parado no cliente"): pedido do cliente 09/07 apos
+// investigar alertas de desvio travados em veículos parados -- ajuda o
+// operador a ver rápido se o veículo está perto de algum ponto conhecido,
+// sem o sistema decidir nada. Quando 2+ pontos DIFERENTES (pontoCodigo
+// distinto) ficam a distância parecida da posição, retorna TODOS eles em
+// vez de escolher 1 arbitrariamente — não dá pra saber qual é de verdade
+// só pela distância.
 function pontoMaisProximoQualquer(
   lat: number, lng: number, pontos: PontoEntrega[]
-): { ponto: PontoEntrega; distM: number } | null {
-  let melhor: { ponto: PontoEntrega; distM: number } | null = null;
+): { candidatos: { ponto: PontoEntrega; distM: number }[] } | null {
+  // Deduplica por ponto/endereço — várias NFs (alvos) podem compartilhar o
+  // mesmo pontoCodigo; isso não é ambiguidade, é o mesmo lugar.
+  const porPonto = new Map<string, PontoEntrega>();
   for (const p of pontos) {
-    const d = haversineM(lat, lng, p.lat, p.lng);
-    if (!melhor || d < melhor.distM) melhor = { ponto: p, distM: d };
+    const chave = p.pontoCodigo != null ? `pc:${p.pontoCodigo}` : `xy:${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
+    if (!porPonto.has(chave)) porPonto.set(chave, p);
   }
-  return melhor;
+  const distancias = [...porPonto.values()]
+    .map(ponto => ({ ponto, distM: haversineM(lat, lng, ponto.lat, ponto.lng) }))
+    .sort((a, b) => a.distM - b.distM);
+  if (distancias.length === 0) return null;
+
+  const candidatos = [distancias[0]];
+  for (let i = 1; i < distancias.length; i++) {
+    if (distancias[i].distM - distancias[0].distM <= MARGEM_AMBIGUIDADE_M) candidatos.push(distancias[i]);
+    else break;
+  }
+  return { candidatos };
 }
 
 // ── Foco de veiculo (selecao + rastro/paradas/alvos + comandos + camera) ──
@@ -1481,11 +1505,16 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             ...(painel.vmAtual?.velocidade === 0 && painel.paradoMin != null
               ? [{
                   label: "PARADO",
-                  value: painel.pontoMaisProximo
-                    ? `${painel.paradoMin}min · ${fmtDist(painel.pontoMaisProximo.distM)} de ${painel.pontoMaisProximo.ponto.nome || "ponto"}`
-                    : `${painel.paradoMin}min`,
+                  value: !painel.pontoMaisProximo
+                    ? `${painel.paradoMin}min`
+                    : painel.pontoMaisProximo.candidatos.length === 1
+                      ? `${painel.paradoMin}min · ${fmtDist(painel.pontoMaisProximo.candidatos[0].distM)} de ${painel.pontoMaisProximo.candidatos[0].ponto.nome || "ponto"}`
+                      // 2+ pontos a distancia parecida: nao dá pra saber qual é
+                      // so pela distância (ver MARGEM_AMBIGUIDADE_M) — mostra
+                      // todos em vez de escolher 1 arbitrariamente.
+                      : `${painel.paradoMin}min · pode ser: ${painel.pontoMaisProximo.candidatos.map(c => c.ponto.nome || "ponto").join(" ou ")}`,
                   wide: true,
-                  color: painel.pontoMaisProximo && painel.pontoMaisProximo.distM <= 500 ? T.green : undefined,
+                  color: painel.pontoMaisProximo && painel.pontoMaisProximo.candidatos[0].distM <= 500 ? T.green : undefined,
                 }]
               : []),
           ].map((item, i, arr) => (
@@ -1646,8 +1675,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     seguir: painel1.seguir,
     desvioInicio: painel1.desvioSelecionado,
     pontoDestaque: painel1.vmAtual?.velocidade === 0 && painel1.pontoMaisProximo
-      ? { lat: painel1.pontoMaisProximo.ponto.lat, lng: painel1.pontoMaisProximo.ponto.lng, raio: painel1.pontoMaisProximo.ponto.raio, distM: painel1.pontoMaisProximo.distM }
-      : null,
+      ? painel1.pontoMaisProximo.candidatos.map(c => ({ lat: c.ponto.lat, lng: c.ponto.lng, raio: c.ponto.raio, distM: c.distM }))
+      : undefined,
     rastro: painel1.rastro,
     paradas: painel1.paradas,
     alvos: painel1.alvosEfetivos,
@@ -1663,8 +1692,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     seguir: painel2.seguir,
     desvioInicio: painel2.desvioSelecionado,
     pontoDestaque: painel2.vmAtual?.velocidade === 0 && painel2.pontoMaisProximo
-      ? { lat: painel2.pontoMaisProximo.ponto.lat, lng: painel2.pontoMaisProximo.ponto.lng, raio: painel2.pontoMaisProximo.ponto.raio, distM: painel2.pontoMaisProximo.distM }
-      : null,
+      ? painel2.pontoMaisProximo.candidatos.map(c => ({ lat: c.ponto.lat, lng: c.ponto.lng, raio: c.ponto.raio, distM: c.distM }))
+      : undefined,
     rastro: painel2.rastro,
     paradas: painel2.paradas,
     alvos: painel2.alvosEfetivos,

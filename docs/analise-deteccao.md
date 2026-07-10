@@ -343,3 +343,31 @@ círculo do raio real da Unitrac no mapa. Reaproveita dado já buscado
 (`parado_desde`, alvos já carregados no drawer) — zero fetch novo, zero
 mudança de detecção. Puramente pra dar contexto visual rápido pro operador
 decidir, sem o sistema confirmar nada sozinho.
+
+**Refinamento (mesmo dia): pontos de entrega muito próximos podem ser
+ambíguos.** Puxando 309 pares de pontos DIFERENTES (pontoCodigo distinto) de
+15 veículos reais: só 2 pares têm o raio se tocando (0,6%, raro), mas um
+deles é grave — dois clientes a **2 metros** um do outro, distância que
+nenhum GPS comum distingue. `pontoMaisProximoQualquer` agora deduplica por
+ponto/endereço (várias NFs no mesmo endereço não contam como ambíguo) e,
+quando 2+ pontos DIFERENTES ficam a distância parecida da posição
+(margem de 30m, o dobro do erro típico de GPS), retorna TODOS os candidatos
+em vez de escolher 1 arbitrariamente — o card mostra "pode ser: X ou Y" e o
+mapa desenha um círculo pra cada. Mesma cautela de sempre: informação, não
+decisão automática.
+
+### 7.5 Rastro lento e perímetro só no ponto mais próximo — corrigido
+
+Achado real: o teto de correção do rastro (subido pra 350 na seção 7.3) fez
+o TEMPO de resposta piorar bastante pra veículos com muitos saltos de GPS —
+TTK-4D15 (322 saltos em 24h) levava **12,7 segundos** só no ajuste de rua
+(OSRM), sentido como "demora muito" ao clicar no veículo. Fix: `/api/rastro`
+ganhou `?bruto=1` (pula o ajuste, só remove picos de GPS) — o front busca o
+bruto primeiro (aparece em ~1,3s, medido ao vivo) e o ajustado em paralelo
+por fora do carregamento principal, trocando sozinho quando terminar.
+
+Também: o círculo de perímetro (7.4) só aparecia no ponto mais próximo de um
+veículo parado. Agora aparece em QUALQUER ponto de entrega ao dar zoom de
+rua (nível 15+), cor conforme o status (pendente/entregue/outro) — pedido
+do cliente pra poder conferir o perímetro de qualquer cliente na rota, não
+só o mais próximo.

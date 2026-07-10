@@ -93,7 +93,10 @@ export interface Props {
   // status) — desenha um círculo do raio real da Unitrac ao redor, pra dar
   // contexto visual de "ele tá mesmo perto de um cliente conhecido?" sem o
   // sistema decidir nada (pedido do cliente 09/07).
-  pontoDestaque?: { lat: number; lng: number; raio: number; distM: number } | null;
+  // Array porque pode haver 2+ pontos ambíguos a distância parecida da
+  // posição (ver MARGEM_AMBIGUIDADE_M em MonitorV2.tsx) — desenha 1 círculo
+  // por candidato em vez de escolher 1 arbitrariamente.
+  pontoDestaque?: { lat: number; lng: number; raio: number; distM: number }[];
   seguir: boolean;
   gatilhoFrota: number;
   flyPara: { lat: number; lng: number; gatilho: number } | null;
@@ -786,15 +789,18 @@ export default function MapaLeafletV2({
         </>
       )}
 
-      {/* ── Perímetro do ponto de entrega mais próximo do veículo PARADO ──
-          Contexto visual: "ele tá mesmo perto de um cliente conhecido?" —
-          nunca decide nada, so ajuda o operador a ver de cara (pedido do
-          cliente 09/07). So desenha se estiver "perto o bastante" pra fazer
-          sentido (senao um circulo a 26km de distancia so polui o mapa). */}
-      {cvSelecionado && pontoDestaque && pontoDestaque.distM <= 3000 && (
+      {/* ── Perímetro do(s) ponto(s) de entrega mais próximo(s) do veículo
+          PARADO ── Contexto visual: "ele tá mesmo perto de um cliente
+          conhecido?" — nunca decide nada, so ajuda o operador a ver de cara
+          (pedido do cliente 09/07). So desenha se estiver "perto o
+          bastante" pra fazer sentido (senao um circulo a 26km de distancia
+          so polui o mapa). Pode ser mais de 1 (pontos ambíguos, distância
+          parecida — achado real 09/07: 2 clientes a só 2m um do outro). */}
+      {cvSelecionado && pontoDestaque?.filter(p => p.distM <= 3000).map((p, i) => (
         <Circle
-          center={{ lat: pontoDestaque.lat, lng: pontoDestaque.lng }}
-          radius={pontoDestaque.raio}
+          key={i}
+          center={{ lat: p.lat, lng: p.lng }}
+          radius={p.raio}
           options={{
             fillColor: "#22c55e",
             fillOpacity: 0.12,
@@ -805,7 +811,7 @@ export default function MapaLeafletV2({
             zIndex: 4,
           }}
         />
-      )}
+      ))}
 
       {/* ── Pontos de entrega (só quando há veículo selecionado) — agrupados por ponto ── */}
       {cvSelecionado && gruposAlvos.map(g => {
