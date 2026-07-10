@@ -624,14 +624,24 @@ describe("devAvancarStreaksDesvio (posicao congelada nao conta como aproximacao)
 describe("foraDeRota (v2: menor distancia a qualquer destino OU aproximacao sustentada)", () => {
   const p = posicaoBase();
   it("mantem alerta enquanto longe de todos os destinos e sem aproximacao sustentada", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 3000, emOperacao: true, foraDaBase: true, aproximandoStreak: 0 })).toBe(true);
+    expect(foraDeRota(p, { menorDistDestinoM: 3000, foraDaBase: true, aproximandoStreak: 0 })).toBe(true);
   });
   it("resolve quando volta a menos de 2,5km de algum destino", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 1000, emOperacao: true, foraDaBase: true, aproximandoStreak: 0 })).toBe(false);
+    expect(foraDeRota(p, { menorDistDestinoM: 1000, foraDaBase: true, aproximandoStreak: 0 })).toBe(false);
   });
-  it("resolve dentro da base ou fora de operacao", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: true, foraDaBase: false, aproximandoStreak: 0 })).toBe(false);
-    expect(foraDeRota(p, { menorDistDestinoM: 9000, emOperacao: false, foraDaBase: true, aproximandoStreak: 0 })).toBe(false);
+  it("resolve dentro da base", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 9000, foraDaBase: false, aproximandoStreak: 0 })).toBe(false);
+  });
+
+  // Achado real 10/07 (deep-dive de resolucao do alerta): !emOperacao fechava
+  // QUALQUER desvio ativo assim que a proxima posicao fresca chegasse fora
+  // do horario 6h-20h seg-sex (ou fim de semana), sem checar nenhum
+  // comportamento -- confirmado com dado real (3 alertas com <30min de vida
+  // fechados exatamente as 20h, so esse caminho explica). emOperacao
+  // continua controlando CRIACAO de alerta novo (detectarDesvio), nunca
+  // mais o fechamento -- removido do contrato de foraDeRota.
+  it("fora de horario de operacao NAO fecha mais sozinho (so o comportamento decide)", () => {
+    expect(foraDeRota(p, { menorDistDestinoM: 9000, foraDaBase: true, aproximandoStreak: 0 })).toBe(true);
   });
 
   // Achado real 09/07 (TUL-1C38, ver docs/analise-deteccao.md secao 7.2):
@@ -642,10 +652,10 @@ describe("foraDeRota (v2: menor distancia a qualquer destino OU aproximacao sust
   // (>=2 leituras consecutivas sem afastar de tudo) encerra o alerta, nao
   // precisa esperar chegar fisicamente perto.
   it("resolve com aproximacao sustentada (streak>=2) mesmo longe de tudo", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 8260, emOperacao: true, foraDaBase: true, aproximandoStreak: 2 })).toBe(false);
+    expect(foraDeRota(p, { menorDistDestinoM: 8260, foraDaBase: true, aproximandoStreak: 2 })).toBe(false);
   });
   it("NAO resolve com so 1 leitura de aproximacao (evita limpar alerta com 1 blip)", () => {
-    expect(foraDeRota(p, { menorDistDestinoM: 8260, emOperacao: true, foraDaBase: true, aproximandoStreak: 1 })).toBe(true);
+    expect(foraDeRota(p, { menorDistDestinoM: 8260, foraDaBase: true, aproximandoStreak: 1 })).toBe(true);
   });
 });
 

@@ -999,8 +999,12 @@ export async function POST(request: Request) {
               ? rumoGraus(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)
               : null;
           // Condição FROUXA de permanência (anti-pisca), agora incluindo bases.
+          // emOperacao NAO participa mais do fechamento (achado real 10/07):
+          // fechava qualquer desvio ativo so por bater fora do horario
+          // 6h-20h seg-sex, sem checar comportamento. emOperacao continua
+          // controlando CRIACAO de alerta (detectarDesvio), nunca o fechamento.
           const estaForaDeRota =
-            pos.fresco && foraDeRota(pos, { menorDistDestinoM, emOperacao, foraDaBase, aproximandoStreak });
+            pos.fresco && foraDeRota(pos, { menorDistDestinoM, foraDaBase, aproximandoStreak });
 
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;

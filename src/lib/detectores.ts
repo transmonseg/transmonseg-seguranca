@@ -521,12 +521,11 @@ export function foraDeRota(
   p: PosicaoNormalizada,
   ctx: {
     menorDistDestinoM: number | null;
-    emOperacao: boolean;
     foraDaBase: boolean;
     aproximandoStreak: number;
   }
 ): boolean {
-  if (!ctx.emOperacao || !ctx.foraDaBase) return false;
+  if (!ctx.foraDaBase) return false;
   if (ctx.aproximandoStreak >= APROXIMANDO_RESOLVE_STREAK) return false;
   if (ctx.menorDistDestinoM === null) return false;
   return ctx.menorDistDestinoM >= DESVIO_RESOLVE_M;
