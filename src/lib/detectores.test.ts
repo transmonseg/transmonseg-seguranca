@@ -364,6 +364,16 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.nivel).toBe("critico");
     expect(a?.score).toBe(80);
   });
+
+  it("alvosApiOk=false (falha da API /alvos): nao dispara mesmo afastando de tudo", () => {
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: true, alvosApiOk: false });
+    expect(a).toBeNull();
+  });
+
+  it("alvosApiOk indefinido (comportamento de hoje, API ok): dispara normalmente", () => {
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: true });
+    expect(a).not.toBeNull();
+  });
 });
 
 describe("detectarDesvio + Camada 3 (fora do tapete, DESATIVADA em 09/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {

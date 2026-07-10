@@ -348,6 +348,12 @@ export type CtxDesvio = {
   emOperacao: boolean;
   foraDaBase: boolean;
   entregasFeitas?: number;
+  // Quando a API /alvos falhou/deu timeout neste ciclo, destinos vira so
+  // bases pra TODOS os veiculos do cliente -- indistinguivel de "rota
+  // realmente sem pendencias". alvosApiOk=false bloqueia o disparo (mesmo
+  // tratamento que saida_nao_autorizada ja tem via alvosApiOk em route.ts).
+  // undefined = comportamento de hoje (API ok).
+  alvosApiOk?: boolean;
   // Ciclos consecutivos afastando-se de TUDO (motor incrementa e persiste).
   streak: number;
   // menorDist(agora) - menorDist(no início da sequência). Só informativo
@@ -499,6 +505,7 @@ export function foraDeRota(
 // destinos (não só o mais próximo), do tapete (via desconhecida, com
 // cobertura mínima confirmada) e da persistência (mata ruído de GPS).
 export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
+  if (ctx.alvosApiOk === false) return null;
   if (!ctx.emOperacao || !ctx.foraDaBase) return null;
   if (p.velocidade <= 0) return null;
   // Indo para a primeira entrega do dia: sem referência de comportamento ainda.
@@ -762,6 +769,7 @@ export function avaliarTodos(
           emOperacao: ctx.emOperacao,
           foraDaBase: ctx.foraDaBase,
           entregasFeitas: ctx.entregasFeitas,
+          alvosApiOk: ctx.alvosApiOk,
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
@@ -796,6 +804,7 @@ export function avaliar(
     temPendentes?: boolean;
     entregasTotal?: number;
     entregasFeitas?: number;
+    alvosApiOk?: boolean;
     rumoMovimento?: number | null;
     rumoBase?: number | null;
     distBaseM?: number | null;
@@ -864,6 +873,7 @@ export function avaliar(
           emOperacao: ctx.emOperacao,
           foraDaBase: ctx.foraDaBase,
           entregasFeitas: ctx.entregasFeitas,
+          alvosApiOk: ctx.alvosApiOk,
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,

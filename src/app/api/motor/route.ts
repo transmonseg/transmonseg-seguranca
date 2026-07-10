@@ -1128,6 +1128,7 @@ export async function POST(request: Request) {
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
+                  alvosApiOk,
                   rumoMovimento,
                   distTiroteioM,
                   tiroteioIdadeMin,
