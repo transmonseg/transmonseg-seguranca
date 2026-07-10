@@ -454,6 +454,31 @@ export function afastouDeTudo(
 // alerta saía km depois do desvio começar. Agora: 1 leitura de aproximação
 // isolada CONGELA o streak (não zera, não incrementa); só 2 consecutivas
 // zeram — mesma régua de persistência usada pra disparar e pra resolver.
+// Tolerancia de "jitter" normal de GPS parado -- abaixo disso, o veiculo
+// nao se moveu de verdade (nao e sinal de aproximacao nem de afastamento).
+const POSICAO_CONGELADA_M = 10;
+
+// Decide se o ciclo atual tem informacao NOVA o suficiente pra avancar os
+// streaks de desvio, ou se e um nao-evento que deve congelar tudo (mesmo
+// tratamento ja dado a saltoImplausivel). Achado real 10/07: se a posicao
+// trava entre ciclos (sinal ruim/bloqueado) mas a velocidade reportada
+// continua >0, afastouDeTudo() calcula "sem afastamento" (distancia nao
+// mudou) e a historese le isso como aproximacao -- em 2 ciclos zera o
+// streak E fecha um alerta ja ativo, exatamente o que um sequestro com
+// bloqueio de sinal faria parecer. distanciaAoAnteriorM=null (sem ciclo
+// anterior) tambem nao avanca -- nada a comparar ainda.
+export function devAvancarStreaksDesvio(ctx: {
+  fresco: boolean;
+  saltoImplausivel: boolean;
+  distanciaAoAnteriorM: number | null;
+  velocidade: number;
+}): boolean {
+  if (!ctx.fresco || ctx.saltoImplausivel) return false;
+  if (ctx.distanciaAoAnteriorM === null) return false;
+  if (ctx.distanciaAoAnteriorM < POSICAO_CONGELADA_M) return false;
+  return ctx.velocidade > 0;
+}
+
 export function avancarStreaksDesvio(
   afastando: boolean,
   atual: { desvioStreak: number; aproximandoStreak: number }

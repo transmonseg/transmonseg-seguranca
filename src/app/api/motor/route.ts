@@ -19,6 +19,7 @@ import {
   foraDeRota,
   afastouDeTudo,
   avancarStreaksDesvio,
+  devAvancarStreaksDesvio,
   emHorarioOperacao,
   detectarRetornoTardio,
   detectarParadaNoturnaIgnicaoAtiva,
@@ -904,7 +905,12 @@ export async function POST(request: Request) {
           // isolada congela a suspeita em vez de apagar, 2 zeram — mata a
           // detecção tardia em estrada de serra onde a linha reta oscila).
           let aproximandoStreak: number = anterior?.aproximando_streak ?? 0;
-          if (pos.fresco && !saltoImplausivel && pos.velocidade > 0 && temAnterior) {
+          if (devAvancarStreaksDesvio({
+            fresco: pos.fresco,
+            saltoImplausivel,
+            distanciaAoAnteriorM: temAnterior ? haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng) : null,
+            velocidade: pos.velocidade,
+          })) {
             const r = avancarStreaksDesvio(
               afastouDeTudo(distDestinosM, distDestinosAnteriorM),
               { desvioStreak, aproximandoStreak }

@@ -13,6 +13,7 @@ import {
   RISCO_AREA_LIMIAR,
   afastouDeTudo,
   avancarStreaksDesvio,
+  devAvancarStreaksDesvio,
   detectarTiroteioProximo,
   detectarSaidaNaoAutorizada,
   foraDeRota,
@@ -564,6 +565,41 @@ describe("avancarStreaksDesvio (histerese: 1 aproximacao congela, 2 zeram)", () 
     s = avancarStreaksDesvio(false, s);  // curva: congela em 2
     s = avancarStreaksDesvio(true, s);   // 3 -- antes da histerese seria 1
     expect(s.desvioStreak).toBe(3);
+  });
+});
+
+describe("devAvancarStreaksDesvio (posicao congelada nao conta como aproximacao)", () => {
+  it("posicao praticamente identica ao ciclo anterior (<10m): NAO avanca (congela)", () => {
+    expect(devAvancarStreaksDesvio({
+      fresco: true, saltoImplausivel: false, distanciaAoAnteriorM: 3, velocidade: 40,
+    })).toBe(false);
+  });
+
+  it("movimento real (>=10m): avanca normalmente", () => {
+    expect(devAvancarStreaksDesvio({
+      fresco: true, saltoImplausivel: false, distanciaAoAnteriorM: 50, velocidade: 40,
+    })).toBe(true);
+  });
+
+  it("sem posicao anterior: nao avanca (nada a comparar)", () => {
+    expect(devAvancarStreaksDesvio({
+      fresco: true, saltoImplausivel: false, distanciaAoAnteriorM: null, velocidade: 40,
+    })).toBe(false);
+  });
+
+  it("nao fresco ou salto implausivel: nao avanca (regras existentes preservadas)", () => {
+    expect(devAvancarStreaksDesvio({
+      fresco: false, saltoImplausivel: false, distanciaAoAnteriorM: 50, velocidade: 40,
+    })).toBe(false);
+    expect(devAvancarStreaksDesvio({
+      fresco: true, saltoImplausivel: true, distanciaAoAnteriorM: 50, velocidade: 40,
+    })).toBe(false);
+  });
+
+  it("velocidade 0 (genuinamente parado, posicao real): nao avanca", () => {
+    expect(devAvancarStreaksDesvio({
+      fresco: true, saltoImplausivel: false, distanciaAoAnteriorM: 50, velocidade: 0,
+    })).toBe(false);
   });
 });
 
