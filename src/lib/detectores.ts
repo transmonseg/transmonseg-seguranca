@@ -568,7 +568,12 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
 
   // Fora de qualquer via já percorrida pela frota (com cobertura mínima
   // confirmada pelo motor): sinal quase certo, crítico já no 2º ciclo.
-  if (ctx.dentroTapete === false) {
+  // Mesmo dado de tapete que causou o incidente de 09/07 (Camada 3) -- esta
+  // escalada vivia SEM a flag, e continuava produzindo o mesmo sintoma
+  // ("fora de via conhecida da frota") mesmo com CAMADA3_TAPETE_ATIVA=false.
+  // Confirmado com dado real: disparou as 21h43 de 09/07, depois da
+  // desativacao. Agora atras da MESMA flag que protege a linha ~527.
+  if (CAMADA3_TAPETE_ATIVA && ctx.dentroTapete === false) {
     return {
       nivel: "critico",
       tipo: "desvio",

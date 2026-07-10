@@ -124,15 +124,18 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados[4]?.score).toBe(68); // streak 4
   });
 
-  it("DESVIO INJETADO fora do tapete: dispara IMEDIATO (score 80) mesmo em area sem risco", () => {
+  it("fora do tapete, mas CAMADA3_TAPETE_ATIVA=false: nao escala, segue escalonamento normal (score 45)", () => {
+    // Achado real 10/07: este branch escalava pra 80 mesmo com a Camada 3
+    // "desativada" -- o mesmo sintoma do incidente de 09/07 (mesmo motivo,
+    // mesma origem de dado) sobrevivia por nao estar atras da flag.
     const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
       ...afastarDe(MANGUINHOS, REALENGO, i * 0.01),
       dentroTapete: false,
       riscoAreaAtual: 0,
     }));
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados[2]?.score).toBe(80); // streak chega a 2 no indice 2
-    expect(resultados[2]?.motivo).toContain("fora de via conhecida");
+    expect(resultados[2]?.score).toBe(45); // streak chega a 2 no indice 2
+    expect(resultados[2]?.motivo).not.toContain("fora de via conhecida");
   });
 
   it("DESVIO INJETADO em via CONHECIDA mas area de risco alto: dispara IMEDIATO (score 80) — o caso que o v4 antigo perdia", () => {

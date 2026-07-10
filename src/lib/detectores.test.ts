@@ -276,9 +276,11 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.tipo).toBe("desvio");
   });
 
-  it("streak 2 fora do tapete (cobertura minima confirmada): critico direto", () => {
+  it("streak 2 fora do tapete, CAMADA3_TAPETE_ATIVA=false: critico, mas NAO escala por tapete (zumbi fechado 10/07)", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: false });
     expect(a?.nivel).toBe("critico");
+    expect(a?.score).toBe(45);
+    expect(a?.motivo).not.toContain("fora de via conhecida");
   });
 
   it("streak 4 escala pra critico mesmo dentro do tapete (persistencia longa)", () => {
@@ -360,7 +362,10 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
   });
 
   it("risco de area nunca SUPRIME nem atrasa o alerta - so acelera", () => {
-    // fora do tapete ja e score 80 por si so; risco alto nao muda isso nem quebra
+    // dentroTapete:false nao escala mais sozinho (CAMADA3_TAPETE_ATIVA=false,
+    // ver describe "zumbi da Camada 3" abaixo) -- mas risco de area alto
+    // (>=RISCO_AREA_LIMIAR) escala pro mesmo score 80 por si so, e continua
+    // valendo mesmo com dentroTapete:false.
     const a = detectarDesvio(emMov, { ...base, dentroTapete: false, riscoAreaAtual: 100 });
     expect(a?.nivel).toBe("critico");
     expect(a?.score).toBe(80);
