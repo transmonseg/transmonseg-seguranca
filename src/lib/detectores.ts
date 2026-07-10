@@ -9,6 +9,14 @@ export type Alerta = {
   tipo: string;
   motivo: string;
   score: number;
+  // Sinaliza que este alerta de desvio precisa passar pela verificacao de
+  // corredor real (route.ts) antes de confirmar -- substitui o acoplamento
+  // por string magica (motivo.startsWith("Afastando-se")) que existia ate
+  // 10/07: qualquer ajuste de texto desligava a protecao inteira em
+  // silencio. So os branches do FLUXO PRINCIPAL de detectarDesvio setam
+  // isso; o branch remanescente da Camada 3 ("Aproximando...") nao seta --
+  // tem semantica de deteccao diferente e nunca teve verificacao de corredor.
+  precisaVerificacaoCorredor?: boolean;
 };
 
 // Informativo de veiculo sem comunicacao (atraso > 60 min).
@@ -579,6 +587,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       tipo: "desvio",
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, fora de via conhecida da frota`,
       score: 80,
+      precisaVerificacaoCorredor: true,
     };
   }
 
@@ -594,6 +603,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       tipo: "desvio",
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, em área de risco elevado`,
       score: 80,
+      precisaVerificacaoCorredor: true,
     };
   }
 
@@ -605,6 +615,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       tipo: "desvio",
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
       score: 68,
+      precisaVerificacaoCorredor: true,
     };
   }
 
@@ -613,6 +624,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     tipo: "desvio",
     motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
     score: 45,
+    precisaVerificacaoCorredor: true,
   };
 }
 

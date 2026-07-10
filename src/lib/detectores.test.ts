@@ -376,6 +376,19 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a).toBeNull();
   });
 
+  it("os 4 branches do fluxo principal marcam precisaVerificacaoCorredor=true", () => {
+    // score 45 (base)
+    expect(detectarDesvio(emMov, { ...base, dentroTapete: true })?.precisaVerificacaoCorredor).toBe(true);
+    // score 68 (streak>=4)
+    expect(detectarDesvio(emMov, { ...base, streak: 4, dentroTapete: true })?.precisaVerificacaoCorredor).toBe(true);
+    // score 80 (area de risco)
+    expect(
+      detectarDesvio(emMov, { ...base, dentroTapete: true, riscoAreaAtual: RISCO_AREA_LIMIAR })?.precisaVerificacaoCorredor
+    ).toBe(true);
+    // score 45 (dentroTapete:false, zumbi fechado -- cai no branch base)
+    expect(detectarDesvio(emMov, { ...base, dentroTapete: false })?.precisaVerificacaoCorredor).toBe(true);
+  });
+
   it("alvosApiOk indefinido (comportamento de hoje, API ok): dispara normalmente", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: true });
     expect(a).not.toBeNull();

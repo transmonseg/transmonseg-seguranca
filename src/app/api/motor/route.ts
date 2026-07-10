@@ -1165,7 +1165,7 @@ export async function POST(request: Request) {
           if (
             CAMADA_CORREDOR_ATIVA &&
             alerta?.tipo === "desvio" &&
-            alerta.motivo.startsWith("Afastando-se") &&
+            alerta.precisaVerificacaoCorredor === true &&
             pos.fresco &&
             desvioInicio
           ) {
