@@ -358,9 +358,16 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.nivel).toBe("critico");
   });
 
-  it("fora de operacao ou dentro da base nao dispara", () => {
-    expect(detectarDesvio(emMov, { ...base, emOperacao: false })).toBeNull();
+  it("dentro da base nao dispara", () => {
     expect(detectarDesvio(emMov, { ...base, foraDaBase: false })).toBeNull();
+  });
+
+  // Achado real 11/07: emOperacao=false sozinho NAO bloqueia mais quando ha
+  // pendentes (rota manda, nao calendario -- ver describe de sabado acima
+  // pro teste dedicado). Cobertura do fallback antigo (sem NENHUMA rota
+  // carregada) tambem esta no describe de sabado.
+  it("fora de operacao MAS com pendentes: dispara (rota manda)", () => {
+    expect(detectarDesvio(emMov, { ...base, emOperacao: false })).not.toBeNull();
   });
 
   it("via CONHECIDA mas area de risco elevado (>= limiar): escala tao rapido quanto fora do tapete", () => {
@@ -419,9 +426,23 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.tipo).toBe("desvio");
   });
 
-  it("fora do calendario e SEM rota de sabado: continua nao disparando (noite/domingo)", () => {
-    expect(detectarDesvio(emMov, { ...base, emOperacao: false, dentroTapete: true })).toBeNull();
-    expect(detectarDesvio(emMov, { ...base, emOperacao: false, sabadoDiurnoComRota: false, dentroTapete: true })).toBeNull();
+  // Achado real 11/07 (diretiva explicita: falso positivo aceitavel,
+  // prioridade total e nunca perder desvio real): calendario removido de
+  // vez quando ha PENDENTES -- se a Unitrac carregou rota, e hora de
+  // trabalho DESSE veiculo, ponto final, nao importa dia/hora. O fallback
+  // por calendario so sobra pro caso sem NENHUMA rota carregada (evita
+  // disparar pra veiculo em manutencao de madrugada sem nada pra fazer).
+  it("fora do calendario e QUALQUER dia/hora, mas TEM pendentes: dispara (rota manda, nao calendario)", () => {
+    const a = detectarDesvio(emMov, { ...base, emOperacao: false, sabadoDiurnoComRota: false, dentroTapete: true });
+    expect(a).not.toBeNull();
+    expect(a?.tipo).toBe("desvio");
+  });
+
+  it("fora do calendario e SEM pendentes: continua nao disparando (fallback preservado)", () => {
+    expect(detectarDesvio(emMov, {
+      ...base, emOperacao: false, sabadoDiurnoComRota: false, dentroTapete: true,
+      temPendentes: false, distDestinosM: [12000], distDestinosAnteriorM: [11000],
+    })).toBeNull();
   });
 });
 

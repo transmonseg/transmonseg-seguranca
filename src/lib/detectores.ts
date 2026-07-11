@@ -552,7 +552,15 @@ export function foraDeRota(
 // cobertura mínima confirmada) e da persistência (mata ruído de GPS).
 export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
   if (ctx.alvosApiOk === false) return null;
-  const operando = ctx.emOperacao || ctx.sabadoDiurnoComRota === true;
+  // Achado real 11/07 (diretiva explicita: falso positivo aceitavel,
+  // prioridade total e nunca perder desvio real): calendario removido de
+  // vez quando ha PENDENTES -- se a Unitrac carregou rota, e hora de
+  // trabalho DESSE veiculo, ponto final, nao importa dia/hora (cobre
+  // domingo e madrugada, alem do sabado ja coberto por
+  // sabadoDiurnoComRota). O fallback por calendario so sobra pro caso sem
+  // NENHUMA rota carregada (evita disparar pra veiculo em manutencao de
+  // madrugada sem nada pra fazer).
+  const operando = ctx.temPendentes || ctx.emOperacao || ctx.sabadoDiurnoComRota === true;
   if (!operando || !ctx.foraDaBase) return null;
   if (p.velocidade <= 0) return null;
   // Indo para a primeira entrega do dia: sem referência de comportamento
