@@ -25,6 +25,7 @@ import {
   detectarParadaNoturnaIgnicaoAtiva,
   detectarAceleracaoBrusca,
   calcularRiscoArea,
+  detectarBypassEntrega,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -541,7 +542,7 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, aproximando_streak, origem_celula");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos");
 
     const mapaPosAtual = new Map<
       string,
@@ -550,6 +551,7 @@ export async function POST(request: Request) {
         parado_desde: string | null; desvio_streak: number; desvio_inicio: DesvioInicio | null;
         ultimo_evento: string | null; fora_tapete_streak: number; aproximando_streak: number;
         origem_celula: string | null;
+        no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
       }
     >();
 
@@ -565,6 +567,9 @@ export async function POST(request: Request) {
         fora_tapete_streak: row.fora_tapete_streak ?? 0,
         aproximando_streak: row.aproximando_streak ?? 0,
         origem_celula: row.origem_celula ?? null,
+        no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
+        no_raio_desde: row.no_raio_desde ?? null,
+        no_raio_dwell_segundos: row.no_raio_dwell_segundos ?? 0,
       });
     }
 
@@ -695,6 +700,7 @@ export async function POST(request: Request) {
       entregas_total: number; local: string | null; desvio_streak: number; rumo: number | null;
       ultimo_evento: string | null; desvio_inicio: string | null; fora_tapete_streak: number;
       aproximando_streak: number; origem_celula: string | null;
+      no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -1316,6 +1322,47 @@ export async function POST(request: Request) {
             cacheCercaPorVeiculo.delete(veiculo_id);
           }
 
+          // Bypass de entrega sem parar (achado do audio do cliente).
+          const alvoNoRaioAgora = pendentes.find(
+            (pt) => haversineM(pos.lat, pos.lng, pt.lat, pt.lng) <= pt.raio
+          ) ?? null;
+          const codigoAnteriorNoRaio = anterior?.no_raio_alvo_codigo ?? null;
+          const desdeAnterior = anterior?.no_raio_desde ?? null;
+          const dwellAnterior = anterior?.no_raio_dwell_segundos ?? 0;
+
+          const mesmoAlvoQueAntes = alvoNoRaioAgora !== null && alvoNoRaioAgora.codigo === codigoAnteriorNoRaio;
+          const LIMIAR_VELOCIDADE_DWELL_KMH = 5;
+
+          let noRaioAlvoCodigo: number | null = alvoNoRaioAgora?.codigo ?? null;
+          let noRaioDesde: string | null = desdeAnterior;
+          let noRaioDwellSegundos = dwellAnterior;
+
+          if (alvoNoRaioAgora === null) {
+            // Fora de qualquer raio: zera (o proximo bloco decide se dispara
+            // ANTES de zerar, usando os valores capturados acima).
+            noRaioAlvoCodigo = null;
+            noRaioDesde = null;
+            noRaioDwellSegundos = 0;
+          } else if (!mesmoAlvoQueAntes) {
+            // Entrou num raio novo (ou pela primeira vez).
+            noRaioDesde = agora.toISOString();
+            noRaioDwellSegundos = pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0;
+          } else {
+            // Continua no mesmo raio: acumula dwell so quando devagar/parado.
+            noRaioDwellSegundos = dwellAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0);
+          }
+
+          const saiuDoRaioAgora = codigoAnteriorNoRaio !== null && alvoNoRaioAgora === null;
+          const alvoQueSaiu = pendentes.find((pt) => pt.codigo === codigoAnteriorNoRaio) ?? null;
+          const alertaBypass = pos.fresco
+            ? detectarBypassEntrega({
+                saiuDoRaioAgora,
+                mesmoAlvoCodigo: codigoAnteriorNoRaio !== null,
+                dwellSegundosAcumulados: dwellAnterior,
+                entregaConfirmada: alvoQueSaiu?.feito ?? false,
+              })
+            : null;
+
           const sabadoDiurnoComRota =
             ehSabadoSP &&
             horaSP >= 6 &&
@@ -1461,6 +1508,7 @@ export async function POST(request: Request) {
               foraDaBase,
             }),
             alertaCerca,
+            alertaBypass,
           ].filter((a): a is Alerta => a !== null);
 
           for (const extra of extras) {
@@ -1556,6 +1604,9 @@ export async function POST(request: Request) {
             fora_tapete_streak: foraTapeteStreak,
             aproximando_streak: aproximandoStreak,
             origem_celula: origemCelula,
+            no_raio_alvo_codigo: noRaioAlvoCodigo,
+            no_raio_desde: noRaioDesde,
+            no_raio_dwell_segundos: noRaioDwellSegundos,
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -1647,7 +1698,8 @@ export async function POST(request: Request) {
               panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
               entregas_feitas, entregas_total, local, desvio_streak, rumo,
               ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
-              aproximando_streak, origem_celula)
+              aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
+              no_raio_dwell_segundos)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -1656,18 +1708,20 @@ export async function POST(request: Request) {
              c.updated_at::timestamptz, c.entregas_feitas, c.entregas_total, c.local,
              c.desvio_streak, c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
              c.desvio_inicio::jsonb, c.fora_tapete_streak, c.aproximando_streak,
-             c.origem_celula
+             c.origem_celula, c.no_raio_alvo_codigo, c.no_raio_desde::timestamptz,
+             c.no_raio_dwell_segundos
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
-             $21::integer[], $22::integer[], $23::text[]
+             $21::integer[], $22::integer[], $23::text[], $24::integer[], $25::text[],
+             $26::integer[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
                   ultimo_evento, desvio_inicio, fora_tapete_streak, aproximando_streak,
-                  origem_celula)
+                  origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -1693,7 +1747,10 @@ export async function POST(request: Request) {
                                   THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END,
              fora_tapete_streak = EXCLUDED.fora_tapete_streak,
              aproximando_streak = EXCLUDED.aproximando_streak,
-             origem_celula      = EXCLUDED.origem_celula`,
+             origem_celula      = EXCLUDED.origem_celula,
+             no_raio_alvo_codigo = EXCLUDED.no_raio_alvo_codigo,
+             no_raio_desde       = EXCLUDED.no_raio_desde,
+             no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -1718,6 +1775,9 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.fora_tapete_streak),
             posicoesCiclo.map((p) => p.aproximando_streak),
             posicoesCiclo.map((p) => p.origem_celula),
+            posicoesCiclo.map((p) => p.no_raio_alvo_codigo),
+            posicoesCiclo.map((p) => p.no_raio_desde),
+            posicoesCiclo.map((p) => p.no_raio_dwell_segundos),
           ]
         );
       } catch (errPosicoes) {
