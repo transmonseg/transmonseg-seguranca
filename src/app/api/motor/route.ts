@@ -11,6 +11,7 @@ import {
   haversineM,
   normalizar,
   centroideGeo,
+  distanciaAoSegmentoM,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
@@ -109,7 +110,7 @@ const cacheCorredorPorVeiculo = new Map<string, CorredorCache>();
 // tentam de novo no ciclo seguinte.
 const MAX_VERIFICACOES_POR_CICLO = 3;
 
-// ─── CERCA VIRTUAL de rota (Fase 1 do plano de 10/07) -- MODO SOMBRA ─────
+// ─── CERCA VIRTUAL de rota (Fase 1 do plano de 10/07) -- ATIVA (11/07) ───
 // Achado real 10/07: o gatilho comportamental ("afastar de TODOS os N
 // destinos") e geometricamente cego quando o veiculo tem muitas entregas --
 // 83% dos alertas de 7 dias dispararam com so 2 destinos restantes, sendo
@@ -118,11 +119,14 @@ const MAX_VERIFICACOES_POR_CICLO = 3;
 // mais proximos, calculada quando o conjunto de pendentes muda), e a cada
 // ciclo uma checagem de geometria pura (zero API). Saiu do corredor: tenta
 // recuperar via verificarCorredor (ancora = ultimo ponto DENTRO, nunca a
-// posicao atual -- mesma licao do bug tautologico); "fora" confirmado =
-// TERIA alertado. Em modo sombra nada chega ao operador -- so grava em
-// cerca_sombra pra validar com um dia real de operacao antes de ligar
-// (backtest offline foi inconclusivo: rastro da Unitrac nao tem timestamp).
-const CERCA_VIRTUAL_MODO: "desligada" | "sombra" | "ativa" = "sombra";
+// posicao atual -- mesma licao do bug tautologico); "fora" confirmado vira
+// Alerta de verdade JA na 1a leitura fora (score 75, escala 85 na 2a). Rodou
+// em modo sombra 10-11/07, validado com um dia inteiro de operacao real
+// (44+ veiculos, 300+ momentos "fora" confirmados) -- ativado 11/07 por
+// diretiva explicita do usuario (falso positivo aceitavel, prioridade total
+// e nunca perder desvio real). cerca_sombra continua gravando em paralelo
+// (auditoria/historico), agora refletindo alerta real, nao mais hipotetico.
+const CERCA_VIRTUAL_MODO: "desligada" | "sombra" | "ativa" = "ativa";
 // Semeaduras (calculo inicial de corredor) por ciclo -- warmup da frota
 // inteira leva alguns ciclos de manha, com o gatilho comportamental cobrindo
 // ate la. Compartilha o throttle global de 1 req/s do modulo de corredor.
@@ -1204,13 +1208,18 @@ export async function POST(request: Request) {
             fatorHorario: perfilHorario[horaSP] ?? 1,
           });
 
-          // ─── CERCA VIRTUAL (modo sombra -- ver CERCA_VIRTUAL_MODO no topo) ──
-          // Bloco 100% aditivo: nao muda alerta, streak, nem nada da deteccao
-          // atual. So mantem o corredor proativo por veiculo e grava em
-          // cerca_sombra o que TERIA alertado. Semeadura usa a POSICAO ATUAL
-          // como origem de rota (correto aqui: a rota semeada e checada contra
-          // posicoes FUTURAS, nunca contra a propria origem -- diferente do
-          // bug tautologico de 10/07, onde origem e ponto checado eram o mesmo).
+          // ─── CERCA VIRTUAL (ver CERCA_VIRTUAL_MODO no topo) ──────────────
+          // Mantem o corredor proativo por veiculo. Em modo "ativa" (11/07,
+          // diretiva explicita do usuario: falso positivo aceitavel,
+          // prioridade total e nunca perder desvio real), "fora" vira um
+          // Alerta de verdade (alertaCerca, mesclado nos "extras" mais
+          // abaixo) JA NA PRIMEIRA leitura fora -- nao espera 2. Sempre
+          // grava em cerca_sombra tambem (auditoria/historico). Semeadura
+          // usa a POSICAO ATUAL como origem de rota (correto aqui: a rota
+          // semeada e checada contra posicoes FUTURAS, nunca contra a
+          // propria origem -- diferente do bug tautologico de 10/07, onde
+          // origem e ponto checado eram o mesmo).
+          let alertaCerca: Alerta | null = null;
           if (
             CERCA_VIRTUAL_MODO !== "desligada" &&
             pos.fresco &&
@@ -1288,6 +1297,20 @@ export async function POST(request: Request) {
                     velocidade: pos.velocidade, veredito: "fora",
                     pendentes: pendentes.length, buffer_m: bufferCerca,
                   });
+                }
+                if (CERCA_VIRTUAL_MODO === "ativa") {
+                  let distCorredorM = Infinity;
+                  for (let i = 0; i < cerca.polilinha.length - 1; i++) {
+                    const d = distanciaAoSegmentoM(pos, cerca.polilinha[i], cerca.polilinha[i + 1]);
+                    if (d < distCorredorM) distCorredorM = d;
+                  }
+                  const distFmt = Number.isFinite(distCorredorM) ? `${Math.round(distCorredorM)}m` : `${bufferCerca}m+`;
+                  alertaCerca = {
+                    nivel: "critico",
+                    tipo: "desvio",
+                    motivo: `Fora da rota esperada (${distFmt} da estrada real até o próximo ponto, buffer ${bufferCerca}m)`,
+                    score: cerca.foraStreak >= 2 ? 85 : 75,
+                  };
                 }
               }
               // "indisponivel": nao mexe em nada (fail-open).
@@ -1450,6 +1473,7 @@ export async function POST(request: Request) {
               velocidadeAnterior: anterior?.velocidade ?? null,
               foraDaBase,
             }),
+            alertaCerca,
           ].filter((a): a is Alerta => a !== null);
 
           for (const extra of extras) {

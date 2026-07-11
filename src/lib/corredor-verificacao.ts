@@ -14,9 +14,11 @@ type Ponto = { lat: number; lng: number };
 // contexto sem mapa de vias: velocidade >= 60 km/h ~ rodovia/serra, onde a
 // estrada real serpenteia longe da polilinha ideal e o GPS espaça mais —
 // buffer MAIOR pra rota do OSRM cobrir o trajeto com folga. Abaixo disso,
-// urbano: 300m já acomoda quarteirão + erro de GPS sem engolir desvio real.
+// urbano: buffer estreito o suficiente pra pegar desvio de ~100-150m.
+// Reduzido de 300/600 pra 120/200 em 11/07 (diretiva explicita do usuario:
+// falso positivo aceitavel, prioridade total e nunca perder desvio real).
 export function bufferPorVelocidade(velKmH: number): number {
-  return velKmH >= 60 ? 600 : 300;
+  return velKmH >= 60 ? 200 : 120;
 }
 
 // Distância mínima do ponto a qualquer segmento da polilinha <= buffer?

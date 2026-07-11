@@ -2,13 +2,15 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor } from "./corredor-verificacao";
 
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
-  it("abaixo de 60 km/h: 300m (urbano)", () => {
-    expect(bufferPorVelocidade(40)).toBe(300);
-    expect(bufferPorVelocidade(0)).toBe(300);
+  // Reduzido 11/07 (diretiva explicita: falso positivo aceitavel, prioridade
+  // e nunca perder desvio real) -- 300/600m escondia desvios de ~100-200m.
+  it("abaixo de 60 km/h: 120m (urbano)", () => {
+    expect(bufferPorVelocidade(40)).toBe(120);
+    expect(bufferPorVelocidade(0)).toBe(120);
   });
-  it("60 km/h ou mais: 600m (rodovia/serra)", () => {
-    expect(bufferPorVelocidade(60)).toBe(600);
-    expect(bufferPorVelocidade(90)).toBe(600);
+  it("60 km/h ou mais: 200m (rodovia/serra)", () => {
+    expect(bufferPorVelocidade(60)).toBe(200);
+    expect(bufferPorVelocidade(90)).toBe(200);
   });
 });
 
