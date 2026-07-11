@@ -33,7 +33,7 @@ import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
-import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade } from "@/lib/corredor-verificacao";
+import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia } from "@/lib/corredor-verificacao";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -1225,12 +1225,16 @@ export async function POST(request: Request) {
             const cercaValida =
               cerca && cerca.pendentesChave === chaveCerca && Date.now() - cerca.calculadoEm < CERCA_CACHE_MS;
             const bufferCerca = bufferPorVelocidade(pos.velocidade);
-            const tresMaisProximos = () =>
-              [...pendentes]
-                .map((pt) => ({ pt, dist: haversineM(pos.lat, pos.lng, pt.lat, pt.lng) }))
-                .sort((a, b) => a.dist - b.dist)
-                .slice(0, 3)
-                .map((x) => ({ lat: x.pt.lat, lng: x.pt.lng }));
+            // Achado real 11/07: nao existe ordem de entrega, o motorista
+            // escolhe livremente qual pendente visitar primeiro. Cortar em
+            // "3 mais proximos" presumia que o motorista ia pro mais perto,
+            // o que gerava alerta em cima de gente indo legitimamente pra um
+            // pendente mais distante. Agora verifica TODOS, ordenados por
+            // distancia so como heuristica de prioridade dentro do
+            // orcamento de chamadas (verificarCorredor ja tem deadline de
+            // 5s/req e o throttle global decide quantos realmente cabem).
+            const todosPendentesPriorizados = () =>
+              ordenarPendentesPorDistancia(pos, pendentes).map((pt) => ({ lat: pt.lat, lng: pt.lng }));
 
             if (!cercaValida) {
               // Semeadura: rota real daqui ate o pendente mais proximo.
@@ -1241,7 +1245,7 @@ export async function POST(request: Request) {
                 const r = await verificarCorredor(
                   { lat: pos.lat, lng: pos.lng },
                   { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
-                  tresMaisProximos()
+                  todosPendentesPriorizados()
                 );
                 if (r.veredito === "dentro" && r.corredor) {
                   cacheCercaPorVeiculo.set(veiculo_id, {
@@ -1267,7 +1271,7 @@ export async function POST(request: Request) {
               const r = await verificarCorredor(
                 cerca.ultimoDentro,
                 { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
-                tresMaisProximos()
+                todosPendentesPriorizados()
               );
               if (r.veredito === "dentro" && r.corredor) {
                 cerca.polilinha = r.corredor;
