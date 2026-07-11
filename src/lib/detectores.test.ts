@@ -393,6 +393,22 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     const a = detectarDesvio(emMov, { ...base, dentroTapete: true });
     expect(a).not.toBeNull();
   });
+
+  // Achado real 10/07 (forense historica): a frota se move DE VERDADE aos
+  // sabados (sabado quase tao ativo quanto dia de semana em varios tipos de
+  // alerta), mas o gate de calendario (seg-sex 6h-20h) deixava o desvio
+  // 100% cego nesses dias. Se a Unitrac carregou rota pro veiculo HOJE, e
+  // dia de trabalho DELE, independente do calendario.
+  it("fora do calendario seg-sex, mas sabadoDiurnoComRota=true: dispara normalmente", () => {
+    const a = detectarDesvio(emMov, { ...base, emOperacao: false, sabadoDiurnoComRota: true, dentroTapete: true });
+    expect(a).not.toBeNull();
+    expect(a?.tipo).toBe("desvio");
+  });
+
+  it("fora do calendario e SEM rota de sabado: continua nao disparando (noite/domingo)", () => {
+    expect(detectarDesvio(emMov, { ...base, emOperacao: false, dentroTapete: true })).toBeNull();
+    expect(detectarDesvio(emMov, { ...base, emOperacao: false, sabadoDiurnoComRota: false, dentroTapete: true })).toBeNull();
+  });
 });
 
 describe("detectarDesvio + Camada 3 (fora do tapete, DESATIVADA em 09/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {

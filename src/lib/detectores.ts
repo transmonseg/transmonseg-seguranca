@@ -362,6 +362,11 @@ export type CtxDesvio = {
   // tratamento que saida_nao_autorizada ja tem via alvosApiOk em route.ts).
   // undefined = comportamento de hoje (API ok).
   alvosApiOk?: boolean;
+  // Sabado 6h-20h COM rota carregada hoje na Unitrac (achado real 10/07:
+  // frota se move de verdade aos sabados e o gate de calendario seg-sex
+  // deixava o desvio cego). Se tem rota de HOJE, e dia de trabalho DESSE
+  // veiculo, independente do calendario. undefined/false = so calendario.
+  sabadoDiurnoComRota?: boolean;
   // Ciclos consecutivos afastando-se de TUDO (motor incrementa e persiste).
   streak: number;
   // menorDist(agora) - menorDist(no início da sequência). Só informativo
@@ -538,7 +543,8 @@ export function foraDeRota(
 // cobertura mínima confirmada) e da persistência (mata ruído de GPS).
 export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
   if (ctx.alvosApiOk === false) return null;
-  if (!ctx.emOperacao || !ctx.foraDaBase) return null;
+  const operando = ctx.emOperacao || ctx.sabadoDiurnoComRota === true;
+  if (!operando || !ctx.foraDaBase) return null;
   if (p.velocidade <= 0) return null;
   // Indo para a primeira entrega do dia: sem referência de comportamento ainda.
   if (ctx.temPendentes && (ctx.entregasFeitas ?? 1) === 0) return null;
@@ -811,6 +817,7 @@ export function avaliarTodos(
           foraDaBase: ctx.foraDaBase,
           entregasFeitas: ctx.entregasFeitas,
           alvosApiOk: ctx.alvosApiOk,
+          sabadoDiurnoComRota: ctx.sabadoDiurnoComRota,
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
@@ -846,6 +853,7 @@ export function avaliar(
     entregasTotal?: number;
     entregasFeitas?: number;
     alvosApiOk?: boolean;
+    sabadoDiurnoComRota?: boolean;
     rumoMovimento?: number | null;
     rumoBase?: number | null;
     distBaseM?: number | null;
@@ -915,6 +923,7 @@ export function avaliar(
           foraDaBase: ctx.foraDaBase,
           entregasFeitas: ctx.entregasFeitas,
           alvosApiOk: ctx.alvosApiOk,
+          sabadoDiurnoComRota: ctx.sabadoDiurnoComRota,
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,

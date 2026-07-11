@@ -406,6 +406,13 @@ export async function POST(request: Request) {
   const agora = new Date();
   const erros: string[] = [];
   const emOperacao = emHorarioOperacao(agora);
+  // Sabado diurno (SP): o desvio tambem roda aos sabados 6h-20h QUANDO o
+  // veiculo tem rota carregada de HOJE na Unitrac (achado 10/07: movimento
+  // real de sabado sem nenhuma cobertura de desvio). dataHojeSP filtra rota
+  // velha de sexta que a Unitrac ainda nao limpou.
+  const ehSabadoSP =
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" }).format(agora) === "Sat";
+  const dataHojeSP = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(agora);
   const desde2h = new Date(agora.getTime() - 2 * 60 * 60 * 1000).toISOString();
 
   // Contador de geocodes novos consumidos neste ciclo
@@ -1265,6 +1272,12 @@ export async function POST(request: Request) {
             cacheCercaPorVeiculo.delete(veiculo_id);
           }
 
+          const sabadoDiurnoComRota =
+            ehSabadoSP &&
+            horaSP >= 6 &&
+            horaSP < 20 &&
+            pendentes.some((pt) => pt.dataInicio != null && pt.dataInicio.startsWith(dataHojeSP));
+
           let alerta: Alerta | null = alertaJammer
             ? alertaJammer
             : pos.fresco
@@ -1284,6 +1297,7 @@ export async function POST(request: Request) {
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
                   alvosApiOk,
+                  sabadoDiurnoComRota,
                   rumoMovimento,
                   distTiroteioM,
                   tiroteioIdadeMin,
