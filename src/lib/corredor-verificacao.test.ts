@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor } from "./corredor-verificacao";
+import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia } from "./corredor-verificacao";
 
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
   // Reduzido 11/07 (diretiva explicita: falso positivo aceitavel, prioridade
@@ -132,5 +132,24 @@ describe("verificarCorredor (fetch mockado, origem FIXA != posicao atual)", () =
   it("sem destinos: indisponivel (nada pra verificar)", async () => {
     const r = await verificarCorredor({ lat: -22.9, lng: -43.2 }, { lat: -22.9, lng: -43.2, velocidade: 40 }, []);
     expect(r.veredito).toBe("indisponivel");
+  });
+});
+
+describe("ordenarPendentesPorDistancia (substitui o corte fixo em 3 mais proximos)", () => {
+  it("ordena todos os pendentes por distancia crescente, sem cortar nenhum", () => {
+    const pos = { lat: -22.90, lng: -43.20 };
+    const pendentes = [
+      { lat: -22.90, lng: -43.20 + 0.05, nome: "longe" },
+      { lat: -22.90, lng: -43.20 + 0.01, nome: "perto" },
+      { lat: -22.90, lng: -43.20 + 0.03, nome: "medio" },
+      { lat: -22.90, lng: -43.20 + 0.09, nome: "muito longe" },
+    ];
+    const resultado = ordenarPendentesPorDistancia(pos, pendentes);
+    expect(resultado.map((p) => p.nome)).toEqual(["perto", "medio", "longe", "muito longe"]);
+    expect(resultado).toHaveLength(4);
+  });
+
+  it("lista vazia retorna vazia", () => {
+    expect(ordenarPendentesPorDistancia({ lat: 0, lng: 0 }, [])).toEqual([]);
   });
 });

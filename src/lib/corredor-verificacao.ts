@@ -6,7 +6,7 @@
 // destino legítimo. Restrições da pesquisa 09/07: OSRM público = 1 req/s
 // GLOBAL, fail-open sempre (API fora = comporta como hoje, nunca segura
 // alerta). Nunca importe nada de 'next' aqui — lib pura + fetch.
-import { distanciaAoSegmentoM } from "./unitrac";
+import { distanciaAoSegmentoM, haversineM } from "./unitrac";
 
 type Ponto = { lat: number; lng: number };
 
@@ -28,6 +28,20 @@ export function dentroDoCorredor(pos: Ponto, polilinha: Ponto[], bufferM: number
     if (distanciaAoSegmentoM(pos, polilinha[i], polilinha[i + 1]) <= bufferM) return true;
   }
   return false;
+}
+
+// Substitui o corte fixo em "3 mais proximos" usado ate 11/07 na cerca
+// virtual -- pressupunha que o motorista vai pro pendente mais perto, mas
+// nao ha ordem de entrega definida (o motorista escolhe livremente). Ordena
+// por distancia como heuristica pratica de prioridade dentro do orcamento
+// de chamadas (quem chama decide quantos tentar), sem descartar nenhum.
+export function ordenarPendentesPorDistancia<T extends { lat: number; lng: number }>(
+  pos: { lat: number; lng: number },
+  pendentes: T[]
+): T[] {
+  return [...pendentes].sort(
+    (a, b) => haversineM(pos.lat, pos.lng, a.lat, a.lng) - haversineM(pos.lat, pos.lng, b.lat, b.lng)
+  );
 }
 
 // Decoder do formato polyline precisao 1e-6 (shape do Valhalla).
