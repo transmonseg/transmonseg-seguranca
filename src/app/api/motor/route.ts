@@ -1265,6 +1265,14 @@ export async function POST(request: Request) {
               // Na rota esperada: atualiza a ancora e zera a suspeita.
               cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
               cerca.foraStreak = 0;
+              // Achado real 11/07 (bug de churn): sem isto, o fechamento do
+              // alerta so olhava o sinal da Camada 1 (aproximando_streak),
+              // que fica sempre alto num caminhao de entrega -- resolvia
+              // (e a cerca reabria) o alerta A CADA CICLO. A cerca agora
+              // controla o proprio fechamento, como a Camada 1 ja faz com
+              // o corredor dela (ver bloco "Verificacao por corredor real"
+              // mais abaixo).
+              estaForaDeRota = false;
             } else if (cerca && cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO + 1) {
               // Saiu do corredor conhecido: tenta RECUPERAR (motorista pode
               // ter escolhido outra rota legitima pra outro pendente).
@@ -1287,6 +1295,10 @@ export async function POST(request: Request) {
                   velocidade: pos.velocidade, veredito: "recuperado",
                   pendentes: pendentes.length, buffer_m: bufferCerca,
                 });
+                // Idem ao ramo "dentro" acima: recuperou a rota real, fecha
+                // o alerta da cerca ja neste ciclo (nao espera o sinal da
+                // Camada 1, que nao sabe nada sobre o corredor da cerca).
+                estaForaDeRota = false;
               } else if (r.veredito === "fora") {
                 cerca.foraStreak++;
                 // Log so nas 2 primeiras leituras fora (espelha o modelo
@@ -1311,6 +1323,16 @@ export async function POST(request: Request) {
                     motivo: `Fora da rota esperada (${distFmt} da estrada real até o próximo ponto, buffer ${bufferCerca}m)`,
                     score: cerca.foraStreak >= 2 ? 85 : 75,
                   };
+                  // Achado real 11/07 (bug de churn): a cerca precisa
+                  // manter o PROPRIO alerta aberto -- sem isto, o
+                  // fechamento (mais abaixo, "if (desvioAtivo &&
+                  // !estaForaDeRota)") usava so o sinal da Camada 1
+                  // (aproximando_streak, quase sempre alto num caminhao de
+                  // entrega em operacao normal) e resolvia o alerta da
+                  // cerca no ciclo seguinte ao dela criar, gerando um
+                  // alerta NOVO a cada ciclo (~20-30s) em vez de UM so
+                  // persistente por episodio.
+                  estaForaDeRota = true;
                 }
               }
               // "indisponivel": nao mexe em nada (fail-open).
