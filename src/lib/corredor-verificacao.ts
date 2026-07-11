@@ -44,6 +44,14 @@ export function ordenarPendentesPorDistancia<T extends { lat: number; lng: numbe
   );
 }
 
+// Achado empirico 11/07/2026: so 1,2% dos pares origem-destino repetem em
+// 2+ dias (corredor_celulas, 6 dias de dado real da Nutry). O historico por
+// par so deve ser confiavel a partir de 3+ dias distintos vistos -- liga
+// sozinho por par conforme o dado acumular, sem decisao manual.
+export function parOrigemDestinoTemHistoricoSuficiente(diasDistintos: number, minDias: number): boolean {
+  return diasDistintos >= minDias;
+}
+
 // Decoder do formato polyline precisao 1e-6 (shape do Valhalla).
 export function decodePolyline6(encoded: string): Ponto[] {
   const pontos: Ponto[] = [];

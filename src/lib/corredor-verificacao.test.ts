@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia } from "./corredor-verificacao";
+import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, parOrigemDestinoTemHistoricoSuficiente } from "./corredor-verificacao";
 
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
   // Reduzido 11/07 (diretiva explicita: falso positivo aceitavel, prioridade
@@ -151,5 +151,15 @@ describe("ordenarPendentesPorDistancia (substitui o corte fixo em 3 mais proximo
 
   it("lista vazia retorna vazia", () => {
     expect(ordenarPendentesPorDistancia({ lat: 0, lng: 0 }, [])).toEqual([]);
+  });
+});
+
+describe("parOrigemDestinoTemHistoricoSuficiente", () => {
+  it("menos de 3 dias distintos: false", () => {
+    expect(parOrigemDestinoTemHistoricoSuficiente(2, 3)).toBe(false);
+  });
+  it("3 ou mais dias distintos: true", () => {
+    expect(parOrigemDestinoTemHistoricoSuficiente(3, 3)).toBe(true);
+    expect(parOrigemDestinoTemHistoricoSuficiente(10, 3)).toBe(true);
   });
 });
