@@ -171,7 +171,13 @@ function criaPgPool() {
 // posicoes_atuais no fim de cada execução se sobrescreve (last-write-wins),
 // corrompendo o streak e disparando o ciclo criar/resolver repetidas vezes por
 // veículo (visto em produção: até 34 alertas de desvio/dia pro mesmo veículo).
-const MOTOR_LOCK_KEY = 91827364;
+//
+// IMPLEMENTACAO: lease com expiracao na tabela motor_lease (migration 016),
+// adquirido/liberado no handler. NUNCA usar pg_try_advisory_lock aqui de
+// novo: atraves do pooler Supavisor + Vercel Fluid (funcao congelada mantem
+// o socket vivo), o advisory lock ficava preso por tempo INDETERMINADO --
+// 64-88% dos ciclos pulados, stalls de 20+ min, e muito provavelmente o
+// apagao de ~20h de 01-02/07 (achado 10-11/07).
 
 // ─── buscarPosicoes com timeout por AbortController ───────────────────────
 async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
@@ -388,14 +394,32 @@ export async function POST(request: Request) {
   const supabase = createAdminClient();
   const pool = criaPgPool();
 
-  // 2. Trava: só um ciclo do motor roda por vez (ver MOTOR_LOCK_KEY acima).
-  const lockClient = await pool.connect();
-  const { rows: lockRows } = await lockClient.query<{ ok: boolean }>(
-    "select pg_try_advisory_lock($1) as ok",
-    [MOTOR_LOCK_KEY]
-  );
-  if (!lockRows[0].ok) {
-    lockClient.release();
+  // 2. Trava: só um ciclo do motor roda por vez -- LEASE com expiracao
+  // (migration 016), NAO advisory lock. Achado real 10-11/07: advisory lock
+  // atraves do pooler Supavisor + Vercel Fluid (funcao congelada mantem o
+  // socket vivo) deixava o lock preso por tempo INDETERMINADO -- 64-88% dos
+  // ciclos pulados o dia todo, stalls de 20+ min, e muito provavelmente o
+  // apagao de ~20h de 01-02/07. O lease e um UPDATE atomico: se o ciclo
+  // dono morrer, expira sozinho em 90s (> maxDuration=60, entao nunca ha
+  // dois ciclos rodando de verdade ao mesmo tempo).
+  let leaseToken: string | null = null;
+  {
+    const lockClient = await pool.connect();
+    try {
+      const { rows: leaseRows } = await lockClient.query<{ token: string }>(
+        `update motor_lease
+         set expira_em = now() + interval '90 seconds',
+             token = gen_random_uuid(),
+             adquirido_em = now()
+         where id = 1 and expira_em < now()
+         returning token`
+      );
+      leaseToken = leaseRows[0]?.token ?? null;
+    } finally {
+      lockClient.release();
+    }
+  }
+  if (!leaseToken) {
     await pool.end();
     return Response.json({
       pulado: true,
@@ -2049,8 +2073,19 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
-    await lockClient.query("select pg_advisory_unlock($1)", [MOTOR_LOCK_KEY]).catch(() => {});
-    lockClient.release();
+    // Libera o lease SO se ainda formos o dono (token confere) -- um ciclo
+    // que passou de 90s e perdeu o lease nunca derruba o lease do sucessor.
+    try {
+      const pgLease = await pool.connect();
+      try {
+        await pgLease.query(
+          `update motor_lease set expira_em = now() where id = 1 and token = $1`,
+          [leaseToken]
+        );
+      } finally {
+        pgLease.release();
+      }
+    } catch { /* lease expira sozinho em 90s */ }
     await pool.end();
   }
 }
