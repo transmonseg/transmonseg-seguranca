@@ -36,6 +36,8 @@ describe("zScoreBaseline", () => {
   });
   it("variancia zero: nao divide por zero, retorna 0 se valor igual, diferenca grande se nao", () => {
     expect(zScoreBaseline(40, { n: 50, media: 40, variancia: 0 }, 20)).toBe(0);
+    expect(zScoreBaseline(50, { n: 50, media: 40, variancia: 0 }, 20)).toBe(Infinity);
+    expect(zScoreBaseline(30, { n: 50, media: 40, variancia: 0 }, 20)).toBe(-Infinity);
   });
 });
 

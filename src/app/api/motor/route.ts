@@ -1375,7 +1375,26 @@ export async function POST(request: Request) {
           }
 
           // Bypass de entrega sem parar (achado do audio do cliente).
-          const alvoNoRaioAgora = pendentes.find(
+          // Achado da auditoria 11/07: buscar em `pendentes` (filtrado por
+          // !feito) fazia o ponto "desaparecer" no exato ciclo em que a
+          // Unitrac confirmava a entrega, mesmo com o veiculo ainda parado
+          // no mesmo lugar -- lido como "saiu do raio" e podia disparar
+          // bypass_entrega justamente numa entrega bem-sucedida. Busca
+          // agora em `pontosVeiculo` (sem o filtro), que mantem o mesmo
+          // ponto rastreavel independente de feito virar true no meio do
+          // dwell, e permite detectarBypassEntrega enxergar a confirmacao
+          // de verdade quando o veiculo realmente sai do raio.
+          // Limitacao conhecida (aceita por ora, sinal e so operacional):
+          // .find() pega o PRIMEIRO ponto cujo raio contem a posicao, entao
+          // (a) raios sobrepostos escondem o bypass do ponto mais distante
+          // se o veiculo entra direto no raio de outro sem "sair" do
+          // primeiro, e (b) varios alvos (NFs) no mesmo endereco tem
+          // `codigo` diferente por NF, entao confirmar uma NF reseta o
+          // dwell mesmo sem o veiculo ter saido fisicamente do lugar.
+          // Resolver direito exigiria checar TODOS os pontos no raio (nao
+          // so o primeiro) e agrupar por `pontoCodigo` (endereco), nao por
+          // `codigo` (NF) -- fora do escopo desta primeira versao.
+          const alvoNoRaioAgora = (pontosVeiculo ?? []).find(
             (pt) => haversineM(pos.lat, pos.lng, pt.lat, pt.lng) <= pt.raio
           ) ?? null;
           const codigoAnteriorNoRaio = anterior?.no_raio_alvo_codigo ?? null;
@@ -1405,7 +1424,13 @@ export async function POST(request: Request) {
           }
 
           const saiuDoRaioAgora = codigoAnteriorNoRaio !== null && alvoNoRaioAgora === null;
-          const alvoQueSaiu = pendentes.find((pt) => pt.codigo === codigoAnteriorNoRaio) ?? null;
+          const alvoQueSaiu = (pontosVeiculo ?? []).find((pt) => pt.codigo === codigoAnteriorNoRaio) ?? null;
+          // mesmoAlvoCodigo: por construcao deste fluxo, saiuDoRaioAgora so
+          // fica true quando NADA e encontrado no raio atual (alvoNoRaioAgora
+          // null) -- a unica identidade em jogo no momento da saida e
+          // sempre codigoAnteriorNoRaio, entao esta checagem e tautologica
+          // aqui (protecao generica da funcao pura contra integracao
+          // futura que computasse saiuDoRaioAgora de outra forma).
           const alertaBypass = pos.fresco
             ? detectarBypassEntrega({
                 saiuDoRaioAgora,
@@ -1853,6 +1878,13 @@ export async function POST(request: Request) {
     // com as amostras deste ciclo. Roda depois do loop de deteccao, mesmo
     // principio do processamento de geocodesPendentes: nao e critico pra
     // este ciclo, so alimenta a calibracao dos proximos.
+    // Achado da auditoria 11/07: o UPSERT sobrescreve com o valor calculado
+    // a partir do snapshot lido no INICIO do ciclo, sem reler antes de
+    // escrever -- se dois ciclos rodarem sobrepostos pro mesmo veiculo
+    // (ja aconteceu antes, ver motor_lease acima), o ultimo a escrever
+    // vence e a amostra do outro ciclo se perde (lost update). Aceito por
+    // ora: e um sinal estatistico que se autocorrige a cada ciclo novo,
+    // nao um valor de seguranca como desvio_streak (que tem o lease).
     if (amostrasBaselineCiclo.length > 0) {
       const porVeiculo = new Map<string, Baseline>();
       const porFrota = new Map<string, Baseline>();
@@ -1870,7 +1902,7 @@ export async function POST(request: Request) {
         porFrota.set(chaveFrota, atualizarBaselineWelford(atualFrota, a.velocidade));
       }
 
-      await Promise.allSettled(
+      const resultadosVeiculo = await Promise.allSettled(
         [...porVeiculo].map(([chave, b]) => {
           const [veiculo_id, tipoViagem] = chave.split(":");
           return pool.query(
@@ -1882,8 +1914,10 @@ export async function POST(request: Request) {
           );
         })
       );
+      const falhasVeiculo = resultadosVeiculo.filter((r) => r.status === "rejected").length;
+      if (falhasVeiculo > 0) console.warn(`Aviso: ${falhasVeiculo} falha(s) ao gravar baseline_veiculo neste ciclo`);
 
-      await Promise.allSettled(
+      const resultadosFrota = await Promise.allSettled(
         [...porFrota].map(([chave, b]) => {
           const [cliente_id, tipoViagem] = chave.split(":");
           return pool.query(
@@ -1895,6 +1929,8 @@ export async function POST(request: Request) {
           );
         })
       );
+      const falhasFrota = resultadosFrota.filter((r) => r.status === "rejected").length;
+      if (falhasFrota > 0) console.warn(`Aviso: ${falhasFrota} falha(s) ao gravar baseline_frota neste ciclo`);
     }
 
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo

@@ -7,6 +7,10 @@ import pg from "pg";
 const MIN_AMOSTRAS = 20;
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
+// Copia intencional de src/lib/calibracao-desvio.ts: script .mjs standalone
+// (mesmo padrao dos outros scripts deste diretorio) nao importa .ts sem
+// build. Se mudar a formula aqui, mudar la tambem (e vice-versa) -- testes
+// unitarios reais ficam em calibracao-desvio.test.ts.
 function taxaFalsoPositivoCalibrada(nAmostras, nFalsoPositivo, taxaGlobal, minAmostras) {
   const alphaPrior = taxaGlobal * minAmostras;
   const betaPrior = (1 - taxaGlobal) * minAmostras;
