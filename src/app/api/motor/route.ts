@@ -628,6 +628,11 @@ export async function POST(request: Request) {
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
+    // Geocodes que deram cache-miss no loop principal -- resolvidos em
+    // PARALELO depois do upsert de posicoes (fora do caminho critico da
+    // deteccao; o rotulo chega ao banco segundos depois, via UPDATE proprio).
+    const geocodesPendentes: { veiculo_id: string; lat: number; lng: number }[] = [];
+
     // Contagem total de células do tapete do cliente — só pro piso
     // TAPETE_MIN_CELULAS (nunca fica gigante: é 1 inteiro, cacheado por
     // CACHE_TAPETE_MS, igual antes). Ver comentário completo acima
@@ -1286,14 +1291,26 @@ export async function POST(request: Request) {
 
           // ─── Localização do veículo (agora que sabemos o nível) ─────────
           // Base > endereço (parado OU em alerta, inclusive em movimento) > Em deslocamento.
-          // Geocodar veículo em alerta mesmo andando: a central quer a rua em tempo real.
+          // Achado real 10/07 (investigacao de lentidao do ciclo): o geocode
+          // reverso rodava AQUI, sequencial, um veiculo por vez (ate 30
+          // chamadas de ate 4s cada por ciclo) -- era o maior custo do
+          // caminho critico da DETECCAO, sendo que o endereco e so rotulo de
+          // exibicao. Agora: cache sincrono aqui (hit = usa na hora); miss =
+          // vira null (o upsert usa COALESCE, entao o rotulo ANTERIOR fica na
+          // tela) e entra na fila geocodesPendentes, processada em PARALELO
+          // depois do upsert de posicoes, fora do caminho da deteccao.
           let localVeiculo: string | null = null;
           if (baseOcupada) {
             localVeiculo = baseOcupada.nome;
           } else if (pos.fresco) {
             const emAlerta = nivel === "vermelho" || nivel === "amarelo";
             if (pos.velocidade === 0 || emAlerta) {
-              localVeiculo = await geocodeReverso(pos.lat, pos.lng, pool, contadorGeocodesNovos, cacheGeocode);
+              const emCache = cacheGeocode.get(chaveGeocode(pos.lat, pos.lng));
+              if (emCache !== undefined) {
+                localVeiculo = emCache;
+              } else {
+                geocodesPendentes.push({ veiculo_id, lat: pos.lat, lng: pos.lng });
+              }
             } else {
               localVeiculo = "Em deslocamento";
             }
@@ -1523,6 +1540,48 @@ export async function POST(request: Request) {
         erros.push(msg);
       } finally {
         pgPosicoes.release();
+      }
+    }
+
+    // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo
+    // (lotes de 8), fora do caminho critico da deteccao -- ver comentario na
+    // fila geocodesPendentes. Mesmo orcamento de sempre (LIMITE_GEOCODES_NOVOS
+    // via contadorGeocodesNovos, aplicado dentro de geocodeReverso). O rotulo
+    // chega via UPDATE proprio; ate la a tela mostra o rotulo anterior
+    // (COALESCE no upsert acima).
+    if (geocodesPendentes.length > 0) {
+      const TAMANHO_LOTE_GEOCODE = 8;
+      const resolvidos: { veiculo_id: string; local: string }[] = [];
+      for (let i = 0; i < geocodesPendentes.length; i += TAMANHO_LOTE_GEOCODE) {
+        const lote = geocodesPendentes.slice(i, i + TAMANHO_LOTE_GEOCODE);
+        const resultados = await Promise.allSettled(
+          lote.map((g) => geocodeReverso(g.lat, g.lng, pool, contadorGeocodesNovos, cacheGeocode))
+        );
+        for (let j = 0; j < lote.length; j++) {
+          const r = resultados[j];
+          if (r.status === "fulfilled" && r.value) {
+            resolvidos.push({ veiculo_id: lote[j].veiculo_id, local: r.value });
+          }
+        }
+        // Orcamento estourou: o resto fica pro proximo ciclo (cache do banco
+        // ja vai ter parte deles preenchida pelas chamadas deste lote).
+        if (contadorGeocodesNovos.valor >= LIMITE_GEOCODES_NOVOS) break;
+      }
+      if (resolvidos.length > 0) {
+        const pgLocais = await pool.connect();
+        try {
+          await pgLocais.query(
+            `UPDATE posicoes_atuais p
+             SET local = c.local
+             FROM unnest($1::uuid[], $2::text[]) AS c(veiculo_id, local)
+             WHERE p.veiculo_id = c.veiculo_id`,
+            [resolvidos.map((r) => r.veiculo_id), resolvidos.map((r) => r.local)]
+          );
+        } catch (errLocais) {
+          console.warn(`Aviso: erro ao atualizar locais geocodados: ${String(errLocais)}`);
+        } finally {
+          pgLocais.release();
+        }
       }
     }
 
