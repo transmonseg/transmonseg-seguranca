@@ -309,7 +309,11 @@ export function detectarParadaAnomala(ctx: {
 // Teto (m): acima disso não é mais "desvio local", é DESLOCAMENTO interurbano
 // (a frota atende o estado todo; ida/volta de praça distante fica sempre a
 // dezenas de km de qualquer destino, isso é viagem normal, não desvio).
-const DESVIO_GATILHO_TETO_M = 25000;
+// Subido de 25km pra 80km em 11/07 (diretiva explicita: falso positivo
+// aceitavel, prioridade total e nunca perder desvio real) -- 25km cortava
+// desvio real em clientes com rota longa de verdade (Nutry atende Angra dos
+// Reis, Volta Redonda).
+const DESVIO_GATILHO_TETO_M = 80000;
 // Distância (m) usada só pra RESOLVER o alerta (voltou perto de algo = chegou).
 const DESVIO_RESOLVE_M = 2500;
 // Crescimento mínimo por ciclo pra contar como afastamento real (ruído de GPS).
