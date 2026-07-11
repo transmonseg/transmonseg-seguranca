@@ -293,8 +293,18 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a).not.toBeNull();
   });
 
-  it("streak 1 nao dispara (persistencia minima 2 ciclos, ~2min)", () => {
-    expect(detectarDesvio(emMov, { ...base, streak: 1 })).toBeNull();
+  it("streak 1 DISPARA agora (persistencia minima baixada pra 1 ciclo, ~1min)", () => {
+    // Baixado de 2 pra 1 em 11/07 (diretiva explicita do usuario: "pode ter
+    // um desvio de 100 metros e ja SER um desvio" -- imediato, sem esperar
+    // um 2o ciclo de confirmacao. Falso positivo aceitavel, prioridade
+    // total e nunca perder desvio real).
+    const a = detectarDesvio(emMov, { ...base, streak: 1 });
+    expect(a).not.toBeNull();
+    expect(a?.motivo).toContain("há 1 leituras");
+  });
+
+  it("streak 0 continua nao disparando (pelo menos 1 ciclo de confirmacao)", () => {
+    expect(detectarDesvio(emMov, { ...base, streak: 0 })).toBeNull();
   });
 
   it("parado nao dispara", () => {

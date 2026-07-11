@@ -603,7 +603,11 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     };
   }
 
-  if (ctx.streak < 2) return null;
+  // Persistência mínima baixada de 2 pra 1 ciclo em 11/07 (diretiva explicita
+  // do usuario: "pode ter um desvio de 100 metros e ja SER um desvio" --
+  // imediato, sem esperar confirmação de um 2º ciclo. Falso positivo
+  // aceitável, prioridade total e nunca perder desvio real).
+  if (ctx.streak < 1) return null;
   // Checagem própria (não confia só no streak pré-computado pelo motor):
   // se o ciclo ATUAL mostra aproximação de qualquer destino, cancela na
   // hora — não espera o motor zerar o streak no próximo ciclo.

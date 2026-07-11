@@ -122,10 +122,11 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
       riscoAreaAtual: 0,
     }));
     const resultados = simular(REALENGO, ciclos);
-    // indice 0: streak 0 (baseline, sem anterior). indice 1: streak 1 (ainda
-    // nao dispara, exige >=2). indice 2: streak 2 (1o disparo). indice 4: streak 4.
+    // indice 0: streak 0 (baseline, sem anterior, nunca dispara). Persistencia
+    // minima baixada de 2 pra 1 em 11/07 (diretiva: falso positivo aceitavel,
+    // imediato) -- indice 1 ja e streak 1 e DISPARA (1o disparo). indice 4: streak 4.
     expect(resultados[0]).toBeNull();
-    expect(resultados[1]).toBeNull();
+    expect(resultados[1]?.score).toBe(45); // streak 1
     expect(resultados[2]?.score).toBe(45); // streak 2
     expect(resultados[4]?.score).toBe(68); // streak 4
   });
@@ -179,48 +180,62 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados.every(r => r === null)).toBe(true);
   });
 
-  it("CORRECAO DE ROTA: ciclo se afastando, depois volta a se aproximar — streak nao dispara (poucos ciclos pra completar a historese)", () => {
-    // Com a historese real (avancarStreaksDesvio), 1 aproximacao isolada
-    // CONGELA o streak em vez de zerar -- mas com so 3 ciclos aqui, o streak
-    // nunca chega a 2 de qualquer forma (congelado em 1). O teste dedicado
-    // de historese abaixo ("cenario de serra via simular()") e o que prova
-    // a diferenca de comportamento com mais ciclos.
+  it("CORRECAO DE ROTA: ciclo se afastando, depois volta a se aproximar — dispara no 1o ciclo, checagem do ciclo atual bloqueia no 2o", () => {
+    // Persistencia minima baixada de 2 pra 1 em 11/07 (diretiva: falso
+    // positivo aceitavel, imediato) -- o 1o ciclo de afastamento ja dispara
+    // sozinho. O 2o ciclo aproxima de verdade NESTE ciclo -- a checagem
+    // propria do ciclo atual (linha ~610, "nao confia so no streak
+    // pre-computado") bloqueia na hora, independente do streak congelado
+    // pela historese (avancarStreaksDesvio) pro PROXIMO ciclo.
     const ciclos: Ciclo[] = [
       { ...MANGUINHOS, dentroTapete: true },
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true }, // afasta (streak=1, ainda nao dispara)
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.005), dentroTapete: true }, // se aproxima de novo (metade do afastamento anterior) -> congela em 1
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true }, // afasta -> streak=1, DISPARA
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.005), dentroTapete: true }, // se aproxima de novo (metade do afastamento anterior) -> bloqueado neste ciclo
     ];
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados.every(r => r === null)).toBe(true);
+    expect(resultados[0]).toBeNull();
+    expect(resultados[1]?.score).toBe(45);
+    expect(resultados[2]).toBeNull();
   });
 
-  it("cenario de serra via simular(): 1 aproximacao isolada (curva) NAO reseta o streak -- dispara 1 ciclo mais cedo do que a reimplementacao simplificada disparava", () => {
+  it("cenario de serra via simular(): 1 aproximacao isolada (curva) NAO reseta o streak pro proximo ciclo -- ja dispara no 1o afastamento", () => {
     // Achado real 09/07 (docs/analise-deteccao.md secao 5): em estrada de
     // serra a distancia em linha reta oscila a cada curva. A reimplementacao
     // simplificada que este arquivo usava ate 10/07 zerava o streak nesse
     // ciclo 2, exigindo 2 ciclos NOVOS de afastamento pra disparar de novo
-    // (so no ciclo 4). Com a historese real, o streak congela no ciclo 2 e
-    // so precisa de MAIS 1 ciclo de afastamento pra disparar -- no ciclo 3.
+    // (so no ciclo 4). Com a historese real, o streak fica congelado em 1
+    // (nao zerado) pro ciclo 3, que ja chega em streak 2.
+    // Persistencia minima baixada de 2 pra 1 em 11/07 (diretiva: falso
+    // positivo aceitavel, imediato) -- o ciclo 1 ja dispara sozinho. O
+    // ciclo 2 (curva, aproximando NESTE ciclo) e bloqueado pela checagem do
+    // ciclo atual (linha ~610), independente do streak congelado.
     const ciclos: Ciclo[] = [
       { ...MANGUINHOS, dentroTapete: true },                              // 0: baseline
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true },   // 1: afasta -> streak 1
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.007), dentroTapete: true },  // 2: curva (mais perto que o ciclo 1) -> congela em 1, NAO zera
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true },   // 3: afasta de novo -> streak 2, DISPARA aqui
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true },   // 1: afasta -> streak 1, DISPARA
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.007), dentroTapete: true },  // 2: curva (mais perto que o ciclo 1) -> bloqueado neste ciclo, mas congela streak em 1 pro proximo
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true },   // 3: afasta de novo -> streak 2 (nao zerou no ciclo 2), DISPARA rapido
     ];
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados[1]).toBeNull();
-    expect(resultados[2]).toBeNull(); // congelado em 1, ainda nao dispara
-    expect(resultados[3]?.score).toBe(45); // streak chegou a 2 -- deteccao rapida, nao atrasada
+    expect(resultados[0]).toBeNull();
+    expect(resultados[1]?.score).toBe(45);
+    expect(resultados[2]).toBeNull(); // bloqueado neste ciclo (aproximando agora), mas nao reseta o streak
+    expect(resultados[3]?.score).toBe(45); // streak chegou a 2 sem precisar reiniciar do zero
   });
 
-  it("RUIDO DE GPS de 1 ciclo isolado (jitter): nao acumula streak suficiente, nao dispara", () => {
+  it("RUIDO DE GPS de 1 ciclo isolado (jitter): dispara no ciclo do ruido, historese congela ate voltar a aproximar de verdade", () => {
+    // Persistencia minima baixada de 2 pra 1 em 11/07 -- 1 ciclo isolado de
+    // ruido/afastamento ja e o suficiente pra disparar (diretiva: nunca
+    // perder desvio real, falso positivo aceitavel). O 3o ciclo (aproximacao
+    // de verdade, streak zera) e que deixa de disparar.
     const ciclos: Ciclo[] = [
       { ...MANGUINHOS, dentroTapete: true },
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.003), dentroTapete: true }, // 1 ciclo de ruido (afasta um pouco)
-      { ...aproximarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true }, // volta a se aproximar do destino
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.003), dentroTapete: true }, // 1 ciclo de ruido (afasta um pouco) -> streak 1, DISPARA
+      { ...aproximarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true }, // volta a se aproximar do destino -> zera
     ];
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados.every(r => r === null)).toBe(true);
+    expect(resultados[0]).toBeNull();
+    expect(resultados[1]?.score).toBe(45);
+    expect(resultados[2]).toBeNull();
   });
 
   it("VEICULO PARADO durante o desvio aparente: nunca dispara (velocidade=0)", () => {
@@ -278,6 +293,8 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     // chegava a 2 e o teste so passava (todos null) por acidente de
     // geometria, nao pelo gate que alegava testar. afastarDe() garante
     // afastamento de verdade, mesmo padrao dos outros cenarios do arquivo.
+    // Persistencia minima baixada de 2 pra 1 em 11/07 -- streak 1 (indice 1)
+    // ja dispara agora, nao so o streak 2 (indice 2).
     let anteriorDist: number[] | null = null;
     let streak = 0;
     const resultados: (ReturnType<typeof detectarDesvio>)[] = [];
@@ -295,8 +312,9 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
       anteriorDist = distDestinosM;
     }
     expect(resultados[0]).toBeNull(); // streak 0
-    expect(resultados[1]).toBeNull(); // streak 1, ainda nao dispara
-    expect(resultados[2]).not.toBeNull(); // streak 2: dispara
+    expect(resultados[1]).not.toBeNull(); // streak 1: ja dispara
+    expect(resultados[1]?.exigeConfirmacaoCorredor).toBe(true);
+    expect(resultados[2]).not.toBeNull(); // streak 2: continua disparando
     expect(resultados[2]?.exigeConfirmacaoCorredor).toBe(true);
   });
 
