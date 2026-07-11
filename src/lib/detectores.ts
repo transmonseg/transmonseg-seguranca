@@ -3,6 +3,7 @@
 // Nunca importe nada de 'next' aqui — lib pura TypeScript.
 
 import type { PosicaoNormalizada } from "./unitrac";
+import { zScoreBaseline, type Baseline } from "./baseline-veiculo";
 
 export type Alerta = {
   nivel: "critico" | "atencao";
@@ -823,6 +824,31 @@ export function detectarBypassEntrega(ctx: CtxBypassEntrega): Alerta | null {
     tipo: "bypass_entrega",
     motivo: `Passou pelo raio de um ponto de entrega sem confirmar (parado so ${ctx.dwellSegundosAcumulados}s, esperado ${BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS}s+)`,
     score: 40,
+  };
+}
+
+export type CtxAnomaliaBaseline = {
+  velocidadeMediaViagemKmh: number;
+  baselineProprio: Baseline;
+  baselineFrota: Baseline;
+  minAmostrasProprio: number;
+};
+
+const BASELINE_MIN_AMOSTRAS_FROTA = 20;
+const BASELINE_Z_LIMIAR = 3;
+
+export function detectarAnomaliaBaseline(ctx: CtxAnomaliaBaseline): Alerta | null {
+  const usaProprio = ctx.baselineProprio.n >= ctx.minAmostrasProprio;
+  const baseline = usaProprio ? ctx.baselineProprio : ctx.baselineFrota;
+  const minAmostras = usaProprio ? ctx.minAmostrasProprio : BASELINE_MIN_AMOSTRAS_FROTA;
+  const z = zScoreBaseline(ctx.velocidadeMediaViagemKmh, baseline, minAmostras);
+  if (z === null || !Number.isFinite(z) || Math.abs(z) < BASELINE_Z_LIMIAR) return null;
+  const origem = usaProprio ? "deste veiculo" : "da frota (veiculo ainda sem historico proprio)";
+  return {
+    nivel: "atencao",
+    tipo: "baseline_veiculo",
+    motivo: `Velocidade media da viagem (${ctx.velocidadeMediaViagemKmh.toFixed(0)}km/h) foge ${Math.abs(z).toFixed(1)} desvios do padrao ${origem}`,
+    score: 35,
   };
 }
 

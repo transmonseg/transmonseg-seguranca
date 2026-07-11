@@ -1,5 +1,6 @@
 // Testes unitarios do motor de deteccao (Vitest).
 import { describe, it, expect } from "vitest";
+import type { Baseline } from "./baseline-veiculo";
 import {
   detectarPanico,
   detectarBau,
@@ -22,6 +23,7 @@ import {
   emHorarioOperacao,
   detectarBypassEntrega,
   type CtxBypassEntrega,
+  detectarAnomaliaBaseline,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
 
@@ -941,5 +943,51 @@ describe("detectarBypassEntrega (achado do audio do cliente 11/07: chegou na por
 
   it("trocou de alvo (nao e o mesmo raio que entrou): nao dispara", () => {
     expect(detectarBypassEntrega({ ...base, mesmoAlvoCodigo: false })).toBeNull();
+  });
+});
+
+describe("detectarAnomaliaBaseline (baseline comportamental por veiculo)", () => {
+  const baselineProprioEstavel: Baseline = { n: 50, media: 40, variancia: 100 };
+  const baselineFrota: Baseline = { n: 500, media: 45, variancia: 121 };
+
+  it("dentro do padrao do proprio veiculo (menos de 3 desvios): nao dispara", () => {
+    const a = detectarAnomaliaBaseline({
+      velocidadeMediaViagemKmh: 50,
+      baselineProprio: baselineProprioEstavel,
+      baselineFrota,
+      minAmostrasProprio: 20,
+    });
+    expect(a).toBeNull();
+  });
+
+  it("mais de 3 desvios do proprio veiculo: dispara atencao", () => {
+    const a = detectarAnomaliaBaseline({
+      velocidadeMediaViagemKmh: 80,
+      baselineProprio: baselineProprioEstavel,
+      baselineFrota,
+      minAmostrasProprio: 20,
+    });
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.tipo).toBe("baseline_veiculo");
+  });
+
+  it("veiculo em cold start (poucas amostras proprias): usa baseline da frota", () => {
+    const a = detectarAnomaliaBaseline({
+      velocidadeMediaViagemKmh: 80,
+      baselineProprio: { n: 3, media: 40, variancia: 100 },
+      baselineFrota,
+      minAmostrasProprio: 20,
+    });
+    expect(a).not.toBeNull();
+  });
+
+  it("sem baseline nenhum ainda confiavel (nem proprio nem frota): nao dispara", () => {
+    const a = detectarAnomaliaBaseline({
+      velocidadeMediaViagemKmh: 80,
+      baselineProprio: { n: 0, media: 0, variancia: 0 },
+      baselineFrota: { n: 0, media: 0, variancia: 0 },
+      minAmostrasProprio: 20,
+    });
+    expect(a).toBeNull();
   });
 });
