@@ -1411,6 +1411,14 @@ export async function POST(request: Request) {
                   };
                 }
                 cacheCorredorPorVeiculo.delete(veiculo_id);
+                // Anti-pisca (achado real 11/07, TTT-1C46 e TTF-5I10): com o
+                // corredor confirmando "fora", a proximidade em linha reta
+                // (<2,5km de algum destino) NAO pode resolver o alerta -- em
+                // peninsula/serra ela mente (destino do outro lado da baia),
+                // e o alerta piscava: criava, resolvia em ~20s pela linha
+                // reta, e recriava no ciclo seguinte. Evidencia da estrada
+                // real ganha da heuristica geometrica.
+                estaForaDeRota = true;
               }
               // "indisponivel": deixa o alerta seguir como hoje (fail-open).
             } else {
