@@ -1429,6 +1429,18 @@ export async function POST(request: Request) {
             }
           }
 
+          // Achado real 11/07: alerta "sem historico de comportamento" (0
+          // entregas feitas) so pode sobreviver com confirmacao EXPLICITA do
+          // corredor ("fora") -- ao contrario do padrao normal de
+          // precisaVerificacaoCorredor, aqui "indisponivel"/orcamento
+          // estourado/corredor desligado NAO fazem fail-open. Sem isso, o
+          // gate antigo (bloqueio total pre-1a-entrega) segue sendo
+          // necessario; com isso, a estrada real supre a falta de historico
+          // sem abrir mao de cautela quando a API estiver fora.
+          if (alerta?.tipo === "desvio" && alerta.exigeConfirmacaoCorredor === true && corredorInfo?.veredito !== "fora") {
+            alerta = null;
+          }
+
           // Novos detectores: retorno_tardio, parada_noturna_ignicao, aceleracao_brusca.
           // Calculados separadamente e sobrepõem alerta principal se mais severos.
           const extras: Alerta[] = [

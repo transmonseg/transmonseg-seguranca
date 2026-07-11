@@ -301,8 +301,22 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(detectarDesvio(posicaoBase({ velocidade: 0 }), base)).toBeNull();
   });
 
-  it("indo para a primeira entrega (0 feitas com pendentes) nao dispara", () => {
-    expect(detectarDesvio(emMov, { ...base, entregasFeitas: 0 })).toBeNull();
+  // Achado real 11/07: o gate antigo bloqueava TOTAL, o dia inteiro, veiculos
+  // de rota curta (1-3 entregas passam a maior parte do dia com 0 feitas).
+  // 4 de 5 casos reais confirmados pela cerca virtual ("fora" de rota real)
+  // nunca viraram alerta so por causa disso. Agora dispara igual, mas exige
+  // confirmacao do corredor pra sobreviver (nao fail-open) -- a estrada real
+  // supre a falta de historico de comportamento sem abrir mao de cautela.
+  it("indo para a primeira entrega (0 feitas com pendentes): dispara, mas exige confirmacao do corredor", () => {
+    const a = detectarDesvio(emMov, { ...base, entregasFeitas: 0 });
+    expect(a).not.toBeNull();
+    expect(a?.precisaVerificacaoCorredor).toBe(true);
+    expect(a?.exigeConfirmacaoCorredor).toBe(true);
+  });
+
+  it("ja com alguma entrega feita: NAO exige confirmacao extra (comportamento de hoje)", () => {
+    const a = detectarDesvio(emMov, { ...base, entregasFeitas: 1 });
+    expect(a?.exigeConfirmacaoCorredor).toBeUndefined();
   });
 
   it("ENTREGA NORMAL: aproximando so do 2o pendente (nao o mais proximo) NAO dispara — bug real corrigido", () => {

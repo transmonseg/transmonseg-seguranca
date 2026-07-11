@@ -266,12 +266,23 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados[2]?.score).toBe(45); // NAO e 80 — risco insuficiente pra acelerar
   });
 
-  it("PRIMEIRA ENTREGA DO DIA (sem historico de comportamento): nao dispara mesmo com desvio claro", () => {
+  // Achado real 11/07: o gate antigo bloqueava TOTAL o dia inteiro pra
+  // veiculos de rota curta (1-3 entregas passam a maior parte do dia com 0
+  // feitas) -- 4 de 5 casos reais confirmados pela cerca virtual como "fora"
+  // de rota real nunca viraram alerta so por isso. Agora dispara igual, mas
+  // marca exigeConfirmacaoCorredor -- so route.ts (fora do escopo deste
+  // teste puro) decide se sobrevive com base no veredito real do corredor.
+  it("PRIMEIRA ENTREGA DO DIA (sem historico de comportamento): dispara, marcado pra exigir corredor", () => {
+    // Correcao 11/07: a versao anterior usava MANGUINHOS.lat/lng - i*0.01,
+    // que na verdade APROXIMA de REALENGO (direcao errada) -- o streak nunca
+    // chegava a 2 e o teste so passava (todos null) por acidente de
+    // geometria, nao pelo gate que alegava testar. afastarDe() garante
+    // afastamento de verdade, mesmo padrao dos outros cenarios do arquivo.
     let anteriorDist: number[] | null = null;
     let streak = 0;
     const resultados: (ReturnType<typeof detectarDesvio>)[] = [];
     for (let i = 0; i < 3; i++) {
-      const lat = MANGUINHOS.lat - i * 0.01, lng = MANGUINHOS.lng - i * 0.01;
+      const { lat, lng } = afastarDe(MANGUINHOS, REALENGO, i * 0.01);
       const distDestinosM = [haversineM(lat, lng, REALENGO.lat, REALENGO.lng)];
       if (anteriorDist && afastouDeTudo(distDestinosM, anteriorDist)) streak += 1; else streak = 0;
       resultados.push(detectarDesvio(posicaoBase({ velocidade: 40 }), {
@@ -283,7 +294,10 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
       }));
       anteriorDist = distDestinosM;
     }
-    expect(resultados.every(r => r === null)).toBe(true);
+    expect(resultados[0]).toBeNull(); // streak 0
+    expect(resultados[1]).toBeNull(); // streak 1, ainda nao dispara
+    expect(resultados[2]).not.toBeNull(); // streak 2: dispara
+    expect(resultados[2]?.exigeConfirmacaoCorredor).toBe(true);
   });
 
   it("DESLOCAMENTO INTERURBANO legitimo (destino > 25km): nao dispara mesmo se afastando", () => {

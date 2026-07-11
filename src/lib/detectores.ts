@@ -17,6 +17,15 @@ export type Alerta = {
   // isso; o branch remanescente da Camada 3 ("Aproximando...") nao seta --
   // tem semantica de deteccao diferente e nunca teve verificacao de corredor.
   precisaVerificacaoCorredor?: boolean;
+  // Achado real 11/07: quando true, o alerta so pode sobreviver se o
+  // corredor CONFIRMAR "fora" explicitamente -- "indisponivel"/orcamento
+  // estourado NAO fazem fail-open aqui (ao contrario do padrao normal de
+  // precisaVerificacaoCorredor). Usado especificamente pro caso "sem
+  // historico de comportamento ainda" (0 entregas feitas): sem essa
+  // exigencia extra, o gate antigo bloqueava a deteccao por completo; com
+  // ela, a estrada real supre a falta de historico sem abrir mao de
+  // cautela quando a API estiver fora.
+  exigeConfirmacaoCorredor?: boolean;
 };
 
 // Informativo de veiculo sem comunicacao (atraso > 60 min).
@@ -546,8 +555,16 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   const operando = ctx.emOperacao || ctx.sabadoDiurnoComRota === true;
   if (!operando || !ctx.foraDaBase) return null;
   if (p.velocidade <= 0) return null;
-  // Indo para a primeira entrega do dia: sem referência de comportamento ainda.
-  if (ctx.temPendentes && (ctx.entregasFeitas ?? 1) === 0) return null;
+  // Indo para a primeira entrega do dia: sem referência de comportamento
+  // ainda. Achado real 11/07: bloquear TOTAL aqui apagava a deteccao o dia
+  // INTEIRO pra veiculos de rota curta (1-3 entregas passam a maior parte
+  // do dia com 0 feitas) -- 4 de 5 casos reais confirmados pela cerca
+  // virtual como fora de rota real nunca viravam alerta so por isso. Agora
+  // dispara igual, mas marca exigeConfirmacaoCorredor: a estrada real
+  // (corredor) supre a falta de historico de comportamento sem abrir mao
+  // de cautela -- route.ts so deixa sobreviver se o corredor CONFIRMAR
+  // "fora" (nao fail-open pra este caso especifico).
+  const semHistorico = ctx.temPendentes && (ctx.entregasFeitas ?? 1) === 0;
   if (ctx.distDestinosM.length === 0) return null;
 
   const menorDistM = Math.min(...ctx.distDestinosM);
@@ -593,6 +610,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, fora de via conhecida da frota`,
       score: 80,
       precisaVerificacaoCorredor: true,
+      exigeConfirmacaoCorredor: semHistorico || undefined,
     };
   }
 
@@ -609,6 +627,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, em área de risco elevado`,
       score: 80,
       precisaVerificacaoCorredor: true,
+      exigeConfirmacaoCorredor: semHistorico || undefined,
     };
   }
 
@@ -621,6 +640,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
       score: 68,
       precisaVerificacaoCorredor: true,
+      exigeConfirmacaoCorredor: semHistorico || undefined,
     };
   }
 
@@ -630,6 +650,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
     score: 45,
     precisaVerificacaoCorredor: true,
+      exigeConfirmacaoCorredor: semHistorico || undefined,
   };
 }
 
