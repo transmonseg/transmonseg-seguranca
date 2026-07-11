@@ -26,6 +26,7 @@ import {
   detectarAceleracaoBrusca,
   calcularRiscoArea,
   detectarBypassEntrega,
+  detectarAnomaliaBaseline,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -35,6 +36,7 @@ import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia } from "@/lib/corredor-verificacao";
+import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -572,6 +574,35 @@ export async function POST(request: Request) {
         no_raio_dwell_segundos: row.no_raio_dwell_segundos ?? 0,
       });
     }
+
+    // Baseline comportamental por veiculo/frota (Fase 3 do redesenho de
+    // 11/07) -- carregado uma vez pra todos os veiculos, mesmo padrao de
+    // mapaPosAtual acima (tabelas pequenas, nao precisa filtrar por cliente).
+    const { data: baselineVeiculoRows } = await supabase
+      .from("baseline_veiculo")
+      .select("veiculo_id, tipo_viagem, feature, n_amostras, media, variancia");
+    const mapaBaselineVeiculo = new Map<string, Baseline>();
+    for (const r of baselineVeiculoRows ?? []) {
+      mapaBaselineVeiculo.set(`${r.veiculo_id}:${r.tipo_viagem}:${r.feature}`, {
+        n: Number(r.n_amostras), media: r.media, variancia: r.variancia,
+      });
+    }
+
+    const { data: baselineFrotaRows } = await supabase
+      .from("baseline_frota")
+      .select("cliente_id, tipo_viagem, feature, n_amostras, media, variancia");
+    const mapaBaselineFrota = new Map<string, Baseline>();
+    for (const r of baselineFrotaRows ?? []) {
+      mapaBaselineFrota.set(`${r.cliente_id}:${r.tipo_viagem}:${r.feature}`, {
+        n: Number(r.n_amostras), media: r.media, variancia: r.variancia,
+      });
+    }
+
+    // Acumula amostras deste ciclo (veiculo + cliente) pra atualizar os
+    // dois baselines em lote no fim, fora do loop de deteccao (mesmo
+    // principio ja usado pra geocodesPendentes: nao bloquear o caminho
+    // critico com round-trips extras por veiculo).
+    const amostrasBaselineCiclo: { veiculo_id: string; cliente_id: string; tipoViagem: "urbano" | "rodoviario"; velocidade: number }[] = [];
 
     // Eventos nativos "rotineiros" da Unitrac — nao viram linha na tabela `eventos`
     // (senao toda transmissao periodica de 220+ veiculos vira log, sem sinal nenhum).
@@ -1207,6 +1238,27 @@ export async function POST(request: Request) {
             fatorHorario: perfilHorario[horaSP] ?? 1,
           });
 
+          // Baseline comportamental por veiculo (Fase 3). velocidade
+          // instantanea do ciclo como proxy de "velocidade media da
+          // viagem" -- simplificacao de primeira versao, nao ha boundaries
+          // de viagem definidos ainda; cada ciclo de 30s vira 1 amostra.
+          const tipoViagem = classificarTipoViagem(pos.velocidade);
+          const baselineProprio = mapaBaselineVeiculo.get(`${veiculo_id}:${tipoViagem}:velocidade_media_kmh`)
+            ?? { n: 0, media: 0, variancia: 0 };
+          const baselineFrotaAtual = mapaBaselineFrota.get(`${cliente_id}:${tipoViagem}:velocidade_media_kmh`)
+            ?? { n: 0, media: 0, variancia: 0 };
+          const alertaBaseline = pos.fresco && pos.velocidade > 0
+            ? detectarAnomaliaBaseline({
+                velocidadeMediaViagemKmh: pos.velocidade,
+                baselineProprio,
+                baselineFrota: baselineFrotaAtual,
+                minAmostrasProprio: 20,
+              })
+            : null;
+          if (pos.fresco && pos.velocidade > 0) {
+            amostrasBaselineCiclo.push({ veiculo_id, cliente_id, tipoViagem, velocidade: pos.velocidade });
+          }
+
           // ─── CERCA VIRTUAL (ver CERCA_VIRTUAL_MODO no topo) ──────────────
           // Mantem o corredor proativo por veiculo. Em modo "ativa" (11/07,
           // diretiva explicita do usuario: falso positivo aceitavel,
@@ -1509,6 +1561,7 @@ export async function POST(request: Request) {
             }),
             alertaCerca,
             alertaBypass,
+            alertaBaseline,
           ].filter((a): a is Alerta => a !== null);
 
           for (const extra of extras) {
@@ -1794,6 +1847,54 @@ export async function POST(request: Request) {
     if (cercaSombraCiclo.length > 0) {
       const { error: erroSombra } = await supabase.from("cerca_sombra").insert(cercaSombraCiclo);
       if (erroSombra) console.warn(`Aviso: erro ao gravar cerca_sombra: ${erroSombra.message}`);
+    }
+
+    // Atualiza baseline_veiculo e baseline_frota incrementalmente (Welford)
+    // com as amostras deste ciclo. Roda depois do loop de deteccao, mesmo
+    // principio do processamento de geocodesPendentes: nao e critico pra
+    // este ciclo, so alimenta a calibracao dos proximos.
+    if (amostrasBaselineCiclo.length > 0) {
+      const porVeiculo = new Map<string, Baseline>();
+      const porFrota = new Map<string, Baseline>();
+      for (const a of amostrasBaselineCiclo) {
+        const chaveVeiculo = `${a.veiculo_id}:${a.tipoViagem}`;
+        const atualVeiculo = porVeiculo.get(chaveVeiculo)
+          ?? mapaBaselineVeiculo.get(`${chaveVeiculo}:velocidade_media_kmh`)
+          ?? { n: 0, media: 0, variancia: 0 };
+        porVeiculo.set(chaveVeiculo, atualizarBaselineWelford(atualVeiculo, a.velocidade));
+
+        const chaveFrota = `${a.cliente_id}:${a.tipoViagem}`;
+        const atualFrota = porFrota.get(chaveFrota)
+          ?? mapaBaselineFrota.get(`${chaveFrota}:velocidade_media_kmh`)
+          ?? { n: 0, media: 0, variancia: 0 };
+        porFrota.set(chaveFrota, atualizarBaselineWelford(atualFrota, a.velocidade));
+      }
+
+      await Promise.allSettled(
+        [...porVeiculo].map(([chave, b]) => {
+          const [veiculo_id, tipoViagem] = chave.split(":");
+          return pool.query(
+            `insert into baseline_veiculo (veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, atualizado_em)
+             values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, now())
+             on conflict (veiculo_id, tipo_viagem, feature)
+             do update set n_amostras = $3, media = $4, variancia = $5, atualizado_em = now()`,
+            [veiculo_id, tipoViagem, b.n, b.media, b.variancia]
+          );
+        })
+      );
+
+      await Promise.allSettled(
+        [...porFrota].map(([chave, b]) => {
+          const [cliente_id, tipoViagem] = chave.split(":");
+          return pool.query(
+            `insert into baseline_frota (cliente_id, tipo_viagem, feature, n_amostras, media, variancia, atualizado_em)
+             values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, now())
+             on conflict (cliente_id, tipo_viagem, feature)
+             do update set n_amostras = $3, media = $4, variancia = $5, atualizado_em = now()`,
+            [cliente_id, tipoViagem, b.n, b.media, b.variancia]
+          );
+        })
+      );
     }
 
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo
