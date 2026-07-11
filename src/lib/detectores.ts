@@ -797,6 +797,35 @@ export function detectarAceleracaoBrusca(
   };
 }
 
+// Achado do audio do cliente Nutry Max (11/07/2026): "desvio de rota e
+// quando ele esta na porta do cliente e nao para, segue por outra via, sem
+// confirmar". Parametros de stay-point detection pra logistica urbana
+// (raio do proprio alvo, ja fornecido pela Unitrac em pt.raio; tempo minimo
+// de permanencia com velocidade baixa, nao so posicao). Sinal OPERACIONAL
+// (nivel atencao): confirmado que ninguem na industria trata isso sozinho
+// como alerta de seguranca, so combinado com outro sinal (route.ts decide
+// a escalada, ver comentario no fluxo de deteccao).
+export type CtxBypassEntrega = {
+  saiuDoRaioAgora: boolean;
+  mesmoAlvoCodigo: boolean;
+  dwellSegundosAcumulados: number;
+  entregaConfirmada: boolean;
+};
+
+export const BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS = 120;
+
+export function detectarBypassEntrega(ctx: CtxBypassEntrega): Alerta | null {
+  if (!ctx.saiuDoRaioAgora || !ctx.mesmoAlvoCodigo) return null;
+  if (ctx.entregaConfirmada) return null;
+  if (ctx.dwellSegundosAcumulados >= BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS) return null;
+  return {
+    nivel: "atencao",
+    tipo: "bypass_entrega",
+    motivo: `Passou pelo raio de um ponto de entrega sem confirmar (parado so ${ctx.dwellSegundosAcumulados}s, esperado ${BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS}s+)`,
+    score: 40,
+  };
+}
+
 // Avalia todos os detectores e retorna TODOS os alertas ativos, ordenados por severidade.
 // Use quando precisar de multiplos alertas simultaneos por veiculo (ex: panico + desvio).
 export function avaliarTodos(

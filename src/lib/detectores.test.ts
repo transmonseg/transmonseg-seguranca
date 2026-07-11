@@ -20,6 +20,8 @@ import {
   avaliar,
   formataDuracao,
   emHorarioOperacao,
+  detectarBypassEntrega,
+  type CtxBypassEntrega,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
 
@@ -907,5 +909,37 @@ describe("detectarSaidaNaoAutorizada", () => {
         { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
       )
     ).toBeNull();
+  });
+});
+
+describe("detectarBypassEntrega (achado do audio do cliente 11/07: chegou na porta e nao parou)", () => {
+  const base: CtxBypassEntrega = {
+    saiuDoRaioAgora: true,
+    mesmoAlvoCodigo: true,
+    dwellSegundosAcumulados: 20,
+    entregaConfirmada: false,
+  };
+
+  it("saiu do raio sem dwell suficiente e sem confirmar entrega: dispara atencao", () => {
+    const a = detectarBypassEntrega(base);
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.tipo).toBe("bypass_entrega");
+    expect(a?.motivo).toContain("sem confirmar");
+  });
+
+  it("dwell suficiente (>=120s): nao dispara, ficou tempo bastante", () => {
+    expect(detectarBypassEntrega({ ...base, dwellSegundosAcumulados: 120 })).toBeNull();
+  });
+
+  it("entrega confirmada pela Unitrac: nao dispara mesmo com dwell baixo", () => {
+    expect(detectarBypassEntrega({ ...base, entregaConfirmada: true })).toBeNull();
+  });
+
+  it("nao saiu do raio agora (ainda dentro): nao dispara", () => {
+    expect(detectarBypassEntrega({ ...base, saiuDoRaioAgora: false })).toBeNull();
+  });
+
+  it("trocou de alvo (nao e o mesmo raio que entrou): nao dispara", () => {
+    expect(detectarBypassEntrega({ ...base, mesmoAlvoCodigo: false })).toBeNull();
   });
 });
