@@ -300,13 +300,26 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados[2]?.exigeConfirmacaoCorredor).toBe(true);
   });
 
-  it("DESLOCAMENTO INTERURBANO legitimo (destino > 25km): nao dispara mesmo se afastando", () => {
-    const destinoLonge = { lat: MANGUINHOS.lat + 0.3, lng: MANGUINHOS.lng + 0.3 }; // ~45km
+  it("DESLOCAMENTO INTERURBANO legitimo (destino > 80km): nao dispara mesmo se afastando", () => {
+    // Teto subido de 25km pra 80km em 11/07 (ver DESVIO_GATILHO_TETO_M) --
+    // 45km (antigo cenario deste teste) agora e desvio local de verdade
+    // (rota longa legitima da Nutry, ex. Angra dos Reis/Volta Redonda), so
+    // acima de 80km e que continua sendo deslocamento interurbano puro.
+    const destinoLonge = { lat: MANGUINHOS.lat + 0.8, lng: MANGUINHOS.lng + 0.8 }; // ~120km
     const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
       lat: MANGUINHOS.lat - i * 0.01, lng: MANGUINHOS.lng - i * 0.01, dentroTapete: false,
     }));
     const resultados = simular(destinoLonge, ciclos);
     expect(resultados.every(r => r === null)).toBe(true);
+  });
+
+  it("DESLOCAMENTO local legitimo antigo (destino ~45km, entre o teto velho 25km e o novo 80km): dispara agora", () => {
+    const destinoMedio = { lat: MANGUINHOS.lat + 0.3, lng: MANGUINHOS.lng + 0.3 }; // ~45km
+    const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
+      lat: MANGUINHOS.lat - i * 0.01, lng: MANGUINHOS.lng - i * 0.01, dentroTapete: false,
+    }));
+    const resultados = simular(destinoMedio, ciclos);
+    expect(resultados.some(r => r !== null)).toBe(true);
   });
 });
 

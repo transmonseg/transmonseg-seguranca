@@ -430,7 +430,11 @@ export const FATOR_HORARIO_MAX = 1.6;
 // Acima disso, trata como "área de risco elevado" pro desvio escalar tão
 // rápido quanto "fora do tapete" — um sinal isolado (só favela, ou só
 // tiroteio perto) já basta; não precisa de combinação de vários.
-export const RISCO_AREA_LIMIAR = 40;
+// Baixado de 40 pra 25 em 11/07 (diretiva explicita: falso positivo
+// aceitavel, prioridade total e nunca perder desvio real) -- um sinal
+// moderado isolado (ex. so roubo de carga alto + fator horario) ja deve
+// bastar, sem precisar de combinacao forte tipo favela+tiroteio.
+export const RISCO_AREA_LIMIAR = 25;
 
 // Score de risco da posição ATUAL do veículo (0-100), combinando sinais
 // geográficos/temporais independentes do tapete de rotas. Função pura —

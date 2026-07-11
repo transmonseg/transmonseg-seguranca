@@ -392,6 +392,15 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.score).toBe(45);
   });
 
+  it("area de risco 30 (entre o limiar antigo 40 e o novo 25): escala pra 80 agora", () => {
+    // Baixado de 40 pra 25 em 11/07 (diretiva explicita: falso positivo
+    // aceitavel, prioridade total) -- um sinal isolado de risco moderado
+    // (ex. so RISCO_ROUBO_CARGA_ALTO=20 + fator horario) devia bastar pra
+    // escalar rapido, nao so combinacoes fortes tipo favela/tiroteio (=40).
+    const a = detectarDesvio(emMov, { ...base, dentroTapete: true, riscoAreaAtual: 30 });
+    expect(a?.score).toBe(80);
+  });
+
   it("risco de area nunca SUPRIME nem atrasa o alerta - so acelera", () => {
     // dentroTapete:false nao escala mais sozinho (CAMADA3_TAPETE_ATIVA=false,
     // ver describe "zumbi da Camada 3" abaixo) -- mas risco de area alto
