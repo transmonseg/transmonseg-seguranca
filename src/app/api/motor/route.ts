@@ -17,7 +17,6 @@ import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
   avaliar,
   detectarJammer,
-  foraDeRota,
   afastouDeTudo,
   avancarStreaksDesvio,
   devAvancarStreaksDesvio,
@@ -988,10 +987,12 @@ export async function POST(request: Request) {
           let desvioStreak: number = anterior?.desvio_streak ?? 0;
           let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
           // aproximandoStreak: ciclos consecutivos aproximando (sem afastar
-          // de tudo) — usado pra RESOLVER o alerta (foraDeRota, TUL-1C38) e
-          // pra HISTERESE do streak (avancarStreaksDesvio: 1 aproximação
-          // isolada congela a suspeita em vez de apagar, 2 zeram — mata a
-          // detecção tardia em estrada de serra onde a linha reta oscila).
+          // de tudo) — usado pra HISTERESE do streak (avancarStreaksDesvio: 1
+          // aproximação isolada congela a suspeita em vez de apagar, 2 zeram
+          // — mata a detecção tardia em estrada de serra onde a linha reta
+          // oscila). Achado real 11/07 (TUL-1C38 e o bug de churn da cerca):
+          // NAO resolve mais alerta nenhum sozinho -- ver comentário no bloco
+          // de gerenciamento de alertas mais abaixo.
           let aproximandoStreak: number = anterior?.aproximando_streak ?? 0;
           if (devAvancarStreaksDesvio({
             fresco: pos.fresco,
@@ -1086,14 +1087,6 @@ export async function POST(request: Request) {
             temAnterior && (anterior!.lat !== pos.lat || anterior!.lng !== pos.lng)
               ? rumoGraus(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)
               : null;
-          // Condição FROUXA de permanência (anti-pisca), agora incluindo bases.
-          // emOperacao NAO participa mais do fechamento (achado real 10/07):
-          // fechava qualquer desvio ativo so por bater fora do horario
-          // 6h-20h seg-sex, sem checar comportamento. emOperacao continua
-          // controlando CRIACAO de alerta (detectarDesvio), nunca o fechamento.
-          let estaForaDeRota =
-            pos.fresco && foraDeRota(pos, { menorDistDestinoM, foraDaBase, aproximandoStreak });
-
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
           let tiroteioIdadeMin: number | null = null;
@@ -1265,14 +1258,6 @@ export async function POST(request: Request) {
               // Na rota esperada: atualiza a ancora e zera a suspeita.
               cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
               cerca.foraStreak = 0;
-              // Achado real 11/07 (bug de churn): sem isto, o fechamento do
-              // alerta so olhava o sinal da Camada 1 (aproximando_streak),
-              // que fica sempre alto num caminhao de entrega -- resolvia
-              // (e a cerca reabria) o alerta A CADA CICLO. A cerca agora
-              // controla o proprio fechamento, como a Camada 1 ja faz com
-              // o corredor dela (ver bloco "Verificacao por corredor real"
-              // mais abaixo).
-              estaForaDeRota = false;
             } else if (cerca && cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO + 1) {
               // Saiu do corredor conhecido: tenta RECUPERAR (motorista pode
               // ter escolhido outra rota legitima pra outro pendente).
@@ -1295,10 +1280,6 @@ export async function POST(request: Request) {
                   velocidade: pos.velocidade, veredito: "recuperado",
                   pendentes: pendentes.length, buffer_m: bufferCerca,
                 });
-                // Idem ao ramo "dentro" acima: recuperou a rota real, fecha
-                // o alerta da cerca ja neste ciclo (nao espera o sinal da
-                // Camada 1, que nao sabe nada sobre o corredor da cerca).
-                estaForaDeRota = false;
               } else if (r.veredito === "fora") {
                 cerca.foraStreak++;
                 // Log so nas 2 primeiras leituras fora (espelha o modelo
@@ -1323,16 +1304,6 @@ export async function POST(request: Request) {
                     motivo: `Fora da rota esperada (${distFmt} da estrada real até o próximo ponto, buffer ${bufferCerca}m)`,
                     score: cerca.foraStreak >= 2 ? 85 : 75,
                   };
-                  // Achado real 11/07 (bug de churn): a cerca precisa
-                  // manter o PROPRIO alerta aberto -- sem isto, o
-                  // fechamento (mais abaixo, "if (desvioAtivo &&
-                  // !estaForaDeRota)") usava so o sinal da Camada 1
-                  // (aproximando_streak, quase sempre alto num caminhao de
-                  // entrega em operacao normal) e resolvia o alerta da
-                  // cerca no ciclo seguinte ao dela criar, gerando um
-                  // alerta NOVO a cada ciclo (~20-30s) em vez de UM so
-                  // persistente por episodio.
-                  estaForaDeRota = true;
                 }
               }
               // "indisponivel": nao mexe em nada (fail-open).
@@ -1415,14 +1386,13 @@ export async function POST(request: Request) {
               // Continua na estrada já confirmada: suprime sem API.
               cache.ultimoDentro = { lat: pos.lat, lng: pos.lng };
               corredorInfo = { veredito: "dentro", bufferM: bufferPorVelocidade(pos.velocidade) };
+              // Suprime a criacao de um NOVO alerta/reinicia o streak
+              // comportamental -- nao fecha nenhum alerta ja aberto no banco
+              // (achado real 11/07: fechamento automatico de desvio REMOVIDO
+              // de vez, so operador humano resolve/marca falso positivo).
               alerta = null;
               desvioStreak = 0;
               desvioInicio = null;
-              // Achado real 10/07: antes disso, "dentro" so afetava o PROXIMO
-              // ciclo (via streak/desvioInicio zerados) -- o alerta ja aberto
-              // no banco continuava ativo ate bater alguma OUTRA regua de
-              // resolucao. Agora fecha no MESMO ciclo em que o corredor confirma.
-              estaForaDeRota = false;
             } else if (verificacoesCorredorNoCiclo < MAX_VERIFICACOES_POR_CICLO) {
               verificacoesCorredorNoCiclo++;
               const bufferAtual = bufferPorVelocidade(pos.velocidade);
@@ -1444,7 +1414,6 @@ export async function POST(request: Request) {
                 alerta = null;
                 desvioStreak = 0;
                 desvioInicio = null;
-                estaForaDeRota = false; // idem: fecha ja neste ciclo
               } else if (r.veredito === "fora") {
                 // Confirma o desvio. Início REAL: onde saiu do corredor.
                 if (cacheValido && cache) {
@@ -1456,14 +1425,6 @@ export async function POST(request: Request) {
                   };
                 }
                 cacheCorredorPorVeiculo.delete(veiculo_id);
-                // Anti-pisca (achado real 11/07, TTT-1C46 e TTF-5I10): com o
-                // corredor confirmando "fora", a proximidade em linha reta
-                // (<2,5km de algum destino) NAO pode resolver o alerta -- em
-                // peninsula/serra ela mente (destino do outro lado da baia),
-                // e o alerta piscava: criava, resolvia em ~20s pela linha
-                // reta, e recriava no ciclo seguinte. Evidencia da estrada
-                // real ganha da heuristica geometrica.
-                estaForaDeRota = true;
               }
               // "indisponivel": deixa o alerta seguir como hoje (fail-open).
             } else {
@@ -1603,12 +1564,14 @@ export async function POST(request: Request) {
           const alertasAbertos = mapaAlertasAbertos.get(veiculo_id) ?? [];
           const tiposSilenciados = mapaTiposSilenciados.get(veiculo_id) ?? new Set<string>();
 
-          // Resolucao automatica generica: todos os tipos EXCETO favela e desvio,
-          // que tem ciclo de vida proprio (tratados separado).
+          // Resolucao automatica generica: todos os tipos EXCETO favela e
+          // desvio. Achado real 11/07 (usuario pediu remocao explicita do
+          // fechamento automatico de desvio, apos o bug de churn da cerca
+          // virtual): desvio NUNCA e resolvido pelo motor, so por acao
+          // manual do operador (Resolver/Falso positivo na UI).
           const alertasGerenciados = (alertasAbertos ?? []).filter(
             (a) => a.tipo !== "favela" && a.tipo !== "desvio"
           );
-          const desvioAtivo = (alertasAbertos ?? []).find((a) => a.tipo === "desvio");
 
           if (alerta) {
             const jaExiste = (alertasAbertos ?? []).some((a) => a.tipo === alerta.tipo);
@@ -1657,19 +1620,6 @@ export async function POST(request: Request) {
               .from("alertas")
               .update({ status: "resolvido", resolvido_em: agora.toISOString() })
               .in("id", alertasGerenciados.map((a) => a.id));
-          }
-
-          // ─── Ciclo de vida do DESVIO (anti-pisca) ──────────────────────
-          // Criado pelo gatilho estrito (via `alerta`, faixa local + afastando +
-          // rumo oposto). Mas só RESOLVIDO quando o veiculo VOLTA pra rota
-          // (estaForaDeRota=false: chegou perto de um ponto, entrou na base, ou
-          // acabaram os pendentes). Assim um mesmo desvio = um unico alerta, em
-          // vez de criar/resolver a cada ciclo conforme a distancia oscila.
-          if (desvioAtivo && !estaForaDeRota) {
-            await supabase
-              .from("alertas")
-              .update({ status: "resolvido", resolvido_em: agora.toISOString() })
-              .eq("id", desvioAtivo.id);
           }
         } catch (errVeiculo) {
           const msg = `Erro ao processar veiculo (raw): ${String(errVeiculo)}`;
@@ -2048,8 +1998,9 @@ export async function POST(request: Request) {
         if (horaSP_cleanup === 20) {
           // desvio removido 10/07: fechava alertas reais so por bater 20h,
           // sem checar comportamento (achado real: 210+ alertas de desvio
-          // fechados assim em 5 dias). Desvio agora so fecha por evidencia
-          // (foraDeRota/corredor) ou resolucao manual do operador.
+          // fechados assim em 5 dias). Desvio agora NUNCA fecha sozinho (nem
+          // por horario, nem por comportamento/corredor) -- so por acao
+          // manual do operador (achado real 11/07, bug de churn da cerca).
           await pgClean.query(`
             UPDATE alertas SET status='resolvido', resolvido_em=now()
             WHERE status='ativo'
