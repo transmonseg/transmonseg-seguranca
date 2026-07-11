@@ -109,6 +109,34 @@ const cacheCorredorPorVeiculo = new Map<string, CorredorCache>();
 // tentam de novo no ciclo seguinte.
 const MAX_VERIFICACOES_POR_CICLO = 3;
 
+// ─── CERCA VIRTUAL de rota (Fase 1 do plano de 10/07) -- MODO SOMBRA ─────
+// Achado real 10/07: o gatilho comportamental ("afastar de TODOS os N
+// destinos") e geometricamente cego quando o veiculo tem muitas entregas --
+// 83% dos alertas de 7 dias dispararam com so 2 destinos restantes, sendo
+// que a frota trabalha com mediana de 11. A cerca inverte o sinal primario:
+// corredor PROATIVO por veiculo (rota real da posicao atual ate os pendentes
+// mais proximos, calculada quando o conjunto de pendentes muda), e a cada
+// ciclo uma checagem de geometria pura (zero API). Saiu do corredor: tenta
+// recuperar via verificarCorredor (ancora = ultimo ponto DENTRO, nunca a
+// posicao atual -- mesma licao do bug tautologico); "fora" confirmado =
+// TERIA alertado. Em modo sombra nada chega ao operador -- so grava em
+// cerca_sombra pra validar com um dia real de operacao antes de ligar
+// (backtest offline foi inconclusivo: rastro da Unitrac nao tem timestamp).
+const CERCA_VIRTUAL_MODO: "desligada" | "sombra" | "ativa" = "sombra";
+// Semeaduras (calculo inicial de corredor) por ciclo -- warmup da frota
+// inteira leva alguns ciclos de manha, com o gatilho comportamental cobrindo
+// ate la. Compartilha o throttle global de 1 req/s do modulo de corredor.
+const CERCA_SEEDS_POR_CICLO = 3;
+const CERCA_CACHE_MS = 20 * 60_000;
+type CercaCache = {
+  polilinha: { lat: number; lng: number }[];
+  ultimoDentro: { lat: number; lng: number };
+  pendentesChave: string;
+  calculadoEm: number;
+  foraStreak: number;
+};
+const cacheCercaPorVeiculo = new Map<string, CercaCache>();
+
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
   if (!raw) return null;
@@ -610,6 +638,14 @@ export async function POST(request: Request) {
     // Orçamento de verificações de corredor com API neste ciclo (ver
     // MAX_VERIFICACOES_POR_CICLO no topo).
     let verificacoesCorredorNoCiclo = 0;
+
+    // Cerca virtual (modo sombra): orcamento de chamadas OSRM da cerca neste
+    // ciclo (semeaduras + recuperacoes) e linhas pro batch de cerca_sombra.
+    let cercaChamadasNoCiclo = 0;
+    const cercaSombraCiclo: {
+      veiculo_id: string; cliente_id: string; lat: number; lng: number;
+      velocidade: number; veredito: string; pendentes: number; buffer_m: number;
+    }[] = [];
 
     // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
     // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
@@ -1137,6 +1173,98 @@ export async function POST(request: Request) {
             fatorHorario: perfilHorario[horaSP] ?? 1,
           });
 
+          // ─── CERCA VIRTUAL (modo sombra -- ver CERCA_VIRTUAL_MODO no topo) ──
+          // Bloco 100% aditivo: nao muda alerta, streak, nem nada da deteccao
+          // atual. So mantem o corredor proativo por veiculo e grava em
+          // cerca_sombra o que TERIA alertado. Semeadura usa a POSICAO ATUAL
+          // como origem de rota (correto aqui: a rota semeada e checada contra
+          // posicoes FUTURAS, nunca contra a propria origem -- diferente do
+          // bug tautologico de 10/07, onde origem e ponto checado eram o mesmo).
+          if (
+            CERCA_VIRTUAL_MODO !== "desligada" &&
+            pos.fresco &&
+            pos.velocidade > 0 &&
+            pendentes.length > 0 &&
+            !saltoImplausivel
+          ) {
+            const chaveCerca = pendentes.map((pt) => pt.codigo ?? `${pt.lat},${pt.lng}`).sort().join(",");
+            const cerca = cacheCercaPorVeiculo.get(veiculo_id);
+            const cercaValida =
+              cerca && cerca.pendentesChave === chaveCerca && Date.now() - cerca.calculadoEm < CERCA_CACHE_MS;
+            const bufferCerca = bufferPorVelocidade(pos.velocidade);
+            const tresMaisProximos = () =>
+              [...pendentes]
+                .map((pt) => ({ pt, dist: haversineM(pos.lat, pos.lng, pt.lat, pt.lng) }))
+                .sort((a, b) => a.dist - b.dist)
+                .slice(0, 3)
+                .map((x) => ({ lat: x.pt.lat, lng: x.pt.lng }));
+
+            if (!cercaValida) {
+              // Semeadura: rota real daqui ate o pendente mais proximo.
+              // Pressupoe veiculo em rota legitima NESTE momento (se ja
+              // estiver desviado, o gatilho comportamental cobre).
+              if (cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO) {
+                cercaChamadasNoCiclo++;
+                const r = await verificarCorredor(
+                  { lat: pos.lat, lng: pos.lng },
+                  { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
+                  tresMaisProximos()
+                );
+                if (r.veredito === "dentro" && r.corredor) {
+                  cacheCercaPorVeiculo.set(veiculo_id, {
+                    polilinha: r.corredor,
+                    ultimoDentro: { lat: pos.lat, lng: pos.lng },
+                    pendentesChave: chaveCerca,
+                    calculadoEm: Date.now(),
+                    foraStreak: 0,
+                  });
+                }
+                // "indisponivel": tenta de novo no proximo ciclo (fail-open).
+              }
+            } else if (cerca && dentroDoCorredor(pos, cerca.polilinha, bufferCerca)) {
+              // Na rota esperada: atualiza a ancora e zera a suspeita.
+              cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
+              cerca.foraStreak = 0;
+            } else if (cerca && cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO + 1) {
+              // Saiu do corredor conhecido: tenta RECUPERAR (motorista pode
+              // ter escolhido outra rota legitima pra outro pendente).
+              // Ancora = ultimo ponto confirmado DENTRO (passado, nunca a
+              // posicao atual).
+              cercaChamadasNoCiclo++;
+              const r = await verificarCorredor(
+                cerca.ultimoDentro,
+                { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
+                tresMaisProximos()
+              );
+              if (r.veredito === "dentro" && r.corredor) {
+                cerca.polilinha = r.corredor;
+                cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
+                cerca.pendentesChave = chaveCerca;
+                cerca.calculadoEm = Date.now();
+                cerca.foraStreak = 0;
+                cercaSombraCiclo.push({
+                  veiculo_id, cliente_id, lat: pos.lat, lng: pos.lng,
+                  velocidade: pos.velocidade, veredito: "recuperado",
+                  pendentes: pendentes.length, buffer_m: bufferCerca,
+                });
+              } else if (r.veredito === "fora") {
+                cerca.foraStreak++;
+                // Log so nas 2 primeiras leituras fora (espelha o modelo
+                // atencao->critico que a versao ativa usaria) -- evita spam.
+                if (cerca.foraStreak <= 2) {
+                  cercaSombraCiclo.push({
+                    veiculo_id, cliente_id, lat: pos.lat, lng: pos.lng,
+                    velocidade: pos.velocidade, veredito: "fora",
+                    pendentes: pendentes.length, buffer_m: bufferCerca,
+                  });
+                }
+              }
+              // "indisponivel": nao mexe em nada (fail-open).
+            }
+          } else if (pendentes.length === 0) {
+            cacheCercaPorVeiculo.delete(veiculo_id);
+          }
+
           let alerta: Alerta | null = alertaJammer
             ? alertaJammer
             : pos.fresco
@@ -1541,6 +1669,13 @@ export async function POST(request: Request) {
       } finally {
         pgPosicoes.release();
       }
+    }
+
+    // Cerca virtual (modo sombra): grava em batch o que TERIA alertado neste
+    // ciclo. Nao-critico: falha aqui nunca derruba o motor.
+    if (cercaSombraCiclo.length > 0) {
+      const { error: erroSombra } = await supabase.from("cerca_sombra").insert(cercaSombraCiclo);
+      if (erroSombra) console.warn(`Aviso: erro ao gravar cerca_sombra: ${erroSombra.message}`);
     }
 
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo
