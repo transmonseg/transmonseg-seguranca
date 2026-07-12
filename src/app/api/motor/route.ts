@@ -27,6 +27,7 @@ import {
   calcularRiscoArea,
   detectarBypassEntrega,
   detectarAnomaliaBaseline,
+  arbitrarCandidatos,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -1454,10 +1455,16 @@ export async function POST(request: Request) {
             horaSP < 20 &&
             pendentes.some((pt) => pt.dataInicio != null && pt.dataInicio.startsWith(dataHojeSP));
 
-          let alerta: Alerta | null = alertaJammer
-            ? alertaJammer
-            : pos.fresco
-              ? avaliar(pos, {
+          // Achado real 12/07: avaliar() JA inclui detectarJammer(p) como um
+          // dos seus proprios candidatos (arbitrados junto com desvio pela
+          // mesma arbitrarCandidatos) -- pular avaliar() inteira quando ha
+          // jammer impedia esse combo (o de maior confianca segundo a
+          // pesquisa) de ser sequer calculado. Agora avaliar() sempre roda
+          // quando fresco; so cai pro alertaJammer isolado quando NAO
+          // fresco (jammer continua valendo mesmo com atraso > 60min, caso
+          // que avaliar() nao cobre).
+          let alerta: Alerta | null = pos.fresco
+            ? avaliar(pos, {
                   paradoMin,
                   emOperacao,
                   foraDaBase,
@@ -1486,7 +1493,7 @@ export async function POST(request: Request) {
                   rumoBase,
                   distBaseM,
                 })
-              : null;
+            : (alertaJammer ?? null);
 
           // ─── Verificação por corredor real (Camada 1 do desvio) ─────────
           // Só intercepta desvio comportamental ("Afastando-se..."), nunca
@@ -1597,12 +1604,7 @@ export async function POST(request: Request) {
             alertaBaseline,
           ].filter((a): a is Alerta => a !== null);
 
-          for (const extra of extras) {
-            if (!alerta) { alerta = extra; continue; }
-            if (alerta.nivel === "critico" && extra.nivel !== "critico") continue;
-            if (extra.nivel === "critico" && alerta.nivel !== "critico") { alerta = extra; continue; }
-            if (extra.score > alerta.score) alerta = extra;
-          }
+          alerta = arbitrarCandidatos([...(alerta ? [alerta] : []), ...extras]);
 
           // Determinar nivel da posicao atual
           let nivel: string;

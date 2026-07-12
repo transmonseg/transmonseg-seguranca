@@ -24,6 +24,8 @@ import {
   detectarBypassEntrega,
   type CtxBypassEntrega,
   detectarAnomaliaBaseline,
+  arbitrarCandidatos,
+  type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
 
@@ -1035,5 +1037,70 @@ describe("detectarAnomaliaBaseline (baseline comportamental por veiculo)", () =>
       minAmostrasProprio: 20,
     });
     expect(a).toBeNull();
+  });
+});
+
+describe("arbitrarCandidatos (fusao de sinais corroborantes, 12/07)", () => {
+  const alertaBase = (tipo: string, score: number, nivel: "critico" | "atencao" = "critico"): Alerta => ({
+    nivel, tipo, motivo: `motivo de ${tipo}`, score,
+  });
+
+  it("1 candidato so: retorna ele sem alteracao", () => {
+    const a = arbitrarCandidatos([alertaBase("jammer", 80)]);
+    expect(a?.score).toBe(80);
+    expect(a?.motivo).toBe("motivo de jammer");
+  });
+
+  it("lista vazia: retorna null", () => {
+    expect(arbitrarCandidatos([])).toBeNull();
+  });
+
+  it("2 candidatos SEM corroboracao relevante (retorno_tardio + parada_longa): maior score vence, sem bonus", () => {
+    const a = arbitrarCandidatos([alertaBase("retorno_tardio", 40), alertaBase("parada_longa", 50)]);
+    expect(a?.score).toBe(50);
+    expect(a?.motivo).toBe("motivo de parada_longa");
+  });
+
+  it("2 candidatos DO conjunto relevante (jammer + desvio): corrobora, soma +15, enriquece motivo", () => {
+    const a = arbitrarCandidatos([alertaBase("jammer", 80), alertaBase("desvio", 45)]);
+    expect(a?.score).toBe(95); // 80 + 15
+    expect(a?.motivo).toContain("motivo de jammer");
+    expect(a?.motivo).toContain("corroborado por");
+    expect(a?.motivo).toContain("desvio");
+  });
+
+  it("3 candidatos do conjunto relevante (jammer + desvio + baseline_veiculo): bonus dobrado (+30)", () => {
+    const a = arbitrarCandidatos([alertaBase("jammer", 60), alertaBase("desvio", 45), alertaBase("baseline_veiculo", 35, "atencao")]);
+    expect(a?.score).toBe(90); // 60 + 30
+  });
+
+  it("score nunca passa de 100 mesmo com muitos sinais corroborando", () => {
+    const a = arbitrarCandidatos([
+      alertaBase("jammer", 90), alertaBase("desvio", 80),
+      alertaBase("bypass_entrega", 40, "atencao"), alertaBase("baseline_veiculo", 35, "atencao"),
+    ]);
+    expect(a?.score).toBe(100);
+  });
+
+  it("desvio de duas fontes (desvio + cerca, ambos tipo=desvio) conta como 1 tipo so, nao corrobora sozinho", () => {
+    const a = arbitrarCandidatos([alertaBase("desvio", 45), alertaBase("desvio", 75)]);
+    expect(a?.score).toBe(75); // maior dos dois, SEM bonus (mesmo tipo, nao e corroboracao)
+    expect(a?.motivo).not.toContain("corroborado");
+  });
+
+  it("desvio (2 fontes, mesmo tipo) + jammer: corrobora normalmente contando desvio como 1 tipo", () => {
+    const a = arbitrarCandidatos([alertaBase("desvio", 45), alertaBase("desvio", 75), alertaBase("jammer", 60)]);
+    expect(a?.score).toBe(90); // 75 (maior) + 15 (1 bonus, desvio conta 1 vez so)
+  });
+
+  it("critico sempre vence atencao, independente de score", () => {
+    const a = arbitrarCandidatos([alertaBase("baseline_veiculo", 90, "atencao"), alertaBase("retorno_tardio", 20, "critico")]);
+    expect(a?.tipo).toBe("retorno_tardio");
+  });
+
+  it("extras operacionais (retorno_tardio, parada_noturna, aceleracao) nao contam pro bonus de corroboracao", () => {
+    const a = arbitrarCandidatos([alertaBase("desvio", 45), alertaBase("retorno_tardio", 40), alertaBase("aceleracao", 70)]);
+    expect(a?.score).toBe(70); // maior score vence (aceleracao), sem bonus (so 1 tipo relevante presente: desvio)
+    expect(a?.motivo).not.toContain("corroborado");
   });
 });

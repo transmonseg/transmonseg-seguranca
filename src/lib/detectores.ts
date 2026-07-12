@@ -949,6 +949,45 @@ export function avaliarTodos(
   });
 }
 
+// Conjunto de sinais de seguranca relevantes pra corroboracao -- confirmado
+// pela pesquisa de 11/07 como o padrao de maior confianca da industria
+// ("jammer + desvio + area de risco juntos"). Extras mais operacionais
+// (retorno_tardio, parada_noturna_ignicao, aceleracao_brusca) ficam de fora
+// de proposito: continuam disputando a arbitragem normalmente, so nao
+// geram bonus de corroboracao, pra nao diluir o sinal.
+const TIPOS_CORROBORANTES = new Set(["jammer", "desvio", "bypass_entrega", "baseline_veiculo"]);
+const BONUS_CORROBORACAO_POR_SINAL = 15;
+
+// Arbitragem compartilhada: escolhe o candidato de maior severidade
+// (critico > atencao, depois maior score) e, se 2+ TIPOS DISTINTOS do
+// conjunto relevante estiverem presentes ao mesmo tempo, soma um bonus por
+// tipo extra (capado em 100) e lista quem corroborou no motivo. Usada
+// internamente por avaliar() E pelo motor (route.ts) pra combinar o
+// resultado de avaliar() com os detectores extras (cerca, bypass, baseline).
+export function arbitrarCandidatos(candidatos: Alerta[]): Alerta | null {
+  if (candidatos.length === 0) return null;
+
+  const vencedor = candidatos.reduce((melhor, atual) => {
+    if (melhor.nivel === "critico" && atual.nivel !== "critico") return melhor;
+    if (atual.nivel === "critico" && melhor.nivel !== "critico") return atual;
+    return atual.score > melhor.score ? atual : melhor;
+  });
+
+  const tiposPresentes = new Set(
+    candidatos.filter((a) => TIPOS_CORROBORANTES.has(a.tipo)).map((a) => a.tipo)
+  );
+
+  if (tiposPresentes.size < 2) return vencedor;
+
+  const outrosTipos = [...tiposPresentes].filter((t) => t !== vencedor.tipo);
+  const bonus = outrosTipos.length * BONUS_CORROBORACAO_POR_SINAL;
+  return {
+    ...vencedor,
+    score: Math.min(100, vencedor.score + bonus),
+    motivo: `${vencedor.motivo} (corroborado por: ${outrosTipos.join(", ")})`,
+  };
+}
+
 // Avalia todos os detectores e retorna o alerta de maior severidade.
 // Prioridade: critico > atencao; desempate por score (maior vence).
 export function avaliar(
@@ -1049,11 +1088,5 @@ export function avaliar(
       : null,
   ].filter((a): a is Alerta => a !== null);
 
-  if (candidatos.length === 0) return null;
-
-  return candidatos.reduce((melhor, atual) => {
-    if (melhor.nivel === "critico" && atual.nivel !== "critico") return melhor;
-    if (atual.nivel === "critico" && melhor.nivel !== "critico") return atual;
-    return atual.score > melhor.score ? atual : melhor;
-  });
+  return arbitrarCandidatos(candidatos);
 }
