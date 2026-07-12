@@ -362,12 +362,21 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a).not.toBeNull();
   });
 
-  it("acima do teto de deslocamento interurbano (80km) nao dispara", () => {
-    // Subido de 25km pra 80km em 11/07 (diretiva explicita: falso positivo
-    // aceitavel) -- 25km cortava desvio real em clientes com rota longa de
-    // verdade (Nutry atende Angra dos Reis, Volta Redonda).
-    expect(detectarDesvio(emMov, {
+  it("entre o teto antigo (80km) e o novo (300km): dispara agora", () => {
+    const a = detectarDesvio(emMov, {
       ...base, distDestinosM: [90000, 95000], distDestinosAnteriorM: [89000, 94000],
+    });
+    expect(a).not.toBeNull();
+  });
+
+  it("acima do novo teto de deslocamento interurbano (300km) nao dispara", () => {
+    // Subido de 80km pra 300km em 12/07 (revisao linha por linha a pedido
+    // do usuario): 80km ainda escondia desvio de verdade acima disso --
+    // cobre confortavelmente qualquer entrega dentro do RJ e estados
+    // vizinhos (SP, MG, ES), mantendo so um piso de sanidade contra GPS
+    // corrompido.
+    expect(detectarDesvio(emMov, {
+      ...base, distDestinosM: [350000, 355000], distDestinosAnteriorM: [349000, 354000],
     })).toBeNull();
   });
 

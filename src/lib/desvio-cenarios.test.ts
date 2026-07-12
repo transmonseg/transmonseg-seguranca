@@ -320,12 +320,11 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados[2]?.exigeConfirmacaoCorredor).toBe(true);
   });
 
-  it("DESLOCAMENTO INTERURBANO legitimo (destino > 80km): nao dispara mesmo se afastando", () => {
-    // Teto subido de 25km pra 80km em 11/07 (ver DESVIO_GATILHO_TETO_M) --
-    // 45km (antigo cenario deste teste) agora e desvio local de verdade
-    // (rota longa legitima da Nutry, ex. Angra dos Reis/Volta Redonda), so
-    // acima de 80km e que continua sendo deslocamento interurbano puro.
-    const destinoLonge = { lat: MANGUINHOS.lat + 0.8, lng: MANGUINHOS.lng + 0.8 }; // ~120km
+  it("DESLOCAMENTO INTERURBANO legitimo (destino > 300km): nao dispara mesmo se afastando", () => {
+    // Teto subido de 80km pra 300km em 12/07 (ver DESVIO_GATILHO_TETO_M) --
+    // 120km (antigo cenario deste teste) agora e desvio local de verdade,
+    // so acima de 300km e que continua sendo deslocamento interurbano puro.
+    const destinoLonge = { lat: MANGUINHOS.lat + 3.0, lng: MANGUINHOS.lng + 3.0 }; // ~450km
     const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
       lat: MANGUINHOS.lat - i * 0.01, lng: MANGUINHOS.lng - i * 0.01, dentroTapete: false,
     }));
@@ -333,8 +332,10 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados.every(r => r === null)).toBe(true);
   });
 
-  it("DESLOCAMENTO local legitimo antigo (destino ~45km, entre o teto velho 25km e o novo 80km): dispara agora", () => {
-    const destinoMedio = { lat: MANGUINHOS.lat + 0.3, lng: MANGUINHOS.lng + 0.3 }; // ~45km
+  it("DESLOCAMENTO legitimo antigo (destino ~120km, entre o teto velho 80km e o novo 300km): dispara agora", () => {
+    // Camada 3 ja ativa (Tarefa 4): dentroTapete=false escala pra score 80,
+    // nao mais 45 -- so verificamos que ALGUM alerta dispara, sem fixar score.
+    const destinoMedio = { lat: MANGUINHOS.lat + 0.8, lng: MANGUINHOS.lng + 0.8 }; // ~120km
     const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
       lat: MANGUINHOS.lat - i * 0.01, lng: MANGUINHOS.lng - i * 0.01, dentroTapete: false,
     }));
