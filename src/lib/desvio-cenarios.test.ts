@@ -344,7 +344,7 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
   });
 });
 
-describe("foraTapeteStreak — Camada 3, DESATIVADA em 09/07/2026 (ver CAMADA3_TAPETE_ATIVA)", () => {
+describe("foraTapeteStreak — Camada 3, RELIGADA em 12/07/2026 (ver CAMADA3_TAPETE_ATIVA)", () => {
   // Regressao do caso real TUK-0H45 (08/07/2026): veiculo a ~4,2km de uma
   // entrega pendente real, indo na direcao dela (Camada 1 nao dispara), mas
   // chegando por uma via que a frota nunca usou antes — o antigo calculo por

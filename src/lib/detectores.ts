@@ -1011,42 +1011,48 @@ export function reduzirPorTransitoInferido(
   };
 }
 
-// Avalia todos os detectores e retorna o alerta de maior severidade.
-// Prioridade: critico > atencao; desempate por score (maior vence).
-export function avaliar(
-  p: PosicaoNormalizada,
-  ctx: {
-    paradoMin: number;
-    emOperacao: boolean;
-    foraDaBase: boolean;
-    noCliente?: boolean;
-    distDestinosM?: number[];
-    distDestinosAnteriorM?: number[];
-    desvioStreak?: number;
-    afastamentoAcumuladoM?: number;
-    dentroTapete?: boolean | null;
-    riscoAreaAtual?: number;
-    foraTapeteStreak?: number;
-    temPendentes?: boolean;
-    entregasTotal?: number;
-    entregasFeitas?: number;
-    alvosApiOk?: boolean;
-    sabadoDiurnoComRota?: boolean;
-    rumoMovimento?: number | null;
-    rumoBase?: number | null;
-    distBaseM?: number | null;
-    distTiroteioM?: number | null;
-    tiroteioIdadeMin?: number | null;
-    // Parada anomala (opcional — so roda se estavEmMovimento for fornecido)
-    estavEmMovimento?: boolean;
-    esMadrugada?: boolean;
-    emZonaRisco?: boolean;
-    temPOIProximo?: boolean;
-    jaParedoNoCicloAnterior?: boolean;
-    vizinhosParados?: number;
-  }
-): Alerta | null {
-  const candidatos: Alerta[] = [
+export type CtxAvaliacao = {
+  paradoMin: number;
+  emOperacao: boolean;
+  foraDaBase: boolean;
+  noCliente?: boolean;
+  distDestinosM?: number[];
+  distDestinosAnteriorM?: number[];
+  desvioStreak?: number;
+  afastamentoAcumuladoM?: number;
+  dentroTapete?: boolean | null;
+  riscoAreaAtual?: number;
+  foraTapeteStreak?: number;
+  temPendentes?: boolean;
+  entregasTotal?: number;
+  entregasFeitas?: number;
+  alvosApiOk?: boolean;
+  sabadoDiurnoComRota?: boolean;
+  rumoMovimento?: number | null;
+  rumoBase?: number | null;
+  distBaseM?: number | null;
+  distTiroteioM?: number | null;
+  tiroteioIdadeMin?: number | null;
+  // Parada anomala (opcional — so roda se estavEmMovimento for fornecido)
+  estavEmMovimento?: boolean;
+  esMadrugada?: boolean;
+  emZonaRisco?: boolean;
+  temPOIProximo?: boolean;
+  jaParedoNoCicloAnterior?: boolean;
+  vizinhosParados?: number;
+};
+
+// Monta a lista CRUA de candidatos dos detectores "core" (sem arbitrar).
+// Exportada pra route.ts poder combinar esses candidatos com os "extras"
+// (cerca virtual, bypass, baseline) numa UNICA arbitragem. Bug real 12/07
+// corrigido: chamar arbitrarCandidatos duas vezes em cadeia (uma aqui
+// dentro, outra em route.ts com os extras) somava o bonus de corroboracao
+// 2x quando o mesmo tipo (ex: "desvio", vindo de detectarDesvio aqui E de
+// alertaCerca em route.ts, fontes diferentes do mesmo tipo) aparecia nas
+// duas chamadas -- arbitrar so uma vez sobre a uniao de todos os candidatos
+// crus evita a duplicacao.
+export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): Alerta[] {
+  return [
     detectarPanico(p),
     detectarBau(p, { noCliente: ctx.noCliente }),
     detectarJammer(p),
@@ -1110,6 +1116,10 @@ export function avaliar(
         })
       : null,
   ].filter((a): a is Alerta => a !== null);
+}
 
-  return arbitrarCandidatos(candidatos);
+// Avalia todos os detectores core e retorna o alerta de maior severidade.
+// Prioridade: critico > atencao; desempate por score (maior vence).
+export function avaliar(p: PosicaoNormalizada, ctx: CtxAvaliacao): Alerta | null {
+  return arbitrarCandidatos(montarCandidatosCore(p, ctx));
 }

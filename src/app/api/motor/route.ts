@@ -15,7 +15,7 @@ import {
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
-  avaliar,
+  montarCandidatosCore,
   detectarJammer,
   afastouDeTudo,
   avancarStreaksDesvio,
@@ -1484,16 +1484,22 @@ export async function POST(request: Request) {
             horaSP < 20 &&
             pendentes.some((pt) => pt.dataInicio != null && pt.dataInicio.startsWith(dataHojeSP));
 
-          // Achado real 12/07: avaliar() JA inclui detectarJammer(p) como um
+          // Achado real 12/07: avaliar() JA incluia detectarJammer(p) como um
           // dos seus proprios candidatos (arbitrados junto com desvio pela
           // mesma arbitrarCandidatos) -- pular avaliar() inteira quando ha
           // jammer impedia esse combo (o de maior confianca segundo a
-          // pesquisa) de ser sequer calculado. Agora avaliar() sempre roda
-          // quando fresco; so cai pro alertaJammer isolado quando NAO
-          // fresco (jammer continua valendo mesmo com atraso > 60min, caso
-          // que avaliar() nao cobre).
-          let alerta: Alerta | null = pos.fresco
-            ? avaliar(pos, {
+          // pesquisa) de ser sequer calculado. Bug real 12/07 (achado na
+          // auditoria adversarial pre-merge): so trocar avaliar() por
+          // "sempre roda" NAO bastava -- route.ts arbitrava o resultado JA
+          // ARBITRADO de avaliar() de novo junto com os extras (cerca,
+          // bypass, baseline), e quando o mesmo tipo (ex: "desvio", vindo de
+          // detectarDesvio aqui E de alertaCerca como extra, fontes
+          // diferentes) aparecia nas duas arbitragens em cadeia, o bonus de
+          // corroboracao era somado 2x. Fix: montarCandidatosCore() retorna
+          // os candidatos CRUS (sem arbitrar); guardamos essa lista e so
+          // arbitramos UMA VEZ, mais abaixo, junto com os extras.
+          const candidatosCore: Alerta[] = pos.fresco
+            ? montarCandidatosCore(pos, {
                   paradoMin,
                   emOperacao,
                   foraDaBase,
@@ -1522,7 +1528,21 @@ export async function POST(request: Request) {
                   rumoBase,
                   distBaseM,
                 })
-            : (alertaJammer ?? null);
+            // jammer continua valendo mesmo com atraso > 60min (caso que
+            // montarCandidatosCore() nao cobre, ja que so roda com fresco).
+            : (alertaJammer ? [alertaJammer] : []);
+
+          // Decisao intermediaria (so os candidatos core, sem os extras
+          // ainda) -- usada pela verificacao de corredor logo abaixo, que
+          // precisa saber SE o vencedor atual e um desvio comportamental
+          // antes de decidir se suprime ou confirma.
+          let alerta: Alerta | null = arbitrarCandidatos(candidatosCore);
+          // Quando o corredor confirma legitimidade (ou exige confirmacao
+          // que nao veio), o desvio comportamental precisa ser removido dos
+          // candidatos CRUS tambem -- senao ele reaparece na arbitragem
+          // final mais abaixo (junto com os extras) mesmo depois de
+          // suprimido aqui.
+          let desvioSuprimidoPorCorredor = false;
 
           // ─── Verificação por corredor real (Camada 1 do desvio) ─────────
           // Só intercepta desvio comportamental ("Afastando-se..."), nunca
@@ -1563,6 +1583,7 @@ export async function POST(request: Request) {
               // (achado real 11/07: fechamento automatico de desvio REMOVIDO
               // de vez, so operador humano resolve/marca falso positivo).
               alerta = null;
+              desvioSuprimidoPorCorredor = true;
               desvioStreak = 0;
               desvioInicio = null;
             } else if (verificacoesCorredorNoCiclo < MAX_VERIFICACOES_POR_CICLO) {
@@ -1584,6 +1605,7 @@ export async function POST(request: Request) {
                   expiraEm: Date.now() + CORREDOR_CACHE_MS,
                 });
                 alerta = null;
+                desvioSuprimidoPorCorredor = true;
                 desvioStreak = 0;
                 desvioInicio = null;
               } else if (r.veredito === "fora") {
@@ -1617,6 +1639,7 @@ export async function POST(request: Request) {
           // sem abrir mao de cautela quando a API estiver fora.
           if (alerta?.tipo === "desvio" && alerta.exigeConfirmacaoCorredor === true && corredorInfo?.veredito !== "fora") {
             alerta = null;
+            desvioSuprimidoPorCorredor = true;
           }
 
           // Novos detectores: retorno_tardio, parada_noturna_ignicao, aceleracao_brusca.
@@ -1633,15 +1656,37 @@ export async function POST(request: Request) {
             alertaBaseline,
           ].filter((a): a is Alerta => a !== null);
 
-          alerta = arbitrarCandidatos([...(alerta ? [alerta] : []), ...extras]);
+          // Arbitragem FINAL, unica: candidatos core CRUS (sem o desvio
+          // comportamental, se o corredor ja suprimiu) + extras. Ver
+          // comentario acima de candidatosCore -- e essa uniao numa unica
+          // chamada de arbitrarCandidatos que evita o bug do bonus
+          // duplicado.
+          const candidatosCoreFinal = desvioSuprimidoPorCorredor
+            ? candidatosCore.filter((c) => c.tipo !== "desvio")
+            : candidatosCore;
+          // Capturado ANTES da fusao com os extras pra distinguir, depois,
+          // se o vencedor final "desvio" veio do detector comportamental
+          // (associado a corredorInfo) ou do alertaCerca (fonte separada,
+          // proprio veredito de corredor, sem relacao com corredorInfo).
+          const desvioComportamental = candidatosCoreFinal.find((c) => c.tipo === "desvio") ?? null;
+
+          alerta = arbitrarCandidatos([...candidatosCoreFinal, ...extras]);
           if (alerta) {
             alerta = reduzirPorTransitoInferido(alerta, {
-              emRodovia: bufferPorVelocidade(pos.velocidade) === 200,
+              emRodovia: pos.velocidade >= 60,
               vizinhosLentos,
             });
           }
           if (alerta) {
-            const segmentoEspecifico = alerta.tipo === "desvio" && corredorInfo?.veredito
+            // Achado real 12/07 (auditoria adversarial): corredorInfo so
+            // descreve o desvio COMPORTAMENTAL (detectarDesvio) -- se o
+            // vencedor final veio do alertaCerca (mesmo tipo "desvio", fonte
+            // e veredito de corredor totalmente separados), usar
+            // corredorInfo pra calibracao misturaria amostras de fontes
+            // diferentes sob a mesma chave de segmento.
+            const veioDoComportamental =
+              desvioComportamental !== null && alerta.motivo.startsWith(desvioComportamental.motivo);
+            const segmentoEspecifico = alerta.tipo === "desvio" && veioDoComportamental && corredorInfo?.veredito
               ? `corredor_veredito:${corredorInfo.veredito}`
               : null;
             const taxaFp = (segmentoEspecifico !== null ? mapaCalibracao.get(segmentoEspecifico) : undefined)

@@ -19,6 +19,7 @@ import {
   detectarSaidaNaoAutorizada,
   foraDeRota,
   avaliar,
+  montarCandidatosCore,
   formataDuracao,
   emHorarioOperacao,
   detectarBypassEntrega,
@@ -491,7 +492,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
   });
 });
 
-describe("detectarDesvio + Camada 3 (fora do tapete, DESATIVADA em 09/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
+describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
   // Aproximando (nao afastando de tudo) -- so assim a Camada 3 entraria em jogo.
   const baseAproximando = {
     distDestinosM: [4000],
@@ -838,6 +839,39 @@ describe("avaliar", () => {
   });
 });
 
+describe("montarCandidatosCore (candidatos crus, sem arbitrar -- extraido no fix do bug 12/07)", () => {
+  it("avaliar() e equivalente a arbitrarCandidatos(montarCandidatosCore(...)) -- mesmo resultado", () => {
+    const ctx = {
+      ...ctxOp,
+      distDestinosM: [6000, 9000],
+      distDestinosAnteriorM: [5000, 8000],
+      temPendentes: true,
+      entregasFeitas: 3,
+      desvioStreak: 4,
+      afastamentoAcumuladoM: 1600,
+    };
+    const p = posicaoBase({ velocidade: 40 });
+    expect(avaliar(p, ctx)).toEqual(arbitrarCandidatos(montarCandidatosCore(p, ctx)));
+  });
+
+  it("retorna os candidatos crus (nao arbitrados) -- jammer e desvio aparecem SEPARADOS quando ambos disparam", () => {
+    const candidatos = montarCandidatosCore(
+      posicaoBase({ ignicao: true, atraso: 60, velocidade: 40 }),
+      {
+        ...ctxOp,
+        distDestinosM: [6000, 9000],
+        distDestinosAnteriorM: [5000, 8000],
+        temPendentes: true,
+        entregasFeitas: 3,
+        desvioStreak: 4,
+        afastamentoAcumuladoM: 1600,
+      }
+    );
+    expect(candidatos.some((c) => c.tipo === "jammer")).toBe(true);
+    expect(candidatos.some((c) => c.tipo === "desvio")).toBe(true);
+  });
+});
+
 describe("detectarParadaAnomala - supressao por congestionamento", () => {
   const ctxParada = {
     paradoMin: 25,
@@ -1103,6 +1137,27 @@ describe("arbitrarCandidatos (fusao de sinais corroborantes, 12/07)", () => {
     const a = arbitrarCandidatos([alertaBase("desvio", 45), alertaBase("retorno_tardio", 40), alertaBase("aceleracao", 70)]);
     expect(a?.score).toBe(70); // maior score vence (aceleracao), sem bonus (so 1 tipo relevante presente: desvio)
     expect(a?.motivo).not.toContain("corroborado");
+  });
+
+  it("bug real 12/07 (auditoria pre-merge): arbitrar TODOS os candidatos crus numa unica chamada nao dobra o bonus quando desvio vem de 2 fontes + jammer", () => {
+    // Cenario de producao: jammer(60) e desvio comportamental(45) sao
+    // candidatos "core"; separadamente, a cerca virtual (alertaCerca,
+    // tambem tipo desvio, fonte independente) e um "extra"(50). O jeito
+    // CERTO (route.ts apos o fix) e uma unica arbitragem com TODOS os
+    // candidatos crus -- desvio conta 1 tipo so mesmo com 2 fontes.
+    const core = [alertaBase("jammer", 60), alertaBase("desvio", 45)];
+    const extras = [alertaBase("desvio", 50)];
+
+    const correto = arbitrarCandidatos([...core, ...extras]);
+    expect(correto?.score).toBe(75); // 60 (jammer) + 15 (1 bonus, desvio conta 1x)
+    expect(correto?.motivo.match(/corroborado por/g)?.length ?? 0).toBe(1);
+
+    // O jeito ERRADO (bug corrigido): arbitrar core primeiro (jammer vence
+    // com bonus, score 75, motivo ja diz "corroborado por: desvio"), DEPOIS
+    // arbitrar esse resultado de novo junto com os extras -- o dedup por
+    // tipo enxerga "desvio" (do extra) como sinal novo e soma +15 de novo.
+    const arbitradoEmCadeia = arbitrarCandidatos([arbitrarCandidatos(core)!, ...extras]);
+    expect(arbitradoEmCadeia?.score).toBe(90); // 60 + 15 + 15, dobrado -- e o bug, nao o comportamento esperado
   });
 });
 
