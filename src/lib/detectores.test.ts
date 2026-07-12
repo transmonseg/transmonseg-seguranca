@@ -280,11 +280,11 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.tipo).toBe("desvio");
   });
 
-  it("streak 2 fora do tapete, CAMADA3_TAPETE_ATIVA=false: critico, mas NAO escala por tapete (zumbi fechado 10/07)", () => {
+  it("streak 2 fora do tapete, Camada 3 ATIVA (religada 12/07): escala pra 80, motivo cita via desconhecida", () => {
     const a = detectarDesvio(emMov, { ...base, dentroTapete: false });
     expect(a?.nivel).toBe("critico");
-    expect(a?.score).toBe(45);
-    expect(a?.motivo).not.toContain("fora de via conhecida");
+    expect(a?.score).toBe(80);
+    expect(a?.motivo).toContain("fora de via conhecida");
   });
 
   it("streak 4 escala pra critico mesmo dentro do tapete (persistencia longa)", () => {
@@ -495,9 +495,10 @@ describe("detectarDesvio + Camada 3 (fora do tapete, DESATIVADA em 09/07/2026 --
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
 
-  it("mesmo fora do tapete por varias leituras: NAO dispara enquanto CAMADA3_TAPETE_ATIVA=false", () => {
+  it("fora do tapete por varias leituras, Camada 3 ATIVA (religada 12/07): dispara", () => {
     const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 8 });
-    expect(a).toBeNull();
+    expect(a).not.toBeNull();
+    expect(a?.motivo).toContain("nunca percorreu");
   });
 
   it("aproximando e DENTRO do tapete (streak 0): nao dispara", () => {

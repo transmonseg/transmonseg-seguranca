@@ -131,18 +131,16 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados[4]?.score).toBe(68); // streak 4
   });
 
-  it("fora do tapete, mas CAMADA3_TAPETE_ATIVA=false: nao escala, segue escalonamento normal (score 45)", () => {
-    // Achado real 10/07: este branch escalava pra 80 mesmo com a Camada 3
-    // "desativada" -- o mesmo sintoma do incidente de 09/07 (mesmo motivo,
-    // mesma origem de dado) sobrevivia por nao estar atras da flag.
+  it("fora do tapete, Camada 3 ATIVA (religada 12/07): escala pra 80", () => {
     const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
       ...afastarDe(MANGUINHOS, REALENGO, i * 0.01),
       dentroTapete: false,
       riscoAreaAtual: 0,
     }));
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados[2]?.score).toBe(45); // streak chega a 2 no indice 2
-    expect(resultados[2]?.motivo).not.toContain("fora de via conhecida");
+    expect(resultados[1]?.score).toBe(80); // streak 1 ja dispara (persistencia minima 11/07)
+    expect(resultados[2]?.score).toBe(80);
+    expect(resultados[2]?.motivo).toContain("fora de via conhecida");
   });
 
   it("DESVIO INJETADO em via CONHECIDA mas area de risco alto: dispara IMEDIATO (score 80) — o caso que o v4 antigo perdia", () => {
@@ -307,7 +305,11 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
         temPendentes: true, emOperacao: true, foraDaBase: true,
         entregasFeitas: 0, // 0 feitas ainda, com pendentes -> sem referencia de comportamento
         streak, afastamentoAcumuladoM: 0, dentroTapete: false, riscoAreaAtual: 100,
-        foraTapeteStreak: 5,
+        // foraTapeteStreak 0 (nao 5): este teste isola o gate de historico
+        // da Camada 1, nao quer exercitar a Camada 3 (religada 12/07), que
+        // senao dispararia ja no ciclo 0 (antes do proprio gate de streak
+        // comportamental que o teste pretende provar).
+        foraTapeteStreak: 0,
       }));
       anteriorDist = distDestinosM;
     }
@@ -350,14 +352,17 @@ describe("foraTapeteStreak — Camada 3, DESATIVADA em 09/07/2026 (ver CAMADA3_T
   // fora do eixo perfeito. A Camada 3 (tapete) resolveria isso, mas foi
   // DESATIVADA no mesmo dia: virou metade do ruido de desvio em rotas rurais
   // com tapete pouco coberto (TTM-7C14/TTM-2G01/TUS-1A47, achado ao vivo).
-  it("mesmo fora do tapete por varias leituras seguidas: NAO dispara enquanto CAMADA3_TAPETE_ATIVA=false", () => {
+  it("fora do tapete por varias leituras seguidas, Camada 3 ATIVA (religada 12/07): dispara ao atingir o minimo", () => {
     const fracoes = [0, 0.3, 0.6];
     const ciclos: Ciclo[] = fracoes.map((f, i) => ({
       ...aproximarDe(MANGUINHOS, REALENGO, f),
       foraTapeteStreak: i,
     }));
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados.every(r => r === null)).toBe(true);
+    expect(resultados[0]).toBeNull(); // foraTapeteStreak 0
+    expect(resultados[1]).toBeNull(); // foraTapeteStreak 1, abaixo do minimo (2)
+    expect(resultados[2]).not.toBeNull(); // foraTapeteStreak 2, atinge o minimo
+    expect(resultados[2]?.motivo).toContain("nunca percorreu");
   });
 
   it("aproximando e DENTRO do tapete (foraTapeteStreak sempre 0): nao dispara — caso real TUK-0H45/TTM-2G01 corrigido", () => {

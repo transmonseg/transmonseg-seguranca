@@ -345,7 +345,17 @@ export const FORA_TAPETE_STREAK_MIN = 2;
 // virava "via nunca percorrida". motor continua computando e persistindo
 // foraTapeteStreak normalmente (dado útil pra redesenhar o limiar com calma,
 // ex.: exigir cobertura mínima por REGIÃO, não só por cliente).
-const CAMADA3_TAPETE_ATIVA = false;
+// Religada em 12/07/2026 apos revisao linha por linha a pedido do usuario.
+// Causa raiz do incidente de 09/07 que motivou a desativacao (o alerta
+// FECHAVA sozinho e reabria a cada ~2min, indistinguivel de bug) ja foi
+// corrigida em 11/07 (desvio nunca mais fecha sozinho, commit 1a23048).
+// Residual esperado: mais alertas em rotas rurais/serra com tapete esparso
+// -- falso positivo que FAZ SENTIDO (fica aberto aguardando o operador, nao
+// pisca), aceitavel pela diretiva do usuario. Cobertura minima POR REGIAO
+// (nao so por cliente inteiro, ja proposta em docs/analise-deteccao.md
+// 09/07) fica FORA de escopo deste ciclo -- resolveria a esparsidade rural
+// de forma mais fina, mas e um projeto proprio.
+const CAMADA3_TAPETE_ATIVA = true;
 
 // A Unitrac NÃO fornece rota planejada nem ordem confiável de entregas.
 // Desvio aqui é comportamento: o veículo se afastando de TODOS os destinos
