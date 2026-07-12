@@ -1255,7 +1255,14 @@ export async function POST(request: Request) {
                 minAmostrasProprio: 20,
               })
             : null;
-          if (pos.fresco && pos.velocidade > 0) {
+          // Achado real 12/07 (autopoluicao confirmada com dado de producao,
+          // TTH-6G37: z-score caiu de 14.5 pra 3.5 em 10min na MESMA
+          // velocidade): uma leitura sinalizada como anomala neste ciclo NAO
+          // entra no baseline -- ele "congela" durante o evento suspeito e
+          // volta a incorporar amostras normais assim que a leitura deixar
+          // de ser anomala. Sem isso, o evento anomalo sustentado acabava
+          // "acostumando" o proprio baseline com ele mesmo.
+          if (pos.fresco && pos.velocidade > 0 && alertaBaseline === null) {
             amostrasBaselineCiclo.push({ veiculo_id, cliente_id, tipoViagem, velocidade: pos.velocidade });
           }
 
