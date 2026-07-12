@@ -1384,16 +1384,17 @@ export async function POST(request: Request) {
           // ponto rastreavel independente de feito virar true no meio do
           // dwell, e permite detectarBypassEntrega enxergar a confirmacao
           // de verdade quando o veiculo realmente sai do raio.
-          // Limitacao conhecida (aceita por ora, sinal e so operacional):
-          // .find() pega o PRIMEIRO ponto cujo raio contem a posicao, entao
-          // (a) raios sobrepostos escondem o bypass do ponto mais distante
-          // se o veiculo entra direto no raio de outro sem "sair" do
-          // primeiro, e (b) varios alvos (NFs) no mesmo endereco tem
-          // `codigo` diferente por NF, entao confirmar uma NF reseta o
-          // dwell mesmo sem o veiculo ter saido fisicamente do lugar.
-          // Resolver direito exigiria checar TODOS os pontos no raio (nao
-          // so o primeiro) e agrupar por `pontoCodigo` (endereco), nao por
-          // `codigo` (NF) -- fora do escopo desta primeira versao.
+          // Achado real 12/07: identificar o alvo por `codigo` (NF) fazia
+          // varias NFs pendentes no MESMO ENDERECO resetarem o cronometro
+          // de dwell so porque uma NF especifica foi confirmada, mesmo sem
+          // o veiculo ter saido fisicamente do lugar. `pontoCodigo` (endereco
+          // fisico) e estavel entre NFs diferentes do mesmo ponto.
+          // Limitacao residual aceita: dois ENDERECOS FISICAMENTE DIFERENTES
+          // com raio sobreposto ainda podem esconder o bypass do mais
+          // distante (.find() pega o primeiro que bate) -- caso raro
+          // (exigiria dois clientes de entrega a poucos metros um do
+          // outro), resolver exigiria checar todos os pontos simultaneamente,
+          // complexidade desproporcional pro caso.
           const alvoNoRaioAgora = (pontosVeiculo ?? []).find(
             (pt) => haversineM(pos.lat, pos.lng, pt.lat, pt.lng) <= pt.raio
           ) ?? null;
@@ -1401,10 +1402,10 @@ export async function POST(request: Request) {
           const desdeAnterior = anterior?.no_raio_desde ?? null;
           const dwellAnterior = anterior?.no_raio_dwell_segundos ?? 0;
 
-          const mesmoAlvoQueAntes = alvoNoRaioAgora !== null && alvoNoRaioAgora.codigo === codigoAnteriorNoRaio;
+          const mesmoAlvoQueAntes = alvoNoRaioAgora !== null && alvoNoRaioAgora.pontoCodigo === codigoAnteriorNoRaio;
           const LIMIAR_VELOCIDADE_DWELL_KMH = 5;
 
-          let noRaioAlvoCodigo: number | null = alvoNoRaioAgora?.codigo ?? null;
+          let noRaioAlvoCodigo: number | null = alvoNoRaioAgora?.pontoCodigo ?? null;
           let noRaioDesde: string | null = desdeAnterior;
           let noRaioDwellSegundos = dwellAnterior;
 
@@ -1424,7 +1425,7 @@ export async function POST(request: Request) {
           }
 
           const saiuDoRaioAgora = codigoAnteriorNoRaio !== null && alvoNoRaioAgora === null;
-          const alvoQueSaiu = (pontosVeiculo ?? []).find((pt) => pt.codigo === codigoAnteriorNoRaio) ?? null;
+          const alvoQueSaiu = (pontosVeiculo ?? []).find((pt) => pt.pontoCodigo === codigoAnteriorNoRaio) ?? null;
           // mesmoAlvoCodigo: por construcao deste fluxo, saiuDoRaioAgora so
           // fica true quando NADA e encontrado no raio atual (alvoNoRaioAgora
           // null) -- a unica identidade em jogo no momento da saida e
