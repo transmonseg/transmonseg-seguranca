@@ -186,6 +186,85 @@ persiste, e volta a incorporar amostras normalmente assim que a leitura deixar d
 anomala. Isso e uma tecnica padrao de estatistica robusta (nao contaminar o estimador
 com outliers detectados) e nao exige nenhum conceito novo de "viagem" no schema.
 
+## Amendment: reduzir conservadorismo (12/07, achados da revisao linha por linha)
+
+Depois de escrever o design acima, o usuario pediu uma revisao direta de TODO ponto do
+codigo que suprime/bloqueia um alerta de desvio (`return null` em `detectarDesvio` e
+detectores vizinhos), buscando onde desvio real pode estar passando batido por excesso
+de cautela. Revisao linha por linha de `src/lib/detectores.ts` achou 4 pontos reais.
+Tres viram mudanca agora; um fica documentado como decisao consciente de NAO mexer.
+
+### E. Parada subita sem aviso previo (mudar)
+
+`detectarDesvio` exige `p.velocidade > 0` pra criar qualquer alerta (linha 574) -- um
+veiculo que ja tinha alerta de desvio aberto continua coberto (nunca fecha sozinho), mas
+um veiculo que e forcado a parar de repente, ANTES de ter construido streak de desvio
+(primeira leitura anomala ja e uma parada), so tem cobertura via `detectarParadaAnomala`,
+que hoje exige 20min (cidade) ou 35min (estrada) parado antes de disparar qualquer
+coisa -- mesmo o proprio comentario do codigo (`detectores.ts:253`) reconhecendo que "um
+roubo tipico acontece em 10-20min". Os limiares atuais (20/35min) estao NA BORDA ou
+DEPOIS do que a propria pesquisa ja documentada considera critico.
+
+**Mudanca:** baixar `limiteMin` de 20/35 pra **8min (cidade) / 15min (estrada)** em
+`detectarParadaAnomala`. Falso positivo aceitavel (parada legitima curta vira alerta
+com mais frequencia), mas corta a janela cega de ate 35 minutos pra uma janela de no
+maximo 15.
+
+### F. Camada 3 (via nunca percorrida pela frota) religada
+
+`CAMADA3_TAPETE_ATIVA = false` desde 09/07/2026, por causa de flapping em rotas
+rurais/serra com tapete esparso (74 Camada 1 vs 75 Camada 3 em 6h, disparando e
+resolvendo a cada 2min). A causa RAIZ daquele incidente especifico -- o alerta se
+FECHAVA sozinho e reabria, indistinguivel de bug -- ja foi corrigida hoje (desvio nunca
+mais fecha sozinho). O sintoma que restaria ao religar (mais alertas HOJE em rotas
+rurais com tapete esparso) e um falso positivo "que faz sentido" pelo criterio do
+proprio usuario (regiao com pouca cobertura, alerta fica ABERTO aguardando o operador,
+nao fica piscando), nao o tipo de ruido sem sentido que motivou a desativacao.
+
+**Mudanca:** `CAMADA3_TAPETE_ATIVA = true`. **Escopo consciente:** a ideia mais
+sofisticada (cobertura minima POR REGIAO, nao por cliente inteiro -- ja proposta em
+`docs/analise-deteccao.md` 09/07, nunca implementada) fica de FORA deste ciclo --
+resolve a esparsidade rural de forma mais fina, mas e um projeto proprio (definir o que
+conta como "regiao", agregar densidade por regiao). Religar com o piso global
+(`TAPETE_MIN_CELULAS = 300`, hoje folgado: 197k+ celulas acumuladas) e o suficiente pra
+esse ciclo, dado que o mecanismo de flapping que tornava isso inaceitavel ja foi
+corrigido.
+
+### G. Teto de deslocamento interurbano
+
+`DESVIO_GATILHO_TETO_M = 80000` (subido de 25km pra 80km ontem) continua sendo um teto
+ABSOLUTO -- acima disso, Camada 1 nunca dispara desvio comportamental, nao importa o
+quao suspeito. Um sequestro que levasse o caminhao mais de 80km de qualquer destino
+conhecido ficaria invisivel pra esse detector especifico (a cerca virtual e o baseline
+por veiculo nao tem esse teto, entao ainda haveria alguma chance de deteccao por outra
+via, mas nao dessa).
+
+**Mudanca:** subir `DESVIO_GATILHO_TETO_M` pra **300000 (300km)** -- cobre
+confortavelmente qualquer entrega dentro do RJ e estados vizinhos (SP, MG, ES) mantendo
+so um piso de sanidade contra leitura de GPS corrompida/absurda (ex.: coordenada do
+outro lado do planeta), sem mais funcionar como teto que esconde desvio real dentro da
+faixa de operacao normal da frota.
+
+### H. Bloqueio quando a API de destinos falha (decisao consciente: NAO mudar)
+
+Confirmado no codigo (`route.ts:836-1467`): `alvosApiOk === false` bloqueia
+especificamente `detectarDesvio` (Camada 1) e `candidatoSaidaParado`
+(saida_nao_autorizada parado) -- quando a API `/alvos` da Unitrac falha, os mapas de
+pendentes ficam vazios, o que faz a cerca virtual tambem naturalmente nao ter nada pra
+verificar (`pendentes.length > 0` fica falso). Jammer, panico, bau, excesso de
+velocidade, parada_longa, parada_anomala, baseline_veiculo e tiroteio proximo continuam
+funcionando normalmente -- NAO e uma cegueira total do sistema, so dos detectores que
+dependem de saber quais sao os destinos.
+
+**Por que nao mexer:** essa guarda existe por causa de um incidente REAL e ja validado
+(06/07/2026): sem ela, quando a API falha, os destinos de TODOS os veiculos colapsam pra
+"so as bases", e quase todo veiculo em operacao parece "afastando-se de tudo"
+simultaneamente -- um estouro de alerta em massa pro cliente inteiro de uma vez, nao um
+falso positivo isolado que faz sentido. E uma classe de risco diferente dos outros 3
+itens (nao e "um desvio raro passando batido", e "o sistema inteiro grita ao mesmo tempo
+e o operador para de confiar nele"). Falso positivo aceitavel nao cobre "alarme em massa
+correlacionado, causado por uma falha tecnica, no cliente inteiro" -- fica como esta.
+
 ## Testes e validacao
 
 Mesma disciplina do redesenho de 11/07: TDD por funcao pura nova/alterada
