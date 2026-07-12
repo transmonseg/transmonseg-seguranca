@@ -277,9 +277,17 @@ export function detectarParadaAnomala(ctx: {
   // transito/fila, nao roubo. Comparar veiculos entre si mata o falso positivo.
   if ((ctx.vizinhosParados ?? 0) >= 2) return null;
 
-  // 20 min em cidade (vinha de >= 30km/h), 35 min em estrada — limites anteriores
-  // (12/25 min) disparavam para praticamente qualquer parada em trânsito pesado do RJ.
-  const limiteMin = ctx.estavEmMovimento ? 20 : 35;
+  // Baixado de 20/35 pra 12/20 em 12/07 (revisao linha por linha a pedido do
+  // usuario, buscando desvio real passando batido por excesso de cautela --
+  // "um roubo tipico acontece em 10-20min" ja documentado acima, e 20/35
+  // estava na borda ou depois disso). ATENCAO: os valores 12/25 ja foram
+  // tentados ANTES e revertidos pra 20/35 porque disparavam pra
+  // praticamente qualquer parada em transito pesado do RJ -- o novo par
+  // (12/20) fica no limite do que ja foi tentado pra cidade e mais
+  // conservador que repetir o par exato que falhou pra estrada. Se
+  // reproduzir ruido de transito pesado, e uma reversao facil (1 linha) e
+  // o monitoramento periodico ja em andamento vai pegar isso.
+  const limiteMin = ctx.estavEmMovimento ? 12 : 20;
   if (ctx.paradoMin < limiteMin || ctx.paradoMin >= 90) return null; // >= 90 ja e parada_longa
 
   let score = 55;

@@ -851,6 +851,42 @@ describe("detectarParadaAnomala - supressao por congestionamento", () => {
   });
 });
 
+describe("detectarParadaAnomala - limiares baixados 12/07 (menos conservador)", () => {
+  const base = {
+    emOperacao: true,
+    foraDaBase: true,
+    noCliente: false,
+    esMadrugada: false,
+    emZonaRisco: false,
+    temPOIProximo: false,
+    jaParedoNoCicloAnterior: true,
+    vizinhosParados: 0,
+  };
+
+  // Historico: 12/25min ja foram tentados e revertidos pra 20/35 porque
+  // disparavam pra praticamente qualquer parada em transito pesado do RJ
+  // (ver comentario em detectores.ts). O novo valor (12/20) fica no limite
+  // do que ja foi tentado pra cidade e um meio-termo pra estrada -- mais
+  // conservador que repetir exatamente o par que ja falhou (12/25).
+  it("cidade, 15min parado (entre o novo 12 e o antigo 20): dispara agora", () => {
+    const a = detectarParadaAnomala({ ...base, paradoMin: 15, estavEmMovimento: true });
+    expect(a).not.toBeNull();
+  });
+
+  it("cidade, 10min parado (abaixo do novo minimo): ainda nao dispara", () => {
+    expect(detectarParadaAnomala({ ...base, paradoMin: 10, estavEmMovimento: true })).toBeNull();
+  });
+
+  it("estrada, 22min parado (entre o novo 20 e o antigo 35): dispara agora", () => {
+    const a = detectarParadaAnomala({ ...base, paradoMin: 22, estavEmMovimento: false });
+    expect(a).not.toBeNull();
+  });
+
+  it("estrada, 18min parado (abaixo do novo minimo): ainda nao dispara", () => {
+    expect(detectarParadaAnomala({ ...base, paradoMin: 18, estavEmMovimento: false })).toBeNull();
+  });
+});
+
 describe("detectarSaidaNaoAutorizada", () => {
   it("fora da base, sem rota, ignicao ligada e EM MOVIMENTO retorna critico", () => {
     const a = detectarSaidaNaoAutorizada(
