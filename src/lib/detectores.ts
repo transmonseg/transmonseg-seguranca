@@ -988,6 +988,29 @@ export function arbitrarCandidatos(candidatos: Alerta[]): Alerta | null {
   };
 }
 
+const TRANSITO_INFERIDO_MIN_VIZINHOS = 2;
+const TRANSITO_INFERIDO_REDUCAO = 20;
+const TRANSITO_INFERIDO_SCORE_MINIMO = 30;
+
+// Transito inferido pela PROPRIA frota (floating car data, decisao do
+// usuario 12/07 apos pesquisa mostrar que nao ha fonte de transito real
+// gratuita e self-serve viavel): se 2+ outros veiculos da frota estao
+// LENTOS (nao parados, ver vizinhosParados que ja existe pra isso) perto
+// da posicao, em contexto de rodovia, isso corrobora "corte de transito
+// legitimo" em vez de desvio suspeito -- reduz a prioridade, nunca some o
+// alerta (piso minimo).
+export function reduzirPorTransitoInferido(
+  alerta: Alerta,
+  ctx: { emRodovia: boolean; vizinhosLentos: number }
+): Alerta {
+  if (alerta.tipo !== "desvio") return alerta;
+  if (!ctx.emRodovia || ctx.vizinhosLentos < TRANSITO_INFERIDO_MIN_VIZINHOS) return alerta;
+  return {
+    ...alerta,
+    score: Math.max(TRANSITO_INFERIDO_SCORE_MINIMO, alerta.score - TRANSITO_INFERIDO_REDUCAO),
+  };
+}
+
 // Avalia todos os detectores e retorna o alerta de maior severidade.
 // Prioridade: critico > atencao; desempate por score (maior vence).
 export function avaliar(

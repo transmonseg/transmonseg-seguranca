@@ -28,6 +28,7 @@ import {
   detectarBypassEntrega,
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
+  reduzirPorTransitoInferido,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -856,16 +857,17 @@ export async function POST(request: Request) {
       // do geocode_cache (ver preencherGeocodeCacheCandidatos). Superset seguro:
       // inclui veiculo fresco em movimento sem alerta, que na real nao precisa de
       // geocode — so deixa a lista de candidatas um pouco maior, nunca erra.
-      const paradosFrescos: { lat: number; lng: number }[] = [];
+      // Generalizado 12/07 (era so p.velocidade===0) pra tambem alimentar
+      // vizinhosLentos (transito inferido pela propria frota) -- guarda
+      // TODO veiculo fresco com sua velocidade, nao so os parados.
+      const posicoesFrescasComVelocidade: { lat: number; lng: number; velocidade: number }[] = [];
       const celulasCandidatasTapete = new Set<string>();
       const chavesCandidatasGeocode = new Set<string>();
       for (const raw of posicoesRaw) {
         try {
           const p = normalizar(raw as Record<string, unknown>);
-          if (p.fresco && p.velocidade === 0 && p.lat != null && p.lng != null) {
-            paradosFrescos.push({ lat: p.lat, lng: p.lng });
-          }
           if (p.fresco && p.lat != null && p.lng != null) {
+            posicoesFrescasComVelocidade.push({ lat: p.lat, lng: p.lng, velocidade: p.velocidade });
             for (const c of vizinhanca3x3(p.lat, p.lng)) celulasCandidatasTapete.add(c);
             chavesCandidatasGeocode.add(chaveGeocode(p.lat, p.lng));
           }
@@ -1218,10 +1220,21 @@ export async function POST(request: Request) {
           let vizinhosParados = 0;
           if (candidatoParadaAnomala) {
             let dentro = 0;
-            for (const q of paradosFrescos) {
-              if (haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentro++;
+            for (const q of posicoesFrescasComVelocidade) {
+              if (q.velocidade === 0 && haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentro++;
             }
             vizinhosParados = Math.max(0, dentro - 1); // exclui o proprio veiculo
+          }
+          // Transito inferido pela propria frota (12/07): quantos OUTROS
+          // veiculos estao LENTOS (nao parados) por perto -- corrobora
+          // congestionamento real em vez de desvio suspeito.
+          let vizinhosLentos = 0;
+          if (pos.fresco) {
+            let dentroLento = 0;
+            for (const q of posicoesFrescasComVelocidade) {
+              if (q.velocidade > 0 && q.velocidade <= 20 && haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentroLento++;
+            }
+            vizinhosLentos = Math.max(0, dentroLento - (pos.velocidade > 0 && pos.velocidade <= 20 ? 1 : 0));
           }
 
           // Score de risco de área (camada 3 do desvio, ver calcularRiscoArea):
@@ -1605,6 +1618,12 @@ export async function POST(request: Request) {
           ].filter((a): a is Alerta => a !== null);
 
           alerta = arbitrarCandidatos([...(alerta ? [alerta] : []), ...extras]);
+          if (alerta) {
+            alerta = reduzirPorTransitoInferido(alerta, {
+              emRodovia: bufferPorVelocidade(pos.velocidade) === 200,
+              vizinhosLentos,
+            });
+          }
 
           // Determinar nivel da posicao atual
           let nivel: string;

@@ -25,6 +25,7 @@ import {
   type CtxBypassEntrega,
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
+  reduzirPorTransitoInferido,
   type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
@@ -1102,5 +1103,36 @@ describe("arbitrarCandidatos (fusao de sinais corroborantes, 12/07)", () => {
     const a = arbitrarCandidatos([alertaBase("desvio", 45), alertaBase("retorno_tardio", 40), alertaBase("aceleracao", 70)]);
     expect(a?.score).toBe(70); // maior score vence (aceleracao), sem bonus (so 1 tipo relevante presente: desvio)
     expect(a?.motivo).not.toContain("corroborado");
+  });
+});
+
+describe("reduzirPorTransitoInferido (transito real da propria frota corrobora corte de transito, 12/07)", () => {
+  const desvioRodovia: Alerta = { nivel: "critico", tipo: "desvio", motivo: "Fora da rota esperada", score: 75 };
+
+  it("fora de rodovia (contexto urbano): nao reduz, mesmo com vizinhos lentos", () => {
+    const a = reduzirPorTransitoInferido(desvioRodovia, { emRodovia: false, vizinhosLentos: 3 });
+    expect(a.score).toBe(75);
+  });
+
+  it("em rodovia mas sem vizinhos lentos o suficiente (so 1): nao reduz", () => {
+    const a = reduzirPorTransitoInferido(desvioRodovia, { emRodovia: true, vizinhosLentos: 1 });
+    expect(a.score).toBe(75);
+  });
+
+  it("em rodovia com 2+ vizinhos lentos: reduz 20 pontos", () => {
+    const a = reduzirPorTransitoInferido(desvioRodovia, { emRodovia: true, vizinhosLentos: 2 });
+    expect(a.score).toBe(55);
+  });
+
+  it("reducao respeita piso minimo de 30 (nao deixa o alerta sumir)", () => {
+    const scoreBaixo: Alerta = { ...desvioRodovia, score: 40 };
+    const a = reduzirPorTransitoInferido(scoreBaixo, { emRodovia: true, vizinhosLentos: 5 });
+    expect(a.score).toBe(30); // 40 - 20 = 20, mas piso e 30
+  });
+
+  it("so aplica a alertas tipo desvio -- outros tipos passam intactos", () => {
+    const outroTipo: Alerta = { nivel: "critico", tipo: "jammer", motivo: "x", score: 80 };
+    const a = reduzirPorTransitoInferido(outroTipo, { emRodovia: true, vizinhosLentos: 3 });
+    expect(a.score).toBe(80);
   });
 });
