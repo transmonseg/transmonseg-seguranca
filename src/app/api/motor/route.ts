@@ -39,6 +39,7 @@ import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
+import { aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -605,6 +606,21 @@ export async function POST(request: Request) {
     // principio ja usado pra geocodesPendentes: nao bloquear o caminho
     // critico com round-trips extras por veiculo).
     const amostrasBaselineCiclo: { veiculo_id: string; cliente_id: string; tipoViagem: "urbano" | "rodoviario"; velocidade: number }[] = [];
+
+    // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
+    // mesmo padrao de mapaBaselineVeiculo/Frota acima. So aplica o fator
+    // quando o segmento ja tem amostra suficiente (mesma regra de 20 ja
+    // usada em baseline_veiculo).
+    const { data: calibracaoRows } = await supabase
+      .from("calibracao_desvio")
+      .select("segmento, n_amostras, taxa_falso_positivo");
+    const MIN_AMOSTRAS_CALIBRACAO = 20;
+    const mapaCalibracao = new Map<string, number>();
+    for (const r of calibracaoRows ?? []) {
+      if (r.n_amostras >= MIN_AMOSTRAS_CALIBRACAO) {
+        mapaCalibracao.set(r.segmento, r.taxa_falso_positivo);
+      }
+    }
 
     // Eventos nativos "rotineiros" da Unitrac — nao viram linha na tabela `eventos`
     // (senao toda transmissao periodica de 220+ veiculos vira log, sem sinal nenhum).
@@ -1623,6 +1639,16 @@ export async function POST(request: Request) {
               emRodovia: bufferPorVelocidade(pos.velocidade) === 200,
               vizinhosLentos,
             });
+          }
+          if (alerta) {
+            const segmentoEspecifico = alerta.tipo === "desvio" && corredorInfo?.veredito
+              ? `corredor_veredito:${corredorInfo.veredito}`
+              : null;
+            const taxaFp = (segmentoEspecifico !== null ? mapaCalibracao.get(segmentoEspecifico) : undefined)
+              ?? mapaCalibracao.get(`tipo:${alerta.tipo}`);
+            if (taxaFp !== undefined) {
+              alerta = { ...alerta, score: aplicarFatorCalibrado(alerta.score, taxaFp) };
+            }
           }
 
           // Determinar nivel da posicao atual

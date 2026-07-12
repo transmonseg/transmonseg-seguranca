@@ -2,6 +2,11 @@
 // operadores. Rodar manualmente por enquanto (nao automatizado neste
 // ciclo); candidato a virar cron semanal depois de validar as primeiras
 // rodadas.
+// Nota 12/07: a coluna score_ajustado (migration 019) fica SEM USO -- o
+// motor aplica o fator ao vivo direto de taxa_falso_positivo
+// (aplicarFatorCalibrado em src/lib/calibracao-desvio.ts), nao precisa de
+// um "score base de referencia" pre-calculado (ambiguo: alertas do mesmo
+// tipo tem scores base muito diferentes).
 import pg from "pg";
 
 const MIN_AMOSTRAS = 20;
