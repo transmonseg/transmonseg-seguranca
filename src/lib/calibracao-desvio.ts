@@ -24,3 +24,25 @@ export function taxaFalsoPositivoCalibrada(
 export function aplicarFatorCalibrado(scoreBase: number, taxaFalsoPositivo: number): number {
   return Math.round(scoreBase * (1 - taxaFalsoPositivo));
 }
+
+// Qual chave de segmento usar pra buscar a taxa calibrada de um alerta
+// "desvio" vencedor da arbitragem. Achado real 12/07 (auditoria
+// adversarial): corredorInfo so descreve o desvio COMPORTAMENTAL
+// (detectarDesvio) -- se o vencedor final veio do alertaCerca (mesmo tipo
+// "desvio", fonte e veredito de corredor totalmente separados), usar
+// corredorInfo pra calibracao misturaria amostras de fontes diferentes sob
+// a mesma chave de segmento. Retorna null quando o segmento mais
+// especifico (por veredito de corredor) nao se aplica -- quem chama cai
+// pro fallback `tipo:${alerta.tipo}`.
+export function segmentoCalibracaoPreferido(
+  alerta: { tipo: string; motivo: string },
+  desvioComportamental: { motivo: string } | null,
+  corredorVeredito: string | null | undefined
+): string | null {
+  const veioDoComportamental =
+    desvioComportamental !== null && alerta.motivo.startsWith(desvioComportamental.motivo);
+  if (alerta.tipo === "desvio" && veioDoComportamental && corredorVeredito) {
+    return `corredor_veredito:${corredorVeredito}`;
+  }
+  return null;
+}

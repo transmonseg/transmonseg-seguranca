@@ -39,7 +39,7 @@ import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
-import { aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
+import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -1683,17 +1683,7 @@ export async function POST(request: Request) {
             });
           }
           if (alerta) {
-            // Achado real 12/07 (auditoria adversarial): corredorInfo so
-            // descreve o desvio COMPORTAMENTAL (detectarDesvio) -- se o
-            // vencedor final veio do alertaCerca (mesmo tipo "desvio", fonte
-            // e veredito de corredor totalmente separados), usar
-            // corredorInfo pra calibracao misturaria amostras de fontes
-            // diferentes sob a mesma chave de segmento.
-            const veioDoComportamental =
-              desvioComportamental !== null && alerta.motivo.startsWith(desvioComportamental.motivo);
-            const segmentoEspecifico = alerta.tipo === "desvio" && veioDoComportamental && corredorInfo?.veredito
-              ? `corredor_veredito:${corredorInfo.veredito}`
-              : null;
+            const segmentoEspecifico = segmentoCalibracaoPreferido(alerta, desvioComportamental, corredorInfo?.veredito);
             const taxaFp = (segmentoEspecifico !== null ? mapaCalibracao.get(segmentoEspecifico) : undefined)
               ?? mapaCalibracao.get(`tipo:${alerta.tipo}`);
             if (taxaFp !== undefined) {
