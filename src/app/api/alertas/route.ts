@@ -3,6 +3,14 @@ import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
+// O motor grava alertas 1x/30s; o dashboard busca no tick do Realtime.
+// Cache curto por cliente (mesmo padrao de /api/mapa) pra N telas do MESMO
+// cliente, com ticks levemente fora de sincronia, dividirem UMA consulta
+// em vez de bater o banco uma vez por tela a cada tick.
+type AlertasCacheEntry = { body: { alertas: unknown[] }; expiraEm: number };
+const CACHE_MS = 8_000;
+const cachePorCliente = new Map<string, AlertasCacheEntry>();
+
 export async function GET(request: Request) {
   const auth = await createClient();
   const {
@@ -13,6 +21,11 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente");
   if (!cod) return Response.json({ alertas: [] });
+
+  const cached = cachePorCliente.get(cod);
+  if (cached && cached.expiraEm > Date.now()) {
+    return Response.json(cached.body);
+  }
 
   const supabase = createAdminClient();
 
@@ -118,5 +131,7 @@ export async function GET(request: Request) {
     }
   );
 
-  return Response.json({ alertas });
+  const body = { alertas };
+  cachePorCliente.set(cod, { body, expiraEm: Date.now() + CACHE_MS });
+  return Response.json(body);
 }

@@ -1244,14 +1244,12 @@ export async function POST(request: Request) {
           // Transito inferido pela propria frota (12/07): quantos OUTROS
           // veiculos estao LENTOS (nao parados) por perto -- corrobora
           // congestionamento real em vez de desvio suspeito.
+          // Custo O(frota) por veiculo: so vale a pena calcular quando ha de
+          // fato um alerta pra reduzir (uso unico, ver reduzirPorTransitoInferido
+          // mais abaixo) -- por isso fica adiado pra la em vez de rodar aqui
+          // incondicionalmente pra todo veiculo fresco todo ciclo (14/07:
+          // era o maior consumidor de CPU do motor no Vercel).
           let vizinhosLentos = 0;
-          if (pos.fresco) {
-            let dentroLento = 0;
-            for (const q of posicoesFrescasComVelocidade) {
-              if (q.velocidade > 0 && q.velocidade <= 20 && haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentroLento++;
-            }
-            vizinhosLentos = Math.max(0, dentroLento - (pos.velocidade > 0 && pos.velocidade <= 20 ? 1 : 0));
-          }
 
           // Score de risco de área (camada 3 do desvio, ver calcularRiscoArea):
           // combina favela + tiroteio ativo perto (já filtrado sem acaoPolicial)
@@ -1672,6 +1670,13 @@ export async function POST(request: Request) {
 
           alerta = arbitrarCandidatos([...candidatosCoreFinal, ...extras]);
           if (alerta) {
+            if (pos.fresco) {
+              let dentroLento = 0;
+              for (const q of posicoesFrescasComVelocidade) {
+                if (q.velocidade > 0 && q.velocidade <= 20 && haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentroLento++;
+              }
+              vizinhosLentos = Math.max(0, dentroLento - (pos.velocidade > 0 && pos.velocidade <= 20 ? 1 : 0));
+            }
             alerta = reduzirPorTransitoInferido(alerta, {
               emRodovia: pos.velocidade >= 60,
               vizinhosLentos,

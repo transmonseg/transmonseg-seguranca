@@ -1,6 +1,5 @@
 import Link from "next/link";
 import RelogioAoVivo from "./components/RelogioAoVivo";
-import AutoRefresh from "./components/AutoRefresh";
 import { createClient } from "@/lib/supabase/server";
 import { sair } from "../login/actions";
 
@@ -125,7 +124,6 @@ export default async function AppLayout({
 
       {/* Conteudo principal */}
       <main className="flex-1 min-h-0 overflow-hidden">
-        <AutoRefresh segundos={30} />
         {children}
       </main>
 
