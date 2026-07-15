@@ -6,7 +6,7 @@
 // destino legítimo. Restrições da pesquisa 09/07: OSRM público = 1 req/s
 // GLOBAL, fail-open sempre (API fora = comporta como hoje, nunca segura
 // alerta). Nunca importe nada de 'next' aqui — lib pura + fetch.
-import { distanciaAoSegmentoM, haversineM } from "./unitrac";
+import { distanciaAoSegmentoM, haversineM, difAngulo, rumoGraus } from "./unitrac";
 
 type Ponto = { lat: number; lng: number };
 
@@ -17,7 +17,20 @@ type Ponto = { lat: number; lng: number };
 // urbano: buffer estreito o suficiente pra pegar desvio de ~100-150m.
 // Reduzido de 300/600 pra 120/200 em 11/07 (diretiva explicita do usuario:
 // falso positivo aceitavel, prioridade total e nunca perder desvio real).
-export function bufferPorVelocidade(velKmH: number): number {
+//
+// Achado real 15/07 (caso 3C94, 13:20): o OSRM/Valhalla roteia so ate a via
+// publica mais proxima do destino, nunca ate a portaria/doca real -- na
+// manobra final de chegada (~200-300m) e normal e legitimo o veiculo se
+// afastar mais da polilinha do que o buffer de transito permite. Buffer
+// alargado so nessa zona, mantendo o buffer apertado no resto do trajeto
+// (onde o risco de desvio de verdade importa mais).
+const RAIO_CHEGADA_M = 300;
+const BUFFER_CHEGADA_M = 250;
+
+export function bufferPorVelocidade(velKmH: number, distDestinoMaisPertoM?: number): number {
+  if (distDestinoMaisPertoM !== undefined && distDestinoMaisPertoM <= RAIO_CHEGADA_M) {
+    return BUFFER_CHEGADA_M;
+  }
   return velKmH >= 60 ? 200 : 120;
 }
 
@@ -30,18 +43,46 @@ export function dentroDoCorredor(pos: Ponto, polilinha: Ponto[], bufferM: number
   return false;
 }
 
+// Faixa de "empate" angular: candidatos cuja diferenca de rumo em relacao ao
+// deslocamento atual do veiculo cai na mesma faixa de 30 graus sao tratados
+// como igualmente alinhados e desempatados por distancia -- evita que um
+// candidato 1 grau mais alinhado, mas muito mais longe, roube a prioridade
+// de um candidato quase tao alinhado e bem mais perto.
+const ANGULO_EMPATE_GRAUS = 30;
+
 // Substitui o corte fixo em "3 mais proximos" usado ate 11/07 na cerca
 // virtual -- pressupunha que o motorista vai pro pendente mais perto, mas
 // nao ha ordem de entrega definida (o motorista escolhe livremente). Ordena
 // por distancia como heuristica pratica de prioridade dentro do orcamento
 // de chamadas (quem chama decide quantos tentar), sem descartar nenhum.
+//
+// Achado real 15/07: com o orcamento de chamadas limitado pelo throttle de
+// 1 req/s do OSRM publico (~4-5 candidatos testaveis por verificacao) e
+// clientes com mediana de 11 pendentes (Nutry Max), o destino real do
+// motorista pode nunca ser testado se so a distancia em linha reta manda --
+// rio/rodovia/mao unica separam distancia real de distancia em linha reta
+// (caso 3C94). rumoAtual (rumo de deslocamento do ciclo anterior->atual, ja
+// calculado no motor como `rumoMovimento`) prioriza candidatos "na frente"
+// do veiculo primeiro, sem gastar mais chamadas de API -- so muda a ORDEM.
 export function ordenarPendentesPorDistancia<T extends { lat: number; lng: number }>(
   pos: { lat: number; lng: number },
-  pendentes: T[]
+  pendentes: T[],
+  rumoAtual: number | null = null
 ): T[] {
-  return [...pendentes].sort(
-    (a, b) => haversineM(pos.lat, pos.lng, a.lat, a.lng) - haversineM(pos.lat, pos.lng, b.lat, b.lng)
-  );
+  if (rumoAtual === null) {
+    return [...pendentes].sort(
+      (a, b) => haversineM(pos.lat, pos.lng, a.lat, a.lng) - haversineM(pos.lat, pos.lng, b.lat, b.lng)
+    );
+  }
+  return pendentes
+    .map((p) => {
+      const dist = haversineM(pos.lat, pos.lng, p.lat, p.lng);
+      const rumoAoPonto = rumoGraus(pos.lat, pos.lng, p.lat, p.lng);
+      const faixaAngular = Math.floor(difAngulo(rumoAtual, rumoAoPonto) / ANGULO_EMPATE_GRAUS);
+      return { p, dist, faixaAngular };
+    })
+    .sort((a, b) => a.faixaAngular - b.faixaAngular || a.dist - b.dist)
+    .map((x) => x.p);
 }
 
 // Achado empirico 11/07/2026: so 1,2% dos pares origem-destino repetem em

@@ -12,6 +12,19 @@ describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () 
     expect(bufferPorVelocidade(60)).toBe(200);
     expect(bufferPorVelocidade(90)).toBe(200);
   });
+  it("dentro de 300m de um destino: 250m (zona de chegada), independente da velocidade", () => {
+    expect(bufferPorVelocidade(40, 100)).toBe(250);
+    expect(bufferPorVelocidade(90, 300)).toBe(250);
+    expect(bufferPorVelocidade(0, 0)).toBe(250);
+  });
+  it("mais de 300m de um destino: comportamento normal por velocidade", () => {
+    expect(bufferPorVelocidade(40, 301)).toBe(120);
+    expect(bufferPorVelocidade(90, 5000)).toBe(200);
+  });
+  it("sem distancia informada (parametro omitido): comportamento atual preservado", () => {
+    expect(bufferPorVelocidade(40)).toBe(120);
+    expect(bufferPorVelocidade(90)).toBe(200);
+  });
 });
 
 describe("dentroDoCorredor", () => {
@@ -151,6 +164,41 @@ describe("ordenarPendentesPorDistancia (substitui o corte fixo em 3 mais proximo
 
   it("lista vazia retorna vazia", () => {
     expect(ordenarPendentesPorDistancia({ lat: 0, lng: 0 }, [])).toEqual([]);
+  });
+
+  it("com rumoAtual: candidato alinhado com o rumo vence mesmo estando mais longe", () => {
+    const pos = { lat: -22.90, lng: -43.20 };
+    // "norte" fica ~1.1km ao norte (rumo ~0), "leste_perto" fica ~200m a leste (rumo ~90).
+    const pendentes = [
+      { lat: -22.90, lng: -43.20 + 0.002, nome: "leste_perto" },
+      { lat: -22.90 + 0.01, lng: -43.20, nome: "norte" },
+    ];
+    // rumoAtual = 0 (indo pro norte): "norte" esta na mesma faixa angular
+    // (dif ~0) e deve vencer mesmo sendo mais longe que "leste_perto" (dif ~90).
+    const resultado = ordenarPendentesPorDistancia(pos, pendentes, 0);
+    expect(resultado.map((p) => p.nome)).toEqual(["norte", "leste_perto"]);
+  });
+
+  it("com rumoAtual: dentro da mesma faixa angular (30 graus), desempata por distancia", () => {
+    const pos = { lat: -22.90, lng: -43.20 };
+    const pendentes = [
+      { lat: -22.90 + 0.02, lng: -43.20, nome: "norte_longe" },
+      { lat: -22.90 + 0.005, lng: -43.20 + 0.001, nome: "quase_norte_perto" },
+    ];
+    // Ambos com rumo bem proximo de 0 (mesma faixa de 30 graus) -- o mais
+    // perto vence dentro da faixa.
+    const resultado = ordenarPendentesPorDistancia(pos, pendentes, 0);
+    expect(resultado.map((p) => p.nome)).toEqual(["quase_norte_perto", "norte_longe"]);
+  });
+
+  it("sem rumoAtual (null ou omitido): comportamento atual preservado, so distancia", () => {
+    const pos = { lat: -22.90, lng: -43.20 };
+    const pendentes = [
+      { lat: -22.90, lng: -43.20 + 0.05, nome: "longe" },
+      { lat: -22.90, lng: -43.20 + 0.01, nome: "perto" },
+    ];
+    expect(ordenarPendentesPorDistancia(pos, pendentes, null).map((p) => p.nome)).toEqual(["perto", "longe"]);
+    expect(ordenarPendentesPorDistancia(pos, pendentes).map((p) => p.nome)).toEqual(["perto", "longe"]);
   });
 });
 

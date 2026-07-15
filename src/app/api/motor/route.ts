@@ -1335,7 +1335,13 @@ export async function POST(request: Request) {
             const cerca = cacheCercaPorVeiculo.get(veiculo_id);
             const cercaValida =
               cerca && cerca.pendentesChave === chaveCerca && Date.now() - cerca.calculadoEm < CERCA_CACHE_MS;
-            const bufferCerca = bufferPorVelocidade(pos.velocidade);
+            // Achado real 15/07 (caso 3C94): buffer alargado perto da chegada
+            // (o corredor OSRM so vai ate a via publica, nunca ate a
+            // portaria/doca real) -- ver bufferPorVelocidade.
+            const distDestinoMaisPertoM = destinosCerca.length > 0
+              ? Math.min(...destinosCerca.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng)))
+              : undefined;
+            const bufferCerca = bufferPorVelocidade(pos.velocidade, distDestinoMaisPertoM);
             // Achado real 11/07: nao existe ordem de entrega, o motorista
             // escolhe livremente qual pendente visitar primeiro. Cortar em
             // "3 mais proximos" presumia que o motorista ia pro mais perto,
@@ -1344,8 +1350,13 @@ export async function POST(request: Request) {
             // distancia so como heuristica de prioridade dentro do
             // orcamento de chamadas (verificarCorredor ja tem deadline de
             // 5s/req e o throttle global decide quantos realmente cabem).
+            // Achado real 15/07: com orcamento apertado (~4-5 candidatos
+            // testaveis) e clientes com mediana de 11 pendentes, prioriza
+            // por alinhamento com o rumo de deslocamento (rumoMovimento, ja
+            // calculado acima) antes da distancia pura -- aumenta a chance
+            // de testar o destino real do motorista.
             const todosPendentesPriorizados = () =>
-              ordenarPendentesPorDistancia(pos, destinosCerca).map((pt) => ({ lat: pt.lat, lng: pt.lng }));
+              ordenarPendentesPorDistancia(pos, destinosCerca, rumoMovimento).map((pt) => ({ lat: pt.lat, lng: pt.lng }));
 
             if (!cercaValida) {
               // Semeadura: rota real daqui ate o pendente mais proximo.
