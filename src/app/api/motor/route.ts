@@ -1024,6 +1024,15 @@ export async function POST(request: Request) {
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))
             .filter((c): c is { lat: number; lng: number } => c !== null);
+          // Mesmas bases, com codigo estavel p/ a cerca virtual (chave de
+          // cache + lista de destinos do verificarCorredor) -- ver uso em
+          // "CERCA VIRTUAL" abaixo.
+          const basesComoDestinoCerca = basesCliente
+            .map((b) => {
+              const c = centroideGeo(b.geom);
+              return c ? { lat: c.lat, lng: c.lng, codigo: `base:${b.nome}` } : null;
+            })
+            .filter((x): x is { lat: number; lng: number; codigo: string } => x !== null);
           const destinos = [
             ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
             ...centroidesBases,
@@ -1313,7 +1322,16 @@ export async function POST(request: Request) {
             pendentes.length > 0 &&
             !saltoImplausivel
           ) {
-            const chaveCerca = pendentes.map((pt) => pt.codigo ?? `${pt.lat},${pt.lng}`).sort().join(",");
+            // Achado real 15/07: a cerca so testava rota ate os PENDENTES,
+            // nunca ate a base -- veiculo com entrega ainda em aberto que
+            // volta pra base (fim de turno, recarga, decisao do motorista)
+            // nunca batia com nenhuma rota calculada e disparava desvio
+            // critico na 1a leitura, mesmo indo pra um destino legitimo. A
+            // Camada 1 (comportamental, destinos acima) ja tratava base como
+            // destino legitimo -- a cerca ficou dessincronizada dela. Fix:
+            // mesma lista de destinos legitimos (pendentes + bases).
+            const destinosCerca = [...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng, codigo: pt.codigo ?? `${pt.lat},${pt.lng}` })), ...basesComoDestinoCerca];
+            const chaveCerca = destinosCerca.map((pt) => pt.codigo).sort().join(",");
             const cerca = cacheCercaPorVeiculo.get(veiculo_id);
             const cercaValida =
               cerca && cerca.pendentesChave === chaveCerca && Date.now() - cerca.calculadoEm < CERCA_CACHE_MS;
@@ -1327,7 +1345,7 @@ export async function POST(request: Request) {
             // orcamento de chamadas (verificarCorredor ja tem deadline de
             // 5s/req e o throttle global decide quantos realmente cabem).
             const todosPendentesPriorizados = () =>
-              ordenarPendentesPorDistancia(pos, pendentes).map((pt) => ({ lat: pt.lat, lng: pt.lng }));
+              ordenarPendentesPorDistancia(pos, destinosCerca).map((pt) => ({ lat: pt.lat, lng: pt.lng }));
 
             if (!cercaValida) {
               // Semeadura: rota real daqui ate o pendente mais proximo.
