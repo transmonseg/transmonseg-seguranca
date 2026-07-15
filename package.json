@@ -16,6 +16,7 @@
     "framer-motion": "^12.42.2",
     "leaflet": "^1.9.4",
     "next": "16.2.9",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",

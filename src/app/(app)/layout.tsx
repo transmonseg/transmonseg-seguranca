@@ -63,6 +63,13 @@ export default async function AppLayout({
             >
               Análise
             </Link>
+            <Link
+              href="/romaneio"
+              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
+            >
+              Romaneio
+            </Link>
           </nav>
 
           {/* Lado direito: relógio + ao vivo + operador */}

@@ -40,6 +40,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
+import { montarPontosDeRomaneio } from "@/lib/romaneio";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -65,6 +66,16 @@ const LIMITE_GEOCODES_NOVOS = TEM_GOOGLE_GEOCODE ? 30 : 3;
 type VeiculoCache = { veiculos: { id: string; cv: string; grupo: string | null }[]; expiraEm: number };
 const CACHE_FROTA_MS = 3 * 60_000; // 3 min: renova rápido o bastante pra pegar veículo novo/desativado sem demora perceptível
 const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
+
+// Pontos de entrega vindos do romaneio de HOJE, por cliente -- ver
+// docs/superpowers/specs/2026-07-15-romaneio-pontos-entrega-design.md.
+// Mesmo padrao de cache do resto do motor (frota, bases): renova a cada 3
+// min, nao precisa reconsultar todo ciclo de 30s. Se nao existir romaneio de
+// hoje pro veiculo, o motor cai no caminho 100% Unitrac de sempre (rede de
+// seguranca, sem regressao de cobertura).
+type RomaneioCache = { pontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number }[]>; expiraEm: number };
+const CACHE_ROMANEIO_MS = 3 * 60_000;
+const cacheRomaneioPorCliente = new Map<string, RomaneioCache>();
 
 // Tapete histórico (Camada 2 do desvio): células que a frota já percorreu nos
 // últimos 30 dias, por cliente. É o sinal PRIMÁRIO e precisa estar disponível
@@ -864,6 +875,38 @@ export async function POST(request: Request) {
         erros.push(msg);
       }
 
+      // Pontos do romaneio de HOJE pro cliente -- ver
+      // docs/superpowers/specs/2026-07-15-romaneio-pontos-entrega-design.md.
+      // Cache de 3min (mesmo padrao de bases/frota); so consulta o banco de
+      // novo quando expira.
+      const cacheRomaneio = cacheRomaneioPorCliente.get(cliente.id);
+      let romaneioPontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number }[]>;
+      if (cacheRomaneio && cacheRomaneio.expiraEm > Date.now()) {
+        romaneioPontosPorPlaca = cacheRomaneio.pontosPorPlaca;
+      } else {
+        romaneioPontosPorPlaca = new Map();
+        // veiculo_id do cliente: mapaCv e global (todos os clientes), filtra
+        // pelo mesmo padrao ja usado acima nesse loop pra cvsCliente -- nao
+        // existe uma lista "veiculos" local nesse escopo (essa so existe no
+        // loop de cima, que so preenche cacheFrotaPorCliente/mapaCv).
+        const veiculoIdsDoCliente = [...mapaCv.values()]
+          .filter((v) => v.cliente_id === cliente.id)
+          .map((v) => v.veiculo_id);
+        const { data: linhasRomaneio } = await supabase
+          .from("romaneio_pontos")
+          .select("placa, nf, cliente_nome, lat, lng")
+          .eq("romaneio_data", dataHojeSP)
+          .not("lat", "is", null)
+          .not("lng", "is", null)
+          .in("veiculo_id", veiculoIdsDoCliente);
+        for (const l of linhasRomaneio ?? []) {
+          const lista = romaneioPontosPorPlaca.get(l.placa) ?? [];
+          lista.push({ nf: l.nf, clienteNome: l.cliente_nome, lat: l.lat, lng: l.lng });
+          romaneioPontosPorPlaca.set(l.placa, lista);
+        }
+        cacheRomaneioPorCliente.set(cliente.id, { pontosPorPlaca: romaneioPontosPorPlaca, expiraEm: Date.now() + CACHE_ROMANEIO_MS });
+      }
+
       // Pre-passada: coleta os veiculos PARADOS e frescos do cliente. Usado para
       // detectar congestionamento — varios parados na mesma area = transito/fila,
       // nao roubo. Comparar veiculos entre si mata o falso positivo de parada anomala.
@@ -1017,7 +1060,15 @@ export async function POST(request: Request) {
           // positivos em 20min): motorista indo pra entrega que não é a
           // mais próxima (comuníssimo com 2+ pendentes) disparava desvio
           // numa entrega normal. Ver detectarDesvio em lib/detectores.ts.
-          const pontosVeiculo = pontosPorPlaca.get(pos.placa);
+          // Rede de seguranca (decisao da spec): se existe romaneio de HOJE
+          // pra esse veiculo, ele vira a fonte da lista/coordenada; o status
+          // (feito/pendente) continua vindo da Unitrac (pontosPorPlaca deste
+          // mesmo ciclo -- ver montarPontosDeRomaneio). Sem romaneio de hoje
+          // pro veiculo, cai no caminho 100% Unitrac de sempre.
+          const romaneioDoVeiculo = romaneioPontosPorPlaca.get(pos.placa);
+          const pontosVeiculo = romaneioDoVeiculo && romaneioDoVeiculo.length > 0
+            ? montarPontosDeRomaneio(romaneioDoVeiculo, pontosPorPlaca.get(pos.placa) ?? [])
+            : pontosPorPlaca.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
           const temPendentes = pendentes.length > 0;
