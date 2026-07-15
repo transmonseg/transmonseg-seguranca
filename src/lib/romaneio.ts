@@ -98,6 +98,15 @@ export type LinhaRomaneioGeocodificada = {
   clienteNome: string;
   lat: number;
   lng: number;
+  // Achado real 15/07 (depois da spec anterior): a coordenada errada da
+  // Unitrac afeta a CONFIRMACAO dela propria -- se o raio dela ta centrado
+  // no ponto errado, uma entrega feita de verdade no endereco certo nunca
+  // entra no raio dela, e a NF fica "pendente pra sempre". presencaConfirmadaEm
+  // (setado pelo motor quando o dwell no NOSSO ponto, ja calculado pro
+  // bypass_entrega, cruza 120s) e um sinal so INTERNO -- une com o status da
+  // Unitrac, nunca substitui, nunca aparece pro operador como "entregue" (ver
+  // docs/superpowers/specs/2026-07-15-presenca-confirmada-romaneio-design.md).
+  presencaConfirmadaEm: string | null;
 };
 
 // Combina os pontos de HOJE vindos do romaneio (endereco/coordenada) com o
@@ -121,7 +130,7 @@ export function montarPontosDeRomaneio(
       raio: alvo?.raio ?? 50,
       ordem: 0,
       nome: l.clienteNome,
-      feito: alvo?.feito ?? false,
+      feito: (alvo?.feito ?? false) || l.presencaConfirmadaEm !== null,
       situacao: alvo?.situacao ?? 0,
       codigo: alvo?.codigo ?? null,
       pontoCodigo: alvo?.pontoCodigo ?? null,

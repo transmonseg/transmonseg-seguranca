@@ -26,6 +26,7 @@ import {
   detectarAceleracaoBrusca,
   calcularRiscoArea,
   detectarBypassEntrega,
+  BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS,
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
@@ -73,7 +74,7 @@ const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
 // min, nao precisa reconsultar todo ciclo de 30s. Se nao existir romaneio de
 // hoje pro veiculo, o motor cai no caminho 100% Unitrac de sempre (rede de
 // seguranca, sem regressao de cobertura).
-type RomaneioCache = { pontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number }[]>; expiraEm: number };
+type RomaneioCache = { pontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number; presencaConfirmadaEm: string | null }[]>; expiraEm: number };
 const CACHE_ROMANEIO_MS = 3 * 60_000;
 const cacheRomaneioPorCliente = new Map<string, RomaneioCache>();
 
@@ -617,6 +618,11 @@ export async function POST(request: Request) {
     // principio ja usado pra geocodesPendentes: nao bloquear o caminho
     // critico com round-trips extras por veiculo).
     const amostrasBaselineCiclo: { veiculo_id: string; cliente_id: string; tipoViagem: "urbano" | "rodoviario"; velocidade: number }[] = [];
+    // Presenca confirmada por permanencia (romaneio) -- ver
+    // docs/superpowers/specs/2026-07-15-presenca-confirmada-romaneio-design.md.
+    // Coleta candidatos durante o loop, grava em lote no fim do ciclo (mesmo
+    // padrao de amostrasBaselineCiclo acima).
+    const presencaConfirmadaCiclo: { veiculo_id: string; nf: string }[] = [];
 
     // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
     // mesmo padrao de mapaBaselineVeiculo/Frota acima. So aplica o fator
@@ -880,7 +886,7 @@ export async function POST(request: Request) {
       // Cache de 3min (mesmo padrao de bases/frota); so consulta o banco de
       // novo quando expira.
       const cacheRomaneio = cacheRomaneioPorCliente.get(cliente.id);
-      let romaneioPontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number }[]>;
+      let romaneioPontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number; presencaConfirmadaEm: string | null }[]>;
       if (cacheRomaneio && cacheRomaneio.expiraEm > Date.now()) {
         romaneioPontosPorPlaca = cacheRomaneio.pontosPorPlaca;
       } else {
@@ -894,14 +900,14 @@ export async function POST(request: Request) {
           .map((v) => v.veiculo_id);
         const { data: linhasRomaneio } = await supabase
           .from("romaneio_pontos")
-          .select("placa, nf, cliente_nome, lat, lng")
+          .select("placa, nf, cliente_nome, lat, lng, presenca_confirmada_em")
           .eq("romaneio_data", dataHojeSP)
           .not("lat", "is", null)
           .not("lng", "is", null)
           .in("veiculo_id", veiculoIdsDoCliente);
         for (const l of linhasRomaneio ?? []) {
           const lista = romaneioPontosPorPlaca.get(l.placa) ?? [];
-          lista.push({ nf: l.nf, clienteNome: l.cliente_nome, lat: l.lat, lng: l.lng });
+          lista.push({ nf: l.nf, clienteNome: l.cliente_nome, lat: l.lat, lng: l.lng, presencaConfirmadaEm: l.presenca_confirmada_em });
           romaneioPontosPorPlaca.set(l.placa, lista);
         }
         cacheRomaneioPorCliente.set(cliente.id, { pontosPorPlaca: romaneioPontosPorPlaca, expiraEm: Date.now() + CACHE_ROMANEIO_MS });
@@ -1539,6 +1545,20 @@ export async function POST(request: Request) {
             noRaioDwellSegundos = dwellAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0);
           }
 
+          // Presenca confirmada por permanencia (romaneio) -- ver
+          // docs/superpowers/specs/2026-07-15-presenca-confirmada-romaneio-design.md.
+          // Mesmo limiar que ja diferencia "parou de verdade" de "so passou"
+          // no bypass_entrega (120s). So se aplica a pontos vindos do
+          // romaneio (romaneioDoVeiculo, ja calculado acima nesta mesma
+          // iteracao) -- sem romaneio, o motor ja confia direto na
+          // coordenada da Unitrac, nao ha o problema de coordenada errada
+          // afetando a propria confirmacao. Idempotente na escrita (WHERE
+          // presenca_confirmada_em IS NULL no flush) -- pode coletar o
+          // mesmo par repetidas vezes sem problema.
+          if (romaneioDoVeiculo && romaneioDoVeiculo.length > 0 && alvoNoRaioAgora?.documento && noRaioDwellSegundos >= BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS) {
+            presencaConfirmadaCiclo.push({ veiculo_id, nf: alvoNoRaioAgora.documento });
+          }
+
           const saiuDoRaioAgora = codigoAnteriorNoRaio !== null && alvoNoRaioAgora === null;
           const alvoQueSaiu = (pontosVeiculo ?? []).find((pt) => pt.pontoCodigo === codigoAnteriorNoRaio) ?? null;
           // mesmoAlvoCodigo: por construcao deste fluxo, saiuDoRaioAgora so
@@ -2106,6 +2126,27 @@ export async function POST(request: Request) {
       );
       const falhasFrota = resultadosFrota.filter((r) => r.status === "rejected").length;
       if (falhasFrota > 0) console.warn(`Aviso: ${falhasFrota} falha(s) ao gravar baseline_frota neste ciclo`);
+    }
+
+    // Presenca confirmada por permanencia (romaneio) -- ver
+    // docs/superpowers/specs/2026-07-15-presenca-confirmada-romaneio-design.md.
+    // Flush em lote (mesmo padrao do baseline acima), dedupe por par
+    // veiculo+NF antes de gravar (o mesmo par pode ter sido coletado em
+    // varios veiculos/ciclos seguidos enquanto o dwell continua acima do
+    // limiar). Idempotente (WHERE presenca_confirmada_em IS NULL).
+    if (presencaConfirmadaCiclo.length > 0) {
+      const paresUnicos = [...new Map(presencaConfirmadaCiclo.map((p) => [`${p.veiculo_id}:${p.nf}`, p])).values()];
+      const resultadosPresenca = await Promise.allSettled(
+        paresUnicos.map((p) =>
+          pool.query(
+            `update romaneio_pontos set presenca_confirmada_em = now()
+             where veiculo_id = $1 and nf = $2 and romaneio_data = $3 and presenca_confirmada_em is null`,
+            [p.veiculo_id, p.nf, dataHojeSP]
+          )
+        )
+      );
+      const falhasPresenca = resultadosPresenca.filter((r) => r.status === "rejected").length;
+      if (falhasPresenca > 0) console.warn(`Aviso: ${falhasPresenca} falha(s) ao gravar presenca_confirmada_em neste ciclo`);
     }
 
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo

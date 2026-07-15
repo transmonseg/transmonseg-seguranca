@@ -105,7 +105,7 @@ describe("parseRomaneio", () => {
 
 describe("montarPontosDeRomaneio", () => {
   it("NF com alvo correspondente na Unitrac: pega o status (feito/situacao) de la", () => {
-    const romaneio = [{ nf: "2272484", clienteNome: "SUPERMERCADO SANSAO", lat: -21.04, lng: -41.98 }];
+    const romaneio = [{ nf: "2272484", clienteNome: "SUPERMERCADO SANSAO", lat: -21.04, lng: -41.98, presencaConfirmadaEm: null }];
     const unitrac = [pontoUnitrac({ documento: "2272484", feito: true, situacao: 1 })];
     const resultado = montarPontosDeRomaneio(romaneio, unitrac);
     expect(resultado).toHaveLength(1);
@@ -113,15 +113,36 @@ describe("montarPontosDeRomaneio", () => {
   });
 
   it("NF sem alvo correspondente ainda (nao sincronizou): vira pendente por padrao", () => {
-    const romaneio = [{ nf: "9999999", clienteNome: "CLIENTE NOVO", lat: -21, lng: -41 }];
+    const romaneio = [{ nf: "9999999", clienteNome: "CLIENTE NOVO", lat: -21, lng: -41, presencaConfirmadaEm: null }];
     const resultado = montarPontosDeRomaneio(romaneio, []);
     expect(resultado[0]).toMatchObject({ feito: false, situacao: 0, codigo: null, pontoCodigo: null });
   });
 
   it("usa raio/codigo/pontoCodigo do alvo da Unitrac quando existe (mantem compatibilidade com o resto do motor)", () => {
-    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: -21, lng: -41 }];
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: -21, lng: -41, presencaConfirmadaEm: null }];
     const unitrac = [pontoUnitrac({ documento: "2272484", raio: 80, codigo: 555, pontoCodigo: 777 })];
     const resultado = montarPontosDeRomaneio(romaneio, unitrac);
     expect(resultado[0]).toMatchObject({ raio: 80, codigo: 555, pontoCodigo: 777 });
+  });
+
+  it("presencaConfirmadaEm nao-nulo: feito=true mesmo sem alvo da Unitrac confirmar", () => {
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: -21, lng: -41, presencaConfirmadaEm: "2026-07-15T12:00:00Z" }];
+    const unitrac = [pontoUnitrac({ documento: "2272484", feito: false, situacao: 0 })];
+    const resultado = montarPontosDeRomaneio(romaneio, unitrac);
+    expect(resultado[0].feito).toBe(true);
+  });
+
+  it("presencaConfirmadaEm null e alvo nao confirmado: feito=false (comportamento atual preservado)", () => {
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: -21, lng: -41, presencaConfirmadaEm: null }];
+    const unitrac = [pontoUnitrac({ documento: "2272484", feito: false, situacao: 0 })];
+    const resultado = montarPontosDeRomaneio(romaneio, unitrac);
+    expect(resultado[0].feito).toBe(false);
+  });
+
+  it("alvo da Unitrac ja confirmado, sem presenca confirmada: continua feito=true (uniao, nao substituicao)", () => {
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: -21, lng: -41, presencaConfirmadaEm: null }];
+    const unitrac = [pontoUnitrac({ documento: "2272484", feito: true, situacao: 1 })];
+    const resultado = montarPontosDeRomaneio(romaneio, unitrac);
+    expect(resultado[0].feito).toBe(true);
   });
 });
