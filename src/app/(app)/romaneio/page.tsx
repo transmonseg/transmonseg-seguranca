@@ -8,7 +8,6 @@ type ResultadoUpload = {
   romaneioData?: string;
   totalLinhas?: number;
   geocodadosOk?: number;
-  geocodadosFallbackUnitrac?: number;
   semCoordenada?: number;
   placasNaoEncontradas?: string[];
 };
@@ -76,8 +75,7 @@ export default function RomaneioPage() {
               <ul className="space-y-1" style={{ color: "var(--text-dim)" }}>
                 <li>{resultado.totalLinhas} linhas no total</li>
                 <li>{resultado.geocodadosOk} geocodificadas com sucesso</li>
-                <li>{resultado.geocodadosFallbackUnitrac} usando coordenada da Unitrac (endereço não geocodificou)</li>
-                <li>{resultado.semCoordenada} sem coordenada nenhuma</li>
+                <li>{resultado.semCoordenada} sem coordenada (endereço não geocodificou — não entram na lista de pendentes)</li>
               </ul>
               {resultado.placasNaoEncontradas && resultado.placasNaoEncontradas.length > 0 && (
                 <p className="mt-2" style={{ color: "var(--danger, #e55)" }}>

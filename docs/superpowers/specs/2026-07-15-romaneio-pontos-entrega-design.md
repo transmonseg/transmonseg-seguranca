@@ -54,7 +54,14 @@ pra saber QUAIS entregas existem no dia.
 3. **Geocodificação:** Google Geocoding primeiro (mesmo padrão já usado no projeto pra
    geocode reverso), Nominatim de fallback gratuito. Cache agressivo por endereço
    normalizado (a maioria dos clientes se repete entre dias) pra manter o custo baixo
-   com o tempo.
+   com o tempo. **Atualizado 15/07 (mesma sessão, depois de testar contra dado real):**
+   SEM fallback pra coordenada da Unitrac quando os dois falham — testado contra um
+   veículo real (22 pontos) e 18 caíram nesse fallback (Nominatim gratuito não cobre a
+   maioria das ruas de cidade pequena do interior, e `GOOGLE_MAPS_API_KEY` server-side
+   não estava configurada), ou seja, a maioria continuaria usando a coordenada "às
+   vezes errada" que o romaneio existe pra evitar. Decisão explícita do usuário: sem
+   geocode, o ponto fica sem coordenada e é excluído da lista de pendentes pelo motor
+   (nunca reusa a coordenada antiga).
 4. **Ciclo diário:** "apagar o arquivo, salvar só os pontos" — o PDF em si nunca é
    persistido em disco/storage, só processado em memória durante o upload. Os pontos
    extraídos ficam no banco, escopados por veículo + data. Romaneios de dias
@@ -102,7 +109,7 @@ CREATE TABLE romaneio_pontos (
   carga_destino_nome text,
   lat double precision,
   lng double precision,
-  geocode_status text NOT NULL DEFAULT 'pendente',  -- ok | fallback_unitrac | falhou
+  geocode_status text NOT NULL DEFAULT 'pendente',  -- ok | falhou (sem fallback_unitrac, ver Decisão 3 atualizada)
   criado_em timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX romaneio_pontos_veiculo_data_idx ON romaneio_pontos (veiculo_id, romaneio_data);
@@ -331,11 +338,12 @@ usa `montarPontosDeRomaneio`; se não, usa `pontosPorPlaca.get(pos.placa)` como 
   `"2026-07-15"`; texto sem nenhuma data no formato esperado retorna `null`.
 - `normalizarPlaca`: com e sem hífen, tamanho errado (não mexe).
 - `geocodificarEndereco`: cache hit não chama nenhuma API; cache miss tenta Google,
-  cai pro Nominatim se Google falhar, cai pro fallback Unitrac se os dois falharem,
-  retorna `null` se não há fallback nenhum.
+  cai pro Nominatim se Google falhar, retorna `null` se os dois falharem (SEM
+  fallback pra Unitrac, ver Decisão 3 atualizada).
 - `montarPontosDeRomaneio`: NF com alvo correspondente pega o status certo; NF sem
-  alvo correspondente (ainda não sincronizou na Unitrac) vira pendente por padrão;
-  linha sem lat/lng (geocode falhou sem fallback) é excluída da lista.
+  alvo correspondente (ainda não sincronizou na Unitrac) vira pendente por padrão.
+  Linha sem coordenada (geocode falhou) já é filtrada antes de chegar aqui (query do
+  motor exige `lat`/`lng` não-nulos).
 - Suite completa (`npx vitest run`) + `tsc`/`eslint`/`build` limpos nos dois repos
   antes do push, mesma disciplina de sempre.
 

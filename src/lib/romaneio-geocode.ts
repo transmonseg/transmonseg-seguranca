@@ -8,7 +8,15 @@ export function normalizarEndereco(enderecoBruto: string): string {
   return enderecoBruto.trim().toUpperCase().replace(/\s+/g, " ");
 }
 
-export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "unitrac" } | null;
+// SEM fallback pra coordenada da Unitrac de proposito -- achado real 15/07:
+// no romaneio de teste (22 pontos, veiculo TUL1C38), 18 cairiam no fallback
+// da Unitrac (Nominatim gratuito nao cobre a maioria das ruas de cidade
+// pequena do interior, e GOOGLE_MAPS_API_KEY server-side nao esta
+// configurada) -- ou seja, a MAIORIA dos pontos continuaria usando a
+// coordenada "as vezes errada" que o romaneio existe pra evitar. Decisao
+// explicita do usuario: se nao geocodificar, o ponto fica sem coordenada
+// (excluido da lista de pendentes pelo motor) em vez de reusar a Unitrac.
+export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" } | null;
 
 type Deps = {
   buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string } | null>;
@@ -17,11 +25,7 @@ type Deps = {
   geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
 };
 
-export async function geocodificarEndereco(
-  enderecoBruto: string,
-  deps: Deps,
-  coordenadaUnitracFallback: { lat: number; lng: number } | null
-): Promise<ResultadoGeocode> {
+export async function geocodificarEndereco(enderecoBruto: string, deps: Deps): Promise<ResultadoGeocode> {
   const chave = normalizarEndereco(enderecoBruto);
   const doCache = await deps.buscarCache(chave);
   if (doCache) return { lat: doCache.lat, lng: doCache.lng, fonte: doCache.fonte as "google" | "nominatim" };
@@ -35,9 +39,6 @@ export async function geocodificarEndereco(
   if (nominatim) {
     await deps.salvarCache(chave, { ...nominatim, fonte: "nominatim" });
     return { ...nominatim, fonte: "nominatim" };
-  }
-  if (coordenadaUnitracFallback) {
-    return { ...coordenadaUnitracFallback, fonte: "unitrac" };
   }
   return null;
 }

@@ -2,7 +2,6 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseRomaneio, extrairDataRomaneio, normalizarPlaca } from "@/lib/romaneio";
 import { geocodificarEndereco, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
-import { buscarAlvos } from "@/lib/unitrac";
 
 export async function POST(request: Request) {
   // Rotas de API nao passam pelo proxy.ts (so protege paginas) -- validar
@@ -39,20 +38,11 @@ export async function POST(request: Request) {
 
   // Resolve veiculo_id por placa normalizada.
   const placasUnicas = [...new Set(linhas.map((l) => normalizarPlaca(l.placaBruta)))];
-  const { data: veiculos } = await admin.from("veiculos").select("id, placa, cv").in("placa", placasUnicas);
+  const { data: veiculos } = await admin.from("veiculos").select("id, placa").in("placa", placasUnicas);
   const veiculoPorPlaca = new Map((veiculos ?? []).map((v) => [v.placa, v]));
   const placasNaoEncontradas = placasUnicas.filter((p) => !veiculoPorPlaca.has(p));
 
-  // Alvos ao vivo da Unitrac pros veiculos envolvidos -- so pra fallback de
-  // coordenada quando o geocode falha (o STATUS ao vivo usado pelo motor
-  // vem de novo a cada ciclo, ver montarPontosDeRomaneio -- aqui e so um
-  // snapshot pontual, no momento do upload).
-  const cvs = [...veiculoPorPlaca.values()].map((v) => v.cv).filter(Boolean);
-  const alvos = cvs.length > 0 ? await buscarAlvos(cvs) : [];
-  const alvoPorNf = new Map(alvos.map((a) => [a.alvodocumento, a]));
-
   let geocodadosOk = 0;
-  let geocodadosFallbackUnitrac = 0;
   let semCoordenada = 0;
 
   const buscarCache = async (chave: string) => {
@@ -67,20 +57,16 @@ export async function POST(request: Request) {
   for (const l of linhas) {
     const placaNormalizada = normalizarPlaca(l.placaBruta);
     const veiculo = veiculoPorPlaca.get(placaNormalizada);
-    const alvo = alvoPorNf.get(l.nf);
-    const fallbackUnitrac = alvo?.pontolatitude && alvo?.pontolongitude
-      ? { lat: alvo.pontolatitude, lng: alvo.pontolongitude }
-      : null;
 
-    const geocode = await geocodificarEndereco(
-      l.enderecoBruto,
-      { buscarCache, salvarCache, geocodificarGoogle, geocodificarNominatim },
-      fallbackUnitrac
-    );
+    // SEM fallback pra coordenada da Unitrac de proposito (achado real
+    // 15/07: a maioria cairia nesse fallback, esvaziando o motivo do
+    // romaneio existir -- decisao explicita do usuario). Se nao
+    // geocodificar, o ponto fica sem lat/lng e o motor simplesmente nao o
+    // usa (ver montarPontosDeRomaneio, filtra por lat/lng nao-nulo).
+    const geocode = await geocodificarEndereco(l.enderecoBruto, { buscarCache, salvarCache, geocodificarGoogle, geocodificarNominatim });
 
     let geocodeStatus: string;
-    if (geocode?.fonte === "unitrac") { geocodadosFallbackUnitrac++; geocodeStatus = "fallback_unitrac"; }
-    else if (geocode) { geocodadosOk++; geocodeStatus = "ok"; }
+    if (geocode) { geocodadosOk++; geocodeStatus = "ok"; }
     else { semCoordenada++; geocodeStatus = "falhou"; }
 
     linhasParaInserir.push({
@@ -109,7 +95,6 @@ export async function POST(request: Request) {
     romaneioData,
     totalLinhas: linhas.length,
     geocodadosOk,
-    geocodadosFallbackUnitrac,
     semCoordenada,
     placasNaoEncontradas,
   });
