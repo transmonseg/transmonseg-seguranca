@@ -251,6 +251,7 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
       tiroteioRecentePertoM: null,
       rouboCargaCispTotal: 5, // medio (>0, <15)
       emCorredorRodoviaRisco: true,
+      emAreaRiscoCliente: false,
       fatorHorario: 1.6, // hora de maior risco historico (Fogo Cruzado)
     });
     expect(score).toBe(48); // (20+10) * 1.6 — multiplicativo, nao bonus fixo
@@ -268,6 +269,7 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
       tiroteioRecentePertoM: null,
       rouboCargaCispTotal: 5,
       emCorredorRodoviaRisco: false,
+      emAreaRiscoCliente: false,
       fatorHorario: 1.6,
     });
     expect(score).toBe(16);

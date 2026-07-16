@@ -538,14 +538,14 @@ describe("calcularRiscoArea", () => {
   it("sem nenhum sinal de risco: score 0 (mesmo com fator horario alto)", () => {
     expect(calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, fatorHorario: 1.6,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1.6,
     })).toBe(0);
   });
 
   it("dentro de favela sozinho ja atinge o limiar de escalonamento (fator horario neutro)", () => {
     const score = calcularRiscoArea({
       emFavela: true, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, fatorHorario: 1,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1,
     });
     expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
   });
@@ -553,7 +553,7 @@ describe("calcularRiscoArea", () => {
   it("tiroteio recente proximo (<=1500m) sozinho ja atinge o limiar", () => {
     const score = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: 800, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, fatorHorario: 1,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1,
     });
     expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
   });
@@ -561,7 +561,7 @@ describe("calcularRiscoArea", () => {
   it("tiroteio longe demais (>1500m) nao conta", () => {
     const score = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: 5000, rouboCargaCispTotal: null,
-      emCorredorRodoviaRisco: false, fatorHorario: 1,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1,
     });
     expect(score).toBe(0);
   });
@@ -569,11 +569,11 @@ describe("calcularRiscoArea", () => {
   it("roubo de carga alto no CISP (>=15 em 12 meses) soma mais que medio", () => {
     const alto = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 20,
-      emCorredorRodoviaRisco: false, fatorHorario: 1,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1,
     });
     const medio = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 3,
-      emCorredorRodoviaRisco: false, fatorHorario: 1,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1,
     });
     expect(alto).toBeGreaterThan(medio);
     expect(medio).toBeGreaterThan(0);
@@ -582,11 +582,11 @@ describe("calcularRiscoArea", () => {
   it("fator horario e MULTIPLICATIVO: amplifica proporcionalmente um sinal espacial ja existente", () => {
     const base = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 3, // medio = 10
-      emCorredorRodoviaRisco: false, fatorHorario: 1,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1,
     });
     const amplificado = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 3,
-      emCorredorRodoviaRisco: false, fatorHorario: 1.6,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: false, fatorHorario: 1.6,
     });
     expect(base).toBe(10);
     expect(amplificado).toBe(16); // 10 * 1.6, nao 10 + bonus fixo
@@ -595,7 +595,7 @@ describe("calcularRiscoArea", () => {
   it("combinacao de sinais fracos pode somar acima do limiar", () => {
     const score = calcularRiscoArea({
       emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: 20,
-      emCorredorRodoviaRisco: true, fatorHorario: 1,
+      emCorredorRodoviaRisco: true, emAreaRiscoCliente: false, fatorHorario: 1,
     });
     expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
   });
@@ -603,9 +603,17 @@ describe("calcularRiscoArea", () => {
   it("nunca passa de 100 mesmo com todos os sinais ativos e fator horario maximo", () => {
     const score = calcularRiscoArea({
       emFavela: true, tiroteioRecentePertoM: 100, rouboCargaCispTotal: 999,
-      emCorredorRodoviaRisco: true, fatorHorario: 1.6,
+      emCorredorRodoviaRisco: true, emAreaRiscoCliente: false, fatorHorario: 1.6,
     });
     expect(score).toBeLessThanOrEqual(100);
+  });
+
+  it("dentro de area de risco cadastrada pelo cliente sozinho ja atinge o limiar (ex.: Caixotaria do Ceasa)", () => {
+    const score = calcularRiscoArea({
+      emFavela: false, tiroteioRecentePertoM: null, rouboCargaCispTotal: null,
+      emCorredorRodoviaRisco: false, emAreaRiscoCliente: true, fatorHorario: 1,
+    });
+    expect(score).toBeGreaterThanOrEqual(RISCO_AREA_LIMIAR);
   });
 });
 

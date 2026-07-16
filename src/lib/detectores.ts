@@ -442,6 +442,13 @@ const RISCO_TIROTEIO_PERTO = 40;
 const RISCO_ROUBO_CARGA_ALTO = 20;
 const RISCO_ROUBO_CARGA_MEDIO = 10;
 const RISCO_CORREDOR_RODOVIA = 20;
+// Area de risco cadastrada pelo PROPRIO cliente (ex.: "Caixotaria do Ceasa",
+// area conhecida de receptacao/roubo perto do Benassi, ja mapeada por eles
+// no Unitrac -- ver geofences.tipo='area_risco_cliente', escopada por
+// cliente_id, 16/07/2026). Peso proximo do favela: e conhecimento
+// operacional direto do cliente sobre um risco real, nao um proxy
+// estatistico como CISP/corredor.
+const RISCO_AREA_CLIENTE = 30;
 // Fator horario multiplicativo (ver calcularPerfilHorario em fogocruzado.ts):
 // fora dessa faixa, um horario com poucos dados historicos poderia zerar ou
 // disparar o score espacial por ruido estatistico — consenso da literatura
@@ -466,6 +473,7 @@ export function calcularRiscoArea(ctx: {
   tiroteioRecentePertoM: number | null; // null = nenhum tiroteio ativo relevante
   rouboCargaCispTotal: number | null; // null = sem CISP resolvido pra essa posição
   emCorredorRodoviaRisco: boolean;
+  emAreaRiscoCliente: boolean; // area de risco cadastrada pelo proprio cliente
   // Fator multiplicativo por hora do dia (ver calcularPerfilHorario), tipico
   // 0.7-1.6. Default esperado 1 (neutro) quando nao ha perfil horario
   // disponivel ainda (ex.: Fogo Cruzado fora do ar) — nunca inventa risco.
@@ -481,6 +489,7 @@ export function calcularRiscoArea(ctx: {
     else if (ctx.rouboCargaCispTotal > 0) score += RISCO_ROUBO_CARGA_MEDIO;
   }
   if (ctx.emCorredorRodoviaRisco) score += RISCO_CORREDOR_RODOVIA;
+  if (ctx.emAreaRiscoCliente) score += RISCO_AREA_CLIENTE;
   return Math.min(100, score * ctx.fatorHorario);
 }
 

@@ -671,9 +671,9 @@ export async function POST(request: Request) {
     // correlacionada por linha é ~150x mais lenta (CTE com JOIN normal:
     // ~230ms pra ~300 veículos; scalar subquery por linha: ~35s — acima do
     // orçamento de um ciclo de 1min). Falha graciosa: sem dado, risco fica 0.
-    const riscoPorVeiculo = new Map<string, { emFavela: boolean; cisp: string | null; emCorredorRisco: boolean }>();
+    const riscoPorVeiculo = new Map<string, { emFavela: boolean; cisp: string | null; emCorredorRisco: boolean; emAreaRiscoCliente: boolean }>();
     try {
-      const { rows } = await pool.query<{ veiculo_id: string; em_favela: boolean; cisp: string | null; em_corredor_risco: boolean }>(
+      const { rows } = await pool.query<{ veiculo_id: string; em_favela: boolean; cisp: string | null; em_corredor_risco: boolean; em_area_risco_cliente: boolean }>(
         `WITH cisp AS (
            SELECT p.veiculo_id, g.meta->>'cisp' as cisp
            FROM posicoes_atuais p
@@ -685,19 +685,31 @@ export async function POST(request: Request) {
            FROM posicoes_atuais p
            JOIN geofences g ON g.tipo = 'risco' AND ST_DWithin(g.geom, p.geom, 250)
            WHERE p.atraso_min <= 60
+         ),
+         area_cliente AS (
+           -- Area de risco cadastrada pelo PROPRIO cliente (ex.: Caixotaria
+           -- do Ceasa, Benassi, 16/07/2026) -- escopada por cliente_id
+           -- (diferente de favela/cisp/risco, que sao globais).
+           SELECT DISTINCT p.veiculo_id
+           FROM posicoes_atuais p
+           JOIN veiculos v ON v.id = p.veiculo_id
+           JOIN geofences g ON g.tipo = 'area_risco_cliente' AND g.cliente_id = v.cliente_id AND ST_Intersects(g.geom, p.geom)
+           WHERE p.atraso_min <= 60
          )
          SELECT
            p.veiculo_id,
            EXISTS (SELECT 1 FROM geofences g WHERE g.tipo = 'favela' AND ST_Intersects(g.geom, p.geom)) AS em_favela,
            cisp.cisp,
-           (corredor.veiculo_id IS NOT NULL) AS em_corredor_risco
+           (corredor.veiculo_id IS NOT NULL) AS em_corredor_risco,
+           (area_cliente.veiculo_id IS NOT NULL) AS em_area_risco_cliente
          FROM posicoes_atuais p
          LEFT JOIN cisp ON cisp.veiculo_id = p.veiculo_id
          LEFT JOIN corredor ON corredor.veiculo_id = p.veiculo_id
+         LEFT JOIN area_cliente ON area_cliente.veiculo_id = p.veiculo_id
          WHERE p.atraso_min <= 60`
       );
       for (const r of rows) {
-        riscoPorVeiculo.set(r.veiculo_id, { emFavela: r.em_favela, cisp: r.cisp, emCorredorRisco: r.em_corredor_risco });
+        riscoPorVeiculo.set(r.veiculo_id, { emFavela: r.em_favela, cisp: r.cisp, emCorredorRisco: r.em_corredor_risco, emAreaRiscoCliente: r.em_area_risco_cliente });
       }
     } catch (errRisco) {
       erros.push(`Aviso: score de risco de area indisponivel neste ciclo: ${String(errRisco)}`);
@@ -1329,6 +1341,7 @@ export async function POST(request: Request) {
             tiroteioRecentePertoM: distTiroteioM,
             rouboCargaCispTotal: riscoLocal?.cisp ? rouboCargaPorCisp.get(riscoLocal.cisp) ?? 0 : null,
             emCorredorRodoviaRisco: riscoLocal?.emCorredorRisco ?? false,
+            emAreaRiscoCliente: riscoLocal?.emAreaRiscoCliente ?? false,
             fatorHorario: perfilHorario[horaSP] ?? 1,
           });
 
