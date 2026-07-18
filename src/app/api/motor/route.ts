@@ -623,6 +623,14 @@ export async function POST(request: Request) {
     // Coleta candidatos durante o loop, grava em lote no fim do ciclo (mesmo
     // padrao de amostrasBaselineCiclo acima).
     const presencaConfirmadaCiclo: { veiculo_id: string; nf: string }[] = [];
+    // Anotacao de proximidade em alertas de desvio ATIVOS -- achado real
+    // 18/07 (analise pedida pelo usuario, ver
+    // docs/superpowers/specs/2026-07-18-anotacao-proximidade-desvio-design.md):
+    // desvio nunca fecha sozinho (11/07), entao um alerta que disparou longe
+    // do destino e o veiculo chegou perto minutos depois fica parecendo
+    // "fresco e grave" pro operador indefinidamente. So INFORMACAO no
+    // contexto (nunca muda nivel/status/fecha o alerta).
+    const proximidadeDesvioCiclo: { alerta_id: string; pontoNome: string; dwellSegundos: number }[] = [];
 
     // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
     // mesmo padrao de mapaBaselineVeiculo/Frota acima. So aplica o fator
@@ -1905,6 +1913,24 @@ export async function POST(request: Request) {
           const alertasAbertos = mapaAlertasAbertos.get(veiculo_id) ?? [];
           const tiposSilenciados = mapaTiposSilenciados.get(veiculo_id) ?? new Set<string>();
 
+          // Anota proximidade atual num alerta de desvio JA ATIVO -- ver
+          // achado real 18/07 (analise pedida pelo usuario): desvio nunca
+          // fecha sozinho, entao um alerta que disparou longe do destino e
+          // o veiculo chegou perto minutos depois fica parecendo "fresco e
+          // grave" indefinidamente pro operador, sem nenhuma pista visivel
+          // de que ja chegou. So informacao no contexto -- nunca muda
+          // nivel/status, nunca fecha o alerta (reusa alvoNoRaioAgora, ja
+          // calculado mais acima pro bypass_entrega -- zero custo extra).
+          if (alvoNoRaioAgora) {
+            for (const d of alertasAbertos.filter((a) => a.tipo === "desvio")) {
+              proximidadeDesvioCiclo.push({
+                alerta_id: d.id,
+                pontoNome: alvoNoRaioAgora.nome,
+                dwellSegundos: noRaioDwellSegundos,
+              });
+            }
+          }
+
           // Resolucao automatica generica: todos os tipos EXCETO favela e
           // desvio. Achado real 11/07 (usuario pediu remocao explicita do
           // fechamento automatico de desvio, apos o bug de churn da cerca
@@ -2160,6 +2186,36 @@ export async function POST(request: Request) {
       );
       const falhasPresenca = resultadosPresenca.filter((r) => r.status === "rejected").length;
       if (falhasPresenca > 0) console.warn(`Aviso: ${falhasPresenca} falha(s) ao gravar presenca_confirmada_em neste ciclo`);
+    }
+
+    // Anotacao de proximidade em alertas de desvio ativos -- ver
+    // docs/superpowers/specs/2026-07-18-anotacao-proximidade-desvio-design.md.
+    // Flush em lote (mesmo padrao acima), dedupe por alerta_id (o mesmo
+    // alerta pode ser coletado 1x por veiculo no ciclo -- na pratica sempre
+    // 1, um veiculo so tem 1 desvio ativo por vez, mas o dedupe protege
+    // contra qualquer cenario com mais de um). SO ADICIONA campo no
+    // contexto (jsonb ||) -- nunca muda nivel/status, nunca fecha o alerta.
+    if (proximidadeDesvioCiclo.length > 0) {
+      const porAlerta = new Map(proximidadeDesvioCiclo.map((p) => [p.alerta_id, p]));
+      const resultadosProximidade = await Promise.allSettled(
+        [...porAlerta.values()].map((p) =>
+          pool.query(
+            `update alertas set contexto = contexto || $2::jsonb where id = $1`,
+            [
+              p.alerta_id,
+              JSON.stringify({
+                proximidade_atual: {
+                  ponto: p.pontoNome,
+                  dwell_segundos: p.dwellSegundos,
+                  atualizado_em: new Date().toISOString(),
+                },
+              }),
+            ]
+          )
+        )
+      );
+      const falhasProximidade = resultadosProximidade.filter((r) => r.status === "rejected").length;
+      if (falhasProximidade > 0) console.warn(`Aviso: ${falhasProximidade} falha(s) ao anotar proximidade de desvio neste ciclo`);
     }
 
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo
