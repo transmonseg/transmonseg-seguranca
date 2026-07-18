@@ -17,6 +17,7 @@ export interface VeiculoMapa {
   local: string | null;
   rumo?: number | null;
   parado_desde?: string | null;
+  tem_romaneio_hoje?: boolean;
 }
 
 export interface Parada {

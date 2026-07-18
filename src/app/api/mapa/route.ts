@@ -37,6 +37,8 @@ export async function GET(request: Request) {
   const { data: { user } } = await auth.auth.getUser();
   if (!user) return Response.json({ erro: "nao autorizado" }, { status: 401 });
 
+  const dataHojeSP = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente") || "4096";
 
@@ -61,7 +63,12 @@ export async function GET(request: Request) {
         await client.query<{ cv: string }>(
           `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
                   p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
-                  p.rumo, p.parado_desde, al.tipo
+                  p.rumo, p.parado_desde, al.tipo,
+                  exists (
+                    select 1 from romaneio_pontos rp
+                    where rp.veiculo_id = v.id and rp.romaneio_data = $2
+                      and rp.lat is not null and rp.lng is not null
+                  ) as tem_romaneio_hoje
            from posicoes_atuais p
            join veiculos v on v.id = p.veiculo_id
            left join lateral (
@@ -73,7 +80,7 @@ export async function GET(request: Request) {
              limit 1
            ) al on true
            where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`,
-          [clienteId]
+          [clienteId, dataHojeSP]
         )
       ).rows;
       veiculosCache = { veiculos: veiculosRows, expiraEm: Date.now() + VEICULOS_CACHE_MS };

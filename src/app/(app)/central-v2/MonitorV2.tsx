@@ -559,6 +559,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // sem o operador perceber ao reabrir a tela dias depois).
   const [splitView, setSplitView] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.5);
+  // Modo "ROMANEIO": mostra so veiculos com romaneio geocodificado hoje.
+  // Deliberadamente NAO persiste (mesmo motivo de modoSelecionados/splitView
+  // — evitar ficar "preso" num filtro que esconde parte da frota sem o
+  // operador perceber ao reabrir a tela).
+  const [modoRomaneio, setModoRomaneio] = useState(false);
   const mapAreaRef = useRef<HTMLDivElement>(null);
 
   // Theme + satellite (satélite padrão = true)
@@ -695,15 +700,22 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     setModoSelecionados(v);
   }, []);
 
-  // Traduz a escolha de 3 estados do EscopoMapaSwitcher pros 2 booleans que
-  // ja existiam (modoSelecionados + o novo splitView) — nao substitui nada,
-  // so orquestra os dois.
+  // Traduz a escolha de 4 estados do EscopoMapaSwitcher pros booleans que ja
+  // existiam (modoSelecionados + splitView) + o novo modoRomaneio — nao
+  // substitui nada, so orquestra os 3.
   const escolherEscopoMapa = useCallback((modo: EscopoMapa) => {
     if (modo === "ambos") {
       setSplitView(true);
+      setModoRomaneio(false);
       return;
     }
     setSplitView(false);
+    if (modo === "romaneio") {
+      setModoRomaneio(true);
+      setModoSelecionadosSessao(false);
+      return;
+    }
+    setModoRomaneio(false);
     setModoSelecionadosSessao(modo === "selecionados");
   }, [setModoSelecionadosSessao]);
 
@@ -967,16 +979,27 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     return m;
   }, [grupos]);
 
+  // Veiculos com romaneio geocodificado hoje — fonte do modo "ROMANEIO" do
+  // EscopoMapaSwitcher (ver docs/superpowers/specs/2026-07-18-modo-romaneio-escopo-mapa-design.md).
+  const cvsComRomaneio = useMemo(
+    () => new Set(veiculosMapa.filter(v => v.tem_romaneio_hoje).map(v => v.cv)),
+    [veiculosMapa]
+  );
+
   // Extraido de proposito (nao so um useMemo): o split view precisa das DUAS
   // variantes (com e sem o filtro de selecionados) simultaneamente, pros 2
   // paineis lado a lado — ver vmTodos/vmSelecionados abaixo. cvForcado: o
   // veiculo selecionado NESSE painel (painel1/painel2) sempre permanece
   // visivel, mesmo que outros filtros o esconderiam.
-  const aplicarFiltrosVeiculos = useCallback((comSelecao: boolean, cvForcado: string | null): VeiculoMapa[] => {
+  const aplicarFiltrosVeiculos = useCallback((comSelecao: boolean, cvForcado: string | null, comRomaneio = false): VeiculoMapa[] => {
     let base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
     if (comSelecao && veiculosSelecionados.size > 0) {
       // Veículo selecionado sempre permanece visível, mesmo fora da lista escolhida
       base = base.filter(v => veiculosSelecionados.has(v.cv) || v.cv === cvForcado);
+    }
+    if (comRomaneio) {
+      // Veículo selecionado sempre permanece visível, mesmo sem romaneio hoje
+      base = base.filter(v => cvsComRomaneio.has(v.cv) || v.cv === cvForcado);
     }
     if (gruposOcultos.size > 0) {
       // Veículo selecionado sempre permanece visível no mapa, mesmo se o grupo dele estiver oculto
@@ -1002,11 +1025,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       lat: al.lat, lng: al.lng, local: al.local, rumo: null,
     };
     return [...base, sintetico];
-  }, [veiculosMapa, filtroComm, veiculosSelecionados, gruposOcultos, cvParaGrupo, filtroTipos, alertas]);
+  }, [veiculosMapa, filtroComm, veiculosSelecionados, cvsComRomaneio, gruposOcultos, cvParaGrupo, filtroTipos, alertas]);
 
   const vmFiltrado: VeiculoMapa[] = useMemo(
-    () => aplicarFiltrosVeiculos(modoSelecionados, painel1.cvSelecionado),
-    [aplicarFiltrosVeiculos, modoSelecionados, painel1.cvSelecionado]
+    () => aplicarFiltrosVeiculos(modoSelecionados, painel1.cvSelecionado, modoRomaneio),
+    [aplicarFiltrosVeiculos, modoSelecionados, painel1.cvSelecionado, modoRomaneio]
   );
   // Paineis do split view: "todos" ignora o filtro de selecionados sempre;
   // "selecionados" aplica ele sempre — independente do modoSelecionados
@@ -1025,6 +1048,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (vista === "foco" && !tiposFoco.includes(a.tipo)) return false;
     if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
     if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
+    if (modoRomaneio && !cvsComRomaneio.has(a.cv)) return false;
     if (gruposOcultos.size > 0) {
       const g = cvParaGrupo.get(a.cv);
       if (g !== undefined && gruposOcultos.has(g)) return false;
@@ -1083,6 +1107,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     .filter(a => a.tipo === "desvio")
     .filter(a => {
       if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
+      if (modoRomaneio && !cvsComRomaneio.has(a.cv)) return false;
       if (gruposOcultos.size === 0) return true;
       const g = cvParaGrupo.get(a.cv);
       return g === undefined || !gruposOcultos.has(g);
@@ -2253,9 +2278,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               (antes so acessivel via checkbox enterrado em Configurações). */}
           <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: Z.badge }}>
             <EscopoMapaSwitcher
-              modo={splitView ? "ambos" : (modoSelecionados ? "selecionados" : "todos")}
+              modo={splitView ? "ambos" : (modoRomaneio ? "romaneio" : (modoSelecionados ? "selecionados" : "todos"))}
               totalSelecionados={veiculosSelecionados.size}
               temSelecao={veiculosSelecionados.size > 0}
+              totalComRomaneio={cvsComRomaneio.size}
               onEscolher={escolherEscopoMapa}
               onAbrirSeletor={() => setSeletorAberto(true)}
               tema={tema}
