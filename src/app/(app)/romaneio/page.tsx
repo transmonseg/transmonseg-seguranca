@@ -122,8 +122,8 @@ export default function RomaneioPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {resultado.pontos.map((p) => (
-                        <tr key={p.nf} style={{ borderTop: "1px solid var(--border)" }}>
+                      {resultado.pontos.map((p, i) => (
+                        <tr key={`${p.nf}-${i}`} style={{ borderTop: "1px solid var(--border)" }}>
                           <td className="pr-3 py-1">{p.nf}</td>
                           <td className="pr-3 py-1">{p.clienteNome}</td>
                           <td className="pr-3 py-1">{p.enderecoBruto}</td>

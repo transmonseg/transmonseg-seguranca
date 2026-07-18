@@ -67,6 +67,7 @@ export async function GET(request: Request) {
                   exists (
                     select 1 from romaneio_pontos rp
                     where rp.veiculo_id = v.id and rp.romaneio_data = $2
+                      and rp.modo_teste = false
                       and rp.lat is not null and rp.lng is not null
                   ) as tem_romaneio_hoje
            from posicoes_atuais p
