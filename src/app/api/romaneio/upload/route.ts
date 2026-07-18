@@ -15,6 +15,7 @@ export async function POST(request: Request) {
   if (!(arquivo instanceof File)) {
     return Response.json({ ok: false, erro: "Nenhum arquivo enviado." }, { status: 400 });
   }
+  const modoTeste = formData.get("modoTeste") === "true";
 
   // pdf-parse v2: classe PDFParse, nao funcao direta (API mudou da v1 --
   // confirmado ao investigar o texto real na Task 2). Import dinamico
@@ -82,6 +83,7 @@ export async function POST(request: Request) {
       lat: geocode?.lat ?? null,
       lng: geocode?.lng ?? null,
       geocode_status: geocodeStatus,
+      modo_teste: modoTeste,
     });
   }
 
@@ -97,5 +99,14 @@ export async function POST(request: Request) {
     geocodadosOk,
     semCoordenada,
     placasNaoEncontradas,
+    modoTeste,
+    pontos: linhasParaInserir.map((l) => ({
+      nf: l.nf,
+      clienteNome: l.cliente_nome,
+      enderecoBruto: l.endereco_bruto,
+      lat: l.lat,
+      lng: l.lng,
+      geocodeStatus: l.geocode_status,
+    })),
   });
 }

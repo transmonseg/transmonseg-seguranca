@@ -922,6 +922,7 @@ export async function POST(request: Request) {
           .from("romaneio_pontos")
           .select("placa, nf, cliente_nome, lat, lng, presenca_confirmada_em")
           .eq("romaneio_data", dataHojeSP)
+          .eq("modo_teste", false)
           .not("lat", "is", null)
           .not("lng", "is", null)
           .in("veiculo_id", veiculoIdsDoCliente);
