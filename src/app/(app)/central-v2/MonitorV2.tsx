@@ -717,7 +717,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     }
     setModoRomaneio(false);
     setModoSelecionadosSessao(modo === "selecionados");
-  }, [setModoSelecionadosSessao]);
+  }, [setModoSelecionadosSessao, setModoRomaneio]);
 
   const tocarPanico = useCallback(() => {
     try {
@@ -2043,7 +2043,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 FILTRO: {veiculosSelecionados.size} VEÍC.
               </span>
               <button onClick={() => setSeletorAberto(true)} style={{ ...tinyBtn(T.accent), marginLeft: "auto" }}>Editar</button>
-              <button onClick={() => setModoSelecionadosSessao(false)} style={tinyBtn(T.dim)}>Mostrar todos</button>
+              <button onClick={() => { setModoSelecionadosSessao(false); setModoRomaneio(false); }} style={tinyBtn(T.dim)}>Mostrar todos</button>
             </div>
           )}
 
@@ -2270,8 +2270,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             <MapaLeafletV2 veiculosMapa={vmFiltrado} {...propsPainelTodos} alvosGlobais={alvosGlobaisMapa} />
           )}
 
-          {/* Alternador TODOS / AMBOS / SELECIONADOS — topo central do mapa.
-              Clique direto num rotulo OU arraste o thumb pelos 3 estados
+          {/* Alternador TODOS / AMBOS / SELECIONADOS / ROMANEIO — topo central do mapa.
+              Clique direto num rotulo OU arraste o thumb pelos 4 estados
               (estilo iPad Split View: extremos = tela cheia de um lado,
               meio = os dois lado a lado, divisor arrastavel via SplitDivider).
               Reaproveita modoSelecionados/veiculosSelecionados que ja existiam
@@ -2657,14 +2657,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
 
             <div style={{ padding: "10px 16px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
-              <button onClick={() => { setModoSelecionadosSessao(false); setSeletorAberto(false); }}
+              <button onClick={() => { setModoSelecionadosSessao(false); setModoRomaneio(false); setSeletorAberto(false); }}
                 style={{
                   flex: 1, height: 32, borderRadius: 7, border: `1px solid ${T.border}`,
                   background: "transparent", color: T.dim, fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
                 }}>
                 Mostrar todos
               </button>
-              <button onClick={() => { setModoSelecionadosSessao(true); setSeletorAberto(false); }}
+              <button onClick={() => { setModoSelecionadosSessao(true); setModoRomaneio(false); setSeletorAberto(false); }}
                 disabled={veiculosSelecionados.size === 0}
                 style={{
                   flex: 1, height: 32, borderRadius: 7, border: "none",
