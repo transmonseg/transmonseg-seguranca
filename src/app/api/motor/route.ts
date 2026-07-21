@@ -1015,7 +1015,7 @@ export async function POST(request: Request) {
       // e outros efeitos colaterais que já acontecem dentro do loop).
       const posicoesComVeiculoId = posicoesRaw.map((raw) => ({
         raw,
-        veiculo_id: mapaCv.get(String((raw as Record<string, unknown>).veicucodigo))?.veiculo_id ?? "",
+        veiculo_id: mapaCv.get(String((raw as Record<string, unknown> | null)?.veicucodigo))?.veiculo_id ?? "",
       }));
       const posicoesOrdenadas = ordenarPorPrioridadeVerificacao(posicoesComVeiculoId, ultimaVerificacaoCorredorPorVeiculo);
 
