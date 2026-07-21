@@ -640,6 +640,16 @@ export async function POST(request: Request) {
     // contexto (nunca muda nivel/status/fecha o alerta).
     const proximidadeDesvioCiclo: { alerta_id: string; pontoNome: string; dwellSegundos: number }[] = [];
 
+    // Anotacao de "rota concluida" em alertas de desvio ATIVOS -- ver
+    // docs/superpowers/specs/2026-07-21-anotacao-rota-concluida-desvio-design.md.
+    // Complementar a proximidadeDesvioCiclo: fica verdadeiro mesmo depois do
+    // veiculo sair de perto de qualquer ponto especifico (proximidade zera
+    // nesse caso, isso continua). Reusa entregas_feitas/entregas_total, ja
+    // computados por veiculo todo ciclo (mesmos valores que
+    // detectarRetornoTardio ja usa pra outro alerta). So INFORMACAO no
+    // contexto -- nunca muda nivel/status, nunca fecha o alerta.
+    const rotaConcluidaCiclo: { alerta_id: string; entregasFeitas: number; entregasTotal: number }[] = [];
+
     // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
     // mesmo padrao de mapaBaselineVeiculo/Frota acima. So aplica o fator
     // quando o segmento ja tem amostra suficiente (mesma regra de 20 ja
@@ -1953,6 +1963,21 @@ export async function POST(request: Request) {
             }
           }
 
+          // Anota "rota concluida" num alerta de desvio JA ATIVO -- ver
+          // docs/superpowers/specs/2026-07-21-anotacao-rota-concluida-desvio-design.md.
+          // Mesma condicao que detectarRetornoTardio ja usa (linha acima na
+          // chamada de avaliarAlertasGerais/detectores), so que aqui e so
+          // anotacao, nunca gera/fecha alerta.
+          if (entregas_total > 0 && entregas_feitas >= entregas_total) {
+            for (const d of alertasAbertos.filter((a) => a.tipo === "desvio")) {
+              rotaConcluidaCiclo.push({
+                alerta_id: d.id,
+                entregasFeitas: entregas_feitas,
+                entregasTotal: entregas_total,
+              });
+            }
+          }
+
           // Resolucao automatica generica: todos os tipos EXCETO favela e
           // desvio. Achado real 11/07 (usuario pediu remocao explicita do
           // fechamento automatico de desvio, apos o bug de churn da cerca
@@ -2238,6 +2263,34 @@ export async function POST(request: Request) {
       );
       const falhasProximidade = resultadosProximidade.filter((r) => r.status === "rejected").length;
       if (falhasProximidade > 0) console.warn(`Aviso: ${falhasProximidade} falha(s) ao anotar proximidade de desvio neste ciclo`);
+    }
+
+    // Anotacao de "rota concluida" em alertas de desvio ativos -- ver
+    // docs/superpowers/specs/2026-07-21-anotacao-rota-concluida-desvio-design.md.
+    // Mesmo padrao de flush em lote + dedupe por alerta_id. SO ADICIONA
+    // campo no contexto (jsonb ||) -- nunca muda nivel/status, nunca fecha
+    // o alerta.
+    if (rotaConcluidaCiclo.length > 0) {
+      const porAlertaRota = new Map(rotaConcluidaCiclo.map((p) => [p.alerta_id, p]));
+      const resultadosRotaConcluida = await Promise.allSettled(
+        [...porAlertaRota.values()].map((p) =>
+          pool.query(
+            `update alertas set contexto = contexto || $2::jsonb where id = $1`,
+            [
+              p.alerta_id,
+              JSON.stringify({
+                rota_concluida: {
+                  entregas_feitas: p.entregasFeitas,
+                  entregas_total: p.entregasTotal,
+                  atualizado_em: new Date().toISOString(),
+                },
+              }),
+            ]
+          )
+        )
+      );
+      const falhasRotaConcluida = resultadosRotaConcluida.filter((r) => r.status === "rejected").length;
+      if (falhasRotaConcluida > 0) console.warn(`Aviso: ${falhasRotaConcluida} falha(s) ao anotar rota concluida neste ciclo`);
     }
 
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo
