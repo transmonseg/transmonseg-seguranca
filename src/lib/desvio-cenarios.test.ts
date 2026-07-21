@@ -30,7 +30,7 @@ const BASE_NUTRY = { lat: -22.9256, lng: -43.2311 }; // ponto de partida generic
 type Ciclo = {
   lat: number; lng: number; velocidade?: number;
   dentroTapete?: boolean | null; riscoAreaAtual?: number;
-  foraTapeteStreak?: number;
+  foraTapeteStreak?: number; familiarVeiculo?: boolean | null;
 };
 
 // Ponto a "passo" graus de distancia de origem, na direcao que se AFASTA de
@@ -90,6 +90,7 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
       streak: desvioStreak,
       afastamentoAcumuladoM,
       dentroTapete: c.dentroTapete ?? null,
+      familiarVeiculo: c.familiarVeiculo ?? null,
       riscoAreaAtual: c.riscoAreaAtual ?? 0,
       foraTapeteStreak: c.foraTapeteStreak ?? 0,
     };
@@ -306,7 +307,7 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
         distDestinosM, distDestinosAnteriorM: anteriorDist ?? [],
         temPendentes: true, emOperacao: true, foraDaBase: true,
         entregasFeitas: 0, // 0 feitas ainda, com pendentes -> sem referencia de comportamento
-        streak, afastamentoAcumuladoM: 0, dentroTapete: false, riscoAreaAtual: 100,
+        streak, afastamentoAcumuladoM: 0, dentroTapete: false, familiarVeiculo: null, riscoAreaAtual: 100,
         // foraTapeteStreak 0 (nao 5): este teste isola o gate de historico
         // da Camada 1, nao quer exercitar a Camada 3 (religada 12/07), que
         // senao dispararia ja no ciclo 0 (antes do proprio gate de streak

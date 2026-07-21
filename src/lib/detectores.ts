@@ -338,6 +338,12 @@ const AFASTAMENTO_MARGEM_M = 50;
 // fica dezenas de km distante e o veículo chega por um ângulo fora da reta
 // base->destino, disparando em aproximação 100% normal.
 export const FORA_TAPETE_STREAK_MIN = 2;
+// Quando o PROPRIO veiculo (nao a frota) ja tem historico de ter passado
+// pela area -- ver corredor_celulas_veiculo, design de 21/07 -- exige mais
+// leituras consecutivas antes de escalar: reduz falso positivo de atalho
+// pessoal legitimo sem suprimir o alerta por completo (nunca fecha
+// sozinho, so amortece -- decisao explicita do usuario em 21/07).
+export const FORA_TAPETE_STREAK_MIN_FAMILIAR = 5;
 // DESATIVADA em 09/07/2026 (achado ao vivo, mesmo dia do deploy): virou
 // quase metade de todo o ruído de desvio (74 Camada 1 vs 75 Camada 3 em 6h),
 // disparando e resolvendo a cada 2min nas MESMAS placas (TTM-7C14, TTM-2G01,
@@ -413,6 +419,14 @@ export type CtxDesvio = {
   // null = sem tapete confiável ainda na região (não modula, nunca crítico
   // só por isso).
   dentroTapete: boolean | null;
+  // Familiaridade PESSOAL do veiculo (nao da frota) com a area atual -- ver
+  // corredor_celulas_veiculo. true = esse veiculo especifico ja passou por
+  // essa celula antes (30 dias), com cobertura minima confirmada
+  // (FAMILIARIDADE_MIN_CELULAS no motor). null = sem historico suficiente
+  // ainda (veiculo novo/pouco dado) -- nao amortece nada nesse caso. Nunca
+  // suprime o alerta, so exige mais leituras (FORA_TAPETE_STREAK_MIN_FAMILIAR)
+  // antes de escalar -- decisao explicita do usuario em 21/07.
+  familiarVeiculo: boolean | null;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -624,7 +638,10 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // entrega). ctx.foraTapeteStreak conta ciclos consecutivos assim — o
   // motor só incrementa quando afastandoDeTudo=false E dentroTapete=false
   // (cobertura mínima confirmada, ver TAPETE_MIN_CELULAS no motor).
-  if (CAMADA3_TAPETE_ATIVA && !afastandoDeTudo && ctx.foraTapeteStreak >= FORA_TAPETE_STREAK_MIN) {
+  const limiarForaTapete = ctx.familiarVeiculo === true
+    ? FORA_TAPETE_STREAK_MIN_FAMILIAR
+    : FORA_TAPETE_STREAK_MIN;
+  if (CAMADA3_TAPETE_ATIVA && !afastandoDeTudo && ctx.foraTapeteStreak >= limiarForaTapete) {
     return {
       nivel: "critico",
       tipo: "desvio",
@@ -946,6 +963,7 @@ export function avaliarTodos(
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
+          familiarVeiculo: ctx.familiarVeiculo ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
           foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
         })
@@ -1030,6 +1048,7 @@ export type CtxAvaliacao = {
   desvioStreak?: number;
   afastamentoAcumuladoM?: number;
   dentroTapete?: boolean | null;
+  familiarVeiculo?: boolean | null;
   riscoAreaAtual?: number;
   foraTapeteStreak?: number;
   temPendentes?: boolean;
@@ -1120,6 +1139,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           streak: ctx.desvioStreak ?? 0,
           afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
           dentroTapete: ctx.dentroTapete ?? null,
+          familiarVeiculo: ctx.familiarVeiculo ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
           foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
         })

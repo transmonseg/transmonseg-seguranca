@@ -96,6 +96,9 @@ type ContagemTapeteCache = { contagem: number; expiraEm: number };
 const CACHE_TAPETE_MS = 3 * 60_000;
 const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
 
+type ContagemFamiliaridadeCache = { contagens: Map<string, number>; expiraEm: number };
+const cacheContagemFamiliaridadePorCliente = new Map<string, ContagemFamiliaridadeCache>();
+
 // ─── Verificação por corredor real (ver lib/corredor-verificacao.ts) ────
 // REDESENHADA 10/07 apos incidente (ver docs/analise-deteccao.md secao 7.6):
 // versao original tracava a rota da POSICAO ATUAL ate o destino e depois
@@ -778,6 +781,12 @@ export async function POST(request: Request) {
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
     const celulasCiclo: { cliente_id: string; celula: string; origem: string | null; destino: string | null }[] = [];
 
+    // Familiaridade por veiculo (Camada 3 do desvio) -- ver
+    // docs/superpowers/specs/2026-07-21-familiaridade-veiculo-desvio-design.md.
+    // Mesmo dado de celulasDoSegmento que ja alimenta celulasCiclo acima, so
+    // que POR VEICULO em vez de por cliente.
+    const celulasVeiculoCiclo: { veiculo_id: string; celula: string }[] = [];
+
     // Orçamento de verificações de corredor com API neste ciclo (ver
     // MAX_VERIFICACOES_POR_CICLO no topo).
     let verificacoesCorredorNoCiclo = 0;
@@ -860,11 +869,66 @@ export async function POST(request: Request) {
       }
     }
 
+    // Contagem de células distintas por veículo (piso de cold-start da
+    // familiaridade, análogo a getContagemTapeteCliente) -- UMA query em
+    // lote por cliente por ciclo (todos os veículos do cliente de uma vez),
+    // nunca uma query por veículo.
+    async function getContagensFamiliaridadeCliente(
+      clienteId: string,
+      veiculoIds: string[]
+    ): Promise<Map<string, number>> {
+      const cache = cacheContagemFamiliaridadePorCliente.get(clienteId);
+      if (cache && cache.expiraEm > Date.now()) return cache.contagens;
+      if (veiculoIds.length === 0) return new Map();
+      const pgFamiliaridade = await pool.connect();
+      try {
+        const { rows } = await pgFamiliaridade.query<{ veiculo_id: string; n: string }>(
+          `SELECT veiculo_id, count(*)::bigint AS n FROM corredor_celulas_veiculo WHERE veiculo_id = ANY($1::uuid[]) GROUP BY veiculo_id`,
+          [veiculoIds]
+        );
+        const contagens = new Map(rows.map((r) => [r.veiculo_id, Number(r.n)]));
+        cacheContagemFamiliaridadePorCliente.set(clienteId, { contagens, expiraEm: Date.now() + CACHE_TAPETE_MS });
+        return contagens;
+      } catch {
+        return cache?.contagens ?? new Map();
+      } finally {
+        pgFamiliaridade.release();
+      }
+    }
+
+    // Células candidatas (vizinhança 3x3) que o PRÓPRIO veículo já visitou
+    // -- análogo a buscarCelulasTapeteCandidatas, mas casando (veiculo_id,
+    // celula) exato via JOIN, não só a celula isolada. Chave do Set:
+    // "${veiculo_id}:${celula}".
+    async function buscarCelulasVeiculoCandidatas(
+      candidatas: { veiculo_id: string; celula: string }[]
+    ): Promise<Set<string>> {
+      if (candidatas.length === 0) return new Set();
+      const pgFamiliaridade = await pool.connect();
+      try {
+        const { rows } = await pgFamiliaridade.query<{ veiculo_id: string; celula: string }>(
+          `SELECT c.veiculo_id, c.celula
+           FROM corredor_celulas_veiculo c
+           JOIN unnest($1::uuid[], $2::text[]) AS cand(veiculo_id, celula)
+             USING (veiculo_id, celula)`,
+          [candidatas.map((c) => c.veiculo_id), candidatas.map((c) => c.celula)]
+        );
+        return new Set(rows.map((r) => `${r.veiculo_id}:${r.celula}`));
+      } catch {
+        return new Set();
+      } finally {
+        pgFamiliaridade.release();
+      }
+    }
+
     for (const cliente of clientes) {
       // Obter CVs deste cliente
       const cvsCliente = [...mapaCv.entries()]
         .filter(([, v]) => v.cliente_id === cliente.id)
         .map(([cv]) => cv);
+      const veiculoIdsCliente = [...mapaCv.entries()]
+        .filter(([, v]) => v.cliente_id === cliente.id)
+        .map(([, v]) => v.veiculo_id);
 
       if (cvsCliente.length === 0) continue;
 
@@ -966,6 +1030,7 @@ export async function POST(request: Request) {
       // TODO veiculo fresco com sua velocidade, nao so os parados.
       const posicoesFrescasComVelocidade: { lat: number; lng: number; velocidade: number }[] = [];
       const celulasCandidatasTapete = new Set<string>();
+      const celulasCandidatasVeiculo: { veiculo_id: string; celula: string }[] = [];
       const chavesCandidatasGeocode = new Set<string>();
       for (const raw of posicoesRaw) {
         try {
@@ -973,6 +1038,12 @@ export async function POST(request: Request) {
           if (p.fresco && p.lat != null && p.lng != null) {
             posicoesFrescasComVelocidade.push({ lat: p.lat, lng: p.lng, velocidade: p.velocidade });
             for (const c of vizinhanca3x3(p.lat, p.lng)) celulasCandidatasTapete.add(c);
+            const veiculoIdPrepass = mapaCv.get(p.cv)?.veiculo_id;
+            if (veiculoIdPrepass) {
+              for (const c of vizinhanca3x3(p.lat, p.lng)) {
+                celulasCandidatasVeiculo.push({ veiculo_id: veiculoIdPrepass, celula: c });
+              }
+            }
             chavesCandidatasGeocode.add(chaveGeocode(p.lat, p.lng));
           }
         } catch { /* posicao malformada: ignora na pre-passada */ }
@@ -987,6 +1058,8 @@ export async function POST(request: Request) {
         cliente.id,
         [...celulasCandidatasTapete]
       );
+      const contagensFamiliaridadeCliente = await getContagensFamiliaridadeCliente(cliente.id, veiculoIdsCliente);
+      const celulasFamiliaridadeVeiculo = await buscarCelulasVeiculoCandidatas(celulasCandidatasVeiculo);
       // Geocode restrito deste ciclo (ver comentario acima de preencherGeocodeCacheCandidatos).
       await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
@@ -1211,6 +1284,21 @@ export async function POST(request: Request) {
             dentroTapete = vizinhanca3x3(pos.lat, pos.lng).some((c) => celulasTapeteCliente.has(c));
           }
 
+          // Familiaridade PESSOAL do veiculo com a area atual -- ver
+          // docs/superpowers/specs/2026-07-21-familiaridade-veiculo-desvio-design.md.
+          // Piso bem menor que TAPETE_MIN_CELULAS (300, por FROTA): por ser
+          // por veiculo unico, 30 celulas distintas ja e cobertura razoavel
+          // (ajustavel depois com dado real, mesmo espirito de todo outro
+          // limiar deste arquivo).
+          const FAMILIARIDADE_MIN_CELULAS = 30;
+          let familiarVeiculo: boolean | null = null;
+          const contagemFamiliaridadeVeiculo = contagensFamiliaridadeCliente.get(veiculo_id) ?? 0;
+          if (pos.fresco && contagemFamiliaridadeVeiculo >= FAMILIARIDADE_MIN_CELULAS) {
+            familiarVeiculo = vizinhanca3x3(pos.lat, pos.lng).some((c) =>
+              celulasFamiliaridadeVeiculo.has(`${veiculo_id}:${c}`)
+            );
+          }
+
           // Streak de "aproximando mas fora do tapete" — Camada 3 do desvio
           // (ver detectarDesvio em detectores.ts). So incrementa com
           // cobertura minima confirmada (mesmo piso do dentroTapete acima) —
@@ -1241,6 +1329,7 @@ export async function POST(request: Request) {
             }
             for (const c of celulasDoSegmento(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)) {
               celulasCiclo.push({ cliente_id, celula: c, origem: origemCelula, destino: destinoCelula });
+              celulasVeiculoCiclo.push({ veiculo_id, celula: c });
             }
           }
 
@@ -1659,6 +1748,7 @@ export async function POST(request: Request) {
                   desvioStreak,
                   afastamentoAcumuladoM,
                   dentroTapete,
+                  familiarVeiculo,
                   riscoAreaAtual,
                   foraTapeteStreak,
                   temPendentes,
@@ -2422,6 +2512,36 @@ export async function POST(request: Request) {
       }
     }
 
+    // Upsert batch da familiaridade por veiculo -- mesmo padrao de
+    // corredor_celulas acima, so chaveado por veiculo_id. DISTINCT ON evita
+    // "ON CONFLICT DO UPDATE command cannot affect row a second time" quando
+    // o mesmo veiculo cruza a mesma celula 2x no mesmo ciclo (segmentos
+    // interpolados adjacentes).
+    if (celulasVeiculoCiclo.length > 0) {
+      const pgCelulasVeiculo = await pool.connect();
+      try {
+        await pgCelulasVeiculo.query(
+          `INSERT INTO corredor_celulas_veiculo (veiculo_id, celula, ultimo_visto)
+           SELECT DISTINCT ON (c.vid, c.cel) c.vid::uuid, c.cel, current_date
+           FROM unnest($1::uuid[], $2::text[]) AS c(vid, cel)
+           ORDER BY c.vid, c.cel
+           ON CONFLICT (veiculo_id, celula) DO UPDATE
+             SET ultimo_visto = EXCLUDED.ultimo_visto
+             WHERE corredor_celulas_veiculo.ultimo_visto < EXCLUDED.ultimo_visto`,
+          [
+            celulasVeiculoCiclo.map((c) => c.veiculo_id),
+            celulasVeiculoCiclo.map((c) => c.celula),
+          ]
+        );
+      } catch (errCelulasVeiculo) {
+        const msg = `Aviso: erro ao salvar corredor_celulas_veiculo: ${String(errCelulasVeiculo)}`;
+        console.warn(msg);
+        erros.push(msg);
+      } finally {
+        pgCelulasVeiculo.release();
+      }
+    }
+
     // Linha do tempo: grava em lote os eventos nativos notaveis detectados neste ciclo.
     if (eventosNovos.length > 0) {
       const { error: erroEventos } = await supabase.from("eventos").insert(eventosNovos);
@@ -2635,6 +2755,11 @@ export async function POST(request: Request) {
         // Tapete: células sem visita há mais de 30 dias saem do corredor.
         await pgClean.query(
           `DELETE FROM corredor_celulas WHERE ultimo_visto < current_date - 30`
+        );
+        // Familiaridade por veiculo: mesma janela de 30 dias do tapete de
+        // frota -- ver docs/superpowers/specs/2026-07-21-familiaridade-veiculo-desvio-design.md.
+        await pgClean.query(
+          `DELETE FROM corredor_celulas_veiculo WHERE ultimo_visto < current_date - 30`
         );
       } catch (errClean) {
         console.warn("Limpeza periódica falhou (não crítico):", errClean);

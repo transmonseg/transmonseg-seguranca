@@ -273,6 +273,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     streak: 2,
     afastamentoAcumuladoM: 300,
     dentroTapete: null as boolean | null,
+    familiarVeiculo: null as boolean | null,
     riscoAreaAtual: 0,
     foraTapeteStreak: 0,
   };
@@ -504,6 +505,7 @@ describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- v
     streak: 0,
     afastamentoAcumuladoM: 0,
     dentroTapete: null as boolean | null,
+    familiarVeiculo: null as boolean | null,
     riscoAreaAtual: 0,
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
@@ -531,6 +533,35 @@ describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- v
       foraTapeteStreak: 5,
     });
     expect(a?.motivo).not.toContain("nunca percorreu");
+  });
+
+  it("veiculo familiar com a area (30+ celulas): NAO dispara com streak 3 (abaixo do limiar amortecido)", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando, foraTapeteStreak: 3, familiarVeiculo: true,
+    });
+    expect(a).toBeNull();
+  });
+
+  it("veiculo familiar com a area: dispara ao atingir o limiar amortecido (5)", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando, foraTapeteStreak: 5, familiarVeiculo: true,
+    });
+    expect(a).not.toBeNull();
+    expect(a?.motivo).toContain("nunca percorreu");
+  });
+
+  it("veiculo SEM historico suficiente (familiarVeiculo null): usa o limiar padrao (2), nao o amortecido", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando, foraTapeteStreak: 2, familiarVeiculo: null,
+    });
+    expect(a).not.toBeNull();
+  });
+
+  it("veiculo explicitamente NAO familiar (familiarVeiculo false): usa o limiar padrao (2)", () => {
+    const a = detectarDesvio(emMov2, {
+      ...baseAproximando, foraTapeteStreak: 2, familiarVeiculo: false,
+    });
+    expect(a).not.toBeNull();
   });
 });
 
