@@ -2148,6 +2148,35 @@ export async function POST(request: Request) {
       }
     }
 
+    // Historico de posicao -- ver
+    // docs/superpowers/specs/2026-07-21-historico-posicao-veiculo-design.md.
+    // Reaproveita o MESMO array posicoesCiclo (zero query nova de leitura) --
+    // so um INSERT em lote a mais. Nao-critico: mesmo padrao defensivo de
+    // cerca_sombra logo abaixo, falha aqui nunca derruba o motor.
+    if (posicoesCiclo.length > 0) {
+      const pgHistorico = await pool.connect();
+      try {
+        await pgHistorico.query(
+          `INSERT INTO posicoes_historico (veiculo_id, lat, lng, velocidade, ignicao, atraso_min)
+           SELECT c.veiculo_id, c.lat, c.lng, c.velocidade, c.ignicao, c.atraso_min
+           FROM unnest($1::uuid[], $2::float8[], $3::float8[], $4::integer[], $5::boolean[], $6::integer[])
+             AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min)`,
+          [
+            posicoesCiclo.map((p) => p.veiculo_id),
+            posicoesCiclo.map((p) => p.lat),
+            posicoesCiclo.map((p) => p.lng),
+            posicoesCiclo.map((p) => p.velocidade),
+            posicoesCiclo.map((p) => p.ignicao),
+            posicoesCiclo.map((p) => p.atraso_min),
+          ]
+        );
+      } catch (errHistorico) {
+        console.warn(`Aviso: erro ao gravar posicoes_historico em lote: ${String(errHistorico)}`);
+      } finally {
+        pgHistorico.release();
+      }
+    }
+
     // Cerca virtual (modo sombra): grava em batch o que TERIA alertado neste
     // ciclo. Nao-critico: falha aqui nunca derruba o motor.
     if (cercaSombraCiclo.length > 0) {
@@ -2590,6 +2619,11 @@ export async function POST(request: Request) {
         );
         await pgClean.query(
           `DELETE FROM eventos WHERE ts < now() - interval '7 days'`
+        );
+        // Historico de posicao > 90 dias -- ver
+        // docs/superpowers/specs/2026-07-21-historico-posicao-veiculo-design.md.
+        await pgClean.query(
+          `DELETE FROM posicoes_historico WHERE criado_em < now() - interval '90 days'`
         );
         // geocode_cache nunca tinha limpeza — crescia pra sempre (achado em
         // varredura de uso: 40k+ linhas em 14 dias). Endereço não fica
