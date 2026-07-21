@@ -203,3 +203,23 @@ export async function verificarCorredor(
   if (!alguma) return { veredito: "indisponivel", corredor: null };
   return { veredito: "fora", corredor: null };
 }
+
+// Rotação justa do orçamento de verificação de corredor (achado real 21/07,
+// ver docs/superpowers/specs/2026-07-21-rotacao-justa-verificacao-corredor-design.md):
+// sem isso, a ordem de iteração da frota é estável e arbitrária (a query de
+// veículos não tem ORDER BY e fica cacheada por minutos), então o pequeno
+// orçamento de chamadas OSRM/Valhalla (throttle real de 1 req/s do servidor
+// público) é sempre vencido pelos mesmos poucos veículos primeiros nessa
+// ordem, deixando o resto da frota praticamente descoberto pra sempre.
+// Ordena por "há mais tempo sem verificação" (nunca verificado = timestamp 0
+// = prioridade máxima) -- ao longo de algumas dezenas de ciclos, todo
+// veículo eventualmente é coberto. Função pura: quem chama decide quando
+// gravar uma nova verificação no mapa.
+export function ordenarPorPrioridadeVerificacao<T extends { veiculo_id: string }>(
+  itens: T[],
+  ultimaVerificacao: Map<string, number>
+): T[] {
+  return [...itens].sort(
+    (a, b) => (ultimaVerificacao.get(a.veiculo_id) ?? 0) - (ultimaVerificacao.get(b.veiculo_id) ?? 0)
+  );
+}

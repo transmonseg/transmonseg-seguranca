@@ -38,7 +38,7 @@ import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
-import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia } from "@/lib/corredor-verificacao";
+import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
@@ -157,6 +157,14 @@ type CercaCache = {
   foraStreak: number;
 };
 const cacheCercaPorVeiculo = new Map<string, CercaCache>();
+
+// Rotação justa do orçamento de verificação de corredor -- ver
+// docs/superpowers/specs/2026-07-21-rotacao-justa-verificacao-corredor-design.md.
+// Grava quando cada veículo consumiu por último uma chamada real de
+// OSRM/Valhalla (nos dois pontos onde isso acontece: semeadura/recuperação
+// da cerca virtual, e confirmação do gatilho comportamental -- ambos
+// competem pelo mesmo throttle global de 1 req/s).
+const ultimaVerificacaoCorredorPorVeiculo = new Map<string, number>();
 
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
@@ -1000,8 +1008,18 @@ export async function POST(request: Request) {
         mapaTiposSilenciados.set(fp.veiculo_id, set);
       }
 
-      // Normalizar e processar cada posicao
-      for (const raw of posicoesRaw) {
+      // Normalizar e processar cada posicao. Reordenado por prioridade de
+      // verificação de corredor (ver Task 2 do plano de 21/07) -- so muda a
+      // ORDEM da iteração, nao materializa novos objetos de posição nem
+      // chama normalizar() antecipadamente (evitaria duplicar totalProcessados
+      // e outros efeitos colaterais que já acontecem dentro do loop).
+      const posicoesComVeiculoId = posicoesRaw.map((raw) => ({
+        raw,
+        veiculo_id: mapaCv.get(String((raw as Record<string, unknown>).veicucodigo))?.veiculo_id ?? "",
+      }));
+      const posicoesOrdenadas = ordenarPorPrioridadeVerificacao(posicoesComVeiculoId, ultimaVerificacaoCorredorPorVeiculo);
+
+      for (const { raw } of posicoesOrdenadas) {
         try {
           const pos = normalizar(raw as Record<string, unknown>);
           totalProcessados++;
@@ -1448,6 +1466,7 @@ export async function POST(request: Request) {
                   { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
                   todosPendentesPriorizados()
                 );
+                ultimaVerificacaoCorredorPorVeiculo.set(veiculo_id, Date.now());
                 if (r.veredito === "dentro" && r.corredor) {
                   cacheCercaPorVeiculo.set(veiculo_id, {
                     polilinha: r.corredor,
@@ -1474,6 +1493,7 @@ export async function POST(request: Request) {
                 { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
                 todosPendentesPriorizados()
               );
+              ultimaVerificacaoCorredorPorVeiculo.set(veiculo_id, Date.now());
               if (r.veredito === "dentro" && r.corredor) {
                 cerca.polilinha = r.corredor;
                 cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
@@ -1715,6 +1735,7 @@ export async function POST(request: Request) {
                 .slice(0, 3)
                 .map((x) => x.d);
               const r = await verificarCorredor(origem, { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);
+              ultimaVerificacaoCorredorPorVeiculo.set(veiculo_id, Date.now());
               corredorInfo = { veredito: r.veredito, bufferM: bufferAtual };
               if (r.veredito === "dentro" && r.corredor) {
                 cacheCorredorPorVeiculo.set(veiculo_id, {

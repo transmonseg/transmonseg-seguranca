@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, parOrigemDestinoTemHistoricoSuficiente } from "./corredor-verificacao";
+import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, parOrigemDestinoTemHistoricoSuficiente } from "./corredor-verificacao";
 
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
   // Reduzido 11/07 (diretiva explicita: falso positivo aceitavel, prioridade
@@ -209,5 +209,49 @@ describe("parOrigemDestinoTemHistoricoSuficiente", () => {
   it("3 ou mais dias distintos: true", () => {
     expect(parOrigemDestinoTemHistoricoSuficiente(3, 3)).toBe(true);
     expect(parOrigemDestinoTemHistoricoSuficiente(10, 3)).toBe(true);
+  });
+});
+
+describe("ordenarPorPrioridadeVerificacao (rotação justa do orçamento de OSRM)", () => {
+  it("ordena veiculos nunca verificados (ausentes do mapa) antes dos ja verificados", () => {
+    const itens = [
+      { veiculo_id: "ja-verificado", label: "A" },
+      { veiculo_id: "nunca-verificado", label: "B" },
+    ];
+    const ultimaVerificacao = new Map([["ja-verificado", 1000]]);
+    const resultado = ordenarPorPrioridadeVerificacao(itens, ultimaVerificacao);
+    expect(resultado.map((x) => x.label)).toEqual(["B", "A"]);
+  });
+
+  it("ordena por timestamp ascendente -- verificado ha mais tempo primeiro", () => {
+    const itens = [
+      { veiculo_id: "recente", label: "recente" },
+      { veiculo_id: "antigo", label: "antigo" },
+      { veiculo_id: "medio", label: "medio" },
+    ];
+    const ultimaVerificacao = new Map([
+      ["recente", 3000],
+      ["antigo", 1000],
+      ["medio", 2000],
+    ]);
+    const resultado = ordenarPorPrioridadeVerificacao(itens, ultimaVerificacao);
+    expect(resultado.map((x) => x.label)).toEqual(["antigo", "medio", "recente"]);
+  });
+
+  it("nao muda a lista original (retorna copia nova)", () => {
+    const itens = [{ veiculo_id: "x", label: "x" }];
+    const original = [...itens];
+    ordenarPorPrioridadeVerificacao(itens, new Map());
+    expect(itens).toEqual(original);
+  });
+
+  it("com mapa vazio, mantem a ordem original (todos empatados em prioridade)", () => {
+    const itens = [
+      { veiculo_id: "a", label: "a" },
+      { veiculo_id: "b", label: "b" },
+      { veiculo_id: "c", label: "c" },
+    ];
+    const resultado = ordenarPorPrioridadeVerificacao(itens, new Map());
+    expect(resultado.map((x) => x.label)).toEqual(["a", "b", "c"]);
   });
 });
