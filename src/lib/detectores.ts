@@ -951,7 +951,7 @@ export function avaliarTodos(
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
     }),
     ctx.distDestinosM !== undefined
-      ? detectarDesvio(p, {
+      ? aplicarBonusClasseViaria(detectarDesvio(p, {
           distDestinosM: ctx.distDestinosM ?? [],
           distDestinosAnteriorM: ctx.distDestinosAnteriorM ?? [],
           temPendentes: ctx.temPendentes ?? false,
@@ -966,7 +966,7 @@ export function avaliarTodos(
           familiarVeiculo: ctx.familiarVeiculo ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
           foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
-        })
+        }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);
 
@@ -984,6 +984,26 @@ export function avaliarTodos(
 // geram bonus de corroboracao, pra nao diluir o sinal.
 const TIPOS_CORROBORANTES = new Set(["jammer", "desvio", "bypass_entrega", "baseline_veiculo"]);
 const BONUS_CORROBORACAO_POR_SINAL = 15;
+
+// Reforco de score da classificacao viaria (via principal -> rua estreita)
+// -- ver docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.
+// Aplicado ao RESULTADO de detectarDesvio, NUNCA lido dentro da funcao --
+// garante por construcao que o sinal nunca cria alerta por conta propria
+// (se detectarDesvio nao retornar nada, nao ha o que reforcar). Mesma
+// magnitude de BONUS_CORROBORACAO_POR_SINAL, capado em 100.
+const BONUS_CLASSE_VIARIA = 15;
+
+export function aplicarBonusClasseViaria(
+  alerta: Alerta | null,
+  quedaClasseViaria: boolean
+): Alerta | null {
+  if (!alerta || !quedaClasseViaria) return alerta;
+  return {
+    ...alerta,
+    score: Math.min(100, alerta.score + BONUS_CLASSE_VIARIA),
+    motivo: alerta.motivo ? `${alerta.motivo} — saiu de via principal recentemente` : alerta.motivo,
+  };
+}
 
 // Arbitragem compartilhada: escolhe o candidato de maior severidade
 // (critico > atencao, depois maior score) e, se 2+ TIPOS DISTINTOS do
@@ -1049,6 +1069,7 @@ export type CtxAvaliacao = {
   afastamentoAcumuladoM?: number;
   dentroTapete?: boolean | null;
   familiarVeiculo?: boolean | null;
+  quedaClasseViaria?: boolean;
   riscoAreaAtual?: number;
   foraTapeteStreak?: number;
   temPendentes?: boolean;
@@ -1127,7 +1148,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
     }),
     ctx.distDestinosM !== undefined
-      ? detectarDesvio(p, {
+      ? aplicarBonusClasseViaria(detectarDesvio(p, {
           distDestinosM: ctx.distDestinosM ?? [],
           distDestinosAnteriorM: ctx.distDestinosAnteriorM ?? [],
           temPendentes: ctx.temPendentes ?? false,
@@ -1142,7 +1163,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           familiarVeiculo: ctx.familiarVeiculo ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
           foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
-        })
+        }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);
 }

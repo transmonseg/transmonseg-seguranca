@@ -27,6 +27,7 @@ import {
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
+  aplicarBonusClasseViaria,
   type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
@@ -1228,5 +1229,29 @@ describe("reduzirPorTransitoInferido (transito real da propria frota corrobora c
     const outroTipo: Alerta = { nivel: "critico", tipo: "jammer", motivo: "x", score: 80 };
     const a = reduzirPorTransitoInferido(outroTipo, { emRodovia: true, vizinhosLentos: 3 });
     expect(a.score).toBe(80);
+  });
+});
+
+describe("aplicarBonusClasseViaria", () => {
+  const alertaBase = { nivel: "critico" as const, tipo: "desvio", motivo: "Afastando-se de tudo", score: 80 };
+
+  it("sem alerta (null): continua null", () => {
+    expect(aplicarBonusClasseViaria(null, true)).toBeNull();
+  });
+
+  it("alerta presente, quedaClasseViaria false: retorna o alerta intacto", () => {
+    const r = aplicarBonusClasseViaria(alertaBase, false);
+    expect(r).toEqual(alertaBase);
+  });
+
+  it("alerta presente, quedaClasseViaria true: soma o bonus ao score", () => {
+    const r = aplicarBonusClasseViaria(alertaBase, true);
+    expect(r?.score).toBe(95); // 80 + 15
+    expect(r?.motivo).toContain("via principal");
+  });
+
+  it("bonus nao ultrapassa 100 (capado)", () => {
+    const r = aplicarBonusClasseViaria({ ...alertaBase, score: 92 }, true);
+    expect(r?.score).toBe(100);
   });
 });

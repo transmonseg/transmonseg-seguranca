@@ -34,6 +34,7 @@ import {
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
 import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
+import { melhorClasse } from "@/lib/classificacao-viaria";
 import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
@@ -570,7 +571,7 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em");
 
     const mapaPosAtual = new Map<
       string,
@@ -580,6 +581,7 @@ export async function POST(request: Request) {
         ultimo_evento: string | null; fora_tapete_streak: number; aproximando_streak: number;
         origem_celula: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
+        ultima_via_principal_em: string | null;
       }
     >();
 
@@ -598,6 +600,7 @@ export async function POST(request: Request) {
         no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
         no_raio_desde: row.no_raio_desde ?? null,
         no_raio_dwell_segundos: row.no_raio_dwell_segundos ?? 0,
+        ultima_via_principal_em: row.ultima_via_principal_em ?? null,
       });
     }
 
@@ -814,6 +817,7 @@ export async function POST(request: Request) {
       ultimo_evento: string | null; desvio_inicio: string | null; fora_tapete_streak: number;
       aproximando_streak: number; origem_celula: string | null;
       no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
+      ultima_via_principal_em: string | null;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -866,6 +870,30 @@ export async function POST(request: Request) {
         return new Set();
       } finally {
         pgTapete.release();
+      }
+    }
+
+    // Classificacao viaria (via principal x rua estreita) -- ver
+    // docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.
+    // vias_celulas NAO tem coluna de escopo (cliente_id/veiculo_id) --
+    // e geografia pura, entao a query e so por celula, sem WHERE de
+    // cliente. Reaproveita as MESMAS candidatas de celulasCandidatasTapete
+    // (mesma vizinhanca 3x3), nao coleta de novo.
+    async function buscarClassesViariasCandidatas(
+      candidatas: string[]
+    ): Promise<Map<string, string>> {
+      if (candidatas.length === 0) return new Map();
+      const pgVias = await pool.connect();
+      try {
+        const { rows } = await pgVias.query<{ celula: string; classe: string }>(
+          `SELECT celula, classe FROM vias_celulas WHERE celula = ANY($1::text[])`,
+          [candidatas]
+        );
+        return new Map(rows.map((r) => [r.celula, r.classe]));
+      } catch {
+        return new Map();
+      } finally {
+        pgVias.release();
       }
     }
 
@@ -1060,6 +1088,7 @@ export async function POST(request: Request) {
       );
       const contagensFamiliaridadeCliente = await getContagensFamiliaridadeCliente(cliente.id, veiculoIdsCliente);
       const celulasFamiliaridadeVeiculo = await buscarCelulasVeiculoCandidatas(celulasCandidatasVeiculo);
+      const classesViariasCliente = await buscarClassesViariasCandidatas([...celulasCandidatasTapete]);
       // Geocode restrito deste ciclo (ver comentario acima de preencherGeocodeCacheCandidatos).
       await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
@@ -1298,6 +1327,36 @@ export async function POST(request: Request) {
               celulasFamiliaridadeVeiculo.has(`${veiculo_id}:${c}`)
             );
           }
+
+          // Classificacao viaria (via principal x rua estreita) -- ver
+          // docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.
+          // classeViaAtual = melhor classe entre as 9 celulas da vizinhanca
+          // 3x3 da posicao atual (null = nenhuma celula mapeada ali).
+          let classeViaAtual: string | null = null;
+          if (pos.fresco) {
+            for (const c of vizinhanca3x3(pos.lat, pos.lng)) {
+              const classe = classesViariasCliente.get(c);
+              if (classe) {
+                classeViaAtual = melhorClasse(
+                  classeViaAtual as "principal" | "intermediaria" | "estreita" | null,
+                  classe as "principal" | "intermediaria" | "estreita"
+                );
+              }
+            }
+          }
+
+          // Estado persistido: quando foi a ultima vez visto numa via
+          // principal. Decai naturalmente pela checagem de janela abaixo
+          // (JANELA_QUEDA_CLASSE_MIN), sem precisar resetar explicitamente.
+          const ultimaViaPrincipalAnterior = anterior?.ultima_via_principal_em ?? null;
+          const ultimaViaPrincipalEm =
+            pos.fresco && classeViaAtual === "principal" ? agora.toISOString() : ultimaViaPrincipalAnterior;
+
+          const JANELA_QUEDA_CLASSE_MIN = 10;
+          const quedaClasseViaria =
+            classeViaAtual === "estreita" &&
+            ultimaViaPrincipalAnterior !== null &&
+            agora.getTime() - new Date(ultimaViaPrincipalAnterior).getTime() <= JANELA_QUEDA_CLASSE_MIN * 60_000;
 
           // Streak de "aproximando mas fora do tapete" — Camada 3 do desvio
           // (ver detectarDesvio em detectores.ts). So incrementa com
@@ -1753,6 +1812,7 @@ export async function POST(request: Request) {
                   afastamentoAcumuladoM,
                   dentroTapete,
                   familiarVeiculo,
+                  quedaClasseViaria,
                   riscoAreaAtual,
                   foraTapeteStreak,
                   temPendentes,
@@ -2027,6 +2087,7 @@ export async function POST(request: Request) {
             no_raio_alvo_codigo: noRaioAlvoCodigo,
             no_raio_desde: noRaioDesde,
             no_raio_dwell_segundos: noRaioDwellSegundos,
+            ultima_via_principal_em: ultimaViaPrincipalEm,
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -2152,7 +2213,7 @@ export async function POST(request: Request) {
               entregas_feitas, entregas_total, local, desvio_streak, rumo,
               ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
               aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
-              no_raio_dwell_segundos)
+              no_raio_dwell_segundos, ultima_via_principal_em)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -2162,19 +2223,20 @@ export async function POST(request: Request) {
              c.desvio_streak, c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
              c.desvio_inicio::jsonb, c.fora_tapete_streak, c.aproximando_streak,
              c.origem_celula, c.no_raio_alvo_codigo, c.no_raio_desde::timestamptz,
-             c.no_raio_dwell_segundos
+             c.no_raio_dwell_segundos, c.ultima_via_principal_em::timestamptz
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::text[], $24::integer[], $25::text[],
-             $26::integer[]
+             $26::integer[], $27::text[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
                   ultimo_evento, desvio_inicio, fora_tapete_streak, aproximando_streak,
-                  origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos)
+                  origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
+                  ultima_via_principal_em)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -2203,7 +2265,8 @@ export async function POST(request: Request) {
              origem_celula      = EXCLUDED.origem_celula,
              no_raio_alvo_codigo = EXCLUDED.no_raio_alvo_codigo,
              no_raio_desde       = EXCLUDED.no_raio_desde,
-             no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos`,
+             no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos,
+             ultima_via_principal_em = EXCLUDED.ultima_via_principal_em`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -2231,6 +2294,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.no_raio_alvo_codigo),
             posicoesCiclo.map((p) => p.no_raio_desde),
             posicoesCiclo.map((p) => p.no_raio_dwell_segundos),
+            posicoesCiclo.map((p) => p.ultima_via_principal_em),
           ]
         );
       } catch (errPosicoes) {
