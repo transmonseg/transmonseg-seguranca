@@ -1,15 +1,16 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
+import { extrairCidadeDoEndereco } from "@/lib/romaneio-geocode-local";
 
 export const maxDuration = 60;
 
 const LOTE_POR_INVOCACAO = 40;
-// Espera sequencial ANTES de cada chamada real de rede (nao de cache-hit)
-// -- respeita a politica real de 1 req/s do Nominatim publico. Loop unico
-// sequencial: nao precisa da fila esperarVaga()/filaThrottle da cerca
-// virtual (aquele mecanismo coordena chamadas concorrentes de VARIOS
-// pontos do motor no mesmo ciclo; aqui e um unico loop, throttle simples
-// ja basta).
+// Espera sequencial ANTES de cada chamada real ao Nominatim -- respeita
+// a politica real de 1 req/s do servidor publico. Movido pra DENTRO da
+// chamada de Nominatim especificamente (nao mais incondicional no loop)
+// -- achado do planejamento: com geocodificacao local resolvendo a
+// maioria dos enderecos, o throttle no loop inteiro anularia o ganho de
+// velocidade (esperaria 1,1s por linha mesmo sem chamar rede nenhuma).
 const ESPERA_ENTRE_CHAMADAS_MS = 1100;
 
 function esperar(ms: number): Promise<void> {
@@ -47,17 +48,54 @@ export async function POST(request: Request) {
     await admin.from("romaneio_geocode_cache").upsert({ endereco_normalizado: chaveNormalizada, lat: r.lat, lng: r.lng, fonte: r.fonte, atualizado_em: new Date().toISOString() });
   };
 
+  // Nominatim com throttle -- so aqui, na chamada real de rede, nao no
+  // loop inteiro (ver comentario no topo do arquivo).
+  const geocodificarNominatimThrottled = async (enderecoBruto: string) => {
+    await esperar(ESPERA_ENTRE_CHAMADAS_MS);
+    return geocodificarNominatim(enderecoBruto);
+  };
+
+  // Resolve os pontos de referencia de cidade do lote, 1x cada (nao 1x
+  // por endereco) -- cacheados em romaneio_geocode_cache com prefixo
+  // "CIDADE:" pra nao colidir com chaves de endereco completo. Poucas
+  // dezenas por lote no maximo, throttle simples ja basta.
+  const cidadesUnicas = [...new Set(
+    pendentes.map((l) => extrairCidadeDoEndereco(l.endereco_bruto)).filter((c): c is string => c !== null)
+  )];
+  const pontosCidade = new Map<string, { lat: number; lng: number }>();
+  for (const cidade of cidadesUnicas) {
+    const chaveCidade = `CIDADE:${cidade.toUpperCase()}`;
+    const doCache = await buscarCache(chaveCidade);
+    if (doCache) {
+      pontosCidade.set(cidade, { lat: doCache.lat, lng: doCache.lng });
+      continue;
+    }
+    const ponto = await geocodificarNominatimThrottled(cidade);
+    if (ponto) {
+      await salvarCache(chaveCidade, { ...ponto, fonte: "nominatim" });
+      pontosCidade.set(cidade, ponto);
+    }
+  }
+
+  const buscarCandidatosPorNome = async (nomeNormalizado: string) => {
+    const { data } = await admin.from("vias_nomes").select("lat, lng").eq("nome_normalizado", nomeNormalizado);
+    return data ?? [];
+  };
+
   let ok = 0;
   let falhou = 0;
 
   for (const linha of pendentes) {
-    // So espera antes de chamada de rede REAL -- cache-hit nao precisa de
-    // throttle (buscarCache e so leitura local). geocodificarEndereco ja
-    // checa cache primeiro internamente, entao esperamos incondicionalmente
-    // aqui (simples, custo desprezivel num cache-hit: so atrasa a
-    // proxima linha do MESMO lote, nao afeta corretude).
-    await esperar(ESPERA_ENTRE_CHAMADAS_MS);
-    const geocode = await geocodificarEndereco(linha.endereco_bruto, { buscarCache, salvarCache, geocodificarGoogle, geocodificarNominatim });
+    const cidade = extrairCidadeDoEndereco(linha.endereco_bruto);
+    const pontoCidade = cidade ? pontosCidade.get(cidade) ?? null : null;
+
+    const geocode = await geocodificarEndereco(linha.endereco_bruto, pontoCidade, {
+      buscarCache,
+      salvarCache,
+      geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
+      geocodificarGoogle,
+      geocodificarNominatim: geocodificarNominatimThrottled,
+    });
 
     const geocodeStatus = geocode ? "ok" : "falhou";
     if (geocode) ok++; else falhou++;
