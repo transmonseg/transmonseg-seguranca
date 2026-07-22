@@ -124,24 +124,27 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     }));
     const resultados = simular(REALENGO, ciclos);
     // indice 0: streak 0 (baseline, sem anterior, nunca dispara). Persistencia
-    // minima baixada de 2 pra 1 em 11/07 (diretiva: falso positivo aceitavel,
-    // imediato) -- indice 1 ja e streak 1 e DISPARA (1o disparo). indice 4: streak 4.
+    // minima RESTAURADA pra 2 ciclos em 21/07 (revertendo a baixa de 11/07
+    // pra 1 ciclo -- achado real desta sessao: 69 de 81 alertas
+    // "afastando-se" dispararam com so 1 leitura) -- indice 1 (streak 1)
+    // fica abaixo do piso agora, so indice 2 (streak 2) dispara. indice 4: streak 4.
     expect(resultados[0]).toBeNull();
-    expect(resultados[1]?.score).toBe(45); // streak 1
-    expect(resultados[2]?.score).toBe(45); // streak 2
+    expect(resultados[1]).toBeNull(); // streak 1, abaixo do novo piso de 2
+    expect(resultados[2]?.score).toBe(45); // streak 2, 1o disparo agora
     expect(resultados[4]?.score).toBe(68); // streak 4
   });
 
   it("fora do tapete, Camada 3 ATIVA (religada 12/07): escala pra 80", () => {
-    const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
+    const ciclos: Ciclo[] = Array.from({ length: 4 }, (_, i) => ({
       ...afastarDe(MANGUINHOS, REALENGO, i * 0.01),
       dentroTapete: false,
       riscoAreaAtual: 0,
     }));
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados[1]?.score).toBe(80); // streak 1 ja dispara (persistencia minima 11/07)
-    expect(resultados[2]?.score).toBe(80);
-    expect(resultados[2]?.motivo).toContain("fora de via conhecida");
+    expect(resultados[1]).toBeNull(); // streak 1, abaixo do novo piso de 2 (21/07)
+    expect(resultados[2]?.score).toBe(80); // streak 2, 1o disparo agora
+    expect(resultados[3]?.score).toBe(80);
+    expect(resultados[3]?.motivo).toContain("fora de via conhecida");
   });
 
   it("DESVIO INJETADO em via CONHECIDA mas area de risco alto: dispara IMEDIATO (score 80) — o caso que o v4 antigo perdia", () => {
@@ -179,22 +182,24 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados.every(r => r === null)).toBe(true);
   });
 
-  it("CORRECAO DE ROTA: ciclo se afastando, depois volta a se aproximar — dispara no 1o ciclo, checagem do ciclo atual bloqueia no 2o", () => {
-    // Persistencia minima baixada de 2 pra 1 em 11/07 (diretiva: falso
-    // positivo aceitavel, imediato) -- o 1o ciclo de afastamento ja dispara
-    // sozinho. O 2o ciclo aproxima de verdade NESTE ciclo -- a checagem
-    // propria do ciclo atual (linha ~610, "nao confia so no streak
-    // pre-computado") bloqueia na hora, independente do streak congelado
-    // pela historese (avancarStreaksDesvio) pro PROXIMO ciclo.
+  it("CORRECAO DE ROTA: ciclo se afastando, depois volta a se aproximar — dispara ao atingir o streak minimo, checagem do ciclo atual bloqueia na correcao", () => {
+    // Persistencia minima RESTAURADA pra 2 ciclos em 21/07 (revertendo a
+    // baixa de 11/07) -- agora precisa de 2 ciclos de afastamento seguidos
+    // pra disparar. O 3o ciclo aproxima de verdade NESTE ciclo -- a
+    // checagem propria do ciclo atual (linha ~610, "nao confia so no
+    // streak pre-computado") bloqueia na hora, independente do streak
+    // congelado pela historese (avancarStreaksDesvio) pro PROXIMO ciclo.
     const ciclos: Ciclo[] = [
       { ...MANGUINHOS, dentroTapete: true },
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true }, // afasta -> streak=1, DISPARA
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.005), dentroTapete: true }, // se aproxima de novo (metade do afastamento anterior) -> bloqueado neste ciclo
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true }, // afasta -> streak=1, abaixo do piso
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true }, // afasta mais -> streak=2, DISPARA
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true }, // se aproxima de novo -> bloqueado neste ciclo
     ];
     const resultados = simular(REALENGO, ciclos);
     expect(resultados[0]).toBeNull();
-    expect(resultados[1]?.score).toBe(45);
-    expect(resultados[2]).toBeNull();
+    expect(resultados[1]).toBeNull();
+    expect(resultados[2]?.score).toBe(45);
+    expect(resultados[3]).toBeNull();
   });
 
   it("cenario de serra via simular(): 1 aproximacao isolada (curva) NAO reseta o streak pro proximo ciclo -- ja dispara no 1o afastamento", () => {
@@ -204,37 +209,38 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     // ciclo 2, exigindo 2 ciclos NOVOS de afastamento pra disparar de novo
     // (so no ciclo 4). Com a historese real, o streak fica congelado em 1
     // (nao zerado) pro ciclo 3, que ja chega em streak 2.
-    // Persistencia minima baixada de 2 pra 1 em 11/07 (diretiva: falso
-    // positivo aceitavel, imediato) -- o ciclo 1 ja dispara sozinho. O
+    // Persistencia minima RESTAURADA pra 2 ciclos em 21/07 (revertendo a
+    // baixa de 11/07) -- o ciclo 1 (streak 1) fica abaixo do piso agora. O
     // ciclo 2 (curva, aproximando NESTE ciclo) e bloqueado pela checagem do
-    // ciclo atual (linha ~610), independente do streak congelado.
+    // ciclo atual (linha ~610), mas a historese NAO reseta o streak (so 2
+    // leituras CONSECUTIVAS de aproximacao zeram, 1 isolada congela) -- o
+    // ciclo 3 retoma de streak 1 (nao de 0) e chega em streak 2, disparando.
     const ciclos: Ciclo[] = [
       { ...MANGUINHOS, dentroTapete: true },                              // 0: baseline
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true },   // 1: afasta -> streak 1, DISPARA
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.01), dentroTapete: true },   // 1: afasta -> streak 1, abaixo do piso
       { ...afastarDe(MANGUINHOS, REALENGO, 0.007), dentroTapete: true },  // 2: curva (mais perto que o ciclo 1) -> bloqueado neste ciclo, mas congela streak em 1 pro proximo
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true },   // 3: afasta de novo -> streak 2 (nao zerou no ciclo 2), DISPARA rapido
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true },   // 3: afasta de novo -> streak 2 (nao zerou no ciclo 2), DISPARA
     ];
     const resultados = simular(REALENGO, ciclos);
     expect(resultados[0]).toBeNull();
-    expect(resultados[1]?.score).toBe(45);
+    expect(resultados[1]).toBeNull(); // streak 1, abaixo do novo piso de 2
     expect(resultados[2]).toBeNull(); // bloqueado neste ciclo (aproximando agora), mas nao reseta o streak
-    expect(resultados[3]?.score).toBe(45); // streak chegou a 2 sem precisar reiniciar do zero
+    expect(resultados[3]?.score).toBe(45); // streak chegou a 2 sem precisar reiniciar do zero -- dispara agora aqui
   });
 
-  it("RUIDO DE GPS de 1 ciclo isolado (jitter): dispara no ciclo do ruido, historese congela ate voltar a aproximar de verdade", () => {
-    // Persistencia minima baixada de 2 pra 1 em 11/07 -- 1 ciclo isolado de
-    // ruido/afastamento ja e o suficiente pra disparar (diretiva: nunca
-    // perder desvio real, falso positivo aceitavel). O 3o ciclo (aproximacao
-    // de verdade, streak zera) e que deixa de disparar.
+  it("RUIDO DE GPS de 1 ciclo isolado (jitter): NAO dispara mais (persistencia minima de 2 ciclos absorve ruido de 1 leitura)", () => {
+    // Persistencia minima RESTAURADA pra 2 ciclos em 21/07 (revertendo a
+    // baixa de 11/07) -- achado real desta sessao: 69 de 81 alertas
+    // "afastando-se" dispararam com so 1 leitura, exatamente esse tipo de
+    // ruido isolado de GPS. Com o piso de 2 ciclos, uma unica leitura de
+    // ruido nunca cruza o streak minimo -- o cenario inteiro fica null.
     const ciclos: Ciclo[] = [
       { ...MANGUINHOS, dentroTapete: true },
-      { ...afastarDe(MANGUINHOS, REALENGO, 0.003), dentroTapete: true }, // 1 ciclo de ruido (afasta um pouco) -> streak 1, DISPARA
+      { ...afastarDe(MANGUINHOS, REALENGO, 0.003), dentroTapete: true }, // 1 ciclo de ruido -> streak 1, abaixo do piso
       { ...aproximarDe(MANGUINHOS, REALENGO, 0.02), dentroTapete: true }, // volta a se aproximar do destino -> zera
     ];
     const resultados = simular(REALENGO, ciclos);
-    expect(resultados[0]).toBeNull();
-    expect(resultados[1]?.score).toBe(45);
-    expect(resultados[2]).toBeNull();
+    expect(resultados.every(r => r === null)).toBe(true);
   });
 
   it("VEICULO PARADO durante o desvio aparente: nunca dispara (velocidade=0)", () => {
@@ -294,8 +300,9 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     // chegava a 2 e o teste so passava (todos null) por acidente de
     // geometria, nao pelo gate que alegava testar. afastarDe() garante
     // afastamento de verdade, mesmo padrao dos outros cenarios do arquivo.
-    // Persistencia minima baixada de 2 pra 1 em 11/07 -- streak 1 (indice 1)
-    // ja dispara agora, nao so o streak 2 (indice 2).
+    // Persistencia minima RESTAURADA pra 2 ciclos em 21/07 (revertendo a
+    // baixa de 11/07) -- streak 1 (indice 1) fica abaixo do piso agora, so
+    // o streak 2 (indice 2) dispara.
     let anteriorDist: number[] | null = null;
     let streak = 0;
     const resultados: (ReturnType<typeof detectarDesvio>)[] = [];
@@ -317,9 +324,8 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
       anteriorDist = distDestinosM;
     }
     expect(resultados[0]).toBeNull(); // streak 0
-    expect(resultados[1]).not.toBeNull(); // streak 1: ja dispara
-    expect(resultados[1]?.exigeConfirmacaoCorredor).toBe(true);
-    expect(resultados[2]).not.toBeNull(); // streak 2: continua disparando
+    expect(resultados[1]).toBeNull(); // streak 1: abaixo do novo piso de 2, nao dispara mais
+    expect(resultados[2]).not.toBeNull(); // streak 2: dispara
     expect(resultados[2]?.exigeConfirmacaoCorredor).toBe(true);
   });
 
