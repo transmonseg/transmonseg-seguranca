@@ -1563,7 +1563,7 @@ export async function POST(request: Request) {
           // diretiva explicita do usuario: falso positivo aceitavel,
           // prioridade total e nunca perder desvio real), "fora" vira um
           // Alerta de verdade (alertaCerca, mesclado nos "extras" mais
-          // abaixo) JA NA PRIMEIRA leitura fora -- nao espera 2. Sempre
+          // abaixo) A PARTIR DA SEGUNDA leitura fora consecutiva -- aguarda confirmacao. Sempre
           // grava em cerca_sombra tambem (auditoria/historico). Semeadura
           // usa a POSICAO ATUAL como origem de rota (correto aqui: a rota
           // semeada e checada contra posicoes FUTURAS, nunca contra a
@@ -1678,7 +1678,12 @@ export async function POST(request: Request) {
                     pendentes: pendentes.length, buffer_m: bufferCerca,
                   });
                 }
-                if (CERCA_VIRTUAL_MODO === "ativa") {
+                // Achado real 22/07 (auditoria): alerta so a partir da 2a
+                // leitura "fora" consecutiva -- reduz blips que se autocorrigem
+                // sozinhos (GPS oscilando, manobra) e viravam alerta completo.
+                // O log de auditoria acima (cercaSombraCiclo) continua desde a
+                // 1a leitura -- so o alerta de verdade espera a confirmacao.
+                if (CERCA_VIRTUAL_MODO === "ativa" && cerca.foraStreak >= 2) {
                   let distCorredorM = Infinity;
                   for (let i = 0; i < cerca.polilinha.length - 1; i++) {
                     const d = distanciaAoSegmentoM(pos, cerca.polilinha[i], cerca.polilinha[i + 1]);
@@ -1689,7 +1694,7 @@ export async function POST(request: Request) {
                     nivel: "critico",
                     tipo: "desvio",
                     motivo: `Fora da rota esperada (${distFmt} da estrada real até o próximo ponto, buffer ${bufferCerca}m)`,
-                    score: cerca.foraStreak >= 2 ? 85 : 75,
+                    score: cerca.foraStreak >= 3 ? 85 : 75,
                   };
                 }
               }

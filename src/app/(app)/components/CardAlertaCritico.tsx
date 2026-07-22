@@ -131,6 +131,12 @@ function formatarTempoRelativo(iso: string): string {
   return `${Math.floor(diffH / 24)}d`;
 }
 
+const LIMIAR_ALERTA_ANTIGO_MS = 2 * 60 * 60 * 1000; // 2h
+
+function ehAlertaAntigo(iso: string): boolean {
+  return Date.now() - new Date(iso).getTime() >= LIMIAR_ALERTA_ANTIGO_MS;
+}
+
 export interface CardAlertaProps {
   id: string;
   status: string;
@@ -233,6 +239,23 @@ export default function CardAlertaCritico({
                 }}
               >
                 Rota concluída
+              </span>
+            )}
+            {tipo === "desvio" && ehAlertaAntigo(desde) && (
+              <span
+                style={{
+                  fontSize: "9px",
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--text-dim)",
+                  backgroundColor: "color-mix(in srgb, var(--text-dim) 12%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text-dim) 25%, transparent)",
+                  borderRadius: 4,
+                  padding: "2px 6px",
+                }}
+              >
+                Alerta antigo — revisar
               </span>
             )}
           </div>
