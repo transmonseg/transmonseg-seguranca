@@ -1936,13 +1936,15 @@ export async function POST(request: Request) {
 
           // Achado real 11/07: alerta "sem historico de comportamento" (0
           // entregas feitas) so pode sobreviver com confirmacao EXPLICITA do
-          // corredor ("fora") -- ao contrario do padrao normal de
-          // precisaVerificacaoCorredor, aqui "indisponivel"/orcamento
-          // estourado/corredor desligado NAO fazem fail-open. Sem isso, o
-          // gate antigo (bloqueio total pre-1a-entrega) segue sendo
-          // necessario; com isso, a estrada real supre a falta de historico
-          // sem abrir mao de cautela quando a API estiver fora.
-          if (alerta?.tipo === "desvio" && alerta.exigeConfirmacaoCorredor === true && corredorInfo?.veredito !== "fora") {
+          // corredor que a rota esta "dentro". Supressao so acontece em
+          // confirmacao POSITIVA (veredito === "dentro"), nao mais em qualquer
+          // coisa que nao seja "fora". Agora "indisponivel"/orcamento estourado
+          // fazem fail-open igual ao resto do detector, corrigindo a inversao
+          // de politica encontrada na auditoria de 22/07. Sem isso, o gate
+          // antigo (bloqueio total pre-1a-entrega) segue sendo necessario;
+          // com isso, a estrada real supre a falta de historico sem abrir mao
+          // de cautela quando a API estiver fora.
+          if (alerta?.tipo === "desvio" && alerta.exigeConfirmacaoCorredor === true && corredorInfo?.veredito === "dentro") {
             alerta = null;
             desvioSuprimidoPorCorredor = true;
           }
@@ -2133,13 +2135,15 @@ export async function POST(request: Request) {
             }
           }
 
-          // Resolucao automatica generica: todos os tipos EXCETO favela e
-          // desvio. Achado real 11/07 (usuario pediu remocao explicita do
-          // fechamento automatico de desvio, apos o bug de churn da cerca
-          // virtual): desvio NUNCA e resolvido pelo motor, so por acao
-          // manual do operador (Resolver/Falso positivo na UI).
+          // Resolucao automatica generica: todos os tipos EXCETO favela,
+          // desvio e bypass_entrega. Achado real 11/07 (usuario pediu remocao
+          // explicita do fechamento automatico de desvio, apos o bug de churn
+          // da cerca virtual): desvio e bypass_entrega NUNCA sao resolvidos
+          // pelo motor, so por acao manual do operador (Resolver/Falso
+          // positivo na UI). bypass_entrega e sinal de seguranca (possivel
+          // furto de carga).
           const alertasGerenciados = (alertasAbertos ?? []).filter(
-            (a) => a.tipo !== "favela" && a.tipo !== "desvio"
+            (a) => a.tipo !== "favela" && a.tipo !== "desvio" && a.tipo !== "bypass_entrega"
           );
 
           if (alerta) {
