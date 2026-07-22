@@ -223,3 +223,19 @@ export function ordenarPorPrioridadeVerificacao<T extends { veiculo_id: string }
     (a, b) => (ultimaVerificacao.get(a.veiculo_id) ?? 0) - (ultimaVerificacao.get(b.veiculo_id) ?? 0)
   );
 }
+
+// Economia de orcamento OSRM na recuperacao da cerca virtual (achado real
+// 21/07, ver docs/superpowers/specs/2026-07-21-cerca-virtual-economia-historico-design.md):
+// quando o historico (de frota OU do proprio veiculo) ja sabe que a area
+// atual e conhecida, pular a chamada OSRM deste veiculo neste ciclo libera
+// o orcamento pra outro veiculo genuinamente desconhecido processado
+// depois no mesmo ciclo -- sem perder cobertura, porque a Camada 2/3 do
+// desvio (foraTapeteStreak) continua rodando em paralelo com o MESMO dado
+// e nunca deixa de disparar para sempre, so amortece. Funcao pura: so
+// decide SE vale gastar o slot, nunca decide o veredito da cerca em si.
+export function deveVerificarRecuperacao(
+  dentroTapete: boolean | null,
+  familiarVeiculo: boolean | null
+): boolean {
+  return dentroTapete !== true && familiarVeiculo !== true;
+}

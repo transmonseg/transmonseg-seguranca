@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, parOrigemDestinoTemHistoricoSuficiente } from "./corredor-verificacao";
+import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, parOrigemDestinoTemHistoricoSuficiente, deveVerificarRecuperacao } from "./corredor-verificacao";
 
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
   // Reduzido 11/07 (diretiva explicita: falso positivo aceitavel, prioridade
@@ -253,5 +253,35 @@ describe("ordenarPorPrioridadeVerificacao (rotação justa do orçamento de OSRM
     ];
     const resultado = ordenarPorPrioridadeVerificacao(itens, new Map());
     expect(resultado.map((x) => x.label)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("deveVerificarRecuperacao (economia de orcamento OSRM na cerca virtual)", () => {
+  it("area conhecida pela frota (dentroTapete=true): NAO precisa verificar", () => {
+    expect(deveVerificarRecuperacao(true, null)).toBe(false);
+  });
+
+  it("area conhecida so pelo proprio veiculo (familiarVeiculo=true): NAO precisa verificar", () => {
+    expect(deveVerificarRecuperacao(null, true)).toBe(false);
+  });
+
+  it("area conhecida pelos dois (frota E veiculo): NAO precisa verificar", () => {
+    expect(deveVerificarRecuperacao(true, true)).toBe(false);
+  });
+
+  it("area desconhecida pelos dois (false/false): PRECISA verificar", () => {
+    expect(deveVerificarRecuperacao(false, false)).toBe(true);
+  });
+
+  it("sem cobertura minima nos dois (null/null, cold-start): PRECISA verificar", () => {
+    expect(deveVerificarRecuperacao(null, null)).toBe(true);
+  });
+
+  it("frota desconhece mas veiculo cold-start (false/null): PRECISA verificar", () => {
+    expect(deveVerificarRecuperacao(false, null)).toBe(true);
+  });
+
+  it("veiculo desconhece mas frota cold-start (null/false): PRECISA verificar", () => {
+    expect(deveVerificarRecuperacao(null, false)).toBe(true);
   });
 });

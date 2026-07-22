@@ -38,7 +38,7 @@ import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
-import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao } from "@/lib/corredor-verificacao";
+import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
@@ -1581,7 +1581,11 @@ export async function POST(request: Request) {
               // Na rota esperada: atualiza a ancora e zera a suspeita.
               cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
               cerca.foraStreak = 0;
-            } else if (cerca && cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO + 1) {
+            } else if (
+              cerca &&
+              cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO + 1 &&
+              deveVerificarRecuperacao(dentroTapete, familiarVeiculo)
+            ) {
               // Saiu do corredor conhecido: tenta RECUPERAR (motorista pode
               // ter escolhido outra rota legitima pra outro pendente).
               // Ancora = ultimo ponto confirmado DENTRO (passado, nunca a
