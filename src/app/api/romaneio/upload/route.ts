@@ -1,7 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseRomaneio, extrairDataRomaneio, normalizarPlaca } from "@/lib/romaneio";
-import { geocodificarEndereco, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
 
 export async function POST(request: Request) {
   // Rotas de API nao passam pelo proxy.ts (so protege paginas) -- validar
@@ -43,34 +42,10 @@ export async function POST(request: Request) {
   const veiculoPorPlaca = new Map((veiculos ?? []).map((v) => [v.placa, v]));
   const placasNaoEncontradas = placasUnicas.filter((p) => !veiculoPorPlaca.has(p));
 
-  let geocodadosOk = 0;
-  let semCoordenada = 0;
-
-  const buscarCache = async (chave: string) => {
-    const { data } = await admin.from("romaneio_geocode_cache").select("lat, lng, fonte").eq("endereco_normalizado", chave).maybeSingle();
-    return data ?? null;
-  };
-  const salvarCache = async (chave: string, r: { lat: number; lng: number; fonte: string }) => {
-    await admin.from("romaneio_geocode_cache").upsert({ endereco_normalizado: chave, lat: r.lat, lng: r.lng, fonte: r.fonte, atualizado_em: new Date().toISOString() });
-  };
-
-  const linhasParaInserir = [];
-  for (const l of linhas) {
+  const linhasParaInserir = linhas.map((l) => {
     const placaNormalizada = normalizarPlaca(l.placaBruta);
     const veiculo = veiculoPorPlaca.get(placaNormalizada);
-
-    // SEM fallback pra coordenada da Unitrac de proposito (achado real
-    // 15/07: a maioria cairia nesse fallback, esvaziando o motivo do
-    // romaneio existir -- decisao explicita do usuario). Se nao
-    // geocodificar, o ponto fica sem lat/lng e o motor simplesmente nao o
-    // usa (ver montarPontosDeRomaneio, filtra por lat/lng nao-nulo).
-    const geocode = await geocodificarEndereco(l.enderecoBruto, { buscarCache, salvarCache, geocodificarGoogle, geocodificarNominatim });
-
-    let geocodeStatus: string;
-    if (geocode) { geocodadosOk++; geocodeStatus = "ok"; }
-    else { semCoordenada++; geocodeStatus = "falhou"; }
-
-    linhasParaInserir.push({
+    return {
       veiculo_id: veiculo?.id ?? null,
       placa: placaNormalizada,
       romaneio_data: romaneioData,
@@ -80,33 +55,26 @@ export async function POST(request: Request) {
       endereco_bruto: l.enderecoBruto,
       carga_destino_codigo: l.cargaDestinoCodigo,
       carga_destino_nome: l.cargaDestinoNome,
-      lat: geocode?.lat ?? null,
-      lng: geocode?.lng ?? null,
-      geocode_status: geocodeStatus,
+      lat: null,
+      lng: null,
+      geocode_status: "pendente",
       modo_teste: modoTeste,
-    });
-  }
+    };
+  });
 
   const { error: erroInsert } = await admin.from("romaneio_pontos").insert(linhasParaInserir);
   if (erroInsert) {
     return Response.json({ ok: false, erro: `Erro ao salvar: ${erroInsert.message}` }, { status: 500 });
   }
 
+  // Geocodificacao roda em background (ver /api/romaneio/processar-geocode,
+  // disparado por pg_cron) -- upload so insere as linhas como 'pendente' e
+  // responde na hora, sem esperar nenhuma chamada de rede externa.
   return Response.json({
     ok: true,
     romaneioData,
     totalLinhas: linhas.length,
-    geocodadosOk,
-    semCoordenada,
     placasNaoEncontradas,
     modoTeste,
-    pontos: linhasParaInserir.map((l) => ({
-      nf: l.nf,
-      clienteNome: l.cliente_nome,
-      enderecoBruto: l.endereco_bruto,
-      lat: l.lat,
-      lng: l.lng,
-      geocodeStatus: l.geocode_status,
-    })),
   });
 }

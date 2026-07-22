@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 type PontoProcessado = {
   nf: string;
@@ -16,11 +16,17 @@ type ResultadoUpload = {
   erro?: string;
   romaneioData?: string;
   totalLinhas?: number;
-  geocodadosOk?: number;
-  semCoordenada?: number;
   placasNaoEncontradas?: string[];
   modoTeste?: boolean;
-  pontos?: PontoProcessado[];
+};
+
+type StatusGeocode = {
+  ok: boolean;
+  total: number;
+  geocodadosOk: number;
+  falhou: number;
+  pendente: number;
+  pontos: PontoProcessado[];
 };
 
 export default function RomaneioPage() {
@@ -29,10 +35,34 @@ export default function RomaneioPage() {
   const [processando, setProcessando] = useState(false);
   const [resultado, setResultado] = useState<ResultadoUpload | null>(null);
 
+  const [status, setStatus] = useState<StatusGeocode | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const pararPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  const buscarStatus = async (romaneioData: string) => {
+    try {
+      const res = await fetch(`/api/romaneio/status?data=${encodeURIComponent(romaneioData)}`);
+      const data = (await res.json()) as StatusGeocode;
+      if (!data.ok) return;
+      setStatus(data);
+      if (data.pendente === 0) pararPolling();
+    } catch {
+      // Falha pontual de poll -- tenta de novo no proximo tick, nao para o polling.
+    }
+  };
+
   const processar = async () => {
     if (!arquivo) return;
     setProcessando(true);
     setResultado(null);
+    setStatus(null);
+    pararPolling();
     try {
       const formData = new FormData();
       formData.append("arquivo", arquivo);
@@ -40,12 +70,18 @@ export default function RomaneioPage() {
       const res = await fetch("/api/romaneio/upload", { method: "POST", body: formData });
       const data = (await res.json()) as ResultadoUpload;
       setResultado(data);
+      if (data.ok && data.romaneioData) {
+        await buscarStatus(data.romaneioData);
+        pollRef.current = setInterval(() => buscarStatus(data.romaneioData!), 4000);
+      }
     } catch (e) {
       setResultado({ ok: false, erro: `Falha de rede: ${String(e)}` });
     } finally {
       setProcessando(false);
     }
   };
+
+  useEffect(() => () => pararPolling(), []);
 
   return (
     <div className="p-6 max-w-3xl mx-auto">
@@ -92,24 +128,32 @@ export default function RomaneioPage() {
           {resultado.ok ? (
             <>
               <p className="font-medium mb-2">
-                Romaneio de {resultado.romaneioData} processado.
+                Romaneio de {resultado.romaneioData} — {resultado.totalLinhas} linhas recebidas.
                 {resultado.modoTeste && (
                   <span className="ml-2" style={{ color: "var(--accent)" }}>
                     (MODO TESTE — não afeta a detecção)
                   </span>
                 )}
               </p>
-              <ul className="space-y-1 mb-4" style={{ color: "var(--text-dim)" }}>
-                <li>{resultado.totalLinhas} linhas no total</li>
-                <li>{resultado.geocodadosOk} geocodificadas com sucesso</li>
-                <li>{resultado.semCoordenada} sem coordenada (endereço não geocodificou — não entram na lista de pendentes)</li>
-              </ul>
               {resultado.placasNaoEncontradas && resultado.placasNaoEncontradas.length > 0 && (
                 <p className="mb-4" style={{ color: "var(--danger, #e55)" }}>
                   Placas não encontradas no cadastro: {resultado.placasNaoEncontradas.join(", ")}
                 </p>
               )}
-              {resultado.pontos && resultado.pontos.length > 0 && (
+              {status && status.pendente > 0 && (
+                <p className="mb-4" style={{ color: "var(--text-dim)" }}>
+                  Geocodificando em segundo plano: {status.geocodadosOk + status.falhou} de {status.total} processadas
+                  ({status.pendente} restantes)...
+                </p>
+              )}
+              {status && status.pendente === 0 && (
+                <ul className="space-y-1 mb-4" style={{ color: "var(--text-dim)" }}>
+                  <li>{status.total} linhas no total</li>
+                  <li>{status.geocodadosOk} geocodificadas com sucesso</li>
+                  <li>{status.falhou} sem coordenada (endereço não geocodificou — não entram na lista de pendentes)</li>
+                </ul>
+              )}
+              {status && status.pendente === 0 && status.pontos.length > 0 && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs" style={{ color: "var(--text)" }}>
                     <thead>
@@ -122,7 +166,7 @@ export default function RomaneioPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {resultado.pontos.map((p, i) => (
+                      {status.pontos.map((p, i) => (
                         <tr key={`${p.nf}-${i}`} style={{ borderTop: "1px solid var(--border)" }}>
                           <td className="pr-3 py-1">{p.nf}</td>
                           <td className="pr-3 py-1">{p.clienteNome}</td>
