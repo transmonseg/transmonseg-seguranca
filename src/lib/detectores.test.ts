@@ -330,9 +330,10 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
   // Achado real 11/07: o gate antigo bloqueava TOTAL, o dia inteiro, veiculos
   // de rota curta (1-3 entregas passam a maior parte do dia com 0 feitas).
   // 4 de 5 casos reais confirmados pela cerca virtual ("fora" de rota real)
-  // nunca viraram alerta so por causa disso. Agora dispara igual, mas exige
-  // confirmacao do corredor pra sobreviver (nao fail-open) -- a estrada real
-  // supre a falta de historico de comportamento sem abrir mao de cautela.
+  // nunca viraram alerta so por causa disso. Agora dispara igual: o DETECTOR
+  // marca exigeConfirmacaoCorredor=true, mas route.ts decide fail-open/fail-closed
+  // por tipo de alerta (ex: indisponivel faz fail-open). A estrada real supre
+  // a falta de historico sem abrir mao de cautela.
   it("indo para a primeira entrega (0 feitas com pendentes): dispara, mas exige confirmacao do corredor", () => {
     const a = detectarDesvio(emMov, { ...base, entregasFeitas: 0 });
     expect(a).not.toBeNull();

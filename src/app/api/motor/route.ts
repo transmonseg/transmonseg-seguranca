@@ -2540,9 +2540,10 @@ export async function POST(request: Request) {
           FROM posicoes_atuais p
           WHERE a.veiculo_id = p.veiculo_id
             AND a.status = 'ativo'
-            -- desvio adicionado 10/07: cortar o sinal pode ser um roubo em
+            -- desvio adicionado 10/07, bypass_entrega adicionado na revisao
+            -- final de 22/07: cortar o sinal pode ser um roubo em
             -- andamento, mesmo criterio ja usado pra favela/jammer/panico.
-            AND a.tipo NOT IN ('favela', 'jammer', 'panico', 'desvio')
+            AND a.tipo NOT IN ('favela', 'jammer', 'panico', 'desvio', 'bypass_entrega')
             AND p.atraso_min > 120
             AND p.ignicao = false
         `);
