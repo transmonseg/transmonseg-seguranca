@@ -27,6 +27,7 @@ interface AlertaEnriquecido {
   ignicao: boolean | null;
   atraso_min: number | null;
   local: string | null;
+  rotaConcluida?: boolean;
 }
 
 interface Props {
@@ -569,6 +570,7 @@ export default function PainelCentral({
                           ignicao={a.ignicao}
                           atraso_min={a.atraso_min}
                           score={a.score}
+                          rotaConcluida={a.rotaConcluida}
                           novo={novosIds.has(a.id)}
                           onFocarMapa={focarMapa}
                           onAlertaResolvido={removerAlerta}

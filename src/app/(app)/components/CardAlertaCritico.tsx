@@ -150,11 +150,13 @@ export interface CardAlertaProps {
   novo?: boolean;
   onFocarMapa?: (lat: number, lng: number, cv?: string, placa?: string) => void;
   onAlertaResolvido?: (id: string) => void;
+  rotaConcluida?: boolean;
 }
 
 export default function CardAlertaCritico({
   id, status, nivel, tipo, placa, motivo, local, desde,
   lat, lng, velocidade, ignicao, atraso_min, score, cv, novo, onFocarMapa, onAlertaResolvido,
+  rotaConcluida,
 }: CardAlertaProps) {
   const corNivel = nivel === "critico" ? "var(--vermelho)" : "var(--amarelo)";
   const bgNivel = nivel === "critico" ? "#160c0c" : "#16120a";
@@ -214,6 +216,23 @@ export default function CardAlertaCritico({
                 }}
               >
                 {score}
+              </span>
+            )}
+            {tipo === "desvio" && rotaConcluida === true && (
+              <span
+                style={{
+                  fontSize: "9px",
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--text-dim)",
+                  backgroundColor: "color-mix(in srgb, var(--text-dim) 12%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--text-dim) 25%, transparent)",
+                  borderRadius: 4,
+                  padding: "2px 6px",
+                }}
+              >
+                Rota concluída
               </span>
             )}
           </div>

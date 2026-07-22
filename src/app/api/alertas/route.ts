@@ -45,7 +45,7 @@ export async function GET(request: Request) {
   // egress da Supabase em 11 dias (31GB). Mesmo dado, consulta muito menor.
   const { data: alertasRaw } = await supabase
     .from("alertas")
-    .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng")
+    .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto")
     .eq("cliente_id", clienteId)
     .in("status", ["ativo", "reconhecido"]);
 
@@ -92,6 +92,7 @@ export async function GET(request: Request) {
       score: number | null;
       lat: number | null;
       lng: number | null;
+      contexto: { rota_concluida?: unknown } | null;
     }) => {
       const veiculo = veiculoMap.get(a.veiculo_id) as
         | { id: string; cv: string; placa: string }
@@ -127,6 +128,7 @@ export async function GET(request: Request) {
         ignicao: pos?.ignicao ?? null,
         atraso_min: pos?.atraso_min ?? null,
         local: pos?.local ?? null,
+        rotaConcluida: a.contexto?.rota_concluida != null,
       };
     }
   );
