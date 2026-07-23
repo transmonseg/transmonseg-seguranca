@@ -126,10 +126,14 @@ type CorredorCache = {
 };
 const CORREDOR_CACHE_MS = 15 * 60_000;
 const cacheCorredorPorVeiculo = new Map<string, CorredorCache>();
-// Orçamento por CICLO: no máx 3 verificações com API (cada uma <= 5s).
-// Acima disso, os demais veículos disparam sem verificação (fail-open) e
-// tentam de novo no ciclo seguinte.
-const MAX_VERIFICACOES_POR_CICLO = 3;
+// Achado real 22/07 (auditoria): unificado de 2 orcamentos separados
+// (CERCA_SEEDS_POR_CICLO=3 + MAX_VERIFICACOES_POR_CICLO=3, ate 7 chamadas
+// seriais sem teto coordenado) pra 1 orcamento compartilhado. Pior caso
+// cai de ~7,7s pra ~6,6s por ciclo. Cerca virtual tem prioridade natural
+// (seu bloco roda antes do comportamental na ordem do codigo, por
+// veiculo) -- sem logica de prioridade extra, seria complexidade
+// desproporcional ao problema real.
+const ORCAMENTO_CORREDOR_POR_CICLO = 6;
 
 // ─── CERCA VIRTUAL de rota (Fase 1 do plano de 10/07) -- ATIVA (11/07) ───
 // Achado real 10/07: o gatilho comportamental ("afastar de TODOS os N
@@ -151,7 +155,7 @@ const CERCA_VIRTUAL_MODO: "desligada" | "sombra" | "ativa" = "ativa";
 // Semeaduras (calculo inicial de corredor) por ciclo -- warmup da frota
 // inteira leva alguns ciclos de manha, com o gatilho comportamental cobrindo
 // ate la. Compartilha o throttle global de 1 req/s do modulo de corredor.
-const CERCA_SEEDS_POR_CICLO = 3;
+// (ORCAMENTO_CORREDOR_POR_CICLO unificado, ver acima)
 const CERCA_CACHE_MS = 20 * 60_000;
 type CercaCache = {
   polilinha: { lat: number; lng: number }[];
@@ -790,13 +794,11 @@ export async function POST(request: Request) {
     // que POR VEICULO em vez de por cliente.
     const celulasVeiculoCiclo: { veiculo_id: string; celula: string }[] = [];
 
-    // Orçamento de verificações de corredor com API neste ciclo (ver
-    // MAX_VERIFICACOES_POR_CICLO no topo).
-    let verificacoesCorredorNoCiclo = 0;
-
-    // Cerca virtual (modo sombra): orcamento de chamadas OSRM da cerca neste
-    // ciclo (semeaduras + recuperacoes) e linhas pro batch de cerca_sombra.
-    let cercaChamadasNoCiclo = 0;
+    // Orçamento COMPARTILHADO de chamadas ao corredor (OSRM/Valhalla) neste
+    // ciclo -- ver ORCAMENTO_CORREDOR_POR_CICLO no topo. Usado tanto pela
+    // cerca virtual (semeaduras + recuperacoes) quanto pela verificacao de
+    // corredor comportamental (Camada 1).
+    let chamadasCorredorNoCiclo = 0;
     const cercaSombraCiclo: {
       veiculo_id: string; cliente_id: string; lat: number; lng: number;
       velocidade: number; veredito: string; pendentes: number; buffer_m: number;
@@ -1617,8 +1619,8 @@ export async function POST(request: Request) {
               // Semeadura: rota real daqui ate o pendente mais proximo.
               // Pressupoe veiculo em rota legitima NESTE momento (se ja
               // estiver desviado, o gatilho comportamental cobre).
-              if (cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO) {
-                cercaChamadasNoCiclo++;
+              if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
+                chamadasCorredorNoCiclo++;
                 const r = await verificarCorredor(
                   { lat: pos.lat, lng: pos.lng },
                   { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
@@ -1642,14 +1644,14 @@ export async function POST(request: Request) {
               cerca.foraStreak = 0;
             } else if (
               cerca &&
-              cercaChamadasNoCiclo < CERCA_SEEDS_POR_CICLO + 1 &&
+              chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO &&
               deveVerificarRecuperacao(dentroTapete, familiarVeiculo)
             ) {
               // Saiu do corredor conhecido: tenta RECUPERAR (motorista pode
               // ter escolhido outra rota legitima pra outro pendente).
               // Ancora = ultimo ponto confirmado DENTRO (passado, nunca a
               // posicao atual).
-              cercaChamadasNoCiclo++;
+              chamadasCorredorNoCiclo++;
               const r = await verificarCorredor(
                 cerca.ultimoDentro,
                 { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
@@ -1895,8 +1897,8 @@ export async function POST(request: Request) {
               desvioSuprimidoPorCorredor = true;
               desvioStreak = 0;
               desvioInicio = null;
-            } else if (verificacoesCorredorNoCiclo < MAX_VERIFICACOES_POR_CICLO) {
-              verificacoesCorredorNoCiclo++;
+            } else if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
+              chamadasCorredorNoCiclo++;
               const bufferAtual = bufferPorVelocidade(pos.velocidade);
               const candidatos = [...destinos]
                 .map((d) => ({ d, dist: haversineM(pos.lat, pos.lng, d.lat, d.lng) }))
