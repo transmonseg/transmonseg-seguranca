@@ -27,6 +27,12 @@ export type Alerta = {
   // ela, a estrada real supre a falta de historico sem abrir mao de
   // cautela quando a API estiver fora.
   exigeConfirmacaoCorredor?: boolean;
+  // Achado real 22/07 (auditoria): substitui o matching fragil por string
+  // (motivo.startsWith(...)) em segmentoCalibracaoPreferido, que quebrava
+  // silenciosamente se o texto do motivo mudasse. Distingue a ORIGEM real
+  // de um alerta tipo="desvio": veio do detector comportamental
+  // (detectarDesvio) ou da cerca virtual (alertaCerca, route.ts)?
+  origemDesvio?: "comportamental" | "cerca_virtual";
 };
 
 // Informativo de veiculo sem comunicacao (atraso > 60 min).
@@ -651,6 +657,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       return {
         nivel: "atencao",
         tipo: "desvio",
+        origemDesvio: "comportamental",
         motivo: `Muito além do raio de verificação detalhada (${(menorDistM / 1000).toFixed(0)}km de todos os ${ctx.distDestinosM.length} destinos) — alerta de baixa confiança, revisar manualmente`,
         score: 30,
       };
@@ -672,6 +679,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
+      origemDesvio: "comportamental",
       motivo: `Aproximando de um destino, mas por caminho que a frota nunca percorreu antes (fora de via conhecida há ${ctx.foraTapeteStreak} leituras)`,
       score: 65,
     };
@@ -702,6 +710,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
+      origemDesvio: "comportamental",
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, fora de via conhecida da frota`,
       score: 80,
       precisaVerificacaoCorredor: true,
@@ -719,6 +728,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
+      origemDesvio: "comportamental",
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado, em área de risco elevado`,
       score: 80,
       precisaVerificacaoCorredor: true,
@@ -732,6 +742,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "critico",
       tipo: "desvio",
+      origemDesvio: "comportamental",
       motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
       score: 68,
       precisaVerificacaoCorredor: true,
@@ -742,6 +753,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   return {
     nivel: "critico",
     tipo: "desvio",
+    origemDesvio: "comportamental",
     motivo: `Afastando-se de todos os ${nDest} destinos há ${ctx.streak} leituras seguidas (~${ctx.streak}min), +${kmAcum}km acumulado`,
     score: 45,
     precisaVerificacaoCorredor: true,
@@ -926,83 +938,6 @@ export function detectarAnomaliaBaseline(ctx: CtxAnomaliaBaseline): Alerta | nul
   };
 }
 
-// Avalia todos os detectores e retorna TODOS os alertas ativos, ordenados por severidade.
-// Use quando precisar de multiplos alertas simultaneos por veiculo (ex: panico + desvio).
-export function avaliarTodos(
-  p: PosicaoNormalizada,
-  ctx: Parameters<typeof avaliar>[1]
-): Alerta[] {
-  const candidatos: Alerta[] = [
-    detectarPanico(p),
-    detectarBau(p, { noCliente: ctx.noCliente }),
-    detectarJammer(p),
-    detectarSaidaNaoAutorizada(p, {
-      foraDaBase: ctx.foraDaBase,
-      temPendentes: ctx.temPendentes ?? false,
-      entregasTotal: ctx.entregasTotal,
-      rumoMovimento: ctx.rumoMovimento ?? null,
-      rumoBase: ctx.rumoBase ?? null,
-      distBaseM: ctx.distBaseM ?? null,
-      temPOIProximo: ctx.temPOIProximo ?? false,
-    }),
-    detectarExcessoVelocidade(p),
-    detectarParadaCliente({
-      paradoMin: ctx.paradoMin,
-      emOperacao: ctx.emOperacao,
-      noCliente: ctx.noCliente,
-    }),
-    detectarParadaLonga({
-      paradoMin: ctx.paradoMin,
-      emOperacao: ctx.emOperacao,
-      foraDaBase: ctx.foraDaBase,
-      noCliente: ctx.noCliente,
-      temPOIProximo: ctx.temPOIProximo,
-      entregasFeitas: ctx.entregasFeitas,
-      entregasTotal: ctx.entregasTotal,
-    }),
-    ctx.estavEmMovimento !== undefined
-      ? detectarParadaAnomala({
-          paradoMin: ctx.paradoMin,
-          emOperacao: ctx.emOperacao,
-          foraDaBase: ctx.foraDaBase,
-          noCliente: ctx.noCliente ?? false,
-          estavEmMovimento: ctx.estavEmMovimento,
-          esMadrugada: ctx.esMadrugada ?? false,
-          emZonaRisco: ctx.emZonaRisco ?? false,
-          temPOIProximo: ctx.temPOIProximo ?? false,
-          jaParedoNoCicloAnterior: ctx.jaParedoNoCicloAnterior ?? false,
-          vizinhosParados: ctx.vizinhosParados ?? 0,
-        })
-      : null,
-    detectarTiroteioProximo(p, {
-      distTiroteioM: ctx.distTiroteioM ?? null,
-      tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,
-    }),
-    ctx.distDestinosM !== undefined
-      ? aplicarBonusClasseViaria(detectarDesvio(p, {
-          distDestinosM: ctx.distDestinosM ?? [],
-          distDestinosAnteriorM: ctx.distDestinosAnteriorM ?? [],
-          temPendentes: ctx.temPendentes ?? false,
-          emOperacao: ctx.emOperacao,
-          foraDaBase: ctx.foraDaBase,
-          entregasFeitas: ctx.entregasFeitas,
-          alvosApiOk: ctx.alvosApiOk,
-          sabadoDiurnoComRota: ctx.sabadoDiurnoComRota,
-          streak: ctx.desvioStreak ?? 0,
-          afastamentoAcumuladoM: ctx.afastamentoAcumuladoM ?? 0,
-          dentroTapete: ctx.dentroTapete ?? null,
-          familiarVeiculo: ctx.familiarVeiculo ?? null,
-          riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
-          foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
-        }), ctx.quedaClasseViaria ?? false)
-      : null,
-  ].filter((a): a is Alerta => a !== null);
-
-  return candidatos.sort((a, b) => {
-    if (a.nivel === b.nivel) return b.score - a.score;
-    return a.nivel === "critico" ? -1 : 1;
-  });
-}
 
 // Conjunto de sinais de seguranca relevantes pra corroboracao -- confirmado
 // pela pesquisa de 11/07 como o padrao de maior confianca da industria

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, parOrigemDestinoTemHistoricoSuficiente, deveVerificarRecuperacao } from "./corredor-verificacao";
+import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, parOrigemDestinoTemHistoricoSuficiente, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "./corredor-verificacao";
 
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
   // Reduzido 11/07 (diretiva explicita: falso positivo aceitavel, prioridade
@@ -283,5 +283,33 @@ describe("deveVerificarRecuperacao (economia de orcamento OSRM na cerca virtual)
 
   it("veiculo desconhece mas frota cold-start (null/false): PRECISA verificar", () => {
     expect(deveVerificarRecuperacao(null, false)).toBe(true);
+  });
+});
+
+describe("paradaLongaInvalidaCache (achado 22/07: gap do design original de 09/07)", () => {
+  const AGORA = new Date("2026-07-22T12:00:00.000Z").getTime();
+
+  it("parado ha menos de 5min: nao invalida", () => {
+    const paradoDesde = new Date(AGORA - 3 * 60_000).toISOString();
+    expect(paradaLongaInvalidaCache(0, paradoDesde, AGORA)).toBe(false);
+  });
+
+  it("parado ha exatamente 5min: invalida", () => {
+    const paradoDesde = new Date(AGORA - 5 * 60_000).toISOString();
+    expect(paradaLongaInvalidaCache(0, paradoDesde, AGORA)).toBe(true);
+  });
+
+  it("parado ha mais de 5min: invalida", () => {
+    const paradoDesde = new Date(AGORA - 10 * 60_000).toISOString();
+    expect(paradaLongaInvalidaCache(0, paradoDesde, AGORA)).toBe(true);
+  });
+
+  it("veiculo NAO estava parado no ciclo anterior (velocidade != 0): nao invalida, mesmo com parado_desde preenchido", () => {
+    const paradoDesde = new Date(AGORA - 10 * 60_000).toISOString();
+    expect(paradaLongaInvalidaCache(40, paradoDesde, AGORA)).toBe(false);
+  });
+
+  it("sem parado_desde (null): nao invalida, mesmo com velocidade=0", () => {
+    expect(paradaLongaInvalidaCache(0, null, AGORA)).toBe(false);
   });
 });

@@ -247,3 +247,23 @@ export function deveVerificarRecuperacao(
 ): boolean {
   return dentroTapete !== true && familiarVeiculo !== true;
 }
+
+// Achado real 22/07 (auditoria): fecha o gap do design original de 09/07
+// ("corredor cacheado invalida... quando veiculo para por 5+ min"), nunca
+// implementado. paradoMin (route.ts) so mede parada NO ciclo atual --
+// nao serve pra detectar "parou, e agora voltou a andar", que e o cenario
+// real aqui (corredor foi cacheado em movimento, veiculo para, quando
+// volta a andar o motor decide se reusa o cache ou revalida). Por isso
+// esta funcao olha o ciclo ANTERIOR: se ele estava parado (velocidade=0)
+// e ja tinha passado o limiar quando parou, invalida.
+const LIMIAR_PARADA_INVALIDA_CACHE_MIN = 5;
+
+export function paradaLongaInvalidaCache(
+  anteriorVelocidade: number | null,
+  anteriorParadoDesde: string | null,
+  agoraMs: number
+): boolean {
+  if (anteriorVelocidade !== 0 || !anteriorParadoDesde) return false;
+  const paradoMin = (agoraMs - new Date(anteriorParadoDesde).getTime()) / 60000;
+  return paradoMin >= LIMIAR_PARADA_INVALIDA_CACHE_MIN;
+}

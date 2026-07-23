@@ -39,7 +39,7 @@ import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
-import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao } from "@/lib/corredor-verificacao";
+import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
@@ -1711,6 +1711,7 @@ export async function POST(request: Request) {
                   alertaCerca = {
                     nivel: "critico",
                     tipo: "desvio",
+                    origemDesvio: "cerca_virtual",
                     motivo: `Fora da rota esperada (${distFmt} da estrada real até o próximo ponto, buffer ${bufferCerca}m)`,
                     score: cerca.foraStreak >= 3 ? 85 : 75,
                   };
@@ -1899,7 +1900,8 @@ export async function POST(request: Request) {
               cache &&
               cache.expiraEm > Date.now() &&
               cache.pendentesChave === pendentesChave &&
-              cache.origemTs === desvioInicio.ts;
+              cache.origemTs === desvioInicio.ts &&
+              !paradaLongaInvalidaCache(anterior?.velocidade ?? null, anterior?.parado_desde ?? null, agora.getTime());
 
             if (cacheValido && cache && dentroDoCorredor(pos, cache.polilinha, bufferPorVelocidade(pos.velocidade))) {
               // Continua na estrada já confirmada: suprime sem API.
@@ -1994,12 +1996,6 @@ export async function POST(request: Request) {
           const candidatosCoreFinal = desvioSuprimidoPorCorredor
             ? candidatosCore.filter((c) => c.tipo !== "desvio")
             : candidatosCore;
-          // Capturado ANTES da fusao com os extras pra distinguir, depois,
-          // se o vencedor final "desvio" veio do detector comportamental
-          // (associado a corredorInfo) ou do alertaCerca (fonte separada,
-          // proprio veredito de corredor, sem relacao com corredorInfo).
-          const desvioComportamental = candidatosCoreFinal.find((c) => c.tipo === "desvio") ?? null;
-
           alerta = arbitrarCandidatos([...candidatosCoreFinal, ...extras]);
           if (alerta) {
             if (pos.fresco) {
@@ -2015,7 +2011,7 @@ export async function POST(request: Request) {
             });
           }
           if (alerta) {
-            const segmentoEspecifico = segmentoCalibracaoPreferido(alerta, desvioComportamental, corredorInfo?.veredito);
+            const segmentoEspecifico = segmentoCalibracaoPreferido(alerta, corredorInfo?.veredito);
             const taxaFp = (segmentoEspecifico !== null ? mapaCalibracao.get(segmentoEspecifico) : undefined)
               ?? mapaCalibracao.get(`tipo:${alerta.tipo}`);
             if (taxaFp !== undefined) {

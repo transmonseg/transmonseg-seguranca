@@ -33,15 +33,16 @@ export function aplicarFatorCalibrado(scoreBase: number, taxaFalsoPositivo: numb
 // corredorInfo pra calibracao misturaria amostras de fontes diferentes sob
 // a mesma chave de segmento. Retorna null quando o segmento mais
 // especifico (por veredito de corredor) nao se aplica -- quem chama cai
-// pro fallback `tipo:${alerta.tipo}`.
+// pro fallback `tipo:${alerta.tipo}`. Desde 22/07 (auditoria): a origem e
+// lida do campo estrutural `origemDesvio` em vez de comparar
+// `motivo.startsWith(...)` -- esse matching por string quebrava
+// silenciosamente toda vez que o texto do motivo mudava (ja mudou 3 vezes
+// so nesta sessao).
 export function segmentoCalibracaoPreferido(
-  alerta: { tipo: string; motivo: string },
-  desvioComportamental: { motivo: string } | null,
+  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" },
   corredorVeredito: string | null | undefined
 ): string | null {
-  const veioDoComportamental =
-    desvioComportamental !== null && alerta.motivo.startsWith(desvioComportamental.motivo);
-  if (alerta.tipo === "desvio" && veioDoComportamental && corredorVeredito) {
+  if (alerta.tipo === "desvio" && alerta.origemDesvio === "comportamental" && corredorVeredito) {
     return `corredor_veredito:${corredorVeredito}`;
   }
   return null;

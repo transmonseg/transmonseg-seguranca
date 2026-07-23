@@ -291,11 +291,13 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.nivel).toBe("critico");
     expect(a?.score).toBe(80);
     expect(a?.motivo).toContain("fora de via conhecida");
+    expect(a?.origemDesvio).toBe("comportamental");
   });
 
   it("streak 4 escala pra critico mesmo dentro do tapete (persistencia longa)", () => {
     const a = detectarDesvio(emMov, { ...base, streak: 4, dentroTapete: true });
     expect(a?.nivel).toBe("critico");
+    expect(a?.origemDesvio).toBe("comportamental");
   });
 
   it("desvio pequeno (afastamento acumulado de so 300m) ja dispara atencao", () => {
@@ -393,6 +395,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.nivel).toBe("atencao");
     expect(a?.score).toBe(30);
     expect(a?.motivo).toContain("Muito além");
+    expect(a?.origemDesvio).toBe("comportamental");
   });
 
   it("acima do novo teto (300km) e NAO afastando de tudo: continua silencioso", () => {
@@ -433,6 +436,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a?.nivel).toBe("critico");
     expect(a?.score).toBe(80);
     expect(a?.motivo).toContain("área de risco elevado");
+    expect(a?.origemDesvio).toBe("comportamental");
   });
 
   it("via conhecida e area de risco BAIXO (abaixo do limiar): mantem escalonamento normal (score 45 no streak 2)", () => {
@@ -525,6 +529,11 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     });
     expect(a).not.toBeNull();
   });
+
+  it("todo alerta de desvio comportamental tem origemDesvio='comportamental' (achado 22/07)", () => {
+    const a = detectarDesvio(emMov, { ...base, streak: 2 });
+    expect(a?.origemDesvio).toBe("comportamental");
+  });
 });
 
 describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
@@ -548,6 +557,7 @@ describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- v
     const a = detectarDesvio(emMov2, { ...baseAproximando, foraTapeteStreak: 8 });
     expect(a).not.toBeNull();
     expect(a?.motivo).toContain("nunca percorreu");
+    expect(a?.origemDesvio).toBe("comportamental");
   });
 
   it("aproximando e DENTRO do tapete (streak 0): nao dispara", () => {

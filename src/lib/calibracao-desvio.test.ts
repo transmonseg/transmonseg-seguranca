@@ -41,33 +41,30 @@ describe("aplicarFatorCalibrado", () => {
   });
 });
 
-describe("segmentoCalibracaoPreferido (achado real 12/07, auditoria adversarial)", () => {
+describe("segmentoCalibracaoPreferido (achado real 12/07, campo estrutural desde 22/07)", () => {
   it("desvio vencedor veio do detector comportamental: usa segmento por veredito de corredor", () => {
-    const desvioComportamental = { motivo: "Afastando-se de todos os 3 destinos ha 2 leituras" };
-    const alerta = { tipo: "desvio", motivo: "Afastando-se de todos os 3 destinos ha 2 leituras (+1,2km)" };
-    expect(segmentoCalibracaoPreferido(alerta, desvioComportamental, "fora")).toBe("corredor_veredito:fora");
+    const alerta = { tipo: "desvio", origemDesvio: "comportamental" as const };
+    expect(segmentoCalibracaoPreferido(alerta, "fora")).toBe("corredor_veredito:fora");
   });
 
-  it("desvio vencedor veio da cerca virtual (motivo nao bate com o comportamental): nao usa veredito de corredor", () => {
-    const desvioComportamental = { motivo: "Afastando-se de todos os 3 destinos ha 2 leituras" };
-    const alertaCerca = { tipo: "desvio", motivo: "Fora da rota esperada (300m da estrada real ate o proximo ponto, buffer 120m)" };
-    expect(segmentoCalibracaoPreferido(alertaCerca, desvioComportamental, "fora")).toBeNull();
+  it("desvio vencedor veio da cerca virtual: nao usa veredito de corredor", () => {
+    const alerta = { tipo: "desvio", origemDesvio: "cerca_virtual" as const };
+    expect(segmentoCalibracaoPreferido(alerta, "fora")).toBeNull();
   });
 
-  it("nao havia candidato comportamental nesse ciclo (so a cerca disparou): nao usa veredito de corredor", () => {
-    const alertaCerca = { tipo: "desvio", motivo: "Fora da rota esperada (300m da estrada real ate o proximo ponto, buffer 120m)" };
-    expect(segmentoCalibracaoPreferido(alertaCerca, null, "fora")).toBeNull();
+  it("origemDesvio ausente (nao deveria acontecer em producao, mas defensivo): nao usa veredito de corredor", () => {
+    const alerta = { tipo: "desvio" };
+    expect(segmentoCalibracaoPreferido(alerta, "fora")).toBeNull();
   });
 
-  it("corredorInfo nao tem veredito (indisponivel/orcamento_estourado): nao usa segmento especifico mesmo vindo do comportamental", () => {
-    const desvioComportamental = { motivo: "Afastando-se de todos os 3 destinos ha 2 leituras" };
-    const alerta = { tipo: "desvio", motivo: "Afastando-se de todos os 3 destinos ha 2 leituras (+1,2km)" };
-    expect(segmentoCalibracaoPreferido(alerta, desvioComportamental, undefined)).toBeNull();
-    expect(segmentoCalibracaoPreferido(alerta, desvioComportamental, null)).toBeNull();
+  it("corredorVeredito nao tem veredito (indisponivel/orcamento_estourado): nao usa segmento especifico mesmo vindo do comportamental", () => {
+    const alerta = { tipo: "desvio", origemDesvio: "comportamental" as const };
+    expect(segmentoCalibracaoPreferido(alerta, undefined)).toBeNull();
+    expect(segmentoCalibracaoPreferido(alerta, null)).toBeNull();
   });
 
   it("alerta vencedor nao e desvio: nunca usa segmento por veredito de corredor", () => {
-    const alerta = { tipo: "jammer", motivo: "Sinal de GPS perdido de forma abrupta" };
-    expect(segmentoCalibracaoPreferido(alerta, null, "fora")).toBeNull();
+    const alerta = { tipo: "jammer" };
+    expect(segmentoCalibracaoPreferido(alerta, "fora")).toBeNull();
   });
 });
