@@ -1095,14 +1095,14 @@ export async function POST(request: Request) {
       // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
       const { data: todosAlertasAbertos } = await supabase
         .from("alertas")
-        .select("id, tipo, veiculo_id")
+        .select("id, tipo, veiculo_id, nivel")
         .eq("cliente_id", cliente.id)
         .in("status", ["ativo", "reconhecido"]);
 
-      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string }[]>();
+      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string }[]>();
       for (const ab of todosAlertasAbertos ?? []) {
         const lista = mapaAlertasAbertos.get(ab.veiculo_id) ?? [];
-        lista.push({ id: ab.id, tipo: ab.tipo });
+        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel });
         mapaAlertasAbertos.set(ab.veiculo_id, lista);
       }
 
@@ -2152,7 +2152,8 @@ export async function POST(request: Request) {
           );
 
           if (alerta) {
-            const jaExiste = (alertasAbertos ?? []).some((a) => a.tipo === alerta.tipo);
+            const alertaExistente = (alertasAbertos ?? []).find((a) => a.tipo === alerta.tipo);
+            const jaExiste = alertaExistente !== undefined;
             const silenciado = tiposSilenciados.has(alerta.tipo);
 
             if (!silenciado) {
@@ -2167,8 +2168,8 @@ export async function POST(request: Request) {
                   .in("id", alertasObsoletos.map((a) => a.id));
               }
 
+              const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null;
               if (!jaExiste) {
-                const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null;
                 await supabase.from("alertas").insert({
                   cliente_id,
                   veiculo_id,
@@ -2190,6 +2191,34 @@ export async function POST(request: Request) {
                     : {},
                   desde: agora.toISOString(),
                 });
+              } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
+                // Achado real 22/07 (revisao final de whole-branch, sub-projeto
+                // C): o alerta FRACO de desvio (nivel atencao, teto de 300km)
+                // nunca fecha sozinho -- sem este escalation, ele bloqueava
+                // silenciosamente a insercao de um desvio CRITICO real do
+                // mesmo tipo que surgisse depois (jaExiste=true). Agora, se o
+                // novo alerta e mais severo que o existente do mesmo tipo,
+                // escala a linha existente (preserva id/desde) em vez de
+                // descartar o sinal mais grave.
+                await supabase
+                  .from("alertas")
+                  .update({
+                    nivel: alerta.nivel,
+                    motivo: alerta.motivo,
+                    score: alerta.score,
+                    ...(ehDesvio
+                      ? {
+                          lat: desvioInicio!.lat,
+                          lng: desvioInicio!.lng,
+                          contexto: {
+                            inicio_ts: desvioInicio!.ts,
+                            fora_tapete: dentroTapete === false,
+                            ...(corredorInfo ? { corredor: corredorInfo } : {}),
+                          },
+                        }
+                      : {}),
+                  })
+                  .eq("id", alertaExistente.id);
               }
             }
           } else if (alertasGerenciados.length > 0) {
