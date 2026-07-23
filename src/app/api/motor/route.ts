@@ -129,11 +129,27 @@ const cacheCorredorPorVeiculo = new Map<string, CorredorCache>();
 // Achado real 22/07 (auditoria): unificado de 2 orcamentos separados
 // (CERCA_SEEDS_POR_CICLO=3 + MAX_VERIFICACOES_POR_CICLO=3, ate 7 chamadas
 // seriais sem teto coordenado) pra 1 orcamento compartilhado. Pior caso
-// cai de ~7,7s pra ~6,6s por ciclo. Cerca virtual tem prioridade natural
-// (seu bloco roda antes do comportamental na ordem do codigo, por
-// veiculo) -- sem logica de prioridade extra, seria complexidade
-// desproporcional ao problema real.
+// cai de ~7,7s pra ~6,6s por ciclo. A ordem do codigo (cerca antes do
+// comportamental, por veiculo) NAO protege o comportamental sozinha --
+// ela so vale DENTRO de um mesmo veiculo, e a semeadura da cerca roda pra
+// MUITOS veiculos por ciclo (warmup da frota inteira, cache expirando a
+// cada CERCA_CACHE_MS). Por isso ha reserva explicita (achado real 22/07,
+// revisao final de whole-branch): ver RESERVA_COMPORTAMENTAL_POR_CICLO
+// logo abaixo, que garante um piso pro comportamental mesmo se a cerca
+// consumisse o orcamento inteiro em veiculos anteriores no mesmo ciclo.
 const ORCAMENTO_CORREDOR_POR_CICLO = 6;
+// Achado real 22/07 (revisao final de whole-branch): sem reserva, a
+// semeadura da cerca virtual (que roda pra MUITOS veiculos em cenarios de
+// warmup -- frota inteira de manha, ou toda vez que CERCA_CACHE_MS=20min
+// expira / pendentes mudam) podia consumir o orcamento compartilhado
+// inteiro antes de qualquer veiculo chegar na verificacao comportamental
+// no mesmo ciclo -- zerando a garantia que a verificacao comportamental
+// tinha antes da unificacao (pote proprio, MAX_VERIFICACOES_POR_CICLO=3).
+// Reserva minima: cerca (semeadura+recuperacao juntas) fica limitada a
+// ORCAMENTO_CORREDOR_POR_CICLO - RESERVA_COMPORTAMENTAL_POR_CICLO = 4 (o
+// mesmo teto que ja tinha antes da unificacao), garantindo que sempre
+// sobrem pelo menos 2 pro comportamental.
+const RESERVA_COMPORTAMENTAL_POR_CICLO = 2;
 
 // ─── CERCA VIRTUAL de rota (Fase 1 do plano de 10/07) -- ATIVA (11/07) ───
 // Achado real 10/07: o gatilho comportamental ("afastar de TODOS os N
@@ -1619,7 +1635,7 @@ export async function POST(request: Request) {
               // Semeadura: rota real daqui ate o pendente mais proximo.
               // Pressupoe veiculo em rota legitima NESTE momento (se ja
               // estiver desviado, o gatilho comportamental cobre).
-              if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
+              if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO - RESERVA_COMPORTAMENTAL_POR_CICLO) {
                 chamadasCorredorNoCiclo++;
                 const r = await verificarCorredor(
                   { lat: pos.lat, lng: pos.lng },
@@ -1644,7 +1660,7 @@ export async function POST(request: Request) {
               cerca.foraStreak = 0;
             } else if (
               cerca &&
-              chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO &&
+              chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO - RESERVA_COMPORTAMENTAL_POR_CICLO &&
               deveVerificarRecuperacao(dentroTapete, familiarVeiculo)
             ) {
               // Saiu do corredor conhecido: tenta RECUPERAR (motorista pode
