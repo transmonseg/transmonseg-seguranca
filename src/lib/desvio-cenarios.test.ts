@@ -329,16 +329,38 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
     expect(resultados[2]?.exigeConfirmacaoCorredor).toBe(true);
   });
 
-  it("DESLOCAMENTO INTERURBANO legitimo (destino > 300km): nao dispara mesmo se afastando", () => {
-    // Teto subido de 80km pra 300km em 12/07 (ver DESVIO_GATILHO_TETO_M) --
-    // 120km (antigo cenario deste teste) agora e desvio local de verdade,
-    // so acima de 300km e que continua sendo deslocamento interurbano puro.
+  it("DESLOCAMENTO INTERURBANO legitimo (destino > 300km) AFASTANDO COM STREAK 2: dispara alerta FRACO (achado 22/07)", () => {
+    // Achado real 22/07 (auditoria): fecha o "ponto cego" de silencio total
+    // acima do teto -- agora dispara alerta FRACO quando ha streak >= 2 e esta
+    // afastando de tudo, mesmo acima de 300km. Isto e uma mudança intencional:
+    // viagem legitima >300km que esteja APROXIMANDO de algo continua silenciosa
+    // (validar com o teste seguinte), so o caso genuinamente suspeito
+    // (afastando, sustentado) passa a alertar.
     const destinoLonge = { lat: MANGUINHOS.lat + 3.0, lng: MANGUINHOS.lng + 3.0 }; // ~450km
     const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
       lat: MANGUINHOS.lat - i * 0.01, lng: MANGUINHOS.lng - i * 0.01, dentroTapete: false,
     }));
     const resultados = simular(destinoLonge, ciclos);
-    expect(resultados.every(r => r === null)).toBe(true);
+    expect(resultados[0]).toBeNull(); // streak 0: nao dispara
+    expect(resultados[1]).toBeNull(); // streak 1: abaixo do piso de 2, nao dispara
+    expect(resultados[2]).not.toBeNull(); // streak 2: dispara alerta FRACO
+    expect(resultados[2]?.nivel).toBe("atencao");
+    expect(resultados[2]?.score).toBe(30);
+  });
+
+  it("DESLOCAMENTO INTERURBANO legitimo (destino > 300km) APROXIMANDO: continua silencioso mesmo com streak", () => {
+    // Contraprova: viagem legitima >300km que esteja se aproximando de algum
+    // destino (ou ao menos nao se afastando de TODOS) nao dispara nem com
+    // streak >= 2 -- so o genuinamente suspeito (afastando persistente) gera
+    // ruido.
+    const destinoLonge = { lat: MANGUINHOS.lat + 3.0, lng: MANGUINHOS.lng + 3.0 }; // ~450km
+    const ciclos: Ciclo[] = Array.from({ length: 3 }, (_, i) => ({
+      // Agora movemento em direcao ao destino (fracao crescente do caminho)
+      ...aproximarDe(MANGUINHOS, destinoLonge, i * 0.1),
+      dentroTapete: false,
+    }));
+    const resultados = simular(destinoLonge, ciclos);
+    expect(resultados.every(r => r === null)).toBe(true); // Todos silenciosos
   });
 
   it("DESLOCAMENTO legitimo antigo (destino ~120km, entre o teto velho 80km e o novo 300km): dispara agora", () => {

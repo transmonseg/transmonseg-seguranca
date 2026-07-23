@@ -382,15 +382,27 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a).not.toBeNull();
   });
 
-  it("acima do novo teto de deslocamento interurbano (300km) nao dispara", () => {
-    // Subido de 80km pra 300km em 12/07 (revisao linha por linha a pedido
-    // do usuario): 80km ainda escondia desvio de verdade acima disso --
-    // cobre confortavelmente qualquer entrega dentro do RJ e estados
-    // vizinhos (SP, MG, ES), mantendo so um piso de sanidade contra GPS
-    // corrompido.
-    expect(detectarDesvio(emMov, {
+  it("acima do novo teto (300km) MAS afastando de tudo: dispara alerta FRACO (achado 22/07)", () => {
+    // Achado real 22/07 (auditoria): fecha o "ponto cego" documentado desde
+    // 12/07 -- sequestro que passe do teto nao fica mais 100% invisivel,
+    // vira alerta de baixa confianca (nivel atencao) em vez de silencio.
+    const a = detectarDesvio(emMov, {
       ...base, distDestinosM: [350000, 355000], distDestinosAnteriorM: [349000, 354000],
-    })).toBeNull();
+    });
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.score).toBe(30);
+    expect(a?.motivo).toContain("Muito além");
+  });
+
+  it("acima do novo teto (300km) e NAO afastando de tudo: continua silencioso", () => {
+    // Viagem legitima >300km que esta se aproximando de algum destino nao
+    // deve gerar ruido -- so o caso genuinamente suspeito (afastando de
+    // tudo, sustentado) passa a alertar.
+    const a = detectarDesvio(emMov, {
+      ...base, distDestinosM: [350000, 355000], distDestinosAnteriorM: [351000, 356000],
+    });
+    expect(a).toBeNull();
   });
 
   it("sem destinos (array vazio) nao dispara", () => {
@@ -498,6 +510,20 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
       ...base, emOperacao: false, sabadoDiurnoComRota: false, dentroTapete: true,
       temPendentes: false, distDestinosM: [12000], distDestinosAnteriorM: [11000],
     })).toBeNull();
+  });
+
+  it("abaixo do piso minimo (2500m) nao dispara -- provavel manobra/estacionamento no destino", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, distDestinosM: [2000, 2200], distDestinosAnteriorM: [1900, 2100],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("exatamente no piso (2500m) ou logo acima: comportamento normal (nao bloqueado pelo piso)", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, distDestinosM: [2500, 2700], distDestinosAnteriorM: [2400, 2600],
+    });
+    expect(a).not.toBeNull();
   });
 });
 

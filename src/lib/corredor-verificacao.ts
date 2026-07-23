@@ -24,6 +24,14 @@ type Ponto = { lat: number; lng: number };
 // afastar mais da polilinha do que o buffer de transito permite. Buffer
 // alargado so nessa zona, mantendo o buffer apertado no resto do trajeto
 // (onde o risco de desvio de verdade importa mais).
+//
+// Achado da auditoria de 22/07: esse mesmo alargamento tambem cobre a area
+// de MAIOR risco (perto do cliente, onde ocorre a descarga) -- um desvio
+// real de ate 250m nessa zona especifica (ex.: descarregar em outro lugar)
+// fica com deteccao mais fraca. Decisao consciente: reduzir o buffer
+// aumentaria falso positivo em toda manobra legitima de chegada, e nao ha
+// dado disponivel (endereco de portaria/doca) pra distinguir os dois casos
+// com precisao. Risco aceito, nao descuido.
 const RAIO_CHEGADA_M = 300;
 const BUFFER_CHEGADA_M = 250;
 

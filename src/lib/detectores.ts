@@ -327,6 +327,14 @@ export function detectarParadaAnomala(ctx: {
 const DESVIO_GATILHO_TETO_M = 300000;
 // Distância (m) usada só pra RESOLVER o alerta (voltou perto de algo = chegou).
 const DESVIO_RESOLVE_M = 2500;
+// Achado real 22/07 (auditoria): piso original do design de 06/07, removido
+// silenciosamente durante a Fase Agressiva de 11/07 sem nenhuma spec
+// documentando a remocao. Restaurado -- abaixo disso, o veiculo esta perto
+// o suficiente de algum destino que e mais provavel manobra/estacionamento
+// normal do que desvio de verdade. Mesmo valor numerico de DESVIO_RESOLVE_M
+// por coincidencia (nao e o mesmo conceito -- um e piso pra CRIAR o alerta,
+// outro e a distancia pra RESOLVER -- mantidos como constantes separadas).
+const DESVIO_MIN_M = 2500;
 // Crescimento mínimo por ciclo pra contar como afastamento real (ruído de GPS).
 const AFASTAMENTO_MARGEM_M = 50;
 // Ciclos consecutivos (aproximando de algum destino, mas fora do tapete
@@ -598,10 +606,12 @@ export function foraDeRota(
 }
 
 // Detector de DESVIO (gatilho de criação). Rápido de propósito: streak>=2
-// (~2min) já dispara, sem piso de distância — um desvio pequeno pode ser
-// um assalto começando. A precisão vem de exigir afastamento de TODOS os
-// destinos (não só o mais próximo), do tapete (via desconhecida, com
-// cobertura mínima confirmada) e da persistência (mata ruído de GPS).
+// (~2min) já dispara. Piso de distância mínima (DESVIO_MIN_M) RESTAURADO
+// em 22/07 -- tinha sido removido silenciosamente na Fase Agressiva de
+// 11/07 sem nenhuma spec documentando (achado da auditoria de 22/07). A
+// precisão vem de exigir afastamento de TODOS os destinos (não só o mais
+// próximo), do tapete (via desconhecida, com cobertura mínima confirmada),
+// da persistência (mata ruído de GPS) e agora também do piso mínimo.
 export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | null {
   if (ctx.alvosApiOk === false) return null;
   // Achado real 11/07 (diretiva explicita: falso positivo aceitavel,
@@ -628,9 +638,26 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   if (ctx.distDestinosM.length === 0) return null;
 
   const menorDistM = Math.min(...ctx.distDestinosM);
-  if (menorDistM > DESVIO_GATILHO_TETO_M) return null;
-
   const afastandoDeTudo = afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM);
+
+  // Achado real 22/07 (auditoria): acima do teto, em vez de silencio total,
+  // dispara um alerta FRACO (nivel atencao) se o veiculo ainda estiver se
+  // afastando de tudo -- fecha o "ponto cego" documentado desde 12/07
+  // (sequestro que passe do teto ficava 100% invisivel), sem inflar o
+  // volume de alertas criticos (viagem legitima >300km que nao esta se
+  // afastando de nada continua silenciosa).
+  if (menorDistM > DESVIO_GATILHO_TETO_M) {
+    if (afastandoDeTudo && ctx.streak >= 2) {
+      return {
+        nivel: "atencao",
+        tipo: "desvio",
+        motivo: `Muito além do raio de verificação detalhada (${(menorDistM / 1000).toFixed(0)}km de todos os ${ctx.distDestinosM.length} destinos) — alerta de baixa confiança, revisar manualmente`,
+        score: 30,
+      };
+    }
+    return null;
+  }
+  if (menorDistM < DESVIO_MIN_M) return null;
 
   // Ponto cego do gatilho principal: aproximar de QUALQUER destino cancela a
   // suspeita, mesmo que o caminho até lá nunca tenha sido percorrido pela
