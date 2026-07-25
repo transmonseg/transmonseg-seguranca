@@ -18,27 +18,11 @@ type Ponto = { lat: number; lng: number };
 // Reduzido de 300/600 pra 120/200 em 11/07 (diretiva explicita do usuario:
 // falso positivo aceitavel, prioridade total e nunca perder desvio real).
 //
-// Achado real 15/07 (caso 3C94, 13:20): o OSRM/Valhalla roteia so ate a via
-// publica mais proxima do destino, nunca ate a portaria/doca real -- na
-// manobra final de chegada (~200-300m) e normal e legitimo o veiculo se
-// afastar mais da polilinha do que o buffer de transito permite. Buffer
-// alargado so nessa zona, mantendo o buffer apertado no resto do trajeto
-// (onde o risco de desvio de verdade importa mais).
-//
-// Achado da auditoria de 22/07: esse mesmo alargamento tambem cobre a area
-// de MAIOR risco (perto do cliente, onde ocorre a descarga) -- um desvio
-// real de ate 250m nessa zona especifica (ex.: descarregar em outro lugar)
-// fica com deteccao mais fraca. Decisao consciente: reduzir o buffer
-// aumentaria falso positivo em toda manobra legitima de chegada, e nao ha
-// dado disponivel (endereco de portaria/doca) pra distinguir os dois casos
-// com precisao. Risco aceito, nao descuido.
-const RAIO_CHEGADA_M = 300;
-const BUFFER_CHEGADA_M = 250;
-
-export function bufferPorVelocidade(velKmH: number, distDestinoMaisPertoM?: number): number {
-  if (distDestinoMaisPertoM !== undefined && distDestinoMaisPertoM <= RAIO_CHEGADA_M) {
-    return BUFFER_CHEGADA_M;
-  }
+// Achado real 25/07 (redesign do desvio): o alargamento de buffer perto da
+// chegada foi removido -- a geofence de chegada (suspenderPorChegada, em
+// unitrac.ts) resolve o mesmo problema de forma mais precisa (raio real do
+// destino, nao um alargamento generico do buffer de rota).
+export function bufferPorVelocidade(velKmH: number): number {
   return velKmH >= 60 ? 200 : 120;
 }
 

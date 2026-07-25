@@ -93,6 +93,11 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
       familiarVeiculo: c.familiarVeiculo ?? null,
       riscoAreaAtual: c.riscoAreaAtual ?? 0,
       foraTapeteStreak: c.foraTapeteStreak ?? 0,
+      // Achado real 25/07 (redesign): campos novos de CtxDesvio, neutros
+      // aqui de proposito -- este arquivo isola o mecanismo de afastamento
+      // (nao exercita suspensao por chegada nem divergencia de rumo).
+      suspensoPorChegada: false,
+      divergenciaRumoStreak: 0,
     };
     resultados.push(detectarDesvio(posicaoBase({ velocidade }), ctx));
     anteriorDist = distDestinosM;
@@ -320,6 +325,8 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
         // senao dispararia ja no ciclo 0 (antes do proprio gate de streak
         // comportamental que o teste pretende provar).
         foraTapeteStreak: 0,
+        suspensoPorChegada: false,
+        divergenciaRumoStreak: 0,
       }));
       anteriorDist = distDestinosM;
     }

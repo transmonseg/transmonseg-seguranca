@@ -265,6 +265,46 @@ export function difAngulo(a: number, b: number): number {
   return d > 180 ? 360 - d : d;
 }
 
+const DIVERGENCIA_RUMO_VELOCIDADE_MIN_KMH = 10;
+const DIVERGENCIA_RUMO_LIMIAR_GRAUS = 100;
+const DIVERGENCIA_RUMO_STREAK_MIN = 2;
+
+// Achado real 25/07: compara o rumo REAL do movimento (posicao anterior ->
+// atual) contra o rumo ESPERADO (posicao atual -> destino legitimo mais
+// proximo). Divergencia alta = veiculo indo numa direcao que nao leva a
+// nenhum destino legitimo, mesmo que a distancia reta ainda esteja caindo
+// (pega o ponto cego do contorno de lagoa/baia, achado real 25/07). Piso de
+// velocidade: abaixo de 10km/h o rumo calculado a partir de 2 pontos GPS e
+// essencialmente ruido (deslocamento de poucos metros, erro do GPS domina).
+export function divergenciaRumoGraus(
+  anteriorLat: number,
+  anteriorLng: number,
+  atualLat: number,
+  atualLng: number,
+  destinoLat: number,
+  destinoLng: number,
+  velocidadeKmH: number = 999
+): number | null {
+  if (velocidadeKmH < DIVERGENCIA_RUMO_VELOCIDADE_MIN_KMH) return null;
+  const rumoReal = rumoGraus(anteriorLat, anteriorLng, atualLat, atualLng);
+  const rumoEsperado = rumoGraus(atualLat, atualLng, destinoLat, destinoLng);
+  return difAngulo(rumoReal, rumoEsperado);
+}
+
+// Decide se o streak acumulado de divergencia (persistido pelo motor,
+// mesmo padrao de fora_tapete_streak) e suficiente pra disparar. SEM
+// amortecimento por familiaridade (decisao revista pelo usuario 25/07,
+// depois da primeira versao ter proposto amortecer -- diretriz explicita:
+// "qualquer desvio de rota a gente vai identificar agora, mesmo que seja
+// falso"). Piso sempre 2, independente de o veiculo ja conhecer a area.
+export function divergenciaRumoDispara(streak: number): boolean {
+  return streak >= DIVERGENCIA_RUMO_STREAK_MIN;
+}
+
+export function divergenciaRumoAcimaDoLimiar(divergencia: number | null): boolean {
+  return divergencia !== null && divergencia > DIVERGENCIA_RUMO_LIMIAR_GRAUS;
+}
+
 // Ponto de entrega (feito OU pendente) mais proximo da posicao informada.
 // Diferente de alvoPendenteMaisProximo, considera TODOS os pontos da rota,
 // inclusive os ja concluidos. Serve para saber se o caminhao esta dentro
@@ -281,6 +321,24 @@ export function alvoMaisProximoQualquer(
     if (melhor === null || d < melhor.distM) melhor = { ponto: p, distM: d };
   }
   return melhor;
+}
+
+// Achado real 25/07 (redesign do detector de desvio): substitui a
+// heuristica "distancia liquida caindo cancela suspeita" (que gerava falso
+// positivo perto de cliente/base e escondia desvio real por rua errada
+// enquanto ainda se aproximava em linha reta). Em vez de confiar na
+// TENDENCIA de distancia, confia em geofence real: dentro do raio de
+// qualquer destino legitimo (mesmo piso de 150m ja usado em
+// alvoMaisProximoQualquer) OU dentro de um ponto_seguro (posto de
+// gasolina) -- nos dois casos, a checagem de desvio e suspensa neste ciclo.
+export function suspenderPorChegada(
+  distDestinoMaisPertoM: number,
+  raioDestinoMaisPerto: number,
+  emPontoSeguro: boolean
+): boolean {
+  if (emPontoSeguro) return true;
+  const raio = Math.max(raioDestinoMaisPerto, 150);
+  return distDestinoMaisPertoM <= raio;
 }
 
 // Busca o rastro (historico de posicoes) de um veiculo nas ultimas N horas.

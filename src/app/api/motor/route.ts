@@ -12,6 +12,10 @@ import {
   normalizar,
   centroideGeo,
   distanciaAoSegmentoM,
+  suspenderPorChegada,
+  divergenciaRumoGraus,
+  divergenciaRumoAcimaDoLimiar,
+  divergenciaRumoDispara,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
@@ -591,14 +595,15 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em");
 
     const mapaPosAtual = new Map<
       string,
       {
         lat: number | null; lng: number | null; velocidade: number | null;
         parado_desde: string | null; desvio_streak: number; desvio_inicio: DesvioInicio | null;
-        ultimo_evento: string | null; fora_tapete_streak: number; aproximando_streak: number;
+        ultimo_evento: string | null; fora_tapete_streak: number; divergencia_rumo_streak: number;
+        aproximando_streak: number;
         origem_celula: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
         ultima_via_principal_em: string | null;
@@ -615,6 +620,7 @@ export async function POST(request: Request) {
         desvio_inicio: (row.desvio_inicio as DesvioInicio | null) ?? null,
         ultimo_evento: row.ultimo_evento ?? null,
         fora_tapete_streak: row.fora_tapete_streak ?? 0,
+        divergencia_rumo_streak: row.divergencia_rumo_streak ?? 0,
         aproximando_streak: row.aproximando_streak ?? 0,
         origem_celula: row.origem_celula ?? null,
         no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
@@ -723,9 +729,9 @@ export async function POST(request: Request) {
     // correlacionada por linha é ~150x mais lenta (CTE com JOIN normal:
     // ~230ms pra ~300 veículos; scalar subquery por linha: ~35s — acima do
     // orçamento de um ciclo de 1min). Falha graciosa: sem dado, risco fica 0.
-    const riscoPorVeiculo = new Map<string, { emFavela: boolean; cisp: string | null; emCorredorRisco: boolean; emAreaRiscoCliente: boolean }>();
+    const riscoPorVeiculo = new Map<string, { emFavela: boolean; cisp: string | null; emCorredorRisco: boolean; emAreaRiscoCliente: boolean; emPontoSeguro: boolean }>();
     try {
-      const { rows } = await pool.query<{ veiculo_id: string; em_favela: boolean; cisp: string | null; em_corredor_risco: boolean; em_area_risco_cliente: boolean }>(
+      const { rows } = await pool.query<{ veiculo_id: string; em_favela: boolean; cisp: string | null; em_corredor_risco: boolean; em_area_risco_cliente: boolean; em_ponto_seguro: boolean }>(
         `WITH cisp AS (
            SELECT p.veiculo_id, g.meta->>'cisp' as cisp
            FROM posicoes_atuais p
@@ -753,7 +759,8 @@ export async function POST(request: Request) {
            EXISTS (SELECT 1 FROM geofences g WHERE g.tipo = 'favela' AND ST_Intersects(g.geom, p.geom)) AS em_favela,
            cisp.cisp,
            (corredor.veiculo_id IS NOT NULL) AS em_corredor_risco,
-           (area_cliente.veiculo_id IS NOT NULL) AS em_area_risco_cliente
+           (area_cliente.veiculo_id IS NOT NULL) AS em_area_risco_cliente,
+           EXISTS (SELECT 1 FROM geofences g WHERE g.tipo = 'ponto_seguro' AND ST_DWithin(g.geom, p.geom, 0)) AS em_ponto_seguro
          FROM posicoes_atuais p
          LEFT JOIN cisp ON cisp.veiculo_id = p.veiculo_id
          LEFT JOIN corredor ON corredor.veiculo_id = p.veiculo_id
@@ -761,7 +768,7 @@ export async function POST(request: Request) {
          WHERE p.atraso_min <= 60`
       );
       for (const r of rows) {
-        riscoPorVeiculo.set(r.veiculo_id, { emFavela: r.em_favela, cisp: r.cisp, emCorredorRisco: r.em_corredor_risco, emAreaRiscoCliente: r.em_area_risco_cliente });
+        riscoPorVeiculo.set(r.veiculo_id, { emFavela: r.em_favela, cisp: r.cisp, emCorredorRisco: r.em_corredor_risco, emAreaRiscoCliente: r.em_area_risco_cliente, emPontoSeguro: r.em_ponto_seguro });
       }
     } catch (errRisco) {
       erros.push(`Aviso: score de risco de area indisponivel neste ciclo: ${String(errRisco)}`);
@@ -833,6 +840,7 @@ export async function POST(request: Request) {
       datagps: string; parado_desde: string | null; updated_at: string; entregas_feitas: number;
       entregas_total: number; local: string | null; desvio_streak: number; rumo: number | null;
       ultimo_evento: string | null; desvio_inicio: string | null; fora_tapete_streak: number;
+      divergencia_rumo_streak: number;
       aproximando_streak: number; origem_celula: string | null;
       no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
       ultima_via_principal_em: string | null;
@@ -1424,6 +1432,39 @@ export async function POST(request: Request) {
             temAnterior && (anterior!.lat !== pos.lat || anterior!.lng !== pos.lng)
               ? rumoGraus(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)
               : null;
+
+          // Suspensao por chegada (achado 25/07): substitui a antiga
+          // heuristica de "distancia cancela". Usa o destino mais proximo
+          // (menor distDestinosM) + seu raio real.
+          const idxMaisProximo = distDestinosM.length > 0
+            ? distDestinosM.indexOf(Math.min(...distDestinosM))
+            : -1;
+          const raioDestinoMaisProximo = idxMaisProximo >= 0 && pendentes[idxMaisProximo]
+            ? pendentes[idxMaisProximo].raio
+            : 250; // base nao tem raio proprio -- usa o mesmo default de bases.raio_m
+          const emPontoSeguro = riscoPorVeiculo.get(veiculo_id)?.emPontoSeguro ?? false;
+          const suspensoPorChegada = idxMaisProximo >= 0
+            ? suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, emPontoSeguro)
+            : emPontoSeguro;
+
+          // Divergencia de rumo (achado 25/07): compara rumoMovimento (ja
+          // calculado acima) contra o rumo esperado ate o destino mais
+          // proximo. Streak persistido igual foraTapeteStreak.
+          let divergenciaRumoStreak: number = anterior?.divergencia_rumo_streak ?? 0;
+          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
+            const divergencia = divergenciaRumoGraus(
+              anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
+              destinos[idxMaisProximo].lat, destinos[idxMaisProximo].lng,
+              pos.velocidade
+            );
+            if (divergenciaRumoAcimaDoLimiar(divergencia)) {
+              divergenciaRumoStreak += 1;
+            } else {
+              divergenciaRumoStreak = 0;
+            }
+          } else {
+            divergenciaRumoStreak = 0;
+          }
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
           let tiroteioIdadeMin: number | null = null;
@@ -1608,13 +1649,7 @@ export async function POST(request: Request) {
             const cerca = cacheCercaPorVeiculo.get(veiculo_id);
             const cercaValida =
               cerca && cerca.pendentesChave === chaveCerca && Date.now() - cerca.calculadoEm < CERCA_CACHE_MS;
-            // Achado real 15/07 (caso 3C94): buffer alargado perto da chegada
-            // (o corredor OSRM so vai ate a via publica, nunca ate a
-            // portaria/doca real) -- ver bufferPorVelocidade.
-            const distDestinoMaisPertoM = destinosCerca.length > 0
-              ? Math.min(...destinosCerca.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng)))
-              : undefined;
-            const bufferCerca = bufferPorVelocidade(pos.velocidade, distDestinoMaisPertoM);
+            const bufferCerca = bufferPorVelocidade(pos.velocidade);
             // Achado real 11/07: nao existe ordem de entrega, o motorista
             // escolhe livremente qual pendente visitar primeiro. Cortar em
             // "3 mais proximos" presumia que o motorista ia pro mais perto,
@@ -1839,6 +1874,8 @@ export async function POST(request: Request) {
                   quedaClasseViaria,
                   riscoAreaAtual,
                   foraTapeteStreak,
+                  suspensoPorChegada,
+                  divergenciaRumoStreak,
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
@@ -2103,6 +2140,7 @@ export async function POST(request: Request) {
             ultimo_evento: pos.evento,
             desvio_inicio: desvioInicio ? JSON.stringify(desvioInicio) : null,
             fora_tapete_streak: foraTapeteStreak,
+            divergencia_rumo_streak: divergenciaRumoStreak,
             aproximando_streak: aproximandoStreak,
             origem_celula: origemCelula,
             no_raio_alvo_codigo: noRaioAlvoCodigo,
@@ -2264,8 +2302,9 @@ export async function POST(request: Request) {
               panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
               entregas_feitas, entregas_total, local, desvio_streak, rumo,
               ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
-              aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
-              no_raio_dwell_segundos, ultima_via_principal_em)
+              divergencia_rumo_streak, aproximando_streak, origem_celula,
+              no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
+              ultima_via_principal_em)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -2273,22 +2312,23 @@ export async function POST(request: Request) {
              c.nivel, c.motivo, c.datagps::timestamptz, c.parado_desde::timestamptz,
              c.updated_at::timestamptz, c.entregas_feitas, c.entregas_total, c.local,
              c.desvio_streak, c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
-             c.desvio_inicio::jsonb, c.fora_tapete_streak, c.aproximando_streak,
-             c.origem_celula, c.no_raio_alvo_codigo, c.no_raio_desde::timestamptz,
-             c.no_raio_dwell_segundos, c.ultima_via_principal_em::timestamptz
+             c.desvio_inicio::jsonb, c.fora_tapete_streak, c.divergencia_rumo_streak,
+             c.aproximando_streak, c.origem_celula, c.no_raio_alvo_codigo,
+             c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
+             c.ultima_via_principal_em::timestamptz
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
-             $21::integer[], $22::integer[], $23::text[], $24::integer[], $25::text[],
-             $26::integer[], $27::text[]
+             $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
+             $26::text[], $27::integer[], $28::text[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
-                  ultimo_evento, desvio_inicio, fora_tapete_streak, aproximando_streak,
-                  origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
-                  ultima_via_principal_em)
+                  ultimo_evento, desvio_inicio, fora_tapete_streak, divergencia_rumo_streak,
+                  aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
+                  no_raio_dwell_segundos, ultima_via_principal_em)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -2313,6 +2353,7 @@ export async function POST(request: Request) {
              ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
                                   THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END,
              fora_tapete_streak = EXCLUDED.fora_tapete_streak,
+             divergencia_rumo_streak = EXCLUDED.divergencia_rumo_streak,
              aproximando_streak = EXCLUDED.aproximando_streak,
              origem_celula      = EXCLUDED.origem_celula,
              no_raio_alvo_codigo = EXCLUDED.no_raio_alvo_codigo,
@@ -2341,6 +2382,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.ultimo_evento),
             posicoesCiclo.map((p) => p.desvio_inicio),
             posicoesCiclo.map((p) => p.fora_tapete_streak),
+            posicoesCiclo.map((p) => p.divergencia_rumo_streak),
             posicoesCiclo.map((p) => p.aproximando_streak),
             posicoesCiclo.map((p) => p.origem_celula),
             posicoesCiclo.map((p) => p.no_raio_alvo_codigo),

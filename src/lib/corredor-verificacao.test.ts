@@ -4,25 +4,14 @@ import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorred
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
   // Reduzido 11/07 (diretiva explicita: falso positivo aceitavel, prioridade
   // e nunca perder desvio real) -- 300/600m escondia desvios de ~100-200m.
+  // Achado real 25/07 (redesign do desvio): o alargamento de buffer perto da
+  // chegada foi removido -- a geofence de chegada resolve isso de forma mais precisa.
   it("abaixo de 60 km/h: 120m (urbano)", () => {
     expect(bufferPorVelocidade(40)).toBe(120);
     expect(bufferPorVelocidade(0)).toBe(120);
   });
   it("60 km/h ou mais: 200m (rodovia/serra)", () => {
     expect(bufferPorVelocidade(60)).toBe(200);
-    expect(bufferPorVelocidade(90)).toBe(200);
-  });
-  it("dentro de 300m de um destino: 250m (zona de chegada), independente da velocidade", () => {
-    expect(bufferPorVelocidade(40, 100)).toBe(250);
-    expect(bufferPorVelocidade(90, 300)).toBe(250);
-    expect(bufferPorVelocidade(0, 0)).toBe(250);
-  });
-  it("mais de 300m de um destino: comportamento normal por velocidade", () => {
-    expect(bufferPorVelocidade(40, 301)).toBe(120);
-    expect(bufferPorVelocidade(90, 5000)).toBe(200);
-  });
-  it("sem distancia informada (parametro omitido): comportamento atual preservado", () => {
-    expect(bufferPorVelocidade(40)).toBe(120);
     expect(bufferPorVelocidade(90)).toBe(200);
   });
 });

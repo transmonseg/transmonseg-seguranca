@@ -441,6 +441,13 @@ export type CtxDesvio = {
   // suprime o alerta, so exige mais leituras (FORA_TAPETE_STREAK_MIN_FAMILIAR)
   // antes de escalar -- decisao explicita do usuario em 21/07.
   familiarVeiculo: boolean | null;
+  // Achado real 25/07 (redesign): substitui o cancelamento por distancia.
+  // true = veiculo dentro do raio de um destino legitimo OU ponto_seguro
+  // -- suspende TODA checagem de desvio neste ciclo.
+  suspensoPorChegada: boolean;
+  // Streak de ciclos consecutivos com divergencia de rumo acima do limiar
+  // (persistido pelo motor, ver divergenciaRumoGraus em lib/unitrac.ts).
+  divergenciaRumoStreak: number;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -533,6 +540,17 @@ export function afastouDeTudo(
   return distDestinosM.every(
     (d, i) => d > distDestinosAnteriorM[i] + AFASTAMENTO_MARGEM_M
   );
+}
+
+// Piso de streak de divergencia de rumo pra disparar. Duplicado de unitrac
+// (DIVERGENCIA_RUMO_STREAK_MIN em lib/unitrac.ts, mesmo valor) para manter
+// este modulo sem dependencias de I/O -- mesmo padrao ja usado por
+// difAnguloGraus abaixo. SEM amortecimento por familiaridade (decisao
+// revista pelo usuario 25/07): qualquer desvio de rota dispara, mesmo que o
+// veiculo ja conheca a area.
+const DIVERGENCIA_RUMO_STREAK_MIN = 2;
+function divergenciaRumoDispara(streak: number): boolean {
+  return streak >= DIVERGENCIA_RUMO_STREAK_MIN;
 }
 
 // Avanço dos streaks do desvio com HISTERESE (achado real 09/07, vídeo da
@@ -644,6 +662,15 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   if (ctx.distDestinosM.length === 0) return null;
 
   const menorDistM = Math.min(...ctx.distDestinosM);
+
+  // Achado real 25/07 (redesign): substitui o cancelamento por distancia
+  // ("distancia liquida caindo cancela suspeita") por geofence real --
+  // dentro do raio de um destino legitimo OU de um ponto_seguro (ver
+  // suspenderPorChegada em lib/unitrac.ts, calculado pelo motor) suspende
+  // TODA checagem de desvio neste ciclo, mesmo com todos os outros sinais
+  // presentes.
+  if (ctx.suspensoPorChegada) return null;
+
   const afastandoDeTudo = afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM);
 
   // Achado real 22/07 (auditoria): acima do teto, em vez de silencio total,
@@ -682,6 +709,25 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       origemDesvio: "comportamental",
       motivo: `Aproximando de um destino, mas por caminho que a frota nunca percorreu antes (fora de via conhecida há ${ctx.foraTapeteStreak} leituras)`,
       score: 65,
+    };
+  }
+
+  // Achado real 25/07: divergencia de rumo dispara independente da
+  // distancia estar caindo -- pega o ponto cego onde o veiculo se afasta
+  // por uma rua que nao faz sentido mas ainda esta "se aproximando" em
+  // linha reta (ex.: contorno de lagoa/baia). Nivel atencao quando so a
+  // direcao disparou (mais ambiguo); critico quando TAMBEM esta afastando
+  // de tudo (o branch de afastandoDeTudo mais abaixo ja cobre esse caso
+  // com nivel critico, entao aqui so cobre o caso "aproximando mas direcao
+  // errada").
+  if (!afastandoDeTudo && divergenciaRumoDispara(ctx.divergenciaRumoStreak)) {
+    const nDestDirecao = ctx.distDestinosM.length;
+    return {
+      nivel: "atencao",
+      tipo: "desvio",
+      origemDesvio: "comportamental",
+      motivo: `Direção do movimento diverge da rota esperada há ${ctx.divergenciaRumoStreak} leituras, mesmo aproximando em linha reta de ${nDestDirecao} destino(s)`,
+      score: 40,
     };
   }
 
@@ -1035,6 +1081,9 @@ export type CtxAvaliacao = {
   quedaClasseViaria?: boolean;
   riscoAreaAtual?: number;
   foraTapeteStreak?: number;
+  // Achado real 25/07 (redesign do detector de desvio): ver CtxDesvio.
+  suspensoPorChegada?: boolean;
+  divergenciaRumoStreak?: number;
   temPendentes?: boolean;
   entregasTotal?: number;
   entregasFeitas?: number;
@@ -1126,6 +1175,8 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           familiarVeiculo: ctx.familiarVeiculo ?? null,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
           foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
+          suspensoPorChegada: ctx.suspensoPorChegada ?? false,
+          divergenciaRumoStreak: ctx.divergenciaRumoStreak ?? 0,
         }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);

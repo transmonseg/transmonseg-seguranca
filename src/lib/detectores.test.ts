@@ -277,6 +277,8 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     familiarVeiculo: null as boolean | null,
     riscoAreaAtual: 0,
     foraTapeteStreak: 0,
+    suspensoPorChegada: false,
+    divergenciaRumoStreak: 0,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
@@ -534,6 +536,58 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     const a = detectarDesvio(emMov, { ...base, streak: 2 });
     expect(a?.origemDesvio).toBe("comportamental");
   });
+
+  // Achado real 25/07 (redesign): suspensoPorChegada substitui o
+  // cancelamento por distancia como cancelador ABSOLUTO -- geofence real
+  // (dentro do raio de um destino legitimo OU ponto_seguro), nao mais
+  // tendencia de distancia.
+  it("suspensoPorChegada=true: nunca dispara, mesmo com todos os outros sinais de desvio presentes", () => {
+    const a = detectarDesvio(emMov, { ...base, suspensoPorChegada: true, divergenciaRumoStreak: 5 });
+    expect(a).toBeNull();
+  });
+
+  it("divergencia de rumo streak suficiente (2), distancia caindo: dispara nivel atencao", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2,
+      distDestinosM: [6300], distDestinosAnteriorM: [7000], // distancia caindo (aproximando)
+    });
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("atencao");
+  });
+
+  it("divergencia de rumo streak insuficiente (1): nao dispara so por isso", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 1,
+      distDestinosM: [6300], distDestinosAnteriorM: [7000],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("divergencia de rumo dispara igual mesmo com veiculo familiarizado com a area (SEM amortecimento, decisao revista 25/07)", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2, familiarVeiculo: true,
+      distDestinosM: [6300], distDestinosAnteriorM: [7000],
+    });
+    expect(a).not.toBeNull();
+  });
+
+  it("afastando de tudo AINDA dispara critico (comportamento existente preservado)", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,
+      distDestinosM: [6300, 8300, 12300], distDestinosAnteriorM: [6000, 8000, 12000],
+    });
+    expect(a?.nivel).toBe("critico");
+  });
+
+  it("ponto cego do contorno de lagoa (achado real 25/07): aproximando em linha reta MAS divergencia de rumo alta -- dispara mesmo assim", () => {
+    // Distancia liquida caindo (a versao antiga cancelaria aqui), mas
+    // divergencia de rumo ja acumulou streak suficiente.
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2, familiarVeiculo: null,
+      distDestinosM: [5000], distDestinosAnteriorM: [5500],
+    });
+    expect(a).not.toBeNull();
+  });
 });
 
 describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
@@ -550,6 +604,8 @@ describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- v
     dentroTapete: null as boolean | null,
     familiarVeiculo: null as boolean | null,
     riscoAreaAtual: 0,
+    suspensoPorChegada: false,
+    divergenciaRumoStreak: 0,
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
 

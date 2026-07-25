@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, type AlvoUnitrac } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoDispara, type AlvoUnitrac } from "./unitrac";
 
 describe("distanciaAoSegmentoM", () => {
   const origem = { lat: -22.9000, lng: -43.2000 };
@@ -175,5 +175,68 @@ describe("agruparPontosPorPlaca", () => {
     const p = agruparPontosPorPlaca(alvos).get("LSN6I72")![0];
     expect(p.feito).toBe(true);
     expect(p.situacao).toBe(98);
+  });
+});
+
+describe("suspenderPorChegada (achado 25/07: geofence de chegada substitui distancia-cancela)", () => {
+  it("dentro do raio do destino mais proximo: suspende", () => {
+    expect(suspenderPorChegada(100, 150, false)).toBe(true);
+  });
+
+  it("exatamente no raio (limite): suspende", () => {
+    expect(suspenderPorChegada(150, 150, false)).toBe(true);
+  });
+
+  it("fora do raio do destino, raio da Unitrac menor que o piso de 150m: usa o piso", () => {
+    // raio vindo da Unitrac = 50m, mas o piso e 150m -- 120m de distancia
+    // fica DENTRO do piso, mesmo estando fora do raio bruto de 50m.
+    expect(suspenderPorChegada(120, 50, false)).toBe(true);
+  });
+
+  it("fora do raio (com piso aplicado) e nao esta em ponto seguro: nao suspende", () => {
+    expect(suspenderPorChegada(500, 150, false)).toBe(false);
+  });
+
+  it("fora do raio do destino mas dentro de um ponto seguro (posto de gasolina): suspende", () => {
+    expect(suspenderPorChegada(500, 150, true)).toBe(true);
+  });
+});
+
+describe("divergenciaRumoGraus (achado 25/07: sinal de direcao, pega desvio mesmo aproximando em linha reta)", () => {
+  it("rumo real bate com o esperado (mesma direcao): divergencia proxima de 0", () => {
+    // De (0,0) indo pra (1,0): rumo ~90 (leste). Destino tambem a leste.
+    // anterior (lat=0, lng=0), atual (lat=0, lng=0.01), destino (lat=0, lng=1)
+    const d = divergenciaRumoGraus(0, 0, 0, 0.01, 0, 1);
+    expect(d).toBeLessThan(10);
+  });
+
+  it("rumo real oposto ao esperado (voltando): divergencia proxima de 180", () => {
+    // Indo de (1,0) pra (0,0): rumo ~180 (sul). Destino ao norte (2,0).
+    // anterior (lat=1, lng=0), atual (lat=0, lng=0), destino (lat=2, lng=0)
+    const d = divergenciaRumoGraus(1, 0, 0, 0, 2, 0);
+    expect(d).toBeGreaterThan(170);
+  });
+
+  it("velocidade abaixo do piso (10km/h): retorna null, rumo e ruido", () => {
+    expect(divergenciaRumoGraus(0, 0, 0, 0.001, 0, 0.01, 5)).toBeNull();
+  });
+
+  it("velocidade no piso ou acima: calcula normalmente", () => {
+    const d = divergenciaRumoGraus(0, 0, 0, 0.01, 0, 1, 10);
+    expect(d).not.toBeNull();
+  });
+});
+
+describe("divergenciaRumoDispara (limiar, SEM amortecimento por familiaridade -- decisao revista 25/07)", () => {
+  it("streak abaixo do piso (1): nao dispara", () => {
+    expect(divergenciaRumoDispara(1)).toBe(false);
+  });
+
+  it("streak no piso (2): dispara", () => {
+    expect(divergenciaRumoDispara(2)).toBe(true);
+  });
+
+  it("streak acima do piso (5): dispara", () => {
+    expect(divergenciaRumoDispara(5)).toBe(true);
   });
 });
