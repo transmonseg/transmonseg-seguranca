@@ -1293,12 +1293,16 @@ export async function POST(request: Request) {
           // NAO resolve mais alerta nenhum sozinho -- ver comentário no bloco
           // de gerenciamento de alertas mais abaixo.
           let aproximandoStreak: number = anterior?.aproximando_streak ?? 0;
-          if (devAvancarStreaksDesvio({
+          // Reaproveitado tambem pelo streak de divergencia de rumo mais
+          // abaixo (achado revisao final 25/07) -- mesmo guard contra GPS
+          // congelado (POSICAO_CONGELADA_M), uma unica chamada.
+          const podeAvancarStreaksDesvio = devAvancarStreaksDesvio({
             fresco: pos.fresco,
             saltoImplausivel,
             distanciaAoAnteriorM: temAnterior ? haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng) : null,
             velocidade: pos.velocidade,
-          })) {
+          });
+          if (podeAvancarStreaksDesvio) {
             const r = avancarStreaksDesvio(
               afastouDeTudo(distDestinosM, distDestinosAnteriorM),
               { desvioStreak, aproximandoStreak }
@@ -1450,8 +1454,16 @@ export async function POST(request: Request) {
           // Divergencia de rumo (achado 25/07): compara rumoMovimento (ja
           // calculado acima) contra o rumo esperado ate o destino mais
           // proximo. Streak persistido igual foraTapeteStreak.
+          //
+          // Achado revisao final 25/07: precisa do mesmo guard contra GPS
+          // congelado que devAvancarStreaksDesvio ja da pro streak de desvio
+          // (podeAvancarStreaksDesvio acima) -- sem ele, posicao congelada
+          // entre ciclos com pos.fresco ainda true faz rumoGraus(anterior,
+          // atual) com anterior===atual retornar 0 (atan2(0,0), norte fixo),
+          // uma divergencia fabricada que pode passar do limiar e disparar
+          // "atencao" falso a cada 2 ciclos parados.
           let divergenciaRumoStreak: number = anterior?.divergencia_rumo_streak ?? 0;
-          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
+          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
             const divergencia = divergenciaRumoGraus(
               anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
               destinos[idxMaisProximo].lat, destinos[idxMaisProximo].lng,
@@ -1634,7 +1646,17 @@ export async function POST(request: Request) {
             pos.fresco &&
             pos.velocidade > 0 &&
             pendentes.length > 0 &&
-            !saltoImplausivel
+            !saltoImplausivel &&
+            // Achado revisao final 25/07: a cerca virtual e um caminho de
+            // alerta SEPARADO de detectarDesvio (nunca passa por ele), entao
+            // nao herdava a suspensao por chegada aplicada la (linha ~672 em
+            // detectores.ts). A Task 8 removeu o alargamento de buffer perto
+            // da chegada assumindo que suspensoPorChegada cobria o mesmo
+            // caso -- so que so cobria o lado comportamental. Sem este guard,
+            // clientes com doca/portaria recuada da via publica (corredor
+            // OSRM nao alcanca) reintroduziam o falso positivo documentado
+            // no achado 15/07 (caso 3C94).
+            !suspensoPorChegada
           ) {
             // Achado real 15/07: a cerca so testava rota ate os PENDENTES,
             // nunca ate a base -- veiculo com entrega ainda em aberto que
