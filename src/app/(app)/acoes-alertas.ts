@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { registrarCasosDesvioRevisao } from "@/lib/casos-desvio-revisao";
 
 export type ResultadoAcao = { ok?: boolean; erro?: string };
 
@@ -43,11 +44,15 @@ const STRIP_PESADO = { geom: null, lat: null, lng: null, contexto: {} };
 
 // Operador tratou e encerrou (ligou, confirmou, resolveu).
 export async function resolverAlerta(id: string): Promise<ResultadoAcao> {
+  const admin = createAdminClient();
+  await registrarCasosDesvioRevisao(admin, [id], "resolvido");
   return atualizar(id, { status: "resolvido", resolvido_em: new Date().toISOString(), ...STRIP_PESADO });
 }
 
 // Operador classificou como engano: encerra e SILENCIA o tipo por 2h no motor.
 export async function marcarFalsoPositivo(id: string): Promise<ResultadoAcao> {
+  const admin = createAdminClient();
+  await registrarCasosDesvioRevisao(admin, [id], "falso_positivo");
   return atualizar(id, { status: "falso_positivo", resolvido_em: new Date().toISOString(), ...STRIP_PESADO });
 }
 
@@ -59,6 +64,7 @@ export async function resolverVarios(
   if (!opId) return { erro: "Sessao expirada." };
   if (ids.length === 0) return { ok: true, resolvidos: 0 };
   const admin = createAdminClient();
+  await registrarCasosDesvioRevisao(admin, ids, "resolvido");
   const { error } = await admin
     .from("alertas")
     .update({ status: "resolvido", resolvido_em: new Date().toISOString(), operador_id: opId, ...STRIP_PESADO })

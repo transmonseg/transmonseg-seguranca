@@ -35,7 +35,9 @@ import {
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
+  montarContextoDesvio,
   type Alerta,
+  type DesvioInicio,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
 import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
@@ -438,7 +440,8 @@ function pontoEmGeo(lng: number, lat: number, geom: GeoJSONGeom | null): boolean
 // Ponto de INÍCIO de uma sequência de desvio (1º ciclo em que o veículo se
 // afastou de todos os destinos legítimos). Persistido em posicoes_atuais
 // para sobreviver entre ciclos e nascer o alerta já com o local correto.
-type DesvioInicio = { lat: number; lng: number; ts: string; menor_dist_m: number };
+// Tipo importado de lib/detectores.ts (era definido localmente aqui; task 3
+// da Fase 2 consolidou -- montarContextoDesvio usa o mesmo tipo).
 
 // ─── Handler principal ───────────────────────────────────────────────────────
 
@@ -1925,6 +1928,13 @@ export async function POST(request: Request) {
           // precisa saber SE o vencedor atual e um desvio comportamental
           // antes de decidir se suprime ou confirma.
           let alerta: Alerta | null = arbitrarCandidatos(candidatosCore);
+          // Hoisted (Task 3 da Fase 2): precisam sobreviver ate o bloco de
+          // gerenciamento de alertas mais abaixo, que monta o contexto
+          // expandido do desvio via montarContextoDesvio -- calculados so
+          // quando ha alerta (ver bloco `if (alerta)` logo apos a
+          // calibracao/arbitragem final).
+          let segmentoEspecifico: string | null = null;
+          let taxaFp: number | undefined = undefined;
           // Quando o corredor confirma legitimidade (ou exige confirmacao
           // que nao veio), o desvio comportamental precisa ser removido dos
           // candidatos CRUS tambem -- senao ele reaparece na arbitragem
@@ -2071,8 +2081,8 @@ export async function POST(request: Request) {
             });
           }
           if (alerta) {
-            const segmentoEspecifico = segmentoCalibracaoPreferido(alerta, corredorInfo?.veredito);
-            const taxaFp = (segmentoEspecifico !== null ? mapaCalibracao.get(segmentoEspecifico) : undefined)
+            segmentoEspecifico = segmentoCalibracaoPreferido(alerta, corredorInfo?.veredito);
+            taxaFp = (segmentoEspecifico !== null ? mapaCalibracao.get(segmentoEspecifico) : undefined)
               ?? mapaCalibracao.get(`tipo:${alerta.tipo}`);
             if (taxaFp !== undefined) {
               alerta = { ...alerta, score: aplicarFatorCalibrado(alerta.score, taxaFp) };
@@ -2258,11 +2268,22 @@ export async function POST(request: Request) {
                   lat: ehDesvio ? desvioInicio!.lat : pos.lat,
                   lng: ehDesvio ? desvioInicio!.lng : pos.lng,
                   contexto: ehDesvio
-                    ? {
-                        inicio_ts: desvioInicio!.ts,
-                        fora_tapete: dentroTapete === false,
-                        ...(corredorInfo ? { corredor: corredorInfo } : {}),
-                      }
+                    ? montarContextoDesvio({
+                        desvioInicio: desvioInicio!,
+                        dentroTapete,
+                        corredorInfo,
+                        distDestinosM,
+                        distDestinosAnteriorM,
+                        desvioStreak,
+                        foraTapeteStreak,
+                        divergenciaRumoStreak,
+                        riscoAreaAtual,
+                        familiarVeiculo,
+                        classeViaAtual,
+                        quedaClasseViaria,
+                        segmentoEspecifico,
+                        taxaFp,
+                      })
                     : {},
                   desde: agora.toISOString(),
                 });
@@ -2285,11 +2306,22 @@ export async function POST(request: Request) {
                       ? {
                           lat: desvioInicio!.lat,
                           lng: desvioInicio!.lng,
-                          contexto: {
-                            inicio_ts: desvioInicio!.ts,
-                            fora_tapete: dentroTapete === false,
-                            ...(corredorInfo ? { corredor: corredorInfo } : {}),
-                          },
+                          contexto: montarContextoDesvio({
+                            desvioInicio: desvioInicio!,
+                            dentroTapete,
+                            corredorInfo,
+                            distDestinosM,
+                            distDestinosAnteriorM,
+                            desvioStreak,
+                            foraTapeteStreak,
+                            divergenciaRumoStreak,
+                            riscoAreaAtual,
+                            familiarVeiculo,
+                            classeViaAtual,
+                            quedaClasseViaria,
+                            segmentoEspecifico,
+                            taxaFp,
+                          }),
                         }
                       : {}),
                   })

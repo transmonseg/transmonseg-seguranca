@@ -469,6 +469,73 @@ export type CtxDesvio = {
   foraTapeteStreak: number;
 };
 
+// Ponto FIXO de início da suspeita de desvio (última posição confirmada
+// ANTES do afastamento começar) -- persistido pelo motor em
+// desvio_inicio (jsonb), ver route.ts. Definido aqui (nao mais duplicado
+// localmente em route.ts, que agora importa este tipo -- task 3 da Fase 2)
+// pra montarContextoDesvio poder referenciar sem duplicar o literal.
+export type DesvioInicio = { lat: number; lng: number; ts: string; menor_dist_m: number };
+
+// Achado real 26/07: o `contexto` jsonb gravado no alerta hoje so tem
+// inicio_ts/fora_tapete/corredor -- todo o resto que o detector calculou
+// (distancias, streaks, risco de area, classe de via, calibracao) existe
+// em memoria no ciclo do motor mas se perde depois. Esta funcao monta o
+// contexto EXPANDIDO, usado tanto pelo insert/escalation do alerta quanto
+// pelo snapshot de casos_desvio_revisao (ver
+// docs/superpowers/specs/2026-07-26-fase2-historico-casos-e-regras-simples-design.md).
+export interface ContextoDesvio {
+  inicio_ts: string;
+  fora_tapete: boolean;
+  corredor?: { veredito: string; bufferM: number };
+  dist_destinos_m: number[];
+  dist_destinos_anterior_m: number[];
+  desvio_streak: number;
+  fora_tapete_streak: number;
+  divergencia_rumo_streak: number;
+  risco_area_atual: number;
+  dentro_tapete: boolean | null;
+  familiar_veiculo: boolean | null;
+  classe_via_atual: string | null;
+  queda_classe_viaria: boolean;
+  calibracao?: { segmento: string | null; taxa_falso_positivo: number };
+}
+
+export function montarContextoDesvio(p: {
+  desvioInicio: DesvioInicio;
+  dentroTapete: boolean | null;
+  corredorInfo?: { veredito: string; bufferM: number } | null;
+  distDestinosM: number[];
+  distDestinosAnteriorM: number[];
+  desvioStreak: number;
+  foraTapeteStreak: number;
+  divergenciaRumoStreak: number;
+  riscoAreaAtual: number;
+  familiarVeiculo: boolean | null;
+  classeViaAtual: string | null;
+  quedaClasseViaria: boolean;
+  segmentoEspecifico: string | null;
+  taxaFp: number | undefined;
+}): ContextoDesvio {
+  return {
+    inicio_ts: p.desvioInicio.ts,
+    fora_tapete: p.dentroTapete === false,
+    ...(p.corredorInfo ? { corredor: p.corredorInfo } : {}),
+    dist_destinos_m: p.distDestinosM,
+    dist_destinos_anterior_m: p.distDestinosAnteriorM,
+    desvio_streak: p.desvioStreak,
+    fora_tapete_streak: p.foraTapeteStreak,
+    divergencia_rumo_streak: p.divergenciaRumoStreak,
+    risco_area_atual: p.riscoAreaAtual,
+    dentro_tapete: p.dentroTapete,
+    familiar_veiculo: p.familiarVeiculo,
+    classe_via_atual: p.classeViaAtual,
+    queda_classe_viaria: p.quedaClasseViaria,
+    ...(p.segmentoEspecifico !== null || p.taxaFp !== undefined
+      ? { calibracao: { segmento: p.segmentoEspecifico, taxa_falso_positivo: p.taxaFp ?? -1 } }
+      : {}),
+  };
+}
+
 // Pesos do score de risco de área (0-100). Cada camada contribui
 // independente — não é probabilidade, é um índice de prioridade pro
 // desvio decidir se escala rápido (ver RISCO_AREA_LIMIAR).

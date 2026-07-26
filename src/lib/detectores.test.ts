@@ -28,6 +28,7 @@ import {
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
   aplicarBonusClasseViaria,
+  montarContextoDesvio,
   type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
@@ -1352,5 +1353,67 @@ describe("aplicarBonusClasseViaria", () => {
   it("bonus nao ultrapassa 100 (capado)", () => {
     const r = aplicarBonusClasseViaria({ ...alertaBase, score: 92 }, true);
     expect(r?.score).toBe(100);
+  });
+});
+
+describe("montarContextoDesvio (achado 26/07: contexto expandido pra analise de falso positivo)", () => {
+  const base = {
+    desvioInicio: { lat: -22.9, lng: -43.2, ts: "2026-07-26T12:00:00.000Z", menor_dist_m: 500 },
+    dentroTapete: false as boolean | null,
+    corredorInfo: undefined as { veredito: string; bufferM: number } | undefined,
+    distDestinosM: [6300, 8300],
+    distDestinosAnteriorM: [6000, 8000],
+    desvioStreak: 3,
+    foraTapeteStreak: 2,
+    divergenciaRumoStreak: 0,
+    riscoAreaAtual: 15,
+    familiarVeiculo: true as boolean | null,
+    classeViaAtual: "estreita" as string | null,
+    quedaClasseViaria: true,
+    segmentoEspecifico: "corredor_veredito:fora" as string | null,
+    taxaFp: 0.12 as number | undefined,
+  };
+
+  it("monta todos os campos esperados a partir do contexto do ciclo", () => {
+    const c = montarContextoDesvio(base);
+    expect(c.inicio_ts).toBe("2026-07-26T12:00:00.000Z");
+    expect(c.fora_tapete).toBe(true);
+    expect(c.dist_destinos_m).toEqual([6300, 8300]);
+    expect(c.dist_destinos_anterior_m).toEqual([6000, 8000]);
+    expect(c.desvio_streak).toBe(3);
+    expect(c.fora_tapete_streak).toBe(2);
+    expect(c.divergencia_rumo_streak).toBe(0);
+    expect(c.risco_area_atual).toBe(15);
+    expect(c.dentro_tapete).toBe(false);
+    expect(c.familiar_veiculo).toBe(true);
+    expect(c.classe_via_atual).toBe("estreita");
+    expect(c.queda_classe_viaria).toBe(true);
+    expect(c.calibracao).toEqual({ segmento: "corredor_veredito:fora", taxa_falso_positivo: 0.12 });
+  });
+
+  it("sem corredorInfo: nao inclui a chave corredor", () => {
+    const c = montarContextoDesvio(base);
+    expect(c).not.toHaveProperty("corredor");
+  });
+
+  it("com corredorInfo: inclui a chave corredor com o valor exato", () => {
+    const c = montarContextoDesvio({ ...base, corredorInfo: { veredito: "fora", bufferM: 120 } });
+    expect(c.corredor).toEqual({ veredito: "fora", bufferM: 120 });
+  });
+
+  it("sem segmentoEspecifico nem taxaFp: nao inclui a chave calibracao", () => {
+    const c = montarContextoDesvio({ ...base, segmentoEspecifico: null, taxaFp: undefined });
+    expect(c).not.toHaveProperty("calibracao");
+  });
+
+  it("dentroTapete=true: fora_tapete e false", () => {
+    const c = montarContextoDesvio({ ...base, dentroTapete: true });
+    expect(c.fora_tapete).toBe(false);
+  });
+
+  it("dentroTapete=null (sem tapete conhecido): fora_tapete e false, dentro_tapete e null", () => {
+    const c = montarContextoDesvio({ ...base, dentroTapete: null });
+    expect(c.fora_tapete).toBe(false);
+    expect(c.dentro_tapete).toBeNull();
   });
 });
