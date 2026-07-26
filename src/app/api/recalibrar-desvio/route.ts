@@ -16,7 +16,8 @@ export const maxDuration = 30;
 
 const MIN_AMOSTRAS = 20;
 
-type Row = { tipo: string; status: string; corredor_veredito: string | null };
+type RowAlertas = { tipo: string; status: string };
+type RowCasosRevisao = { status: string; segmento: string | null };
 
 // Copia intencional de src/lib/calibracao-desvio.ts, mesmo padrao do script
 // standalone: rota nao importa .ts de lib sem passar pelo bundler do Next,
@@ -34,7 +35,13 @@ function taxaFalsoPositivoCalibrada(
   return (alphaPrior + nFalsoPositivo) / (alphaPrior + betaPrior + nAmostras);
 }
 
-function segmentar(rows: Row[], chave: (r: Row) => string | null): Map<string, { total: number; falsoPositivo: number }> {
+// Generico desde 26/07: precisa rodar sobre 2 formatos de linha diferentes
+// (`alertas`: {tipo, status}; `casos_desvio_revisao`: {status, segmento}) --
+// ver achado no comentario da query principal, abaixo.
+function segmentar<T extends { status: string }>(
+  rows: T[],
+  chave: (r: T) => string | null
+): Map<string, { total: number; falsoPositivo: number }> {
   const grupos = new Map<string, { total: number; falsoPositivo: number }>();
   for (const r of rows) {
     const k = chave(r);
@@ -60,18 +67,37 @@ export async function POST(request: Request) {
   });
 
   try {
-    const { rows } = await pool.query<Row>(`
-      select tipo, status, contexto -> 'corredor' ->> 'veredito' as corredor_veredito
+    // Segmentacao grosseira por tipo -- continua vindo de `alertas`, nao
+    // precisa de `contexto` (que ja esta zerado pelo STRIP_PESADO em
+    // acoes-alertas.ts nesse ponto pra qualquer alerta ja fechado). Tambem a
+    // fonte da populacao mais ampla usada como denominador de `taxaGlobal`.
+    const { rows: rowsAlertas } = await pool.query<RowAlertas>(`
+      select tipo, status
       from alertas
       where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo') and status != 'ativo'
     `);
 
-    const totalFalsoPositivo = rows.filter((r) => r.status === "falso_positivo").length;
-    const taxaGlobal = rows.length > 0 ? totalFalsoPositivo / rows.length : 0.3;
+    // Achado real 26/07: a segmentacao FINA (antes `corredor_veredito:X`, lida
+    // de `alertas.contexto`) travava com dado congelado -- `contexto` ja esta
+    // `{}` no momento em que este job roda (STRIP_PESADO acontece no
+    // resolver/marcar-falso-positivo, muito antes do cron semanal). O
+    // segmento correto (`corredor_veredito:X` ou `origem:saida_parada`, ja
+    // calculado uma vez por `segmentoCalibracaoPreferido` no momento em que o
+    // alerta foi criado) sobrevive intacto em `casos_desvio_revisao`
+    // (snapshot tirado ANTES do STRIP_PESADO, ver src/lib/casos-desvio-revisao.ts).
+    // So tem status_final in ('resolvido','falso_positivo') por construcao --
+    // nunca 'ativo', nao precisa filtrar de novo.
+    const { rows: rowsCasosRevisao } = await pool.query<RowCasosRevisao>(`
+      select status_final as status, contexto_detector -> 'calibracao' ->> 'segmento' as segmento
+      from casos_desvio_revisao
+    `);
+
+    const totalFalsoPositivo = rowsAlertas.filter((r) => r.status === "falso_positivo").length;
+    const taxaGlobal = rowsAlertas.length > 0 ? totalFalsoPositivo / rowsAlertas.length : 0.3;
 
     const segmentos = new Map([
-      ...segmentar(rows, (r) => `tipo:${r.tipo}`),
-      ...segmentar(rows, (r) => (r.corredor_veredito ? `corredor_veredito:${r.corredor_veredito}` : null)),
+      ...segmentar(rowsAlertas, (r) => `tipo:${r.tipo}`),
+      ...segmentar(rowsCasosRevisao, (r) => r.segmento),
     ]);
 
     const resultado: { segmento: string; amostras: number; taxa: number }[] = [];
