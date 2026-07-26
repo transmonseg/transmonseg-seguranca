@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { fetchContabo } from "./fetch-contabo";
 
 // Cliente de servidor (anon/publishable + cookies) — respeita RLS,
 // para Server Components e leitura autenticada do operador.
@@ -23,6 +24,7 @@ export async function createClient() {
           }
         },
       },
+      global: { fetch: fetchContabo },
     }
   );
 }

@@ -1,13 +1,14 @@
 // Favelas (áreas de perigo) como GeoJSON com o perímetro preciso.
 // Estáticas: cacheadas (mudam raramente), carregam uma vez no mapa.
 import pg from "pg";
+import { sslContabo } from "@/lib/supabase/contabo-ca";
 
 export const revalidate = 86400; // 1 dia
 
 export async function GET() {
   const client = new pg.Client({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: sslContabo(process.env.DATABASE_URL),
   });
   try {
     await client.connect();

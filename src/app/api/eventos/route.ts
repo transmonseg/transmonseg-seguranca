@@ -2,6 +2,7 @@
 // GET /api/eventos?clienteId={uuid}&cv={cv}
 import pg from "pg";
 import { createClient } from "@/lib/supabase/server";
+import { sslContabo } from "@/lib/supabase/contabo-ca";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
 
   const client = new pg.Client({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: sslContabo(process.env.DATABASE_URL),
   });
 
   try {

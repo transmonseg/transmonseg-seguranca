@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { fetchContabo } from "./fetch-contabo";
 
 // Atualiza a sessão (refresh do token) e protege as rotas de página.
 // Roda no proxy.ts (Node runtime no Next 16). Tudo exige login, exceto /login.
@@ -22,6 +23,12 @@ export async function updateSession(request: NextRequest) {
           );
         },
       },
+      // Achado da Task 18: faltava aqui (Task 17 so cobriu server.ts/admin.ts) --
+      // sem isso, TODA navegacao de pagina (proxy.ts roda em toda rota exceto
+      // /login) tentava validar a sessao contra o Contabo com o fetch padrao,
+      // que rejeita o certificado auto-assinado, e o usuario era chutado de
+      // volta pro /login mesmo com cookie de sessao valido.
+      global: { fetch: fetchContabo },
     }
   );
 

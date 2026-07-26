@@ -1,6 +1,7 @@
 "use server";
 
 import pg from "pg";
+import { sslContabo } from "@/lib/supabase/contabo-ca";
 
 // Portal humano da Unitrac (autenticado, com captcha no login) — diferente
 // da API aberta datalayer.portalunitrac.com usada pro resto do app.
@@ -10,7 +11,7 @@ const PORTAL = "https://www2.portalunitrac.com/unitrac";
 function criarPool() {
   return new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: sslContabo(process.env.DATABASE_URL),
     max: 2,
   });
 }

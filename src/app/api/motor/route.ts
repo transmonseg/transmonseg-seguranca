@@ -3,6 +3,7 @@
 
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { sslContabo } from "@/lib/supabase/contabo-ca";
 import {
   agruparAlvosPorPlaca,
   agruparPontosPorPlaca,
@@ -212,7 +213,7 @@ function parseDatagps(raw: string | undefined | null): string | null {
 function criaPgPool() {
   return new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: sslContabo(process.env.DATABASE_URL),
     max: 3,
   });
 }

@@ -4,6 +4,7 @@
 import pg from "pg";
 import { buscarPosicaoUnica } from "@/lib/unitrac";
 import { createClient } from "@/lib/supabase/server";
+import { sslContabo } from "@/lib/supabase/contabo-ca";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ export async function GET(request: Request) {
   // 2) Fallback: banco normalizado — monta objeto com os campos que PainelVeiculoAlerta espera
   const client = new pg.Client({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: sslContabo(process.env.DATABASE_URL),
   });
   try {
     await client.connect();
