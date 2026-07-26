@@ -98,6 +98,10 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
       // (nao exercita suspensao por chegada nem divergencia de rumo).
       suspensoPorChegada: false,
       divergenciaRumoStreak: 0,
+      // Achado real 26/07 (Fase 2): campos novos de CtxDesvio, neutros aqui
+      // de proposito -- este arquivo nao exercita viradaErradaSaindoDeParada.
+      saiuDoRaioAgora: false,
+      divergenciaGrausAtual: null,
     };
     resultados.push(detectarDesvio(posicaoBase({ velocidade }), ctx));
     anteriorDist = distDestinosM;
@@ -327,6 +331,8 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
         foraTapeteStreak: 0,
         suspensoPorChegada: false,
         divergenciaRumoStreak: 0,
+        saiuDoRaioAgora: false,
+        divergenciaGrausAtual: null,
       }));
       anteriorDist = distDestinosM;
     }

@@ -67,4 +67,9 @@ describe("segmentoCalibracaoPreferido (achado real 12/07, campo estrutural desde
     const alerta = { tipo: "jammer" };
     expect(segmentoCalibracaoPreferido(alerta, "fora")).toBeNull();
   });
+
+  it("origemDesvio='saida_parada': retorna segmento proprio, independente de corredorVeredito", () => {
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "saida_parada" }, null)).toBe("origem:saida_parada");
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "saida_parada" }, "fora")).toBe("origem:saida_parada");
+  });
 });

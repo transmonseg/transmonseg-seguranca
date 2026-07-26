@@ -29,6 +29,7 @@ import {
   reduzirPorTransitoInferido,
   aplicarBonusClasseViaria,
   montarContextoDesvio,
+  viradaErradaSaindoDeParada,
   type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
@@ -280,6 +281,8 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     foraTapeteStreak: 0,
     suspensoPorChegada: false,
     divergenciaRumoStreak: 0,
+    saiuDoRaioAgora: false,
+    divergenciaGrausAtual: null as number | null,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
@@ -589,6 +592,56 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     });
     expect(a).not.toBeNull();
   });
+
+  // Achado real 26/07 (Fase 2): virada errada saindo de parada -- dispara
+  // com 1 leitura so (sem streak) quando o veiculo acabou de sair do raio
+  // de um destino legitimo E tomou direcao muito divergente (>140 graus).
+  it("virada errada saindo de parada: saiuDoRaioAgora + divergencia alta (150), 1 leitura so, dispara atencao", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,
+      saiuDoRaioAgora: true, divergenciaGrausAtual: 150,
+      distDestinosM: [6300], distDestinosAnteriorM: [7000], // aproximando em linha reta (afastandoDeTudo=false)
+    });
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.origemDesvio).toBe("saida_parada");
+  });
+
+  it("nao saiu do raio agora: NAO dispara so por divergencia alta numa leitura (precisa da regra geral, streak>=2)", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,
+      saiuDoRaioAgora: false, divergenciaGrausAtual: 150,
+      distDestinosM: [6300], distDestinosAnteriorM: [7000],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("saiu do raio agora mas divergencia dentro do esperado: nao dispara", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,
+      saiuDoRaioAgora: true, divergenciaGrausAtual: 30,
+      distDestinosM: [6300], distDestinosAnteriorM: [7000],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("suspensoPorChegada=true: nao dispara mesmo com saiuDoRaioAgora+divergencia alta (guard existente prevalece)", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: true, divergenciaRumoStreak: 0,
+      saiuDoRaioAgora: true, divergenciaGrausAtual: 150,
+      distDestinosM: [6300], distDestinosAnteriorM: [7000],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("afastando de tudo: a regra critica existente prevalece (nao entra no branch novo)", () => {
+    const a = detectarDesvio(emMov, {
+      ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,
+      saiuDoRaioAgora: true, divergenciaGrausAtual: 150,
+      distDestinosM: [6300, 8300, 12300], distDestinosAnteriorM: [6000, 8000, 12000], // afastando de tudo
+    });
+    expect(a?.nivel).toBe("critico"); // branch de afastandoDeTudo, nao o novo
+  });
 });
 
 describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
@@ -607,6 +660,8 @@ describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- v
     riscoAreaAtual: 0,
     suspensoPorChegada: false,
     divergenciaRumoStreak: 0,
+    saiuDoRaioAgora: false,
+    divergenciaGrausAtual: null as number | null,
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
 
@@ -1415,5 +1470,27 @@ describe("montarContextoDesvio (achado 26/07: contexto expandido pra analise de 
     const c = montarContextoDesvio({ ...base, dentroTapete: null });
     expect(c.fora_tapete).toBe(false);
     expect(c.dentro_tapete).toBeNull();
+  });
+});
+
+describe("viradaErradaSaindoDeParada (achado 26/07, Fase 2: dispara com 1 leitura so saindo de parada)", () => {
+  it("saiu do raio agora + divergencia bem acima do limiar (150): dispara", () => {
+    expect(viradaErradaSaindoDeParada(true, 150)).toBe(true);
+  });
+
+  it("exatamente no limiar (140): NAO dispara (estrito >, nao >=)", () => {
+    expect(viradaErradaSaindoDeParada(true, 140)).toBe(false);
+  });
+
+  it("saiu do raio agora mas divergencia baixa (rumo ok, ex: 50): nao dispara", () => {
+    expect(viradaErradaSaindoDeParada(true, 50)).toBe(false);
+  });
+
+  it("NAO saiu do raio agora (fora da janela estreita), mesmo com divergencia altissima (179): nao dispara", () => {
+    expect(viradaErradaSaindoDeParada(false, 179)).toBe(false);
+  });
+
+  it("divergencia null (velocidade abaixo do piso, ou bloqueada por guard de GPS congelado/salto implausivel): nao dispara mesmo saindo do raio", () => {
+    expect(viradaErradaSaindoDeParada(true, null)).toBe(false);
   });
 });

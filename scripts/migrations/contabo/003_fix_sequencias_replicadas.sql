@@ -1,0 +1,62 @@
+-- scripts/migrations/contabo/003_fix_sequencias_replicadas.sql
+--
+-- Achado real 26/07 (durante a Task 4 do plano 2026-07-26-regra-virada-errada-saindo-parada,
+-- ao investigar por que nenhum candidato real aparecia em posicoes_historico):
+-- a replicacao logica Supabase->Contabo (Task 4/5 da migracao de infra,
+-- docs/plans/2026-07-25-migracao-contabo.md) copia os DADOS das tabelas
+-- publicadas, mas nao avanca as sequences locais (IDENTITY/serial) que
+-- alimentam suas colunas de id -- isso nunca faz parte de uma publication
+-- de replicacao logica do Postgres. Toda tabela com coluna identity/serial
+-- que ja tinha linhas no Supabase no momento da sincronizacao inicial ficou
+-- com a sequence local do Contabo comecando do zero (ou de onde a migration
+-- de schema a criou), MUITO atras do maior id ja existente nos dados
+-- replicados.
+--
+-- Resultado real observado (confirmado via log do Postgres,
+-- /var/log/postgresql/postgresql-17-main.log, verificado independentemente
+-- pelo revisor): o primeiro erro apareceu as 2026-07-26 14:32:27 CEST (nao
+-- 13:59 -- essa era so a ultima linha gravada com sucesso ANTES do problema
+-- comecar; houve ainda ~33min de escrita bem-sucedida depois das 13:59,
+-- provavelmente enquanto o backfill inicial da replica ainda corria) e se
+-- repetiu continuamente ate' o fix, as 21:47:32 CEST -- ~7h15 seguidas,
+-- 857 ocorrencias, TODO INSERT feito pelo app (app_service) em
+-- posicoes_historico falhando SILENCIOSAMENTE com "duplicate key value
+-- violates unique constraint posicoes_historico_pkey" -- o try/catch em
+-- route.ts so loga um aviso, por design, pra nunca travar o motor. Ou seja:
+-- ZERO linhas novas gravadas em posicoes_historico por ~7h15, sem nenhum
+-- sinal visivel pro operador. eventos tinha o mesmo problema latente
+-- (sequence tambem atrasada) mas ainda nao tinha causado erro nenhum por
+-- coincidencia de nao ter havido write nesse meio tempo. vias_nomes (tabela
+-- de ingestao unica, nunca escrita pelo app em producao) tinha o mesmo
+-- padrao mas dormente.
+--
+-- Escopo confirmado exaustivamente: das 4 tabelas do schema public com
+-- coluna identity/serial (eventos, posicoes_historico, vias_nomes,
+-- casos_desvio_revisao), so as 3 replicadas do Supabase tinham esse
+-- problema -- casos_desvio_revisao foi criada direto no Contabo (migration
+-- 029, sem replicacao), entao nasceu com a sequence correta desde o inicio.
+-- auth.refresh_tokens e' gerenciada pelo proprio GoTrue fora do schema
+-- public (nunca fez parte da publication de replicacao), tambem sem
+-- problema. http_request_queue e' tabela interna do pg_net, criada local no
+-- Contabo, tambem sem problema.
+--
+-- Fix: avanca cada sequence pro max(id) real de cada tabela. Idempotente
+-- (setval pode ser rodado de novo sem risco, so nao deve ser rodado
+-- CONCORRENTEMENTE com um INSERT real na mesma tabela).
+select setval('eventos_id_seq', (select max(id) from eventos));
+select setval('posicoes_historico_id_seq', (select max(id) from posicoes_historico));
+select setval('vias_nomes_id_seq', (select max(id) from vias_nomes));
+
+-- Verificado ao vivo apos o fix: proximo ciclo do motor (~30s depois) ja
+-- escreveu em posicoes_historico com sucesso, sem novo erro de duplicate
+-- key no log do Postgres.
+--
+-- Licao para o futuro: QUALQUER tabela nova com coluna identity/serial que
+-- receber dado via a replicacao logica Supabase->Contabo precisa ter sua
+-- sequence conferida/avancada manualmente apos a sincronizacao inicial --
+-- checar isso nao esta em nenhum checklist documentado ainda. Recomendacao
+-- registrada no relatorio da Task 4 do plano de regras de desvio: documentar
+-- como passo padrao de qualquer migration/sync futura no Contabo, junto com
+-- o achado ja registrado (Task 5 do plano de historico de casos) de que
+-- NOTIFY pgrst, 'reload schema' tambem precisa rodar manualmente apos criar
+-- tabela nova.

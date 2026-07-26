@@ -1467,12 +1467,20 @@ export async function POST(request: Request) {
           // uma divergencia fabricada que pode passar do limiar e disparar
           // "atencao" falso a cada 2 ciclos parados.
           let divergenciaRumoStreak: number = anterior?.divergencia_rumo_streak ?? 0;
+          // Achado real 26/07 (Fase 2): valor CRU do ciclo atual (nao
+          // acumulado em streak), exposto pra viradaErradaSaindoDeParada
+          // poder decidir com 1 leitura so -- reaproveita o MESMO calculo
+          // (e os mesmos guards: fresco, saltoImplausivel, suspensoPorChegada,
+          // podeAvancarStreaksDesvio) ja usado pro streak geral, sem duplicar
+          // a chamada de divergenciaRumoGraus.
+          let divergenciaGrausAtual: number | null = null;
           if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
             const divergencia = divergenciaRumoGraus(
               anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
               destinos[idxMaisProximo].lat, destinos[idxMaisProximo].lng,
               pos.velocidade
             );
+            divergenciaGrausAtual = divergencia;
             if (divergenciaRumoAcimaDoLimiar(divergencia)) {
               divergenciaRumoStreak += 1;
             } else {
@@ -1902,6 +1910,8 @@ export async function POST(request: Request) {
                   foraTapeteStreak,
                   suspensoPorChegada,
                   divergenciaRumoStreak,
+                  saiuDoRaioAgora,
+                  divergenciaGrausAtual,
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,

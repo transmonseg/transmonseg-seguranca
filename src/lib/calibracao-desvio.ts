@@ -39,11 +39,19 @@ export function aplicarFatorCalibrado(scoreBase: number, taxaFalsoPositivo: numb
 // silenciosamente toda vez que o texto do motivo mudava (ja mudou 3 vezes
 // so nesta sessao).
 export function segmentoCalibracaoPreferido(
-  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" },
+  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" },
   corredorVeredito: string | null | undefined
 ): string | null {
   if (alerta.tipo === "desvio" && alerta.origemDesvio === "comportamental" && corredorVeredito) {
     return `corredor_veredito:${corredorVeredito}`;
+  }
+  // Achado real 26/07 (Fase 2): segmento proprio pra regra nova de virada
+  // errada saindo de parada -- permite medir com o tempo, via
+  // recalibrar-desvio, se ESTA regra especifica (dispara com 1 leitura so)
+  // e' confiavel ou gera ruido, sem misturar com a regra geral (que exige
+  // streak>=2) nem com o corredor.
+  if (alerta.tipo === "desvio" && alerta.origemDesvio === "saida_parada") {
+    return "origem:saida_parada";
   }
   return null;
 }

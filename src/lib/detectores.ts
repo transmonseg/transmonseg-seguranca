@@ -31,8 +31,10 @@ export type Alerta = {
   // (motivo.startsWith(...)) em segmentoCalibracaoPreferido, que quebrava
   // silenciosamente se o texto do motivo mudasse. Distingue a ORIGEM real
   // de um alerta tipo="desvio": veio do detector comportamental
-  // (detectarDesvio) ou da cerca virtual (alertaCerca, route.ts)?
-  origemDesvio?: "comportamental" | "cerca_virtual";
+  // (detectarDesvio), da cerca virtual (alertaCerca, route.ts), ou da regra
+  // nova de virada errada saindo de parada (achado real 26/07, Fase 2 --
+  // dispara com 1 leitura so, ver viradaErradaSaindoDeParada)?
+  origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada";
 };
 
 // Informativo de veiculo sem comunicacao (atraso > 60 min).
@@ -448,6 +450,14 @@ export type CtxDesvio = {
   // Streak de ciclos consecutivos com divergencia de rumo acima do limiar
   // (persistido pelo motor, ver divergenciaRumoGraus em lib/unitrac.ts).
   divergenciaRumoStreak: number;
+  // Achado real 26/07 (Fase 2): true no ciclo exato em que o veiculo saiu
+  // do raio de um destino legitimo (mesmo sinal usado por
+  // detectarBypassEntrega no motor). Usado por viradaErradaSaindoDeParada.
+  saiuDoRaioAgora: boolean;
+  // Divergencia de rumo (graus) do ciclo atual, CRUA (nao acumulada em
+  // streak) -- mesmo valor usado pra avancar divergenciaRumoStreak, exposto
+  // aqui pra viradaErradaSaindoDeParada decidir com 1 leitura so.
+  divergenciaGrausAtual: number | null;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -620,6 +630,31 @@ function divergenciaRumoDispara(streak: number): boolean {
   return streak >= DIVERGENCIA_RUMO_STREAK_MIN;
 }
 
+// Achado real 26/07 (Fase 2 -- casos reais da cliente Nutry Max, ver
+// docs/superpowers/specs/2026-07-26-fase2-historico-casos-e-regras-simples-design.md):
+// o piso de streak>=2 da regra geral de divergencia de rumo (acima) existe
+// pra nao confundir ruido de GPS com desvio real, mas isso deixa passar
+// qualquer virada errada mais curta que ~1min antes do veiculo se
+// autocorrigir sozinho -- padrao relatado 3x pela cliente ("saiu do
+// cliente e foi sentido contrario"). Esta regra e' mais restrita: SO vale
+// no ciclo exato em que o veiculo saiu do raio de um destino legitimo
+// (saiuDoRaioAgora, ja calculado pelo motor pra detectarBypassEntrega) --
+// fora dessa janela estreita, a regra geral acima continua sendo a unica.
+// Por disparar com 1 leitura so (sem confirmacao por streak), usa um
+// limiar mais alto (140 graus, vs 100 da regra geral) pra compensar.
+const VIRADA_ERRADA_LIMIAR_GRAUS = 140;
+
+export function viradaErradaSaindoDeParada(
+  saiuDoRaioAgora: boolean,
+  divergenciaGrausAtual: number | null
+): boolean {
+  return (
+    saiuDoRaioAgora &&
+    divergenciaGrausAtual !== null &&
+    divergenciaGrausAtual > VIRADA_ERRADA_LIMIAR_GRAUS
+  );
+}
+
 // Avanço dos streaks do desvio com HISTERESE (achado real 09/07, vídeo da
 // operação: desvio pra Xerém só pontuou lá em cima). Em estrada de serra a
 // distância em linha reta a um destino oscila a cada curva — zerar o streak
@@ -776,6 +811,24 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       origemDesvio: "comportamental",
       motivo: `Aproximando de um destino, mas por caminho que a frota nunca percorreu antes (fora de via conhecida há ${ctx.foraTapeteStreak} leituras)`,
       score: 65,
+    };
+  }
+
+  // Achado real 26/07 (Fase 2): virada errada no ciclo exato em que o
+  // veiculo saiu do raio de um destino legitimo -- dispara com 1 leitura
+  // so (sem esperar streak>=2 da regra geral abaixo), usando um limiar
+  // mais alto (140 graus) pra compensar a falta de confirmacao. Ver
+  // viradaErradaSaindoDeParada. Colocado ANTES do branch geral de
+  // divergencia de rumo (mesma guarda !afastandoDeTudo) por ser a
+  // checagem mais rapida; a ordem entre os dois nao importa na pratica,
+  // os dois sinais nunca coincidem de forma relevante.
+  if (!afastandoDeTudo && viradaErradaSaindoDeParada(ctx.saiuDoRaioAgora, ctx.divergenciaGrausAtual)) {
+    return {
+      nivel: "atencao",
+      tipo: "desvio",
+      origemDesvio: "saida_parada",
+      motivo: `Saiu de um ponto de entrega e tomou direção oposta à esperada (divergência de ${Math.round(ctx.divergenciaGrausAtual!)}°), sem esperar confirmação por streak`,
+      score: 40,
     };
   }
 
@@ -1151,6 +1204,10 @@ export type CtxAvaliacao = {
   // Achado real 25/07 (redesign do detector de desvio): ver CtxDesvio.
   suspensoPorChegada?: boolean;
   divergenciaRumoStreak?: number;
+  // Achado real 26/07 (Fase 2): ver CtxDesvio.saiuDoRaioAgora /
+  // CtxDesvio.divergenciaGrausAtual (viradaErradaSaindoDeParada).
+  saiuDoRaioAgora?: boolean;
+  divergenciaGrausAtual?: number | null;
   temPendentes?: boolean;
   entregasTotal?: number;
   entregasFeitas?: number;
@@ -1244,6 +1301,8 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           foraTapeteStreak: ctx.foraTapeteStreak ?? 0,
           suspensoPorChegada: ctx.suspensoPorChegada ?? false,
           divergenciaRumoStreak: ctx.divergenciaRumoStreak ?? 0,
+          saiuDoRaioAgora: ctx.saiuDoRaioAgora ?? false,
+          divergenciaGrausAtual: ctx.divergenciaGrausAtual ?? null,
         }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);
