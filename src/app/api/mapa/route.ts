@@ -2,7 +2,7 @@
 import pg from "pg";
 import { buscarAlvos, agruparPontosPorPlaca } from "@/lib/unitrac";
 import { createClient } from "@/lib/supabase/server";
-import { sslContabo } from "@/lib/supabase/contabo-ca";
+import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +11,7 @@ export const dynamic = "force-dynamic";
 // conexão Postgres nova por request (como era antes) não escala com o
 // número de telas simultâneas. Mesmo padrão de pool do motor.
 const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: sslContabo(process.env.DATABASE_URL),
+  ...configPoolContabo(process.env.DATABASE_URL),
   max: 5,
 });
 

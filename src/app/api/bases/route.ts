@@ -1,5 +1,5 @@
 import pg from "pg";
-import { sslContabo } from "@/lib/supabase/contabo-ca";
+import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -7,8 +7,7 @@ export async function GET(request: Request) {
   if (!clienteId) return Response.json({ type: "FeatureCollection", features: [] }, { status: 400 });
 
   const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: sslContabo(process.env.DATABASE_URL),
+    ...configPoolContabo(process.env.DATABASE_URL),
     max: 2,
   });
   const client = await pool.connect();

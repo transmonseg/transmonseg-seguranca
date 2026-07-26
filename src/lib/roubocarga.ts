@@ -10,7 +10,7 @@
 // dentro da mesma cidade — mesmo órgão/portal, mesmo formato de coluna,
 // só troca a chave de agregação.
 import pg from "pg";
-import { sslContabo } from "@/lib/supabase/contabo-ca";
+import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 
 const ISP_CSV = "https://www.ispdados.rj.gov.br/Arquivos/BaseDPEvolucaoMensalCisp.csv";
 
@@ -81,7 +81,7 @@ async function agregarISP(): Promise<{
 // Estática (limites de 2019) — não precisa refazer o join a cada request,
 // só reconsultar o banco (rápido, sem chamada externa).
 async function buscarMalhaCisp(): Promise<GeoJSON.FeatureCollection | null> {
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: sslContabo(process.env.DATABASE_URL) });
+  const pool = new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL) });
   try {
     const r = await pool.query<{ cisp: string; geojson: GeoJSON.Geometry }>(
       `select meta->>'cisp' as cisp,

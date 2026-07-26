@@ -9,7 +9,7 @@
 // taxa_falso_positivo (aplicarFatorCalibrado em src/lib/calibracao-desvio.ts).
 
 import pg from "pg";
-import { sslContabo } from "@/lib/supabase/contabo-ca";
+import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -61,8 +61,7 @@ export async function POST(request: Request) {
   }
 
   const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: sslContabo(process.env.DATABASE_URL),
+    ...configPoolContabo(process.env.DATABASE_URL),
     max: 2,
   });
 

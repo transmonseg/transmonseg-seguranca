@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { ConnectionOptions } from "node:tls";
+import type pg from "pg";
 
 // Certificado auto-assinado gerado no Contabo (Task 16,
 // docs/plans/2026-07-25-migracao-contabo.md / .superpowers/sdd/task-16-report.md).
@@ -122,4 +123,43 @@ export function sslContabo(connectionString: string | undefined): ConnectionOpti
     };
   }
   return { rejectUnauthorized: false };
+}
+
+// Achado real 26/07: connectionString com ?sslmode=... sobrescreve
+// silenciosamente o `ssl:` explicito do pg.Pool (Object.assign interno do
+// driver pg da prioridade ao parse() da propria connectionString, ver
+// `node_modules/pg/lib/connection-parameters.js`: `config = Object.assign({},
+// config, parse(config.connectionString))` -- o resultado de `parse()` vem
+// DEPOIS e vence). Confirmado ao vivo (26/07, teste de integracao em
+// `contabo-ca.test.ts`) que isso descarta o `ca`/`checkServerIdentity`
+// pinados, restando so o que `pg-connection-string` monta a partir de
+// `sslmode` sozinho -- na versao instalada (2.14.0) isso vira `{}` (sem
+// pinning nenhum, cai na cadeia de CA publica padrao -- rejeitaria o
+// certificado auto-assinado do Contabo, quebrando a conexao), mas o ponto de
+// fundo e' o mesmo independente da versao do driver: o `ssl` explicito NUNCA
+// deveria depender do que sobra escrito na query string da URL configurada.
+//
+// Este helper centraliza a construcao do Pool pra nunca depender de "por
+// acaso a URL configurada nao tem sslmode" -- remove qualquer `sslmode` (e
+// `ssl`) da query string ANTES de passar pro Pool, garantindo que o
+// `ssl: sslContabo(...)` explicito sempre prevalece, venha o que vier na
+// DATABASE_URL configurada.
+export function configPoolContabo(connectionString: string | undefined): pg.PoolConfig {
+  const limpa = limparParametrosSsl(connectionString);
+  return { connectionString: limpa, ssl: sslContabo(connectionString) };
+}
+
+// Exportada separadamente pra ser testavel isoladamente (parsing puro, sem
+// I/O) -- remove sslmode/ssl da query string sem alterar mais nada
+// (usuario/senha/host/porta/database/outros params intactos).
+export function limparParametrosSsl(connectionString: string | undefined): string | undefined {
+  if (!connectionString) return connectionString;
+  try {
+    const url = new URL(connectionString);
+    url.searchParams.delete("sslmode");
+    url.searchParams.delete("ssl");
+    return url.toString();
+  } catch {
+    return connectionString; // string malformada -- deixa passar como estava, nao e' escopo deste fix tratar URL invalida
+  }
 }
