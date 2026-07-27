@@ -1639,6 +1639,26 @@ describe("montarContextoDesvio (achado 26/07: contexto expandido pra analise de 
     expect(c.fora_tapete).toBe(false);
     expect(c.dentro_tapete).toBeNull();
   });
+
+  it("inclui o afastamento acumulado (menor_dist_m do desvioInicio) no contexto", () => {
+    const ctx = montarContextoDesvio({
+      desvioInicio: { lat: -22.9, lng: -43.2, ts: "2026-07-27T10:00:00.000Z", menor_dist_m: 5000 },
+      dentroTapete: false,
+      corredorInfo: undefined,
+      distDestinosM: [8000],
+      distDestinosAnteriorM: [7500],
+      desvioStreak: 3,
+      foraTapeteStreak: 0,
+      divergenciaRumoStreak: 0,
+      riscoAreaAtual: 0,
+      familiarVeiculo: null,
+      classeViaAtual: null,
+      quedaClasseViaria: false,
+      segmentoEspecifico: null,
+      taxaFp: undefined,
+    });
+    expect(ctx.afastamento_acumulado_m).toBe(3000); // 8000 - 5000
+  });
 });
 
 describe("viradaErradaSaindoDeParada (achado 26/07, Fase 2: dispara com 1 leitura so saindo de parada)", () => {

@@ -620,6 +620,7 @@ export interface ContextoDesvio {
   familiar_veiculo: boolean | null;
   classe_via_atual: string | null;
   queda_classe_viaria: boolean;
+  afastamento_acumulado_m: number;
   calibracao?: { segmento: string | null; taxa_falso_positivo: number };
 }
 
@@ -653,6 +654,7 @@ export function montarContextoDesvio(p: {
     familiar_veiculo: p.familiarVeiculo,
     classe_via_atual: p.classeViaAtual,
     queda_classe_viaria: p.quedaClasseViaria,
+    afastamento_acumulado_m: Math.min(...p.distDestinosM) - p.desvioInicio.menor_dist_m,
     ...(p.segmentoEspecifico !== null || p.taxaFp !== undefined
       ? { calibracao: { segmento: p.segmentoEspecifico, taxa_falso_positivo: p.taxaFp ?? -1 } }
       : {}),
