@@ -4,7 +4,14 @@ import { extrairCidadeDoEndereco } from "@/lib/romaneio-geocode-local";
 
 export const maxDuration = 60;
 
-const LOTE_POR_INVOCACAO = 40;
+// Achado real 27/07: dado real de um romaneio de 1587 enderecos mostrou
+// 74% resolvendo local (rapido, sem API externa) e so 26% precisando do
+// caminho throttled -- 60 por lote fica bem dentro da janela de 30s do
+// job mais frequente (60 * 0,26 ~= 16 chamadas throttled * 1,1s ~= 17s).
+const LOTE_POR_INVOCACAO = 60;
+// Reivindicacoes mais velhas que isso sao consideradas abandonadas
+// (processo que crashou no meio) e voltam a ficar disponiveis.
+const REIVINDICACAO_EXPIRA_MIN = 5;
 // Espera sequencial ANTES de cada chamada real ao Nominatim -- respeita
 // a politica real de 1 req/s do servidor publico. Movido pra DENTRO da
 // chamada de Nominatim especificamente (nao mais incondicional no loop)
@@ -25,18 +32,50 @@ export async function POST(request: Request) {
 
   const admin = createAdminClient();
 
-  const { data: pendentes, error: erroPendentes } = await admin
+  // Achado real 27/07: agora que o job roda mais de uma vez por minuto
+  // (ver migration contabo/005), duas invocacoes podem se sobrepor --
+  // sem reivindicar a linha antes de processar, as duas pegariam os
+  // MESMOS enderecos "pendente" e chamariam a API externa 2x pra nada.
+  // Pega tambem reivindicacoes velhas (processo anterior que crashou no
+  // meio) -- senao aquelas linhas ficariam presas pra sempre.
+  const expiraAntesDe = new Date(Date.now() - REIVINDICACAO_EXPIRA_MIN * 60_000).toISOString();
+  const { data: candidatos, error: erroCandidatos } = await admin
     .from("romaneio_pontos")
     .select("id, endereco_bruto")
-    .eq("geocode_status", "pendente")
+    .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
     .order("criado_em", { ascending: true })
     .limit(LOTE_POR_INVOCACAO);
 
-  if (erroPendentes) {
-    console.error(`Erro ao buscar romaneio_pontos pendentes: ${erroPendentes.message}`);
+  if (erroCandidatos) {
+    console.error(`Erro ao buscar romaneio_pontos pendentes: ${erroCandidatos.message}`);
   }
 
-  if (!pendentes || pendentes.length === 0) {
+  if (!candidatos || candidatos.length === 0) {
+    return Response.json({ processados: 0 });
+  }
+
+  // Reivindica ANTES de processar. Achado real 27/07 (pego em teste ao
+  // vivo com 2 chamadas concorrentes): so filtrar por id aqui NAO basta
+  // -- se 2 invocacoes fizerem o SELECT acima quase ao mesmo tempo,
+  // ambas veem as MESMAS linhas ainda "pendente"/"processando" (a raca
+  // esta exatamente nessa janela), e um UPDATE só por id reivindicaria
+  // pra AMBAS igualmente, processando tudo 2x. Reaplicar a MESMA condicao
+  // do SELECT no UPDATE torna a reivindicacao atomica de verdade: a
+  // primeira invocacao a rodar o UPDATE muda o status, a segunda tenta
+  // atualizar as mesmas linhas mas elas ja nao batem mais na condicao
+  // (nao estao mais "pendente" nem com reivindicacao velha) -- o UPDATE
+  // dela simplesmente nao afeta essas linhas, e o .select() retorna a
+  // lista real (menor) do que ela conseguiu reivindicar de verdade.
+  const idsCandidatos = candidatos.map((c) => c.id);
+  const { data: pendentes, error: erroReivindicar } = await admin
+    .from("romaneio_pontos")
+    .update({ geocode_status: "processando", geocode_reivindicado_em: new Date().toISOString() })
+    .in("id", idsCandidatos)
+    .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
+    .select("id, endereco_bruto");
+
+  if (erroReivindicar || !pendentes) {
+    console.error(`Erro ao reivindicar romaneio_pontos: ${erroReivindicar?.message}`);
     return Response.json({ processados: 0 });
   }
 
