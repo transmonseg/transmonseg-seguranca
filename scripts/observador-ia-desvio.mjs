@@ -89,17 +89,42 @@ function normalizarPosicao(p) {
   };
 }
 
+// Achado real 27/07 (pedido do usuario: "mostrar pra ela o que precisa
+// identificar"): isto NAO e' treinamento/fine-tuning (precisaria de
+// exemplo real rotulado, que a gente ainda nao tem -- e' exatamente o que
+// o modo sombra desta semana vai gerar). E' um system prompt com os
+// MESMOS criterios que o motor de verdade usa (ver src/lib/detectores.ts,
+// afastouDeTudo/quedaClasseViaria/divergenciaRumoGraus), explicados em
+// portugues simples -- da pra ela um criterio claro em vez de so numero
+// solto. Mantido honesto sobre a LIMITACAO real: hoje so mandamos
+// velocidade/distancia-ao-mais-proximo/tendencia/contagem de destinos --
+// NAO mandamos ainda classificacao de rua nem rumo/direcao (esses dados
+// existem no projeto mas nao estao nesta pipeline ainda, seria melhoria
+// futura). O system prompt so ensina criterio compativel com o dado que
+// ela REALMENTE recebe, pra nao incentivar ela a "alucinar" sobre coisa
+// que nao foi informada.
+const SYSTEM_PROMPT = `Você é um observador de veículos de entrega no Rio de Janeiro, ajudando a identificar possíveis desvios de rota (inclusive risco de roubo de carga). Você NUNCA decide nada sozinho — só dá uma opinião curta que um humano revisa depois.
+
+Critérios reais que o sistema desta empresa usa para desconfiar de desvio (aplique o mesmo raciocínio):
+- Um veículo com VÁRIOS destinos pendentes (entregas + base) só é suspeito se estiver se afastando de TODOS eles ao mesmo tempo. Se ele está ficando mais longe do destino mais próximo mas na real está indo em direção a outro destino pendente (rota normal com várias paradas), isso NÃO é desvio.
+- Voltar para a base depois de terminar as entregas é normal, mesmo que pareça "se afastar" das entregas já feitas.
+- Quanto mais destinos pendentes ele tem (campo "total de destinos"), mais cautela: com só 1-2 destinos, uma distância aumentando pode ser só o carro contornando um quarteirão — não conclua desvio sozinho com pouca margem.
+- Velocidade muito baixa (parado ou quase) geralmente significa que ele está fazendo uma entrega, não é sinal de desvio por si só.
+- Prefira responder "comportamento normal" quando a informação for ambígua ou insuficiente — é melhor deixar passar um caso duvidoso do que gerar alarme falso sem base.
+
+Responda SEMPRE em português, em no máximo 2 frases curtas. Primeiro explique seu raciocínio em UMA frase objetiva baseada só nos números fornecidos, e SÓ DEPOIS, na frase final, dê um veredito claro que seja consistente com o raciocínio que você acabou de explicar (ex.: "Parece normal.", "Merece atenção.", "Suspeito."). Nunca dê um veredito que contradiga sua própria justificativa.`;
+
 // Pergunta pro modelo local, em portugues simples, com os numeros ja
 // calculados (nao pede pra ele fazer conta geometrica sozinho -- modelo
 // pequeno e' ruim nisso, so pede opiniao sobre o que ja foi calculado).
 async function perguntarOllama(situacao) {
-  const prompt = `Você observa veículos de entrega em tempo real. Responda em UMA frase curta e direta, em português: você acha que este veículo está fazendo um desvio de rota suspeito, ou é um comportamento normal de entrega? Justifique em poucas palavras.
-
-Placa: ${situacao.placa}
+  const prompt = `Placa: ${situacao.placa}
 Velocidade atual: ${situacao.velocidade} km/h
 Destino conhecido mais próximo: ${Math.round(situacao.distMinM)}m de distância
 Nos últimos minutos, a distância até esse destino: ${situacao.piorando ? "AUMENTOU (se afastando)" : "diminuiu ou ficou igual (aproximando)"}
-Total de destinos pendentes (entregas + bases): ${situacao.totalDestinos}`;
+Total de destinos pendentes (entregas + bases): ${situacao.totalDestinos}
+
+O que você acha desta situação?`;
 
   const inicio = Date.now();
   const data = await fetchComTimeout(
@@ -107,18 +132,31 @@ Total de destinos pendentes (entregas + bases): ${situacao.totalDestinos}`;
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
+      body: JSON.stringify({ model: OLLAMA_MODEL, system: SYSTEM_PROMPT, prompt, stream: false }),
     },
     OLLAMA_TIMEOUT_MS
   );
   const tempoMs = Date.now() - inicio;
   const resposta = (data.response ?? "").trim();
   // Heuristica bem simples so pra popular achou_desvio (campo informativo,
-  // NAO usado pra nada automatico) -- procura "sim"/"suspeito"/"desvio" no
-  // inicio da resposta. Leitura humana do texto completo (opiniao_ia) e'
-  // sempre a fonte real, este campo e' so pra facilitar filtro/contagem.
-  const inicioResposta = resposta.toLowerCase().slice(0, 30);
-  const achouDesvio = /\b(sim|suspeit|desvio)\b/.test(inicioResposta) && !/\bnão\b/.test(inicioResposta);
+  // NAO usado pra nada automatico) -- o prompt pede raciocinio PRIMEIRO e
+  // veredito por ULTIMO (achado real: pedir veredito logo no inicio fazia
+  // a palavra "suspeito"/"normal" as vezes contradizer a propria
+  // justificativa que vinha depois), entao procura nos ULTIMOS ~40
+  // caracteres, nao no inicio. Leitura humana do texto completo
+  // (opiniao_ia) e' sempre a fonte real, este campo e' so pra facilitar
+  // filtro/contagem.
+  const fimResposta = resposta.toLowerCase().slice(-40);
+  const achouDesvio = /\b(suspeit|desvio|atenção|atencao)\b/.test(fimResposta) && !/\bnormal\b/.test(fimResposta);
+  // LIMITACAO REAL confirmada em teste manual (27/07): mesmo pedindo
+  // raciocinio antes do veredito, o modelo (llama3.2:3b) as vezes ainda
+  // da um veredito que contradiz a propria justificativa que acabou de
+  // escrever (ex.: explica "parece rotina normal" e termina com
+  // "Suspeito." mesmo assim). Nao e' bug deste script -- e' limitacao
+  // real do modelo pequeno. Como isto e' modo sombra (nada automatico
+  // depende de achou_desvio, um humano sempre le opiniao_ia por completo),
+  // isso e' aceitavel por ora -- fica registrado aqui pra nao ser
+  // confundido com bug depois.
   return { resposta, tempoMs, achouDesvio };
 }
 
