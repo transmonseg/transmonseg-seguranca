@@ -72,4 +72,9 @@ describe("segmentoCalibracaoPreferido (achado real 12/07, campo estrutural desde
     expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "saida_parada" }, null)).toBe("origem:saida_parada");
     expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "saida_parada" }, "fora")).toBe("origem:saida_parada");
   });
+
+  it("origemDesvio='classe_viaria': retorna segmento proprio, independente de corredorVeredito (achado 27/07)", () => {
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "classe_viaria" }, null)).toBe("origem:classe_viaria");
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "classe_viaria" }, "fora")).toBe("origem:classe_viaria");
+  });
 });

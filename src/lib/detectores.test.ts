@@ -283,6 +283,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     divergenciaRumoStreak: 0,
     saiuDoRaioAgora: false,
     divergenciaGrausAtual: null as number | null,
+    quedaClasseViaria: false,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
@@ -642,6 +643,70 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     });
     expect(a?.nivel).toBe("critico"); // branch de afastandoDeTudo, nao o novo
   });
+
+  describe("queda de classe viaria dispara SOZINHA (achado 27/07, pedido explicito do usuario)", () => {
+    it("quedaClasseViaria=true, aproximando (nao afastando de tudo), fora de chegada: dispara atencao", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000], // aproximando -- deveria disparar MESMO ASSIM
+      });
+      expect(a).not.toBeNull();
+      expect(a?.nivel).toBe("atencao");
+      expect(a?.origemDesvio).toBe("classe_viaria");
+    });
+
+    it("suspensoPorChegada=true (chegada real): NAO dispara mesmo com quedaClasseViaria=true", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: true, quedaClasseViaria: true,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).toBeNull();
+    });
+
+    it("quedaClasseViaria=false: nao dispara so por isso", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: false,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).toBeNull();
+    });
+
+    it("afastando de tudo: a regra critica existente prevalece (nao entra neste branch)", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        distDestinosM: [6300, 8300, 12300], distDestinosAnteriorM: [6000, 8000, 12000], // afastando de tudo
+      });
+      expect(a?.nivel).toBe("critico"); // veio de outro branch, nao do de classe viaria
+    });
+
+    // Achado do revisor (opus) + decisao explicita do usuario, task 2: o
+    // branch acima herdava um piso de 2500m (DESVIO_MIN_M) por estar
+    // posicionado DEPOIS do "if (menorDistM < DESVIO_MIN_M) return null;" --
+    // so disparava se o veiculo estivesse a mais de 2,5km de QUALQUER
+    // destino. Usuario nao quer esse piso pra esta regra: um roubo pode
+    // acontecer bem perto do cliente (ex.: 100m depois de virar numa rua
+    // errada). Estes dois testes cobrem os extremos (bem perto / bem longe)
+    // que o piso e o teto bloqueavam antes da regra mudar de posicao.
+    it("dispara mesmo com destino bem perto (200m, abaixo do piso de 2500m que protegia os OUTROS branches)", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        distDestinosM: [200], distDestinosAnteriorM: [250], // aproximando, mas bem perto -- sem piso agora
+      });
+      expect(a).not.toBeNull();
+      expect(a?.nivel).toBe("atencao");
+      expect(a?.origemDesvio).toBe("classe_viaria");
+    });
+
+    it("dispara mesmo com destino bem longe (500km, alem do teto de 300km), sem precisar do streak>=2 que o branch do teto exige pra ele mesmo", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true, streak: 1,
+        distDestinosM: [500000], distDestinosAnteriorM: [500500], // aproximando, bem alem do teto -- sem teto agora
+      });
+      expect(a).not.toBeNull();
+      expect(a?.nivel).toBe("atencao");
+      expect(a?.origemDesvio).toBe("classe_viaria");
+    });
+  });
 });
 
 describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
@@ -662,6 +727,7 @@ describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- v
     divergenciaRumoStreak: 0,
     saiuDoRaioAgora: false,
     divergenciaGrausAtual: null as number | null,
+    quedaClasseViaria: false,
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
 
@@ -1408,6 +1474,21 @@ describe("aplicarBonusClasseViaria", () => {
   it("bonus nao ultrapassa 100 (capado)", () => {
     const r = aplicarBonusClasseViaria({ ...alertaBase, score: 92 }, true);
     expect(r?.score).toBe(100);
+  });
+});
+
+describe("aplicarBonusClasseViaria nao duplica quando origemDesvio ja e' classe_viaria", () => {
+  it("alerta com origemDesvio=classe_viaria: nao aplica bonus de novo", () => {
+    const alertaJaContado = { nivel: "atencao" as const, tipo: "desvio", motivo: "x", score: 40, origemDesvio: "classe_viaria" as const };
+    const resultado = aplicarBonusClasseViaria(alertaJaContado, true);
+    expect(resultado?.score).toBe(40); // sem bonus extra
+    expect(resultado?.motivo).toBe("x"); // sem texto duplicado
+  });
+
+  it("alerta de OUTRA origem: continua aplicando o bonus normalmente (comportamento preexistente)", () => {
+    const alertaOutraOrigem = { nivel: "critico" as const, tipo: "desvio", motivo: "y", score: 60, origemDesvio: "comportamental" as const };
+    const resultado = aplicarBonusClasseViaria(alertaOutraOrigem, true);
+    expect(resultado?.score).toBe(75);
   });
 });
 

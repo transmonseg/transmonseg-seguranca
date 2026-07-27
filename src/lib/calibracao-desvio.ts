@@ -39,7 +39,7 @@ export function aplicarFatorCalibrado(scoreBase: number, taxaFalsoPositivo: numb
 // silenciosamente toda vez que o texto do motivo mudava (ja mudou 3 vezes
 // so nesta sessao).
 export function segmentoCalibracaoPreferido(
-  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" },
+  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria" },
   corredorVeredito: string | null | undefined
 ): string | null {
   if (alerta.tipo === "desvio" && alerta.origemDesvio === "comportamental" && corredorVeredito) {
@@ -52,6 +52,15 @@ export function segmentoCalibracaoPreferido(
   // streak>=2) nem com o corredor.
   if (alerta.tipo === "desvio" && alerta.origemDesvio === "saida_parada") {
     return "origem:saida_parada";
+  }
+  // Achado real 27/07 (pedido explicito do usuario): quedaClasseViaria
+  // passou a disparar alerta SOZINHA (antes so reforcava outro alerta via
+  // aplicarBonusClasseViaria). E o sinal mais "largo" hoje -- risco real de
+  // gerar mais ruido que os outros -- por isso segmento proprio, pra
+  // recalibrar-desvio-semanal aprender sozinho, com o tempo, se essa regra
+  // especifica e' confiavel, sem misturar com as demais.
+  if (alerta.tipo === "desvio" && alerta.origemDesvio === "classe_viaria") {
+    return "origem:classe_viaria";
   }
   return null;
 }

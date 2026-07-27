@@ -31,10 +31,14 @@ export type Alerta = {
   // (motivo.startsWith(...)) em segmentoCalibracaoPreferido, que quebrava
   // silenciosamente se o texto do motivo mudasse. Distingue a ORIGEM real
   // de um alerta tipo="desvio": veio do detector comportamental
-  // (detectarDesvio), da cerca virtual (alertaCerca, route.ts), ou da regra
-  // nova de virada errada saindo de parada (achado real 26/07, Fase 2 --
-  // dispara com 1 leitura so, ver viradaErradaSaindoDeParada)?
-  origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada";
+  // (detectarDesvio), da cerca virtual (alertaCerca, route.ts), da regra de
+  // virada errada saindo de parada (achado real 26/07, Fase 2 -- dispara
+  // com 1 leitura so, ver viradaErradaSaindoDeParada), ou da queda de
+  // classe viaria disparando SOZINHA (achado real 27/07, pedido explicito
+  // do usuario -- ate entao esse sinal so REFORCAVA um alerta que ja ia
+  // disparar por outro motivo via aplicarBonusClasseViaria; ver o branch
+  // dedicado dentro de detectarDesvio)?
+  origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria";
 };
 
 // Informativo de veiculo sem comunicacao (atraso > 60 min).
@@ -458,6 +462,11 @@ export type CtxDesvio = {
   // streak) -- mesmo valor usado pra avancar divergenciaRumoStreak, exposto
   // aqui pra viradaErradaSaindoDeParada decidir com 1 leitura so.
   divergenciaGrausAtual: number | null;
+  // Achado real 27/07 (pedido explicito do usuario): true quando o veiculo
+  // saiu de via principal ha menos de 10min e esta numa rua estreita (ja
+  // calculado no motor, mesmo campo usado por aplicarBonusClasseViaria) --
+  // usado aqui pra disparar um alerta PROPRIO, nao so reforcar um existente.
+  quedaClasseViaria: boolean;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -774,6 +783,44 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   if (ctx.suspensoPorChegada) return null;
 
   const afastandoDeTudo = afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM);
+
+  // Achado real 27/07 (pedido explicito do usuario, revisão de regras):
+  // ate hoje, sair de via principal pra rua estreita (quedaClasseViaria)
+  // so REFORCAVA um alerta que ja ia disparar por outro motivo
+  // (aplicarBonusClasseViaria) -- sozinho, nunca criava alerta. Diretriz
+  // explicita: "mesmo que esteja indo em direcao ao cliente, se o CAMINHO
+  // nao faz sentido (rua estranha), e desvio" -- dispara mesmo aproximando
+  // (por isso dentro do bloco !afastandoDeTudo, nao precisa de mais nada).
+  // A protecao contra falso positivo em toda chegada normal de entrega
+  // (que tambem sai de via principal pra rua estreita) e' o guard
+  // suspensoPorChegada, ja aplicado no topo desta funcao -- se chegou
+  // aqui, nao e' uma chegada real.
+  //
+  // Achado do revisor (opus) + decisao explicita do usuario, task 2 (achado
+  // 22/07, corrigido 27/07): posicionado ORIGINALMENTE depois do teto de
+  // 300km (DESVIO_GATILHO_TETO_M) e do piso de 2500m (DESVIO_MIN_M) --
+  // herdava os dois sem querer, so disparava com o veiculo a mais de 2,5km
+  // de QUALQUER destino e a menos de 300km de todos. Usuario recusou
+  // explicitamente esse piso pra ESTA regra: um roubo pode acontecer bem
+  // perto do cliente (ex.: 100m depois de virar numa rua errada), entao a
+  // checagem de classe viaria precisa disparar independente de distancia --
+  // sem piso, sem teto -- confiando SO no guard suspensoPorChegada (que ja
+  // rodou acima) pra nao confundir com uma chegada real de entrega. Por
+  // isso o branch fica ANTES do teto/piso, logo apos os dois guards
+  // universais (suspensoPorChegada + calculo de afastandoDeTudo), virando o
+  // primeiro branch de disparo real da funcao. Os irmaos abaixo
+  // (virada_errada saindo de parada, divergencia de rumo geral) CONTINUAM
+  // depois do piso de 2500m de proposito -- essa mudanca e' so pra
+  // quedaClasseViaria.
+  if (!afastandoDeTudo && ctx.quedaClasseViaria) {
+    return {
+      nivel: "atencao",
+      tipo: "desvio",
+      origemDesvio: "classe_viaria",
+      motivo: "Saiu de via principal recentemente e está em rua estreita, fora do raio de qualquer destino conhecido",
+      score: 40,
+    };
+  }
 
   // Achado real 22/07 (auditoria): acima do teto, em vez de silencio total,
   // dispara um alerta FRACO (nivel atencao) se o veiculo ainda estiver se
@@ -1116,17 +1163,24 @@ const BONUS_CORROBORACAO_POR_SINAL = 15;
 
 // Reforco de score da classificacao viaria (via principal -> rua estreita)
 // -- ver docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.
-// Aplicado ao RESULTADO de detectarDesvio, NUNCA lido dentro da funcao --
-// garante por construcao que o sinal nunca cria alerta por conta propria
-// (se detectarDesvio nao retornar nada, nao ha o que reforcar). Mesma
-// magnitude de BONUS_CORROBORACAO_POR_SINAL, capado em 100.
+// Aplicado ao RESULTADO de detectarDesvio. Ate 26/07 esse sinal NUNCA era
+// lido dentro da propria funcao, garantindo por construcao que nunca
+// criava alerta sozinho. Achado real 27/07 (pedido explicito do usuario):
+// isso mudou -- quedaClasseViaria agora TAMBEM e lido dentro de
+// detectarDesvio (origemDesvio="classe_viaria"), pra disparar um alerta
+// PROPRIO em vez de so reforcar um alerta de outra origem. A guarda abaixo
+// (alerta.origemDesvio === "classe_viaria") evita contar o mesmo sinal 2x:
+// se o alerta ja nasceu do branch novo, o sinal ja esta 100% contabilizado
+// no score/motivo dele, reforcar de novo aqui duplicaria o bonus e
+// repetiria o texto. Mesma magnitude de BONUS_CORROBORACAO_POR_SINAL,
+// capado em 100.
 const BONUS_CLASSE_VIARIA = 15;
 
 export function aplicarBonusClasseViaria(
   alerta: Alerta | null,
   quedaClasseViaria: boolean
 ): Alerta | null {
-  if (!alerta || !quedaClasseViaria) return alerta;
+  if (!alerta || !quedaClasseViaria || alerta.origemDesvio === "classe_viaria") return alerta;
   return {
     ...alerta,
     score: Math.min(100, alerta.score + BONUS_CLASSE_VIARIA),
@@ -1303,6 +1357,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           divergenciaRumoStreak: ctx.divergenciaRumoStreak ?? 0,
           saiuDoRaioAgora: ctx.saiuDoRaioAgora ?? false,
           divergenciaGrausAtual: ctx.divergenciaGrausAtual ?? null,
+          quedaClasseViaria: ctx.quedaClasseViaria ?? false,
         }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);
