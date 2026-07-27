@@ -32,6 +32,7 @@ import {
   montarContextoDesvio,
   viradaErradaSaindoDeParada,
   TIPOS_NAO_GERENCIADOS,
+  temCoordenadaValida,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -1659,5 +1660,18 @@ describe("viradaErradaSaindoDeParada (achado 26/07, Fase 2: dispara com 1 leitur
 
   it("divergencia null (velocidade abaixo do piso, ou bloqueada por guard de GPS congelado/salto implausivel): nao dispara mesmo saindo do raio", () => {
     expect(viradaErradaSaindoDeParada(true, null)).toBe(false);
+  });
+});
+
+describe("temCoordenadaValida", () => {
+  it("rejeita lat/lng null", () => {
+    expect(temCoordenadaValida({ lat: null, lng: -43.2 })).toBe(false);
+    expect(temCoordenadaValida({ lat: -22.9, lng: null })).toBe(false);
+  });
+  it("rejeita (0,0) explicito", () => {
+    expect(temCoordenadaValida({ lat: 0, lng: 0 })).toBe(false);
+  });
+  it("aceita coordenada real do Rio", () => {
+    expect(temCoordenadaValida({ lat: -22.9, lng: -43.2 })).toBe(true);
   });
 });

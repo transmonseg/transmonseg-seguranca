@@ -38,6 +38,7 @@ import {
   montarContextoDesvio,
   PARADA_FORA_TAPETE_MIN,
   TIPOS_NAO_GERENCIADOS,
+  temCoordenadaValida,
   type Alerta,
   type DesvioInicio,
 } from "@/lib/detectores";
@@ -1258,7 +1259,7 @@ export async function POST(request: Request) {
             ? montarPontosDeRomaneio(romaneioDoVeiculo, pontosPorPlaca.get(pos.placa) ?? [])
             : pontosPorPlaca.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
-          const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito);
+          const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito && temCoordenadaValida(pt));
           const temPendentes = pendentes.length > 0;
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))

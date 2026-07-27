@@ -718,6 +718,15 @@ export function calcularRiscoArea(ctx: {
   return Math.min(100, score * ctx.fatorHorario);
 }
 
+// Ponto de entrega com coordenada valida? Unitrac retorna null quando o
+// endereco nunca foi geocodificado -- sem este filtro, haversineM trata
+// null como 0 (coercao JS), e o "destino" vira um ponto fantasma a
+// ~5.300km (distancia até 0,0 a partir do Rio) que infla a contagem de
+// destinos pendentes sem representar nada real.
+export function temCoordenadaValida(pt: { lat: number | null; lng: number | null }): boolean {
+  return pt.lat != null && pt.lng != null && !(pt.lat === 0 && pt.lng === 0);
+}
+
 // O veículo se afastou de TODOS os destinos legítimos desde o ciclo
 // anterior? Aproximar de QUALQUER um cancela — é assim que uma entrega
 // normal (rumo a um pendente que não é o mais próximo) nunca dispara.
