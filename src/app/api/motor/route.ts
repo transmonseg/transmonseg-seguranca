@@ -2316,8 +2316,22 @@ export async function POST(request: Request) {
               // logica de parada_fora_tapete: nao ha "inicio de desvio"
               // por movimento pra essa regra, so classificacao de via
               // ATUAL) e contexto proprio com o segmento de calibracao.
+              //
+              // Mesmo bug, mesma causa, achado no MESMO dia (27/07) pra
+              // origemDesvio="saida_parada" (viradaErradaSaindoDeParada,
+              // ver detectores.ts): tambem dispara com 1 leitura so, ANTES
+              // de qualquer streak de afastamento (so exige
+              // saiuDoRaioAgora + divergencia de rumo alta), entao
+              // desvioInicio tambem fica null quando ela e' a causa
+              // primaria -- mesmo `{}` silencioso, mesmo segmento proprio
+              // ("origem:saida_parada", ja existente em
+              // segmentoCalibracaoPreferido) nunca alimentado. Mesmo fix:
+              // origemSaidaParada tambem exclui ehDesvio, tambem sempre
+              // posicao ATUAL (o ponto exato onde saiu do raio e virou
+              // errado, sem "inicio de desvio" por movimento separado).
               const origemClasseViaria = alerta.origemDesvio === "classe_viaria";
-              const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null && !origemClasseViaria;
+              const origemSaidaParada = alerta.origemDesvio === "saida_parada";
+              const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null && !origemClasseViaria && !origemSaidaParada;
               const ehParadaForaTapete = alerta.tipo === "parada_fora_tapete";
               const contextoParadaForaTapete = {
                 parado_min: paradoMin,
@@ -2336,6 +2350,14 @@ export async function POST(request: Request) {
                   ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
                   : {}),
               };
+              const contextoSaidaParada = {
+                divergencia_graus_atual: divergenciaGrausAtual,
+                dentro_tapete: dentroTapete,
+                risco_area_atual: riscoAreaAtual,
+                ...(segmentoEspecifico !== null || taxaFp !== undefined
+                  ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
+                  : {}),
+              };
               if (!jaExiste) {
                 await supabase.from("alertas").insert({
                   cliente_id,
@@ -2347,10 +2369,10 @@ export async function POST(request: Request) {
                   status: "ativo",
                   // Desvio: lat/lng do PONTO DE INÍCIO da sequência (onde
                   // começou a se afastar), não da posição do disparo.
-                  // parada_fora_tapete e classe_viaria: sempre a posição
-                  // ATUAL (pos.lat/lng) -- nenhuma das duas tem conceito de
-                  // "início do desvio" por movimento separado da posição
-                  // atual do veículo.
+                  // parada_fora_tapete, classe_viaria e saida_parada:
+                  // sempre a posição ATUAL (pos.lat/lng) -- nenhuma das
+                  // tres tem conceito de "início do desvio" por movimento
+                  // separado da posição atual do veículo.
                   lat: ehDesvio ? desvioInicio!.lat : pos.lat,
                   lng: ehDesvio ? desvioInicio!.lng : pos.lng,
                   contexto: ehDesvio
@@ -2374,7 +2396,9 @@ export async function POST(request: Request) {
                       ? contextoParadaForaTapete
                       : origemClasseViaria
                         ? contextoClasseViaria
-                        : {},
+                        : origemSaidaParada
+                          ? contextoSaidaParada
+                          : {},
                   desde: agora.toISOString(),
                 });
               } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
@@ -2427,6 +2451,32 @@ export async function POST(request: Request) {
                         }
                       : ehParadaForaTapete
                         ? { contexto: contextoParadaForaTapete }
+                        // origemClasseViaria e origemSaidaParada caem aqui
+                        // (contexto intocado na escalacao) DE PROPOSITO, nao
+                        // por descuido -- verificado explicitamente (nao só
+                        // assumido) ao adicionar o fix de saida_parada
+                        // (27/07): tanto detectarDesvio's branch de
+                        // quedaClasseViaria quanto o de
+                        // viradaErradaSaindoDeParada retornam
+                        // `nivel: "atencao"` HARDCODED (sem depender de
+                        // score), e nem arbitrarCandidatos nem
+                        // reduzirPorTransitoInferido nem
+                        // aplicarBonusClasseViaria jamais reescrevem o campo
+                        // `nivel` de um alerta (so score/motivo) -- entao um
+                        // alerta destas origens NUNCA chega com
+                        // `alerta.nivel === "critico"`, e este branch de
+                        // escalacao (que exige exatamente isso) e
+                        // estruturalmente inalcancavel pra ambas. Se um dia
+                        // alguem mudar o nivel hardcoded de uma dessas
+                        // regras pra tambem poder ser "critico", este
+                        // comentario e o gatilho pra adicionar aqui o mesmo
+                        // tratamento de contexto que o insert acima ja tem
+                        // (contextoClasseViaria / contextoSaidaParada) --
+                        // senao a escalacao voltaria a gravar contexto
+                        // desatualizado (o antigo, da criacao original) em
+                        // vez do contexto do episodio que causou a
+                        // escalacao, reintroduzindo silenciosamente o mesmo
+                        // bug de perda de dado corrigido aqui.
                         : {}),
                   })
                   .eq("id", alertaExistente.id);

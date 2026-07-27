@@ -34,6 +34,7 @@ import {
   TIPOS_NAO_GERENCIADOS,
   type Alerta,
 } from "./detectores";
+import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
 import type { PosicaoNormalizada } from "./unitrac";
 
 function posicaoBase(overrides: Partial<PosicaoNormalizada> = {}): PosicaoNormalizada {
@@ -608,6 +609,45 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a).not.toBeNull();
     expect(a?.nivel).toBe("atencao");
     expect(a?.origemDesvio).toBe("saida_parada");
+  });
+
+  // Achado real 27/07 (fix(desvio): contexto/calibracao de saida_parada
+  // nunca era salvo -- mesmo bug, mesmo padrao do fix aplicado hoje pra
+  // origemDesvio="classe_viaria"): esta regra dispara com 1 leitura so
+  // (ver acima), ANTES de qualquer streak de afastamento existir --
+  // portanto desvioInicio (que so avanca via avancarStreaksDesvio, atrelado
+  // a movimento de afastamento) tipicamente esta null em route.ts quando
+  // ELA e' a causa primaria do alerta. route.ts usava `ehDesvio` (definido
+  // so por tipo==="desvio" && desvioInicio!==null) pra decidir se contexto
+  // era gravado -- sem o fix, contexto caia sempre em `{}`, perdendo pra
+  // sempre o segmento de calibracao "origem:saida_parada" (pedido explicito
+  // do usuario pra recalibrar-desvio aprender sozinha a taxa de falso
+  // positivo desta regra). Nao ha harness de teste pra route.ts em si
+  // (mesma limitacao que o fix de classe_viaria teve: commit 72e5a1e nao
+  // adicionou nenhum teste novo, pelo mesmo motivo) -- estes dois testes
+  // travam os ingredientes REAIS que route.ts combina pra decidir lat/lng/
+  // contexto: a origem do alerta e a resolucao do segmento de calibracao.
+  describe("saida_parada: contexto/calibracao nao pode se perder (mesmo bug e mesmo fix de classe_viaria, 27/07)", () => {
+    it("alerta disparado tem nivel SEMPRE 'atencao' (nunca 'critico') -- e por isso que a escalacao pra critico em route.ts e' estruturalmente inalcancavel pra esta origem, igual classe_viaria", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,
+        saiuDoRaioAgora: true, divergenciaGrausAtual: 150,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a?.origemDesvio).toBe("saida_parada");
+      expect(a?.nivel).toBe("atencao");
+    });
+
+    it("segmentoCalibracaoPreferido resolve o segmento proprio pra este alerta, independente do veredito de corredor -- o dado que route.ts agora grava no contexto (contextoSaidaParada) em vez de perder em `{}`", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,
+        saiuDoRaioAgora: true, divergenciaGrausAtual: 150,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).not.toBeNull();
+      expect(segmentoCalibracaoPreferido(a!, null)).toBe("origem:saida_parada");
+      expect(segmentoCalibracaoPreferido(a!, "fora")).toBe("origem:saida_parada");
+    });
   });
 
   it("nao saiu do raio agora: NAO dispara so por divergencia alta numa leitura (precisa da regra geral, streak>=2)", () => {
