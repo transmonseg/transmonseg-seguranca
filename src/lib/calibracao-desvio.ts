@@ -62,5 +62,24 @@ export function segmentoCalibracaoPreferido(
   if (alerta.tipo === "desvio" && alerta.origemDesvio === "classe_viaria") {
     return "origem:classe_viaria";
   }
+  // Achado real 27/07 (caso TTK-4D14, revisado na mesma sessao apos
+  // auditoria adversarial): gatilho "parado fora do tapete" (ver
+  // detectarParadaForaTapete, detectores.ts) dispara com posicao ESTATICA,
+  // sem depender de nenhum streak de movimento -- perfil de falso positivo
+  // bem diferente das demais origens (nenhuma delas exige velocidade===0).
+  // Originalmente modelado como tipo="desvio" + origemDesvio=
+  // "parada_fora_tapete" (checado aqui do mesmo jeito que os branches
+  // acima); a revisao adversarial encontrou que reusar tipo="desvio" fazia
+  // este alerta ocupar a mesma vaga (1-por-veiculo-por-tipo) da familia de
+  // desvio comportamental, arriscando bloquear um desvio real subsequente
+  // -- corrigido dando tipo PROPRIO ("parada_fora_tapete", ver
+  // detectores.ts). Este branch agora checa o TIPO diretamente (nao mais
+  // origemDesvio, que nunca e' setado por este detector) -- mesmo segmento
+  // de saida ("origem:parada_fora_tapete"), pra recalibrar-desvio-semanal
+  // continuar aprendendo sozinho, com o tempo, se esta regra especifica e'
+  // confiavel, sem misturar com as demais.
+  if (alerta.tipo === "parada_fora_tapete") {
+    return "origem:parada_fora_tapete";
+  }
   return null;
 }

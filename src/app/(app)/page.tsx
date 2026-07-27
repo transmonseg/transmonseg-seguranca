@@ -14,7 +14,7 @@ function ordemSeveridade(tipo: string): number {
   if (t === "tiroteio") return 3; if (t === "ignicao_noturna") return 4;
   if (t === "saida_nao_autorizada") return 5; if (t === "parada_cliente") return 6;
   if (t === "parada_anomala") return 7; if (t === "parada_longa") return 8;
-  if (t === "desvio" || t === "excesso") return 9;
+  if (t === "desvio" || t === "excesso" || t === "parada_fora_tapete") return 9;
   if (t === "jammer" || t.includes("sinal") || t.includes("bloqueio")) return 11;
   return 10;
 }

@@ -55,14 +55,17 @@ const NOME_TIPO: Record<string, string> = {
   panico: "Pânico", bau: "Baú aberto", favela: "Favela/risco",
   tiroteio: "Tiroteio", jammer: "Jammer/sinal", saida_nao_autorizada: "Saída n.aut.",
   parada_anomala: "Par. anômala", parada_longa: "Par. longa", parada_cliente: "Par. cliente",
-  ignicao_noturna: "Ign. noturna", desvio: "Desvio de rota", excesso: "Excesso vel.",
+  ignicao_noturna: "Ign. noturna", desvio: "Desvio de rota", parada_fora_tapete: "Desvio de rota", excesso: "Excesso vel.",
   retorno_tardio: "Retorno tardio", aceleracao: "Acel. brusca", sem_comunicacao: "Sem comunicação",
 };
 function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 
-// Prioridade por tipo (maior = mais urgente)
+// Prioridade por tipo (maior = mais urgente). parada_fora_tapete e' tipo
+// proprio no banco (nao compartilha o slot de arbitracao do desvio de
+// movimento, achado 27/07), mas pro operador ela conta como desvio de rota --
+// mesma prioridade, mesmo nome, mesmo apito (ver TIPOS_NOTIFICAM_POR_CLIENTE).
 const TIPO_PRIORITY: Record<string, number> = {
-  desvio: 15, panico: 12, saida_nao_autorizada: 10, jammer: 9,
+  desvio: 15, parada_fora_tapete: 15, panico: 12, saida_nao_autorizada: 10, jammer: 9,
   bau: 8, parada_cliente: 8, tiroteio: 7, parada_anomala: 6, ignicao_noturna: 5,
   retorno_tardio: 4, aceleracao: 3, favela: 2, parada_longa: 1,
 };
@@ -79,7 +82,7 @@ function prioAlerta(a: { nivel: string; tipo: string }): number {
 // PÂNICO é exceção de segurança e sempre notifica, em qualquer cliente —
 // não é negociável mesmo se não estiver nessa lista.
 const TIPOS_NOTIFICAM_POR_CLIENTE: Record<string, string[]> = {
-  "4096": ["desvio"],          // Nutry: só desvio de rota (já mostrado na faixa do topo)
+  "4096": ["desvio", "parada_fora_tapete"],  // Nutry: desvio de rota (movimento + parada fora do tapete, já mostrado na faixa do topo)
   "4586": ["parada_cliente"],  // Benassi: só parada de 1h30+ dentro do cliente
 };
 
@@ -433,7 +436,7 @@ function usePainelFoco(params: {
   const desvioSelecionado = useMemo(() => {
     if (!cvSelecionado) return null;
     const a = alertas.find(
-      (x) => x.tipo === "desvio" && x.cv === cvSelecionado && x.origemLat != null && x.origemLng != null
+      (x) => (x.tipo === "desvio" || x.tipo === "parada_fora_tapete") && x.cv === cvSelecionado && x.origemLat != null && x.origemLng != null
     );
     return a ? { lat: a.origemLat as number, lng: a.origemLng as number } : null;
   }, [alertas, cvSelecionado]);
@@ -1093,7 +1096,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Desvios de rota — faixa dedicada no topo do mapa, sempre visivel independente
   // dos filtros da sidebar (vista/tipo). Ordenado do mais recente pro mais antigo.
   const desviosAtivos = alertas
-    .filter(a => a.tipo === "desvio")
+    .filter(a => a.tipo === "desvio" || a.tipo === "parada_fora_tapete")
     .filter(a => {
       if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
       if (modoRomaneio && !cvsComRomaneio.has(a.cv)) return false;
@@ -1108,7 +1111,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // nunca pode ficar filtrada por selecao (mesma classe de bug ja corrigida
   // na malha de entregas e na lista de alertas da sidebar).
   const desviosAtivosSplitTodos = alertas
-    .filter(a => a.tipo === "desvio")
+    .filter(a => a.tipo === "desvio" || a.tipo === "parada_fora_tapete")
     .filter(a => {
       if (gruposOcultos.size === 0) return true;
       const g = cvParaGrupo.get(a.cv);

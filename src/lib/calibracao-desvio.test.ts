@@ -77,4 +77,14 @@ describe("segmentoCalibracaoPreferido (achado real 12/07, campo estrutural desde
     expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "classe_viaria" }, null)).toBe("origem:classe_viaria");
     expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "classe_viaria" }, "fora")).toBe("origem:classe_viaria");
   });
+
+  it("tipo='parada_fora_tapete': retorna segmento proprio, independente de corredorVeredito (achado 27/07, caso TTK-4D14 -- tipo proprio desde a revisao adversarial, nao mais origemDesvio sob tipo='desvio')", () => {
+    expect(segmentoCalibracaoPreferido({ tipo: "parada_fora_tapete" }, null)).toBe("origem:parada_fora_tapete");
+    expect(segmentoCalibracaoPreferido({ tipo: "parada_fora_tapete" }, "fora")).toBe("origem:parada_fora_tapete");
+  });
+
+  it("tipo='parada_fora_tapete' nao e mais alcancado via origemDesvio sob tipo='desvio' (a colisao de vaga que motivou a mudanca)", () => {
+    const alerta = { tipo: "desvio" };
+    expect(segmentoCalibracaoPreferido(alerta, "fora")).toBeNull();
+  });
 });

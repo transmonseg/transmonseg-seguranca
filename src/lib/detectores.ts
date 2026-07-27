@@ -37,7 +37,17 @@ export type Alerta = {
   // classe viaria disparando SOZINHA (achado real 27/07, pedido explicito
   // do usuario -- ate entao esse sinal so REFORCAVA um alerta que ja ia
   // disparar por outro motivo via aplicarBonusClasseViaria; ver o branch
-  // dedicado dentro de detectarDesvio)?
+  // dedicado dentro de detectarDesvio).
+  // NAO inclui mais "parada_fora_tapete" (achado real da revisao adversarial
+  // de 27/07, caso TTK-4D14): esse gatilho nasceu reusando tipo="desvio" +
+  // origemDesvio="parada_fora_tapete", mas isso o fazia ocupar a MESMA vaga
+  // de alerta-unico-por-veiculo-por-tipo da familia de desvio comportamental
+  // (arriscando bloquear/perder um desvio real que surgisse depois, ver
+  // detectarParadaForaTapete abaixo) e o excluia do auto-resolve generico
+  // (fica preso ate resolucao manual ou o cron de 7 dias, muito mais tempo
+  // do que faz sentido pra um sinal fundamentalmente de PARADA). Agora tem
+  // tipo proprio ("parada_fora_tapete", ver TIPOS_NAO_GERENCIADOS) e nunca
+  // seta este campo.
   origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria";
 };
 
@@ -324,6 +334,100 @@ export function detectarParadaAnomala(ctx: {
     tipo: "parada_anomala",
     motivo: `Parada suspeita de ${duracao} fora de rota sem ponto de entrega${sufixo}`,
     score,
+  };
+}
+
+// Parada FORA DO TAPETE — gatilho RÁPIDO complementar a detectarParadaAnomala.
+// Achado real 27/07 (caso TTK-4D14 -- ver
+// docs/superpowers/specs/2026-07-27-parada-fora-tapete-e-fix-lat-escalacao-design.md):
+// devAvancarStreaksDesvio (abaixo, ~linha 690) exige velocidade>0 pra avançar
+// QUALQUER streak de desvio (comportamental, tapete, divergência de rumo) —
+// correto e intencional (anti-jitter de GPS parado, achado 10/07). Consequência:
+// um veículo que sai da rota e PARA antes de acumular streak>=2 nunca dispara
+// nada por essa família inteira de regras. detectarParadaAnomala cobre paradas
+// de 12-89min fora da base/cliente, mas não olha se a parada é especificamente
+// fora do tapete — só cobre parada LONGA em geral. Uma parada de poucos
+// minutos já fora do tapete/rua conhecida cai no buraco: curta demais pra
+// parada suspeita, parada demais pra qualquer streak de movimento.
+//
+// Piso de 3min deliberadamente baixo comparado ao piso de 12min da parada
+// anômala genérica — a condição extra (dentroTapete===false, que já exige
+// TAPETE_MIN_CELULAS de cobertura mínima confirmada no motor, ver route.ts)
+// é uma corroboração espacial forte o bastante pra justificar confirmar mais
+// rápido. Ajustável com dado real depois (mesmo espírito de todo limiar deste
+// arquivo).
+//
+// Reusa as MESMAS supressões anti-FP já usadas por detectarParadaAnomala:
+// temPOIProximo (posto de gasolina/apoio) e vizinhosParados (congestionamento
+// — 2+ outros veículos da frota parados na mesma área).
+//
+// tipo="parada_fora_tapete" PRÓPRIO (revisão adversarial de 27/07, caso
+// TTK-4D14 -- corrige o design original desta mesma sessão, que reusava
+// tipo="desvio" + origemDesvio="parada_fora_tapete"). Dois problemas reais
+// encontrados nesse reuso, ambos resolvidos por dar um tipo próprio:
+//   (1) lat/lng errados -- o insert de alerta em route.ts decide
+//       "ehDesvio = tipo==='desvio' && desvioInicio!==null" e, quando
+//       true, grava desvioInicio.lat/lng (ponto FIXO de um streak de
+//       MOVIMENTO anterior, possivelmente obsoleto) em vez de pos.lat/lng
+//       (onde o veículo está PARADO agora, o único ponto que faz sentido
+//       pra este alerta). Tipo próprio faz ehDesvio ser sempre false aqui,
+//       então o insert cai no default correto (pos.lat/lng) sem precisar
+//       de nenhum caso especial.
+//   (2) colisão de vaga -- alertas no banco são 1-por-veículo-por-tipo
+//       (dedup e escalação em route.ts chaveiam por `alerta.tipo`). Com
+//       tipo="desvio" compartilhado, este gatilho (baseado em posição
+//       ESTÁTICA) ocupava a MESMA linha que um desvio comportamental real
+//       (baseado em streak de MOVIMENTO) usaria depois. Se esta parada
+//       disparasse critico primeiro (score>=65 quando riscoAreaAtual>=25,
+//       ex. 1 favela), um desvio real subsequente do mesmo veículo nunca
+//       conseguiria criar linha nova (jaExiste=true) nem escalar (a
+//       escalação só grava quando não-crítico -> crítico; se a linha já
+//       está crítica por causa DESTA parada, o motivo/lat/lng/score do
+//       desvio real de verdade nunca chegam ao banco). Tipo próprio
+//       elimina a colisão por construção: nunca compete pela mesma vaga
+//       que "desvio" (dedup, escalação, TIPOS_NAO_GERENCIADOS).
+// Consequência boa e desejada do tipo próprio: participa do auto-resolve
+// GENÉRICO (baseado em alertasGerenciados em route.ts) exatamente como
+// detectarParadaAnomala já participa -- fecha sozinho quando a condição
+// deixa de valer (voltou pro tapete, saiu da base, etc.), em vez de ficar
+// preso até resolução manual ou o cron de 7 dias (o que acontecia sob
+// tipo="desvio", ver TIPOS_NAO_GERENCIADOS). Não precisa de guard contra
+// dupla contagem em aplicarBonusClasseViaria nem entra em
+// TIPOS_CORROBORANTES -- este detector só dispara com velocidade===0,
+// mutuamente exclusivo por construção com detectarDesvio (sempre exige
+// p.velocidade>0), nunca pode coexistir com o mesmo veículo no mesmo
+// ciclo.
+export const PARADA_FORA_TAPETE_MIN = 3;
+
+export function detectarParadaForaTapete(ctx: {
+  paradoMin: number;
+  emOperacao: boolean;
+  foraDaBase: boolean;
+  noCliente: boolean;
+  dentroTapete: boolean | null;
+  temPOIProximo: boolean;
+  vizinhosParados?: number;
+  riscoAreaAtual: number;
+}): Alerta | null {
+  if (!ctx.emOperacao || !ctx.foraDaBase || ctx.noCliente) return null;
+  // false = fora do tapete com cobertura mínima confirmada (route.ts,
+  // TAPETE_MIN_CELULAS). true = dentro do tapete: nunca dispara. null = sem
+  // cobertura suficiente ainda pra confiar no sinal (cold-start): também não
+  // dispara, mesma cautela de CAMADA3_TAPETE_ATIVA/dentroTapete em geral.
+  if (ctx.dentroTapete !== false) return null;
+  if (ctx.paradoMin < PARADA_FORA_TAPETE_MIN) return null;
+  if (ctx.temPOIProximo) return null; // parada em local legitimo (posto/apoio)
+  // Congestionamento: 2+ outros veiculos da frota parados na mesma area =
+  // transito/fila, nao roubo — mesma régua de detectarParadaAnomala.
+  if ((ctx.vizinhosParados ?? 0) >= 2) return null;
+
+  const nivel: "critico" | "atencao" = ctx.riscoAreaAtual >= RISCO_AREA_LIMIAR ? "critico" : "atencao";
+  const duracao = formataDuracao(ctx.paradoMin);
+  return {
+    nivel,
+    tipo: "parada_fora_tapete",
+    motivo: `Parado há ${duracao} fora de qualquer via conhecida da frota, sem ponto de entrega por perto`,
+    score: nivel === "critico" ? 65 : 45,
   };
 }
 
@@ -1161,6 +1265,24 @@ export function detectarAnomaliaBaseline(ctx: CtxAnomaliaBaseline): Alerta | nul
 const TIPOS_CORROBORANTES = new Set(["jammer", "desvio", "bypass_entrega", "baseline_veiculo"]);
 const BONUS_CORROBORACAO_POR_SINAL = 15;
 
+// Tipos EXCLUÍDOS do auto-resolve genérico e da resolução de "obsoletos" em
+// route.ts (ver alertasGerenciados) -- ficam abertos até ação manual do
+// operador (Resolver/Falso positivo) ou o cron de 7 dias
+// (expirar-alertas-ativos-esquecidos), nunca fecham sozinhos só porque a
+// condição que os disparou deixou de valer num ciclo. Extraído aqui (em vez
+// de literal duplicado em route.ts) pra ser testável e pra documentar num
+// só lugar QUEM está nesta lista -- achado real da revisão adversarial de
+// 27/07 (caso TTK-4D14): detectarParadaForaTapete tinha sido implementado
+// reusando tipo="desvio", o que o colocava aqui por acidente (ficava preso
+// igual a um desvio de verdade, e podia ocupar/bloquear a vaga de um desvio
+// real subsequente do mesmo veículo -- ver comentário completo acima de
+// detectarParadaForaTapete). Tipo próprio ("parada_fora_tapete") resolve
+// isso simplesmente por NÃO entrar nesta lista -- participa do auto-resolve
+// genérico exatamente como parada_anomala (nunca esteve aqui) e qualquer
+// outro tipo "gerenciado" (parada_longa, parada_cliente,
+// saida_nao_autorizada, excesso, etc.).
+export const TIPOS_NAO_GERENCIADOS = new Set(["favela", "desvio", "bypass_entrega"]);
+
 // Reforco de score da classificacao viaria (via principal -> rua estreita)
 // -- ver docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.
 // Aplicado ao RESULTADO de detectarDesvio. Ate 26/07 esse sinal NUNCA era
@@ -1333,6 +1455,16 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           vizinhosParados: ctx.vizinhosParados ?? 0,
         })
       : null,
+    detectarParadaForaTapete({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      foraDaBase: ctx.foraDaBase,
+      noCliente: ctx.noCliente ?? false,
+      dentroTapete: ctx.dentroTapete ?? null,
+      temPOIProximo: ctx.temPOIProximo ?? false,
+      vizinhosParados: ctx.vizinhosParados ?? 0,
+      riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
+    }),
     detectarTiroteioProximo(p, {
       distTiroteioM: ctx.distTiroteioM ?? null,
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,

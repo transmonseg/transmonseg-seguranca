@@ -16,10 +16,21 @@ export function calcularJanelaTrilha(desde: Date, agora: Date): { inicio: Date; 
   return { inicio, fim: agora };
 }
 
+// Tipos cobertos pelo snapshot de casos_desvio_revisao -- escopo original
+// (spec de 26/07) era so 'desvio'. 'parada_fora_tapete' adicionado 27/07
+// (revisao adversarial, caso TTK-4D14): esse gatilho ganhou tipo proprio no
+// mesmo ciclo (deixou de reusar tipo='desvio', ver
+// detectores.ts/TIPOS_NAO_GERENCIADOS), e sem entrar aqui ficaria
+// SILENCIOSAMENTE fora do pipeline de calibracao -- recalibrar-desvio nunca
+// aprenderia a taxa de falso positivo real desta regra (mesma motivacao de
+// todo outro segmento de origem: saida_parada, classe_viaria, etc.).
+const TIPOS_CASO_REVISAO = ["desvio", "parada_fora_tapete"];
+
 // Copia o contexto do detector + a trilha de posicao do veiculo pra
 // casos_desvio_revisao ANTES do STRIP_PESADO (acoes-alertas.ts) apagar o
-// contexto original do alerta. So processa alertas tipo='desvio' -- outros
-// tipos nao entram nesta tabela (escopo da feature, ver spec de 26/07).
+// contexto original do alerta. So processa os tipos em TIPOS_CASO_REVISAO --
+// outros tipos nao entram nesta tabela (escopo da feature, ver spec de
+// 26/07 e o achado de 27/07 acima).
 // Nao lanca erro: falha aqui NUNCA deve bloquear o operador de
 // resolver/marcar falso positivo (e' um recurso de analise, nao a acao
 // principal) -- so loga um aviso, mesmo padrao ja usado pro insert em lote
@@ -35,7 +46,7 @@ export async function registrarCasosDesvioRevisao(
       .from("alertas")
       .select("id, veiculo_id, contexto, desde")
       .in("id", ids)
-      .eq("tipo", "desvio");
+      .in("tipo", TIPOS_CASO_REVISAO);
     if (errAlertas || !alertasDesvio || alertasDesvio.length === 0) return;
 
     const agora = new Date();

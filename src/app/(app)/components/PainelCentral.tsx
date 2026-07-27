@@ -52,14 +52,19 @@ function ordemSeveridade(tipo: string): number {
   if (t === "parada_cliente") return 7;
   if (t === "parada_anomala") return 8;
   if (t === "parada_longa") return 9;
-  if (t === "desvio" || t === "excesso") return 10;
+  if (t === "desvio" || t === "excesso" || t === "parada_fora_tapete") return 10;
   return 11;
 }
 
-// Normaliza o tipo para a chave de grupo (jammer/sinal/bloqueio viram "jammer").
+// Normaliza o tipo para a chave de grupo (jammer/sinal/bloqueio viram "jammer";
+// parada_fora_tapete e' internamente um tipo proprio -- pra nao compartilhar o
+// slot de arbitracao/escalonamento do desvio de movimento (achado 27/07: risco
+// de engolir um desvio critico real) -- mas o operador deve ve-la junto do
+// desvio, entao agrupa visualmente aqui).
 function chaveTipo(t: string): string {
   const x = (t ?? "").toLowerCase();
   if (x === "jammer" || x.includes("sinal") || x.includes("bloqueio")) return "jammer";
+  if (x === "parada_fora_tapete") return "desvio";
   return x;
 }
 
@@ -75,6 +80,7 @@ const NOME_TIPO: Record<string, string> = {
   parada_anomala: "Parada anômala",
   parada_longa: "Parada longa",
   desvio: "Desvio de rota",
+  parada_fora_tapete: "Desvio de rota",
   excesso: "Excesso de velocidade",
 };
 function nomeTipo(t: string): string {

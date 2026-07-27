@@ -8,7 +8,7 @@
 //
 // Nao mexe em banco de dados — funcoes puras, dado 100% sintetico.
 import { describe, it, expect } from "vitest";
-import { detectarDesvio, afastouDeTudo, avancarStreaksDesvio, calcularRiscoArea, type CtxDesvio } from "./detectores";
+import { detectarDesvio, afastouDeTudo, avancarStreaksDesvio, calcularRiscoArea, detectarParadaForaTapete, PARADA_FORA_TAPETE_MIN, TIPOS_NAO_GERENCIADOS, type CtxDesvio } from "./detectores";
 import { haversineM } from "./unitrac";
 import type { PosicaoNormalizada } from "./unitrac";
 
@@ -441,5 +441,180 @@ describe("foraTapeteStreak — Camada 3, RELIGADA em 12/07/2026 (ver CAMADA3_TAP
     }));
     const resultados = simular(REALENGO, ciclos);
     expect(resultados[2]?.score).toBe(45); // streak 2, via conhecida, sem risco de area — fluxo normal intacto
+  });
+});
+
+// Gatilho RAPIDO "parada fora do tapete" (Fix 1, achado real 27/07, caso
+// TTK-4D14) -- ver docs/superpowers/specs/2026-07-27-parada-fora-tapete-e-fix-lat-escalacao-design.md.
+// Cobre o "buraco" que detectarDesvio nunca fecha sozinho: devAvancarStreaksDesvio
+// exige velocidade>0 pra avancar QUALQUER streak de desvio (anti-jitter de GPS
+// parado, intencional, achado 10/07) -- um veiculo que desvia e PARA antes de
+// streak>=2 nunca dispara nada por aquela familia inteira de regras. Detector
+// de ciclo unico (posicao ESTATICA), por isso testado direto (sem o helper
+// `simular`, que so faz sentido pra sequencias em movimento).
+describe("detectarParadaForaTapete — gatilho rapido 'desviou e parou' (Fix 1, 27/07)", () => {
+  const base = {
+    paradoMin: PARADA_FORA_TAPETE_MIN,
+    emOperacao: true,
+    foraDaBase: true,
+    noCliente: false,
+    dentroTapete: false as boolean | null,
+    temPOIProximo: false,
+    vizinhosParados: 0,
+    riscoAreaAtual: 0,
+  };
+
+  it("parado poucos minutos FORA do tapete, sem POI/congestionamento: dispara (nivel atencao, area sem risco)", () => {
+    const a = detectarParadaForaTapete(base);
+    expect(a).not.toBeNull();
+    // Tipo PROPRIO desde a revisao adversarial de 27/07 (caso TTK-4D14) --
+    // antes reusava tipo="desvio" + origemDesvio="parada_fora_tapete", o
+    // que fazia este alerta ocupar a mesma vaga 1-por-veiculo-por-tipo da
+    // familia de desvio comportamental (risco de bloquear um desvio real
+    // subsequente, ver detectores.ts). Agora tipo e origemDesvio sao
+    // independentes: nunca mais "desvio", nunca mais seta origemDesvio.
+    expect(a?.tipo).toBe("parada_fora_tapete");
+    expect(a?.origemDesvio).toBeUndefined();
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.motivo).toContain("fora de qualquer via conhecida da frota");
+  });
+
+  it("area de risco elevado (riscoAreaAtual >= limiar): escala pra critico", () => {
+    const a = detectarParadaForaTapete({ ...base, riscoAreaAtual: 30 });
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("critico");
+  });
+
+  it("abaixo do piso de tempo (PARADA_FORA_TAPETE_MIN - 1 min): NAO dispara ainda", () => {
+    expect(detectarParadaForaTapete({ ...base, paradoMin: PARADA_FORA_TAPETE_MIN - 1 })).toBeNull();
+  });
+
+  it("parado DENTRO do tapete (dentroTapete=true): nunca dispara, mesmo parado ha muito tempo", () => {
+    expect(detectarParadaForaTapete({ ...base, dentroTapete: true, paradoMin: 20 })).toBeNull();
+  });
+
+  it("dentroTapete=null (cobertura minima do tapete ainda nao confirmada, cold-start): nao dispara", () => {
+    expect(detectarParadaForaTapete({ ...base, dentroTapete: null })).toBeNull();
+  });
+
+  it("fora do tapete mas com POI perto (posto/apoio): suprime, mesma regra anti-FP de detectarParadaAnomala", () => {
+    expect(detectarParadaForaTapete({ ...base, temPOIProximo: true })).toBeNull();
+  });
+
+  it("2+ outros veiculos da frota parados perto (congestionamento/transito): suprime", () => {
+    expect(detectarParadaForaTapete({ ...base, vizinhosParados: 2 })).toBeNull();
+  });
+
+  it("1 vizinho parado por perto ainda dispara (nao e aglomeracao, mesma regra de detectarParadaAnomala)", () => {
+    expect(detectarParadaForaTapete({ ...base, vizinhosParados: 1 })).not.toBeNull();
+  });
+
+  it("no cliente (dentro do raio de entrega): nunca dispara, mesmo fora do tapete", () => {
+    expect(detectarParadaForaTapete({ ...base, noCliente: true })).toBeNull();
+  });
+
+  it("dentro da base (foraDaBase=false): nunca dispara", () => {
+    expect(detectarParadaForaTapete({ ...base, foraDaBase: false })).toBeNull();
+  });
+
+  it("fora de horario de operacao: nunca dispara", () => {
+    expect(detectarParadaForaTapete({ ...base, emOperacao: false })).toBeNull();
+  });
+
+  // Auto-resolve (achado real 27/07, revisao adversarial, caso TTK-4D14):
+  // tipo proprio "parada_fora_tapete" participa do auto-resolve generico de
+  // route.ts (alertasGerenciados) exatamente como parada_anomala ja
+  // participa -- NAO fica preso ate acao manual/cron de 7 dias como
+  // "desvio" ficaria. route.ts fecha o alerta sozinho assim que
+  // avaliar()/montarCandidatosCore param de retornar candidato pra este
+  // veiculo; os dois testes abaixo confirmam que o DETECTOR realmente para
+  // de disparar nas duas formas de "condicao deixou de valer" citadas no
+  // pedido (voltou pro tapete / saiu andando), que e' a precondicao pro
+  // auto-resolve de route.ts acontecer.
+  it("episodio completo: dispara parado fora do tapete, depois para de disparar quando o veiculo volta a andar POR DENTRO do tapete conhecido", () => {
+    const cicloParado = detectarParadaForaTapete(base);
+    expect(cicloParado).not.toBeNull();
+    expect(cicloParado?.tipo).toBe("parada_fora_tapete");
+
+    const cicloVoltouTapete = detectarParadaForaTapete({ ...base, dentroTapete: true });
+    expect(cicloVoltouTapete).toBeNull();
+  });
+
+  it("episodio completo: dispara parado fora do tapete, depois para de disparar quando o veiculo sai andando (paradoMin volta a 0)", () => {
+    const cicloParado = detectarParadaForaTapete(base);
+    expect(cicloParado).not.toBeNull();
+
+    // route.ts zera parado_desde assim que velocidade>0 e' reportada de
+    // novo -- paradoMin volta a 0 no ciclo seguinte.
+    const cicloAndando = detectarParadaForaTapete({ ...base, paradoMin: 0 });
+    expect(cicloAndando).toBeNull();
+  });
+});
+
+// Issue C da revisao adversarial de 27/07 (caso TTK-4D14): sob o design
+// ORIGINAL (tipo="desvio" + origemDesvio="parada_fora_tapete"), um
+// parada_fora_tapete critico (riscoAreaAtual>=25) ocupava a MESMA vaga
+// 1-por-veiculo-por-tipo que um desvio comportamental real usaria depois.
+// route.ts so ESCALA a linha existente numa transicao nao-critico->critico
+// (ver "achado real 22/07" no proprio route.ts) -- com a linha ja critica
+// por causa da parada, um desvio real subsequente do MESMO veiculo (tambem
+// critico) nunca criaria linha nova (jaExiste=true) nem escalaria (nivel
+// nao muda), entao motivo/lat/lng/score do desvio real JAMAIS chegariam ao
+// banco: o operador continuaria vendo o texto antigo "parou fora do
+// tapete" enquanto um sequestro em andamento passava batido. Tipo proprio
+// resolve isso por construcao -- os testes abaixo confirmam a base do
+// argumento (tipos distintos, dedup de route.ts chaveia por tipo exato).
+describe("parada_fora_tapete nao bloqueia/engole um desvio comportamental real (issue C da revisao adversarial 27/07)", () => {
+  it("parada_fora_tapete critico e desvio comportamental critico do MESMO veiculo tem tipos DIFERENTES -- nunca competem pela mesma linha em route.ts", () => {
+    // Ciclo 1: veiculo parado fora do tapete, em area de risco -- critico.
+    const alertaParada = detectarParadaForaTapete({
+      paradoMin: PARADA_FORA_TAPETE_MIN,
+      emOperacao: true,
+      foraDaBase: true,
+      noCliente: false,
+      dentroTapete: false,
+      temPOIProximo: false,
+      vizinhosParados: 0,
+      riscoAreaAtual: 30,
+    });
+    expect(alertaParada?.nivel).toBe("critico");
+    expect(alertaParada?.tipo).toBe("parada_fora_tapete");
+
+    // Ciclo posterior, MESMO veiculo: retomou o movimento e se afastou de
+    // TODOS os destinos, fora de qualquer via conhecida -- desvio
+    // comportamental critico de verdade (Camada 3, streak>=2).
+    const ctxDesvio: CtxDesvio = {
+      distDestinosM: [10000, 12000],
+      distDestinosAnteriorM: [8000, 10000],
+      temPendentes: true,
+      emOperacao: true,
+      foraDaBase: true,
+      streak: 2,
+      afastamentoAcumuladoM: 2000,
+      dentroTapete: false,
+      familiarVeiculo: null,
+      suspensoPorChegada: false,
+      divergenciaRumoStreak: 0,
+      saiuDoRaioAgora: false,
+      divergenciaGrausAtual: null,
+      quedaClasseViaria: false,
+      riscoAreaAtual: 0,
+      foraTapeteStreak: 0,
+    };
+    const alertaDesvio = detectarDesvio(posicaoBase({ velocidade: 40 }), ctxDesvio);
+    expect(alertaDesvio?.nivel).toBe("critico");
+    expect(alertaDesvio?.tipo).toBe("desvio");
+
+    // O ponto central da correcao: tipos DIFERENTES. route.ts identifica
+    // "ja existe alerta deste tipo pro veiculo" com
+    // `alertasAbertos.find(a => a.tipo === alerta.tipo)` -- com tipos
+    // diferentes, o desvio real sempre cria/atualiza SUA PROPRIA linha,
+    // nunca esbarra na linha (ja critica) da parada_fora_tapete.
+    expect(alertaDesvio?.tipo).not.toBe(alertaParada?.tipo);
+  });
+
+  it("desvio permanece fora do auto-resolve (TIPOS_NAO_GERENCIADOS); parada_fora_tapete nao herda essa exclusao", () => {
+    expect(TIPOS_NAO_GERENCIADOS.has("desvio")).toBe(true);
+    expect(TIPOS_NAO_GERENCIADOS.has("parada_fora_tapete")).toBe(false);
   });
 });

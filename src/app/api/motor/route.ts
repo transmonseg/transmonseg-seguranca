@@ -36,6 +36,8 @@ import {
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
   montarContextoDesvio,
+  PARADA_FORA_TAPETE_MIN,
+  TIPOS_NAO_GERENCIADOS,
   type Alerta,
   type DesvioInicio,
 } from "@/lib/detectores";
@@ -1532,6 +1534,31 @@ export async function POST(request: Request) {
             paradoMin >= 12 && paradoMin < 90 &&
             foraDaBase && !noCliente && emOperacao;
 
+          // Candidato a PARADA FORA DO TAPETE: gatilho RAPIDO complementar,
+          // achado real 27/07 (caso TTK-4D14) -- ver
+          // docs/superpowers/specs/2026-07-27-parada-fora-tapete-e-fix-lat-escalacao-design.md.
+          // devAvancarStreaksDesvio (detectores.ts) exige velocidade>0 pra
+          // avancar QUALQUER streak de desvio (comportamental, tapete,
+          // divergencia de rumo) -- correto e intencional (anti-jitter de
+          // GPS parado, achado 10/07), MAS tem como consequencia que um
+          // veiculo que desvia e PARA antes de acumular streak>=2 nunca
+          // dispara nada por aquela familia inteira de regras.
+          // candidatoParadaAnomala (acima) so cobre paradas de 12-89min --
+          // uma parada curta (3-10min) ja fora do tapete/rua conhecida cai
+          // no buraco: curta demais pra parada suspeita, parada demais pra
+          // qualquer streak de movimento. Piso de 3min deliberadamente baixo
+          // comparado ao piso de 12min acima -- a condicao extra
+          // (dentroTapete===false, que ja exige TAPETE_MIN_CELULAS de
+          // cobertura minima confirmada, ver ~linha 1345) e' uma
+          // corroboracao espacial forte o bastante pra justificar confirmar
+          // mais rapido.
+          const candidatoParadaForaTapete =
+            pos.fresco &&
+            pos.velocidade === 0 &&
+            paradoMin >= PARADA_FORA_TAPETE_MIN &&
+            dentroTapete === false &&
+            foraDaBase && !noCliente && emOperacao;
+
           // Candidato a SAIDA NAO AUTORIZADA parado: tambem precisa de temPOI para
           // suprimir abastecimento/parada de apoio (so faz sentido fora ~2km da base).
           const candidatoSaidaParado =
@@ -1561,8 +1588,9 @@ export async function POST(request: Request) {
             estavEmMovimento = anterior != null && (anterior.velocidade ?? 0) >= 30;
             esMadrugada = horaSP >= 0 && horaSP < 5;
           }
-          // POI consultado para parada anomala E saida nao autorizada parada.
-          if (candidatoParadaAnomala || candidatoSaidaParado) {
+          // POI consultado para parada anomala, saida nao autorizada parada
+          // E parada fora do tapete (mesma supressao anti-FP das outras).
+          if (candidatoParadaAnomala || candidatoSaidaParado || candidatoParadaForaTapete) {
             try {
               temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
             } catch {
@@ -1577,9 +1605,10 @@ export async function POST(request: Request) {
           }
 
           // Congestionamento: quantos OUTROS veiculos da frota estao parados num
-          // raio curto. >= 2 => transito/fila, suprime a parada anomala (anti-FP).
+          // raio curto. >= 2 => transito/fila, suprime a parada anomala E a
+          // parada fora do tapete (mesmo sinal, mesma supressao, anti-FP).
           let vizinhosParados = 0;
-          if (candidatoParadaAnomala) {
+          if (candidatoParadaAnomala || candidatoParadaForaTapete) {
             let dentro = 0;
             for (const q of posicoesFrescasComVelocidade) {
               if (q.velocidade === 0 && haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentro++;
@@ -2234,15 +2263,22 @@ export async function POST(request: Request) {
             }
           }
 
-          // Resolucao automatica generica: todos os tipos EXCETO favela,
-          // desvio e bypass_entrega. Achado real 11/07 (usuario pediu remocao
-          // explicita do fechamento automatico de desvio, apos o bug de churn
-          // da cerca virtual): desvio e bypass_entrega NUNCA sao resolvidos
-          // pelo motor, so por acao manual do operador (Resolver/Falso
-          // positivo na UI). bypass_entrega e sinal de seguranca (possivel
-          // furto de carga).
+          // Resolucao automatica generica: todos os tipos EXCETO os listados
+          // em TIPOS_NAO_GERENCIADOS (favela, desvio, bypass_entrega).
+          // Achado real 11/07 (usuario pediu remocao explicita do
+          // fechamento automatico de desvio, apos o bug de churn da cerca
+          // virtual): desvio e bypass_entrega NUNCA sao resolvidos pelo
+          // motor, so por acao manual do operador (Resolver/Falso positivo
+          // na UI). bypass_entrega e sinal de seguranca (possivel furto de
+          // carga). parada_fora_tapete (achado real 27/07, revisao
+          // adversarial, caso TTK-4D14) foi DELIBERADAMENTE deixado FORA
+          // desta lista -- ao contrario do design original (que reusava
+          // tipo="desvio" e por isso ficava preso aqui por acidente), esse
+          // gatilho e' fundamentalmente um sinal de PARADA (mesma familia de
+          // parada_anomala, que tambem nunca esteve nesta lista) e deve
+          // fechar sozinho quando a condicao deixa de valer.
           const alertasGerenciados = (alertasAbertos ?? []).filter(
-            (a) => a.tipo !== "favela" && a.tipo !== "desvio" && a.tipo !== "bypass_entrega"
+            (a) => !TIPOS_NAO_GERENCIADOS.has(a.tipo)
           );
 
           if (alerta) {
@@ -2263,6 +2299,27 @@ export async function POST(request: Request) {
               }
 
               const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null;
+              // Achado real 27/07 (revisao adversarial, caso TTK-4D14):
+              // parada_fora_tapete tem tipo proprio agora (nao mais
+              // "desvio"), entao ehDesvio acima e sempre false pra ele --
+              // lat/lng ja caem corretamente no default (pos.lat/pos.lng,
+              // a posicao ATUAL onde o veiculo esta parado; nunca faz
+              // sentido pinar num desvioInicio de um streak de MOVIMENTO
+              // anterior, que pode estar obsoleto). So falta o contexto:
+              // sem este branch, cairia no `{}` generico e perderia o
+              // segmento/taxa de calibracao calculados acima (necessarios
+              // pra recalibrar-desvio aprender a taxa de falso positivo
+              // desta regra com o tempo, mesmo motivo de todo outro
+              // segmento de origem).
+              const ehParadaForaTapete = alerta.tipo === "parada_fora_tapete";
+              const contextoParadaForaTapete = {
+                parado_min: paradoMin,
+                dentro_tapete: dentroTapete,
+                risco_area_atual: riscoAreaAtual,
+                ...(segmentoEspecifico !== null || taxaFp !== undefined
+                  ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
+                  : {}),
+              };
               if (!jaExiste) {
                 await supabase.from("alertas").insert({
                   cliente_id,
@@ -2274,6 +2331,9 @@ export async function POST(request: Request) {
                   status: "ativo",
                   // Desvio: lat/lng do PONTO DE INÍCIO da sequência (onde
                   // começou a se afastar), não da posição do disparo.
+                  // parada_fora_tapete: sempre a posição ATUAL (pos.lat/lng)
+                  // -- não tem conceito de "início do desvio" separado da
+                  // posição parada.
                   lat: ehDesvio ? desvioInicio!.lat : pos.lat,
                   lng: ehDesvio ? desvioInicio!.lng : pos.lng,
                   contexto: ehDesvio
@@ -2293,7 +2353,9 @@ export async function POST(request: Request) {
                         segmentoEspecifico,
                         taxaFp,
                       })
-                    : {},
+                    : ehParadaForaTapete
+                      ? contextoParadaForaTapete
+                      : {},
                   desde: agora.toISOString(),
                 });
               } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
@@ -2315,6 +2377,18 @@ export async function POST(request: Request) {
                       ? {
                           lat: desvioInicio!.lat,
                           lng: desvioInicio!.lng,
+                          // Achado real 27/07 (caso TTK-4D14): sem isto, `desde`
+                          // ficava preso no valor da criacao ORIGINAL do alerta
+                          // enquanto lat/lng/contexto ja refletiam o NOVO
+                          // desvioInicio deste episodio de streak -- o alerta
+                          // escalado descrevia dois momentos diferentes do
+                          // "mesmo" evento (idade exibida vs posicao exibida).
+                          // Efeito colateral aceito: a idade exibida pode
+                          // "encolher" ao escalar bem depois de criado -- correto
+                          // (reflete o inicio real do episodio atual), nao um bug
+                          // novo. Nao mexe no "preserva id" da escalacao (existe
+                          // pra evitar spam de alerta duplicado, achado 22/07).
+                          desde: desvioInicio!.ts,
                           contexto: montarContextoDesvio({
                             desvioInicio: desvioInicio!,
                             dentroTapete,
@@ -2332,7 +2406,9 @@ export async function POST(request: Request) {
                             taxaFp,
                           }),
                         }
-                      : {}),
+                      : ehParadaForaTapete
+                        ? { contexto: contextoParadaForaTapete }
+                        : {}),
                   })
                   .eq("id", alertaExistente.id);
               }

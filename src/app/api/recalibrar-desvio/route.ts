@@ -70,10 +70,17 @@ export async function POST(request: Request) {
     // precisa de `contexto` (que ja esta zerado pelo STRIP_PESADO em
     // acoes-alertas.ts nesse ponto pra qualquer alerta ja fechado). Tambem a
     // fonte da populacao mais ampla usada como denominador de `taxaGlobal`.
+    // 'parada_fora_tapete' adicionado 27/07 (revisao adversarial, caso
+    // TTK-4D14): tipo NOVO, criado nesta mesma sessao dando ao gatilho
+    // "parado fora do tapete" uma vaga propria em vez de reusar tipo=
+    // "desvio" (ver detectores.ts/TIPOS_NAO_GERENCIADOS) -- precisa entrar
+    // aqui pra ter um segmento `tipo:parada_fora_tapete` de fallback e pra
+    // contar na populacao de `taxaGlobal`, mesma logica ja aplicada a
+    // bypass_entrega/baseline_veiculo quando ganharam tipo proprio.
     const { rows: rowsAlertas } = await pool.query<RowAlertas>(`
       select tipo, status
       from alertas
-      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo') and status != 'ativo'
+      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete') and status != 'ativo'
     `);
 
     // Achado real 26/07: a segmentacao FINA (antes `corredor_veredito:X`, lida

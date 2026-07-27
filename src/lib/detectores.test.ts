@@ -9,6 +9,7 @@ import {
   detectarParadaCliente,
   detectarParadaLonga,
   detectarParadaAnomala,
+  PARADA_FORA_TAPETE_MIN,
   detectarDesvio,
   calcularRiscoArea,
   RISCO_AREA_LIMIAR,
@@ -30,6 +31,7 @@ import {
   aplicarBonusClasseViaria,
   montarContextoDesvio,
   viradaErradaSaindoDeParada,
+  TIPOS_NAO_GERENCIADOS,
   type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
@@ -1130,6 +1132,50 @@ describe("montarCandidatosCore (candidatos crus, sem arbitrar -- extraido no fix
     );
     expect(candidatos.some((c) => c.tipo === "jammer")).toBe(true);
     expect(candidatos.some((c) => c.tipo === "desvio")).toBe(true);
+  });
+
+  it("parado fora do tapete (Fix 1, 27/07; tipo proprio desde a revisao adversarial): aparece como candidato tipo='parada_fora_tapete', e avaliar() o retorna", () => {
+    const ctx = {
+      ...ctxOp,
+      paradoMin: PARADA_FORA_TAPETE_MIN,
+      dentroTapete: false,
+    };
+    const p = posicaoBase({ velocidade: 0 });
+    const candidatos = montarCandidatosCore(p, ctx);
+    const candidato = candidatos.find((c) => c.tipo === "parada_fora_tapete");
+    expect(candidato).toBeDefined();
+    expect(candidato?.origemDesvio).toBeUndefined();
+    expect(avaliar(p, ctx)?.tipo).toBe("parada_fora_tapete");
+  });
+
+  it("parado fora do tapete NUNCA aparece com tipo='desvio' (revisao adversarial 27/07, caso TTK-4D14): tipo proprio evita colisao de vaga com desvio comportamental real", () => {
+    const ctx = {
+      ...ctxOp,
+      paradoMin: PARADA_FORA_TAPETE_MIN,
+      dentroTapete: false,
+    };
+    const p = posicaoBase({ velocidade: 0 });
+    const candidatos = montarCandidatosCore(p, ctx);
+    expect(candidatos.some((c) => c.tipo === "desvio")).toBe(false);
+  });
+});
+
+describe("TIPOS_NAO_GERENCIADOS (achado real 27/07, revisao adversarial, caso TTK-4D14)", () => {
+  // route.ts usa este set pra decidir quais tipos ficam de fora do
+  // auto-resolve generico (alertasGerenciados) -- ver comentario completo
+  // em detectores.ts. desvio/favela/bypass_entrega NUNCA fecham sozinhos
+  // (so acao manual do operador ou o cron de 7 dias); todo o resto
+  // (incluindo parada_anomala e, agora, parada_fora_tapete) fecha sozinho
+  // quando a condicao que disparou deixa de valer.
+  it("desvio, favela e bypass_entrega continuam de fora do auto-resolve", () => {
+    expect(TIPOS_NAO_GERENCIADOS.has("desvio")).toBe(true);
+    expect(TIPOS_NAO_GERENCIADOS.has("favela")).toBe(true);
+    expect(TIPOS_NAO_GERENCIADOS.has("bypass_entrega")).toBe(true);
+  });
+
+  it("parada_fora_tapete participa do auto-resolve generico, igual a parada_anomala (nao fica na lista)", () => {
+    expect(TIPOS_NAO_GERENCIADOS.has("parada_fora_tapete")).toBe(false);
+    expect(TIPOS_NAO_GERENCIADOS.has("parada_anomala")).toBe(false);
   });
 });
 

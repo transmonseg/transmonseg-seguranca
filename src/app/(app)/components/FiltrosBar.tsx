@@ -30,7 +30,7 @@ const CHIPS_TIPO: ChipTipo[] = [
   { label: "Bau",            tipos: ["bau"],                           cor: "#f97316" },
   { label: "Favela",         tipos: ["favela"],                        cor: "#dc2626" },
   { label: "Tiroteio",       tipos: ["tiroteio"],                      cor: "#b91c1c" },
-  { label: "Desvio",         tipos: ["desvio"],                        cor: "#f59e0b" },
+  { label: "Desvio",         tipos: ["desvio", "parada_fora_tapete"],  cor: "#f59e0b" },
   { label: "Parada cliente", tipos: ["parada_cliente"],                 cor: "#3b82f6" },
   { label: "Parada anômala", tipos: ["parada_anomala"],                 cor: "#f97316" },
   { label: "Parada longa",   tipos: ["parada_longa"],                   cor: "#64748b" },
