@@ -2298,22 +2298,38 @@ export async function POST(request: Request) {
                   .in("id", alertasObsoletos.map((a) => a.id));
               }
 
-              const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null;
-              // Achado real 27/07 (revisao adversarial, caso TTK-4D14):
-              // parada_fora_tapete tem tipo proprio agora (nao mais
-              // "desvio"), entao ehDesvio acima e sempre false pra ele --
-              // lat/lng ja caem corretamente no default (pos.lat/pos.lng,
-              // a posicao ATUAL onde o veiculo esta parado; nunca faz
-              // sentido pinar num desvioInicio de um streak de MOVIMENTO
-              // anterior, que pode estar obsoleto). So falta o contexto:
-              // sem este branch, cairia no `{}` generico e perderia o
-              // segmento/taxa de calibracao calculados acima (necessarios
-              // pra recalibrar-desvio aprender a taxa de falso positivo
-              // desta regra com o tempo, mesmo motivo de todo outro
-              // segmento de origem).
+              // Achado real 27/07 (investigando um caso real de falso
+              // positivo, TTH-0G95): origemDesvio="classe_viaria" dispara
+              // no branch de detectarDesvio ANTES de qualquer streak de
+              // afastamento existir (so exige !afastandoDeTudo) -- entao
+              // desvioInicio normalmente esta null quando ela e' a causa
+              // primaria do alerta, e `ehDesvio` (definido so por
+              // tipo==="desvio" && desvioInicio!==null) ficava true por
+              // coincidencia rara (streak antigo ainda nao zerado) ou false
+              // (caso comum). Resultado real: contexto SEMPRE `{}` pra
+              // classe_viaria, e o segmento proprio "origem:classe_viaria"
+              // (pedido explicito do usuario pra recalibrar-desvio aprender
+              // sozinha a taxa de falso positivo desta regra) nunca
+              // recebia um unico dado desde que a regra foi criada hoje.
+              // Fix: origemClasseViaria tem prioridade sobre ehDesvio pra
+              // decidir lat/lng/contexto -- sempre posicao ATUAL (mesma
+              // logica de parada_fora_tapete: nao ha "inicio de desvio"
+              // por movimento pra essa regra, so classificacao de via
+              // ATUAL) e contexto proprio com o segmento de calibracao.
+              const origemClasseViaria = alerta.origemDesvio === "classe_viaria";
+              const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null && !origemClasseViaria;
               const ehParadaForaTapete = alerta.tipo === "parada_fora_tapete";
               const contextoParadaForaTapete = {
                 parado_min: paradoMin,
+                dentro_tapete: dentroTapete,
+                risco_area_atual: riscoAreaAtual,
+                ...(segmentoEspecifico !== null || taxaFp !== undefined
+                  ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
+                  : {}),
+              };
+              const contextoClasseViaria = {
+                classe_via_atual: classeViaAtual,
+                queda_classe_viaria: quedaClasseViaria,
                 dentro_tapete: dentroTapete,
                 risco_area_atual: riscoAreaAtual,
                 ...(segmentoEspecifico !== null || taxaFp !== undefined
@@ -2331,9 +2347,10 @@ export async function POST(request: Request) {
                   status: "ativo",
                   // Desvio: lat/lng do PONTO DE INÍCIO da sequência (onde
                   // começou a se afastar), não da posição do disparo.
-                  // parada_fora_tapete: sempre a posição ATUAL (pos.lat/lng)
-                  // -- não tem conceito de "início do desvio" separado da
-                  // posição parada.
+                  // parada_fora_tapete e classe_viaria: sempre a posição
+                  // ATUAL (pos.lat/lng) -- nenhuma das duas tem conceito de
+                  // "início do desvio" por movimento separado da posição
+                  // atual do veículo.
                   lat: ehDesvio ? desvioInicio!.lat : pos.lat,
                   lng: ehDesvio ? desvioInicio!.lng : pos.lng,
                   contexto: ehDesvio
@@ -2355,7 +2372,9 @@ export async function POST(request: Request) {
                       })
                     : ehParadaForaTapete
                       ? contextoParadaForaTapete
-                      : {},
+                      : origemClasseViaria
+                        ? contextoClasseViaria
+                        : {},
                   desde: agora.toISOString(),
                 });
               } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
