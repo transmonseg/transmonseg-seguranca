@@ -15,13 +15,23 @@ import pg from "pg";
 
 const BASE_URL = "https://datalayer.portalunitrac.com";
 const OLLAMA_URL = "http://127.0.0.1:11434/api/generate";
-const OLLAMA_MODEL = "llama3.2:3b";
+// Achado real 27/07: testado ao vivo llama3.2:3b vs qwen2.5:7b com os
+// mesmos 2 cenarios (varios destinos pendentes = normal; so 1 destino
+// pendente afastando = suspeito). O 3b contradizia o proprio exemplo dado
+// no prompt (dizia "suspeito" pra um caso quase identico a um exemplo
+// rotulado "normal"); o 7b acertou o caso mais comum na operacao real
+// (varios destinos pendentes) mas errou o mais raro (so 1 destino). Optado
+// pelo 7b -- mais lento (~10-40s vs ~10s por veiculo, sem problema aqui,
+// roda em segundo plano) mas mais coerente no caso mais frequente.
+const OLLAMA_MODEL = "qwen2.5:7b";
 const COD_USER_UNITRAC_NUTRY = "4096";
 
 const VELOCIDADE_MIN_KMH = 5;
 const ATRASO_MAX_MIN = 60;
 const FETCH_TIMEOUT_MS = 15000;
-const OLLAMA_TIMEOUT_MS = 45000;
+// Bumped de 45s pra 90s (achado real 27/07: qwen2.5:7b levou 42s numa
+// resposta de teste, 45s deixava pouca margem).
+const OLLAMA_TIMEOUT_MS = 90000;
 // Teto de quantos veiculos observar por rodada -- inferencia em CPU e' lenta
 // (~10-20s por veiculo); nao vale rodar a frota inteira de uma vez e
 // competir com o motor real por CPU. Roda em lotes pequenos, com cadencia
@@ -112,7 +122,21 @@ Critérios reais que o sistema desta empresa usa para desconfiar de desvio (apli
 - Velocidade muito baixa (parado ou quase) geralmente significa que ele está fazendo uma entrega, não é sinal de desvio por si só.
 - Prefira responder "comportamento normal" quando a informação for ambígua ou insuficiente — é melhor deixar passar um caso duvidoso do que gerar alarme falso sem base.
 
-Responda SEMPRE em português, em no máximo 2 frases curtas. Primeiro explique seu raciocínio em UMA frase objetiva baseada só nos números fornecidos, e SÓ DEPOIS, na frase final, dê um veredito claro que seja consistente com o raciocínio que você acabou de explicar (ex.: "Parece normal.", "Merece atenção.", "Suspeito."). Nunca dê um veredito que contradiga sua própria justificativa.`;
+Responda SEMPRE em português, em no máximo 2 frases curtas. Primeiro explique seu raciocínio em UMA frase objetiva baseada só nos números fornecidos, e SÓ DEPOIS, na frase final, dê um veredito claro que seja consistente com o raciocínio que você acabou de explicar (ex.: "Parece normal.", "Merece atenção.", "Suspeito."). Nunca dê um veredito que contradiga sua própria justificativa.
+
+Dois exemplos de como responder (mesmo formato que você vai receber):
+
+Exemplo 1:
+Velocidade atual: 40 km/h
+Destino mais próximo: 3000m, AUMENTANDO
+Total de destinos pendentes: 9
+Resposta correta: "Com 9 destinos pendentes, ficar mais longe de só 1 deles é normal em rota com várias paradas — provavelmente está indo para outro destino. Parece normal."
+
+Exemplo 2:
+Velocidade atual: 50 km/h
+Destino mais próximo: 4000m, AUMENTANDO
+Total de destinos pendentes: 1
+Resposta correta: "Com só 1 destino pendente e a distância até ele aumentando de forma consistente, não há nenhum outro destino que justifique esse afastamento. Suspeito."`;
 
 // Pergunta pro modelo local, em portugues simples, com os numeros ja
 // calculados (nao pede pra ele fazer conta geometrica sozinho -- modelo
@@ -132,7 +156,11 @@ O que você acha desta situação?`;
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: OLLAMA_MODEL, system: SYSTEM_PROMPT, prompt, stream: false }),
+      // temperature:0 -- testado ao vivo (27/07), nao resolveu a
+      // inconsistencia do modelo pequeno sozinho, mas e' boa pratica pra
+      // um caso de julgamento onde queremos a resposta mais reproduzivel
+      // possivel dado o mesmo input, nao mais "criatividade".
+      body: JSON.stringify({ model: OLLAMA_MODEL, system: SYSTEM_PROMPT, prompt, stream: false, options: { temperature: 0 } }),
     },
     OLLAMA_TIMEOUT_MS
   );
