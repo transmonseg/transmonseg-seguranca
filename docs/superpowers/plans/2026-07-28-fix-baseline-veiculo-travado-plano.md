@@ -460,3 +460,223 @@ git commit -m "feat: wiring do circuit breaker de baseline_veiculo travado no mo
 - Replicar pros dois repos (TEMP + definitivo) + aplicar a migration no Postgres do Contabo + deploy manual nos 2 processos PM2 (`transmonseg-temp` e `transmonseg-definitivo`, `git pull && npm ci && npm run build && pm2 restart --update-env` nos dois).
 - Verificar logs limpos por alguns minutos depois do deploy (`pm2 logs transmonseg-temp --lines 50`).
 - Checar no banco, algumas horas depois: `SELECT placa, tipo_viagem, n_amostras, media, variancia, excluida_desde FROM baseline_veiculo b JOIN veiculos v ON v.id=b.veiculo_id WHERE v.placa = 'RQV-9B26';` — variancia deve comecar a subir de 0.0068 conforme leituras normais voltam a ser admitidas (nao vai corrigir instantaneamente, mas o `excluida_desde` deve aparecer marcado logo, e depois de 4h sem readmissao natural o circuit breaker forca).
+
+---
+
+## Task 5: Fix round 1 — achados da revisao independente (BLOCK)
+
+A revisao (opus, independente) rodou simulacao numerica de verdade e achou 2 CRITICOS + 3 IMPORTANTES + 3 MENORES. Corrigir TODOS antes de qualquer deploy. Detalhe completo de cada achado ja foi discutido no chat; aqui vai a correcao exata pra cada um.
+
+### 5.1 — CRITICO: Welford tampado diverge em vez de convergir
+
+**Arquivo:** `src/lib/baseline-veiculo.ts`
+
+O bug: dividir `m2Anterior + delta*delta2` pelo **n tampado** faz a variancia so crescer (nunca decai), porque uma vez saturado (`n === BASELINE_N_MAXIMO`), `m2Anterior/n` vira exatamente a variancia anterior inteira, sem nenhum termo de decaimento. Simulado: sd real=10 vira sd=200 depois de 200k amostras (por veiculo, isso destrava em ~30 dias; pra `baseline_frota`, que recebe ~1 amostra por veiculo ativo por ciclo, destrava em ~1 HORA apos deploy). Isso mata o detector de anomalia de velocidade pra frota inteira, silenciosamente, sem log.
+
+**Fix:** dividir pelo n **bruto** (nao-tampado), so tampar o `n` guardado/retornado. Alem disso, aceitar um `nMaximo` como parametro (resolve tambem o achado 5.5 abaixo: `baseline_frota` precisa de um teto bem maior que `baseline_veiculo`, porque recebe muito mais amostras por ciclo).
+
+Trocar `atualizarBaselineWelford` por:
+
+```ts
+export function atualizarBaselineWelford(
+  atual: Baseline,
+  novoValor: number,
+  nMaximo: number = BASELINE_N_MAXIMO
+): Baseline {
+  const nEfetivo = Math.min(atual.n, nMaximo);
+  const nBruto = nEfetivo + 1; // divide sempre pelo bruto -- so o valor guardado e tampado
+  const delta = novoValor - atual.media;
+  const media = atual.media + delta / nBruto;
+  const delta2 = novoValor - media;
+  const variancia = (atual.variancia * nEfetivo + delta * delta2) / nBruto;
+  return { n: Math.min(nBruto, nMaximo), media, variancia };
+}
+```
+
+Adicionar tambem, junto de `BASELINE_N_MAXIMO`:
+
+```ts
+// baseline_frota agrega ~1 amostra POR VEICULO ATIVO a cada ciclo (nao 1
+// amostra por ciclo como baseline_veiculo) -- achado da revisao 28/07: usar
+// o mesmo teto de 500 destravaria o cold-start da frota em ~1h depois do
+// deploy (vira "como a frota dirigiu nos ultimos 90s" em vez de um
+// historico de verdade). Teto bem maior pra frota, mesma logica de decaimento.
+export const BASELINE_FROTA_N_MAXIMO = 50_000;
+```
+
+Em `route.ts`, na chamada de `atualizarBaselineWelford` pro lado da frota (dentro do loop que monta `porFrota`), passar `BASELINE_FROTA_N_MAXIMO` explicitamente: `atualizarBaselineWelford(atualFrota, a.velocidade, BASELINE_FROTA_N_MAXIMO)`. A chamada pro lado do veiculo (`porVeiculo`) fica sem o 3o argumento (usa o default `BASELINE_N_MAXIMO`).
+
+**Teste que tem que existir** (o que faltou e permitiu o bug passar): feed de um valor oscilando com variancia real conhecida por MUITO mais que `BASELINE_N_MAXIMO` amostras, e assert que a variancia final fica PROXIMA da variancia real (nao cresce sem limite):
+
+```ts
+it("apos saturar, variancia converge pra variancia real (nao cresce sem limite)", () => {
+  let b: Baseline = { n: 0, media: 0, variancia: 0 };
+  // oscila 20/40 -- media real 30, variancia real 100 (sd=10)
+  for (let i = 0; i < BASELINE_N_MAXIMO * 20; i++) b = atualizarBaselineWelford(b, i % 2 === 0 ? 20 : 40);
+  expect(b.variancia).toBeCloseTo(100, -1); // tolerancia ampla, so pra provar que NAO explode
+  expect(b.variancia).toBeLessThan(300); // bem abaixo do que o bug antigo dava (sd=200 -> variancia=40000)
+});
+```
+
+### 5.2 — CRITICO: deploy fora de ordem apaga baseline de todo mundo
+
+**Arquivo:** `src/app/api/motor/route.ts`
+
+O bug: o `select` de `baseline_veiculo`/`baseline_frota` nao checa `error`. Se rodar antes da migration 008 (ou antes do PostgREST recarregar o schema cache), a query falha, `data` vem `null`, o Map fica vazio, e o UPSERT no fim do ciclo trata TODO veiculo como cold-start (`n=0`) e sobrescreve o historico real com uma unica amostra. Destrutivo e silencioso.
+
+**Fix:** capturar o `error` de cada select e pular o bloco de ESCRITA correspondente (nao o de leitura -- leitura vazia e seguro, cai no fallback de cold-start normalmente; o perigo e so escrever de volta um estado derivado de uma leitura que falhou).
+
+```ts
+    const { data: baselineVeiculoRows, error: erroLeituraBaselineVeiculo } = await supabase
+      .from("baseline_veiculo")
+      .select("veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, excluida_desde");
+    if (erroLeituraBaselineVeiculo) {
+      console.warn(`Aviso: erro ao ler baseline_veiculo, pulando gravacao de baseline neste ciclo: ${erroLeituraBaselineVeiculo.message}`);
+    }
+    const mapaBaselineVeiculo = new Map<string, Baseline & { excluidaDesde: string | null }>();
+    for (const r of baselineVeiculoRows ?? []) {
+      mapaBaselineVeiculo.set(`${r.veiculo_id}:${r.tipo_viagem}:${r.feature}`, {
+        n: Number(r.n_amostras), media: r.media, variancia: r.variancia,
+        excluidaDesde: r.excluida_desde ?? null,
+      });
+    }
+
+    const { data: baselineFrotaRows, error: erroLeituraBaselineFrota } = await supabase
+      .from("baseline_frota")
+      .select("cliente_id, tipo_viagem, feature, n_amostras, media, variancia");
+    if (erroLeituraBaselineFrota) {
+      console.warn(`Aviso: erro ao ler baseline_frota, pulando gravacao de baseline neste ciclo: ${erroLeituraBaselineFrota.message}`);
+    }
+    const mapaBaselineFrota = new Map<string, Baseline>();
+    for (const r of baselineFrotaRows ?? []) {
+      mapaBaselineFrota.set(`${r.cliente_id}:${r.tipo_viagem}:${r.feature}`, {
+        n: Number(r.n_amostras), media: r.media, variancia: r.variancia,
+      });
+    }
+```
+
+E la embaixo, no bloco de escrita em lote (onde hoje faz `Promise.allSettled` pro insert de `baseline_veiculo` e depois pro de `baseline_frota`), envolver CADA upsert com a checagem do erro correspondente:
+
+```ts
+      if (!erroLeituraBaselineVeiculo) {
+        const resultadosVeiculo = await Promise.allSettled(/* ... upsert de baseline_veiculo, igual ja esta ... */);
+        const falhasVeiculo = resultadosVeiculo.filter((r) => r.status === "rejected").length;
+        if (falhasVeiculo > 0) console.warn(`Aviso: ${falhasVeiculo} falha(s) ao gravar baseline_veiculo neste ciclo`);
+      }
+
+      if (!erroLeituraBaselineFrota) {
+        const resultadosFrota = await Promise.allSettled(/* ... upsert de baseline_frota, igual ja esta ... */);
+        const falhasFrota = resultadosFrota.filter((r) => r.status === "rejected").length;
+        if (falhasFrota > 0) console.warn(`Aviso: ${falhasFrota} falha(s) ao gravar baseline_frota neste ciclo`);
+      }
+```
+
+E o bloco de `baselineExclusaoCiclo` (marca `excluida_desde`) tambem deve ser pulado se `erroLeituraBaselineVeiculo` (mesma logica: sem leitura confiavel, nao sabemos se ja estava marcado, escrever agora poderia estender o circuit breaker sem necessidade):
+
+```ts
+    if (!erroLeituraBaselineVeiculo && baselineExclusaoCiclo.size > 0) {
+      /* ... igual ja esta ... */
+    }
+```
+
+### 5.3 — IMPORTANTE: circuit breaker nunca destrava veiculo novo (cold-start)
+
+**Arquivo:** `src/app/api/motor/route.ts`
+
+O bug: `detectarAnomaliaBaseline` cai pro baseline DA FROTA quando o veiculo ainda tem `n < 20` proprio. Se a leitura parecer anomala CONTRA A FROTA, o codigo atual marca `excluida_desde` mesmo assim -- mas como a linha do veiculo em `baseline_veiculo` ainda nao existe, o UPDATE de marcacao afeta 0 linhas, silenciosamente. Resultado: veiculo novo nunca acumula amostra propria, alerta de baseline dispara todo ciclo, pra sempre.
+
+**Fix:** so aplicar a logica de exclusao/circuit-breaker quando a leitura foi medida contra o baseline PROPRIO do veiculo (n >= 20, mesmo limiar de `minAmostrasProprio` ja usado logo acima). Se ainda em cold-start (usando fallback da frota), SEMPRE admite a leitura no baseline proprio do veiculo -- e assim, sempre, que ele acumule seus 20 primeiros normalmente.
+
+Trocar o bloco de decisao (o que a Task 3 desta plano ja escreveu) por:
+
+```ts
+          const chaveBaselineVeiculo = `${veiculo_id}:${tipoViagem}`;
+          const usaBaselineProprio = baselineProprio.n >= 20; // mesmo limiar de minAmostrasProprio acima
+          const forcarReadmissaoBaseline = usaBaselineProprio && alertaBaseline !== null &&
+            deveForcarReadmissaoBaseline(baselineProprio.excluidaDesde, agora);
+          // So excluir quando a anomalia foi medida contra o baseline PROPRIO
+          // do veiculo -- uma leitura que parece anomala so contra o
+          // fallback da frota (cold start, n<20) nao diz nada sobre
+          // autopoluicao do baseline deste veiculo especifico, e excluir
+          // aqui so trava o veiculo pra sempre (achado real 28/07).
+          const excluirDoBaseline = usaBaselineProprio && alertaBaseline !== null && !forcarReadmissaoBaseline;
+          if (pos.fresco && pos.velocidade > 0 && !excluirDoBaseline) {
+            amostrasBaselineCiclo.push({ veiculo_id, cliente_id, tipoViagem, velocidade: pos.velocidade });
+          } else if (excluirDoBaseline && baselineProprio.excluidaDesde === null) {
+            baselineExclusaoCiclo.set(chaveBaselineVeiculo, agora.toISOString());
+          }
+```
+
+### 5.4 — IMPORTANTE: nada reseta os baselines ja travados (RQV-9B26 e dezenas de outros)
+
+**Arquivo:** novo `scripts/migrations/contabo/009_reset_baseline_veiculo_travado.sql`
+
+O piso/teto/circuit-breaker corrigem o mecanismo daqui pra frente, mas NAO corrigem as linhas que JA estao travadas hoje (variancia quase zero) -- essas continuariam alertando (com z menor, mas ainda acima do limiar 3) por dias/semanas ate reconvergir organicamente. Resetar direto as linhas com variancia abaixo do piso novo (`desvio < BASELINE_DESVIO_MINIMO_KMH`, ou seja `variancia < 9`) pra cold-start limpo -- assim elas caem no fallback da frota (ou silencio, se frota tambem sem dado) ate acumularem 20 amostras novas do jeito certo, com o mecanismo ja corrigido.
+
+```sql
+-- scripts/migrations/contabo/009_reset_baseline_veiculo_travado.sql
+--
+-- Achado real 28/07: dezenas de veiculos com baseline_veiculo travado
+-- (variancia ~0, algumas linhas com 40k+ amostras presas) -- o fix em
+-- baseline-veiculo.ts (piso/teto/circuit-breaker) corrige o mecanismo dai
+-- pra frente, mas nao corrige linhas JA travadas (ficariam alertando por
+-- dias/semanas ate reconvergir organicamente). Reset pra cold-start limpo
+-- nas linhas com desvio abaixo do piso novo (BASELINE_DESVIO_MINIMO_KMH=3,
+-- ou seja variancia<9) -- caem no fallback da frota ate acumular 20
+-- amostras novas com o mecanismo ja corrigido.
+UPDATE baseline_veiculo
+SET n_amostras = 0, media = 0, variancia = 0, excluida_desde = NULL
+WHERE feature = 'velocidade_media_kmh' AND variancia < 9;
+
+UPDATE baseline_frota
+SET n_amostras = 0, media = 0, variancia = 0
+WHERE feature = 'velocidade_media_kmh' AND variancia < 9;
+```
+
+**Aplicar:** junto com a migration 008 no deploy (Task 4), na mesma sessao de `psql -f`.
+
+### 5.5 — MENOR: teste da linha de decisao do route.ts (a logica mais arriscada, hoje sem teste nenhum)
+
+**Arquivo:** `src/lib/baseline-veiculo.ts` + `src/lib/baseline-veiculo.test.ts` + `src/app/api/motor/route.ts`
+
+Extrair a decisao de admitir/excluir (5.3 acima) pra uma funcao pura testável, em vez de deixar so inline no route.ts:
+
+```ts
+// Decide se uma leitura entra no baseline_veiculo deste ciclo, e se deve
+// marcar o inicio de uma exclusao continua. Extraido pra cá (em vez de
+// inline em route.ts) porque essa e a logica mais arriscada do fix de
+// 28/07 -- precisa ser testavel sem subir o motor inteiro.
+export function decidirAdmissaoBaseline(ctx: {
+  usaBaselineProprio: boolean;
+  ehAnomalia: boolean;
+  excluidaDesde: string | null;
+  agora: Date;
+}): { admitir: boolean; marcarExclusaoAgora: boolean } {
+  const forcarReadmissao = ctx.usaBaselineProprio && ctx.ehAnomalia &&
+    deveForcarReadmissaoBaseline(ctx.excluidaDesde, ctx.agora);
+  const excluir = ctx.usaBaselineProprio && ctx.ehAnomalia && !forcarReadmissao;
+  return {
+    admitir: !excluir,
+    marcarExclusaoAgora: excluir && ctx.excluidaDesde === null,
+  };
+}
+```
+
+`route.ts` passa a chamar essa funcao em vez de reimplementar a logica inline. Testes cobrindo: cold-start (usaBaselineProprio=false) sempre admite mesmo com ehAnomalia=true; baseline proprio + anomalia + ainda dentro do prazo → exclui e marca; baseline proprio + anomalia + ja passou do prazo → admite (forcado) e nao marca de novo; ja estava marcado (excluidaDesde != null) + ainda anomalo + dentro do prazo → exclui mas NAO marca de novo (marcarExclusaoAgora=false, ja estava marcado).
+
+### 5.6 — MENOR: corrida na marcacao de exclusao sob ciclos sobrepostos
+
+**Arquivo:** `src/app/api/motor/route.ts`
+
+No UPDATE que marca `excluida_desde` (bloco `baselineExclusaoCiclo`), adicionar `AND excluida_desde IS NULL` na clausula WHERE -- torna "marca so uma vez" verdade a nivel de banco, nao so a nivel do snapshot lido no inicio do ciclo (o arquivo ja documenta que ciclos sobrepostos acontecem, ver comentario existente perto do bloco de baseline).
+
+```sql
+update baseline_veiculo set excluida_desde = $3
+ where veiculo_id = $1 and tipo_viagem = $2 and feature = 'velocidade_media_kmh' and excluida_desde is null
+```
+
+### 5.7 — Verificacao final do round
+
+- Atualizar TODOS os testes existentes de `atualizarBaselineWelford` que hoje esperam o comportamento antigo (assinatura ganhou um 3o parametro opcional, mas o default preserva `BASELINE_N_MAXIMO` pros testes que nao passam esse argumento -- confirmar que continuam validos com a formula corrigida, os numeros esperados podem mudar levemente porque agora divide por `nBruto` em vez de `n` tampado).
+- Rodar suite inteira (`npm test -- --run`), `npx tsc --noEmit`, `npm run build`.
+- Commit separado por achado (ou agrupado por severidade -- julgamento do implementador), mensagens claras referenciando o achado (ex: "fix: Welford tampado dividia pelo n errado e divergia").
