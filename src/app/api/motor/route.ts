@@ -2147,6 +2147,13 @@ export async function POST(request: Request) {
           // afastando-de-tudo de outro episodio em andamento (e vice-versa)
           // -- os dois streaks sao independentes e nao podem compartilhar o
           // mesmo efeito colateral.
+          // Precisa ficar calculado ANTES de qualquer `alerta = null` mais
+          // abaixo (veredito "dentro" some com o alerta) -- os 3 pontos que
+          // usam esta const (zerarStreakDaOrigemVencedora/
+          // reancorarOrigemVencedora) dependem de capturar QUEM venceu
+          // antes do alerta ser potencialmente zerado; inline nesses pontos
+          // leria sempre false e devolveria o efeito colateral pro streak
+          // errado (afastando-de-tudo em vez de rumo-diverge).
           const origemRumoDivergeGanhou = alerta?.tipo === "desvio" && alerta.origemDesvio === "rumo_diverge";
           // Mesma funcao usada pra Task 3 (contexto persistido) -- a
           // escolha de qual anchor usar (Step 3b) e' identica nos dois

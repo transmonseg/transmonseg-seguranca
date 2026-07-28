@@ -8,4 +8,14 @@
 -- pra streak de divergencia de rumo.
 ALTER TABLE posicoes_atuais ADD COLUMN IF NOT EXISTS divergencia_rumo_inicio jsonb NULL DEFAULT NULL;
 
+-- Achado MENOR da revisao independente (round 2): veiculos que ja estao
+-- com divergencia_rumo_streak>=1 no momento deste deploy nunca passaram
+-- pela transicao 0->1 que seta o anchor -- ficariam com streak>=1 e
+-- divergencia_rumo_inicio=null (auto-corrige em minutos/horas assim que a
+-- streak zerar, mas resetar direto evita o intervalo de contexto vazio +
+-- corredor fechado). Mesmo espirito do reset de baseline_veiculo travado
+-- (migration 009), numa tabela e coluna diferentes.
+UPDATE posicoes_atuais SET divergencia_rumo_streak = 0
+WHERE divergencia_rumo_streak > 0 AND divergencia_rumo_inicio IS NULL;
+
 NOTIFY pgrst, 'reload schema';
