@@ -30,6 +30,7 @@ import {
   reduzirPorTransitoInferido,
   aplicarBonusClasseViaria,
   montarContextoDesvio,
+  desvioInicioEfetivoParaContexto,
   viradaErradaSaindoDeParada,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
@@ -1694,6 +1695,56 @@ describe("montarContextoDesvio (achado 26/07: contexto expandido pra analise de 
       taxaFp: undefined,
     });
     expect(ctx.afastamento_acumulado_m).toBe(3000); // 8000 - 5000
+  });
+});
+
+describe("desvioInicioEfetivoParaContexto (Task 3, achado 28/07: rumo-diverge nao pode perder contexto so por nao ter desvioInicio real)", () => {
+  const posAtual = { lat: -22.91, lng: -43.21 };
+  const agoraIso = "2026-07-28T12:00:00.000Z";
+
+  it("desvioInicio real (nao-null): retorna ele mesmo, independente de origemRumoDiverge (preserva o caso 'acidental' ja existente)", () => {
+    const real = { lat: -22.9, lng: -43.2, ts: "2026-07-28T11:55:00.000Z", menor_dist_m: 5000 };
+    expect(desvioInicioEfetivoParaContexto(real, true, posAtual, agoraIso, 4800)).toBe(real);
+    expect(desvioInicioEfetivoParaContexto(real, false, posAtual, agoraIso, 4800)).toBe(real);
+  });
+
+  it("desvioInicio null e origemRumoDiverge=false (ex: comportamental/cerca_virtual): retorna null (preserva comportamento de hoje)", () => {
+    expect(desvioInicioEfetivoParaContexto(null, false, posAtual, agoraIso, 4800)).toBeNull();
+  });
+
+  it("desvioInicio null e origemRumoDiverge=true: sintetiza um inicio na posicao/instante ATUAL (fix real do Task 3)", () => {
+    const efetivo = desvioInicioEfetivoParaContexto(null, true, posAtual, agoraIso, 4800);
+    expect(efetivo).toEqual({ lat: posAtual.lat, lng: posAtual.lng, ts: agoraIso, menor_dist_m: 4800 });
+  });
+
+  it("desvioInicio null, origemRumoDiverge=true, menorDistDestinoM null (sem destinos -- nao deveria acontecer na pratica, defensivo): usa 0", () => {
+    const efetivo = desvioInicioEfetivoParaContexto(null, true, posAtual, agoraIso, null);
+    expect(efetivo?.menor_dist_m).toBe(0);
+  });
+
+  it("o fallback sintetizado, passado pra montarContextoDesvio, produz afastamento_acumulado_m=0 (honesto: sem streak de afastamento por tras deste alerta) e preserva dist_destinos_m", () => {
+    const efetivo = desvioInicioEfetivoParaContexto(null, true, posAtual, agoraIso, 6300)!;
+    const ctx = montarContextoDesvio({
+      desvioInicio: efetivo,
+      dentroTapete: null,
+      corredorInfo: undefined,
+      distDestinosM: [6300, 9000],
+      distDestinosAnteriorM: [7000, 9500],
+      desvioStreak: 0,
+      foraTapeteStreak: 0,
+      divergenciaRumoStreak: 2,
+      riscoAreaAtual: 0,
+      familiarVeiculo: null,
+      classeViaAtual: null,
+      quedaClasseViaria: false,
+      segmentoEspecifico: "origem:rumo_diverge",
+      taxaFp: undefined,
+    });
+    expect(ctx.afastamento_acumulado_m).toBe(0);
+    expect(ctx.dist_destinos_m).toEqual([6300, 9000]);
+    expect(ctx.dist_destinos_anterior_m).toEqual([7000, 9500]);
+    expect(ctx.divergencia_rumo_streak).toBe(2);
+    expect(ctx.calibracao).toEqual({ segmento: "origem:rumo_diverge", taxa_falso_positivo: -1 });
   });
 });
 

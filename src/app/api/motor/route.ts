@@ -36,6 +36,7 @@ import {
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
   montarContextoDesvio,
+  desvioInicioEfetivoParaContexto,
   PARADA_FORA_TAPETE_MIN,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
@@ -2525,7 +2526,36 @@ export async function POST(request: Request) {
               // errado, sem "inicio de desvio" por movimento separado).
               const origemClasseViaria = alerta.origemDesvio === "classe_viaria";
               const origemSaidaParada = alerta.origemDesvio === "saida_parada";
-              const ehDesvio = alerta.tipo === "desvio" && desvioInicio !== null && !origemClasseViaria && !origemSaidaParada;
+              // Achado real 28/07 (Task 3 do plano de melhorias pos-baseline,
+              // mesma familia de bug do fix de classe_viaria/saida_parada
+              // acima): rumo_diverge (ver detectores.ts) dispara com
+              // !afastandoDeTudo -- desvioInicio (ancorado pelo streak de
+              // "afastando de tudo") normalmente ainda esta null quando ELA
+              // e' a causa primaria do alerta, so sobrevivendo por acidente
+              // quando um episodio anterior de afastando-de-tudo ainda nao
+              // tinha zerado (historese). DIFERENTE de classe_viaria/
+              // saida_parada (que sao EXCLUIDAS de ehDesvio, sempre posicao
+              // ATUAL, contexto simples sem dist_destinos_m): rumo_diverge
+              // especificamente PRECISA do contexto RICO de
+              // montarContextoDesvio (dist_destinos_m/dist_destinos_anterior_m/
+              // divergencia_rumo_streak -- exatamente o dado que este Task
+              // existe pra parar de perder) -- por isso ela e' INCLUIDA em
+              // ehDesvio via o fallback de desvioInicioEfetivoParaContexto
+              // (sintetiza um "inicio" na posicao/instante atual quando nao
+              // ha ancora real, ver detectores.ts). Este fallback e' seguro
+              // APENAS aqui (persistencia de contexto) -- a verificacao de
+              // corredor (Task 4, bloco mais acima) continua lendo o
+              // desvioInicio REAL (nao este), pra nao tornar a checagem
+              // tautologica (ver corredor-verificacao.ts).
+              const origemRumoDiverge = alerta.origemDesvio === "rumo_diverge";
+              const desvioInicioParaContexto = desvioInicioEfetivoParaContexto(
+                desvioInicio,
+                origemRumoDiverge,
+                pos,
+                agora.toISOString(),
+                menorDistDestinoM
+              );
+              const ehDesvio = alerta.tipo === "desvio" && desvioInicioParaContexto !== null && !origemClasseViaria && !origemSaidaParada;
               const ehParadaForaTapete = alerta.tipo === "parada_fora_tapete";
               const contextoParadaForaTapete = {
                 parado_min: paradoMin,
@@ -2567,11 +2597,11 @@ export async function POST(request: Request) {
                   // sempre a posição ATUAL (pos.lat/lng) -- nenhuma das
                   // tres tem conceito de "início do desvio" por movimento
                   // separado da posição atual do veículo.
-                  lat: ehDesvio ? desvioInicio!.lat : pos.lat,
-                  lng: ehDesvio ? desvioInicio!.lng : pos.lng,
+                  lat: ehDesvio ? desvioInicioParaContexto!.lat : pos.lat,
+                  lng: ehDesvio ? desvioInicioParaContexto!.lng : pos.lng,
                   contexto: ehDesvio
                     ? montarContextoDesvio({
-                        desvioInicio: desvioInicio!,
+                        desvioInicio: desvioInicioParaContexto!,
                         dentroTapete,
                         corredorInfo,
                         distDestinosM,
@@ -2612,8 +2642,8 @@ export async function POST(request: Request) {
                     score: alerta.score,
                     ...(ehDesvio
                       ? {
-                          lat: desvioInicio!.lat,
-                          lng: desvioInicio!.lng,
+                          lat: desvioInicioParaContexto!.lat,
+                          lng: desvioInicioParaContexto!.lng,
                           // Achado real 27/07 (caso TTK-4D14): sem isto, `desde`
                           // ficava preso no valor da criacao ORIGINAL do alerta
                           // enquanto lat/lng/contexto ja refletiam o NOVO
@@ -2625,9 +2655,14 @@ export async function POST(request: Request) {
                           // (reflete o inicio real do episodio atual), nao um bug
                           // novo. Nao mexe no "preserva id" da escalacao (existe
                           // pra evitar spam de alerta duplicado, achado 22/07).
-                          desde: desvioInicio!.ts,
+                          // rumo_diverge nunca chega aqui na pratica (nivel
+                          // sempre "atencao", hardcoded em detectores.ts --
+                          // este branch exige "critico") -- desvioInicioParaContexto!
+                          // usado por consistencia/seguranca de tipos, mesmo
+                          // padrao do bloco de insert acima.
+                          desde: desvioInicioParaContexto!.ts,
                           contexto: montarContextoDesvio({
-                            desvioInicio: desvioInicio!,
+                            desvioInicio: desvioInicioParaContexto!,
                             dentroTapete,
                             corredorInfo,
                             distDestinosM,
@@ -2671,6 +2706,15 @@ export async function POST(request: Request) {
                         // vez do contexto do episodio que causou a
                         // escalacao, reintroduzindo silenciosamente o mesmo
                         // bug de perda de dado corrigido aqui.
+                        //
+                        // rumo_diverge (Task 3, achado 28/07): mesma logica
+                        // se aplica (nivel "atencao" HARDCODED em
+                        // detectores.ts, branch nunca alcancavel aqui), mas
+                        // ela NAO cai neste `: {}` -- diferente de
+                        // classe_viaria/saida_parada, rumo_diverge e'
+                        // INCLUIDA em ehDesvio (via
+                        // desvioInicioEfetivoParaContexto), entao already
+                        // cai no branch `ehDesvio` acima, nao aqui.
                         : {}),
                   })
                   .eq("id", alertaExistente.id);

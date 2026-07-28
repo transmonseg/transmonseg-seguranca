@@ -669,6 +669,51 @@ export function montarContextoDesvio(p: {
   };
 }
 
+// Achado real 28/07 (Task 3 do plano de melhorias pos-baseline): rumo-diverge
+// dispara com !afastandoDeTudo (ver branch em detectarDesvio acima) --
+// desvioInicio (a ancora que montarContextoDesvio usa pra inicio_ts/
+// afastamento_acumulado_m) so avanca via avancarStreaksDesvio, atrelado ao
+// streak de "afastando de tudo" (desvioStreak). Na maioria dos ciclos em que
+// rumo-diverge e' o alerta vencedor, esse streak esta zerado (desvioInicio
+// null) -- so sobrevivia por ACIDENTE quando um episodio anterior de
+// "afastando de tudo" ainda nao tinha zerado (historese: 1 ciclo de
+// aproximacao congela, so o 2o zera, ver avancarStreaksDesvio). Sem ancora
+// real, route.ts gravava contexto vazio (`{}`), perdendo pra sempre
+// dist_destinos_m/divergencia_rumo_streak/etc. pra este alerta -- nao por
+// decisao, so por acidente de estado alheio.
+//
+// Fix: quando nao ha desvioInicio real E a origem e' rumo_diverge, sintetiza
+// um "inicio" na posicao/instante ATUAL, com afastamento_acumulado_m=0 (nao
+// ha streak de afastamento por tras deste alerta especifico -- 0 e' o valor
+// HONESTO, nao um placeholder arbitrario).
+//
+// IMPORTANTE: isto e' seguro APENAS para persistir contexto (inicio_ts e'
+// so um rotulo, afastamento_acumulado_m so um numero informativo). NUNCA usar
+// este fallback como `origem` de verificarCorredor -- o proprio modulo
+// (corredor-verificacao.ts) documenta que a rota tem que sair de um ponto do
+// PASSADO: usar a posicao atual tornaria a checagem tautologica (toda rota
+// comecaria exatamente onde o veiculo esta, entao "esta em cima da rota que
+// sai de mim mesmo" seria sempre verdade). Por isso este helper NAO e usado
+// pelo gate de precisaVerificacaoCorredor em route.ts (que continua lendo o
+// desvioInicio REAL, possivelmente null) -- so pelo bloco de persistencia de
+// alerta/contexto, mais abaixo no fluxo.
+export function desvioInicioEfetivoParaContexto(
+  desvioInicio: DesvioInicio | null,
+  origemRumoDiverge: boolean,
+  posAtual: { lat: number; lng: number },
+  agoraIso: string,
+  menorDistDestinoM: number | null
+): DesvioInicio | null {
+  if (desvioInicio !== null) return desvioInicio;
+  if (!origemRumoDiverge) return null;
+  return {
+    lat: posAtual.lat,
+    lng: posAtual.lng,
+    ts: agoraIso,
+    menor_dist_m: menorDistDestinoM ?? 0,
+  };
+}
+
 // Pesos do score de risco de área (0-100). Cada camada contribui
 // independente — não é probabilidade, é um índice de prioridade pro
 // desvio decidir se escala rápido (ver RISCO_AREA_LIMIAR).
