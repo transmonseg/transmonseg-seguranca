@@ -565,13 +565,14 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     expect(a).toBeNull();
   });
 
-  it("divergencia de rumo streak suficiente (2), distancia caindo: dispara nivel atencao", () => {
+  it("divergencia de rumo streak suficiente (2), distancia caindo: dispara nivel atencao com origemDesvio proprio (Task 2, achado 28/07: antes era 'comportamental', misturado com afastando-de-tudo)", () => {
     const a = detectarDesvio(emMov, {
       ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2,
       distDestinosM: [6300], distDestinosAnteriorM: [7000], // distancia caindo (aproximando)
     });
     expect(a).not.toBeNull();
     expect(a?.nivel).toBe("atencao");
+    expect(a?.origemDesvio).toBe("rumo_diverge");
   });
 
   it("divergencia de rumo streak insuficiente (1): nao dispara so por isso", () => {
@@ -658,6 +659,31 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
       expect(a).not.toBeNull();
       expect(segmentoCalibracaoPreferido(a!, null)).toBe("origem:saida_parada");
       expect(segmentoCalibracaoPreferido(a!, "fora")).toBe("origem:saida_parada");
+    });
+  });
+
+  // Achado real 28/07 (Task 2 do plano de melhorias pos-baseline): rumo
+  // diverge (divergenciaRumoDispara) usava origemDesvio="comportamental"
+  // ate aqui, misturado com "afastando de tudo" no balde generico
+  // tipo:desvio -- mesma familia de bug (segmento de calibracao proprio
+  // perdido) ja corrigida pra saida_parada/classe_viaria acima.
+  describe("rumo_diverge: segmento de calibracao proprio (Task 2, achado 28/07)", () => {
+    it("origemDesvio da regra de divergencia de rumo e' 'rumo_diverge' (nao mais 'comportamental')", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a?.origemDesvio).toBe("rumo_diverge");
+    });
+
+    it("segmentoCalibracaoPreferido resolve 'origem:rumo_diverge' pra este alerta, independente do veredito de corredor", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).not.toBeNull();
+      expect(segmentoCalibracaoPreferido(a!, null)).toBe("origem:rumo_diverge");
+      expect(segmentoCalibracaoPreferido(a!, "fora")).toBe("origem:rumo_diverge");
     });
   });
 

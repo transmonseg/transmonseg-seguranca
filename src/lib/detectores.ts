@@ -48,7 +48,15 @@ export type Alerta = {
   // do que faz sentido pra um sinal fundamentalmente de PARADA). Agora tem
   // tipo proprio ("parada_fora_tapete", ver TIPOS_NAO_GERENCIADOS) e nunca
   // seta este campo.
-  origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria";
+  // Achado real 28/07 (Task 2 do plano de melhorias pos-baseline): "rumo
+  // diverge" (divergenciaRumoDispara, ver branch dedicado abaixo) usava
+  // "comportamental" ate aqui -- igual a "afastando de tudo" e ao alerta
+  // fraco de "alem do raio", apesar de ter perfil de falso positivo bem
+  // diferente (dispara com o veiculo ainda se aproximando em linha reta,
+  // so a DIRECAO diverge). Sem valor proprio, a taxa de falso positivo
+  // desta regra especifica ficava escondida dentro do balde generico
+  // tipo:desvio (ver segmentoCalibracaoPreferido em calibracao-desvio.ts).
+  origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria" | "rumo_diverge";
 };
 
 // Informativo de veiculo sem comunicacao (atraso > 60 min).
@@ -1208,7 +1216,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
     return {
       nivel: "atencao",
       tipo: "desvio",
-      origemDesvio: "comportamental",
+      origemDesvio: "rumo_diverge",
       motivo: `Direção do movimento diverge da rota esperada há ${ctx.divergenciaRumoStreak} leituras, mesmo aproximando em linha reta de ${nDestDirecao} destino(s)`,
       score: 40,
     };

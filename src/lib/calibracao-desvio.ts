@@ -39,9 +39,28 @@ export function aplicarFatorCalibrado(scoreBase: number, taxaFalsoPositivo: numb
 // silenciosamente toda vez que o texto do motivo mudava (ja mudou 3 vezes
 // so nesta sessao).
 export function segmentoCalibracaoPreferido(
-  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria" },
+  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria" | "rumo_diverge" },
   corredorVeredito: string | null | undefined
 ): string | null {
+  // Achado real 28/07 (Task 2, Step 4 -- grep obrigatorio por todo o repo
+  // antes de estender "rumo_diverge"): `alerta.origemDesvio === "comportamental"`
+  // so e checado neste UNICO lugar em todo o codebase (fora de comentarios/
+  // strings do tipo). Decisao EXPLICITA: rumo_diverge NAO entra neste check.
+  // Motivo -- este branch existe pra segmentar "afastando de tudo" pelo
+  // VEREDITO do corredor (a origem mais numerosa/generica, unica que ate
+  // 27/07 sempre setava precisaVerificacaoCorredor); saida_parada e
+  // classe_viaria, que ja tem perfil de falso positivo proprio, deliberadamente
+  // NAO passam por aqui -- ganham segmento proprio nos branches abaixo em vez
+  // disso. rumo_diverge segue a MESMA logica: ja ganha "origem:rumo_diverge"
+  // (branch novo abaixo) precisamente pra medir a taxa dela SEPARADA das
+  // demais origens de desvio -- se tambem entrasse aqui quando corredorVeredito
+  // existir, o dado voltaria a se misturar com "afastando de tudo" sob a
+  // MESMA chave `corredor_veredito:X`, exatamente o problema que este Task
+  // pretende resolver. Os dois objetivos (segmento por origem vs. segmento
+  // por veredito de corredor) sao mutuamente exclusivos aqui de proposito --
+  // a funcao retorna 1 segmento so, e "origem:rumo_diverge" ganha prioridade
+  // (ver ordem dos branches abaixo, mesmo padrao ja usado por saida_parada/
+  // classe_viaria).
   if (alerta.tipo === "desvio" && alerta.origemDesvio === "comportamental" && corredorVeredito) {
     return `corredor_veredito:${corredorVeredito}`;
   }
@@ -61,6 +80,19 @@ export function segmentoCalibracaoPreferido(
   // especifica e' confiavel, sem misturar com as demais.
   if (alerta.tipo === "desvio" && alerta.origemDesvio === "classe_viaria") {
     return "origem:classe_viaria";
+  }
+  // Achado real 28/07 (Task 2 do plano de melhorias pos-baseline): "rumo
+  // diverge" (divergenciaRumoDispara, ver detectores.ts) sempre caia no
+  // balde generico tipo:desvio -- so ganhava "corredor_veredito:X" (branch
+  // acima) quando por acaso tinha corredorVeredito, o que raramente
+  // acontecia ja que esta regra nunca setava precisaVerificacaoCorredor
+  // (agora seta, ver Task 4 -- ver decisao no branch acima sobre por que
+  // isso NAO reativa o check de "comportamental"). Segmento proprio pra
+  // recalibrar-desvio aprender a taxa real dela separada de "afastando de
+  // tudo" (perfil de risco bem diferente: dispara ainda aproximando em
+  // linha reta, so a direcao diverge).
+  if (alerta.tipo === "desvio" && alerta.origemDesvio === "rumo_diverge") {
+    return "origem:rumo_diverge";
   }
   // Achado real 27/07 (caso TTK-4D14, revisado na mesma sessao apos
   // auditoria adversarial): gatilho "parado fora do tapete" (ver

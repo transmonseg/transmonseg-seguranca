@@ -83,6 +83,20 @@ describe("segmentoCalibracaoPreferido (achado real 12/07, campo estrutural desde
     expect(segmentoCalibracaoPreferido({ tipo: "parada_fora_tapete" }, "fora")).toBe("origem:parada_fora_tapete");
   });
 
+  it("origemDesvio='rumo_diverge': retorna segmento proprio, independente de corredorVeredito (Task 2, achado 28/07)", () => {
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "rumo_diverge" }, null)).toBe("origem:rumo_diverge");
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "rumo_diverge" }, "fora")).toBe("origem:rumo_diverge");
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "rumo_diverge" }, "dentro")).toBe("origem:rumo_diverge");
+  });
+
+  it("origemDesvio='rumo_diverge' NUNCA usa o segmento por veredito de corredor (Task 2, Step 4: decisao explicita -- nao reusa o check de 'comportamental', mesmo tendo corredorVeredito disponivel desde a Task 4)", () => {
+    // Se rumo_diverge caisse no branch de "comportamental", isto retornaria
+    // "corredor_veredito:fora" em vez de "origem:rumo_diverge" -- exatamente
+    // o dado se misturando de volta com "afastando de tudo" que este Task
+    // existe pra evitar.
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "rumo_diverge" }, "fora")).not.toBe("corredor_veredito:fora");
+  });
+
   it("tipo='parada_fora_tapete' nao e mais alcancado via origemDesvio sob tipo='desvio' (a colisao de vaga que motivou a mudanca)", () => {
     const alerta = { tipo: "desvio" };
     expect(segmentoCalibracaoPreferido(alerta, "fora")).toBeNull();
