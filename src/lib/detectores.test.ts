@@ -2057,6 +2057,17 @@ describe("deveAutoResolverRuaEstranha", () => {
 // um nivel abaixo -- a fixture antiga (mesmoPonto:true hardcoded) nao
 // refletia o dado real, e por isso "passava" sem pegar o problema.
 // mesmoPonto foi REMOVIDO da funcao -- so velocidade decide agora.
+//
+// CRITICO (revisao independente rodada 2): a PRIMEIRA correcao (so
+// velocidade decide, +30s pra qualquer leitura <=limiar) trocou um bug por
+// outro -- contava dirigir devagar (ate 20km/h) como se fosse ter parado.
+// Cenario real: veiculo dirigindo por rua estreita a 10-18km/h (normal,
+// nunca excede o limiar) por 20+ minutos, sem nunca parar de verdade --
+// UMA leitura de semaforo com velocidade=0 no fim bastava pra
+// "paradaEfetivaMin" passar de 20min e fechar o alerta sozinho. Corrigido:
+// so velocidade===0 de verdade SOMA tempo; velocidade entre 1 e o limiar
+// so EVITA resetar (tolera o blip sem fingir que parou naquele ciclo) --
+// ver calcularParadaToleranteSegundos.
 describe("calcularParadaToleranteSegundos", () => {
   it("acumula quando parado de verdade (velocidade 0)", () => {
     let segundos = 0;
@@ -2066,11 +2077,11 @@ describe("calcularParadaToleranteSegundos", () => {
     expect(segundos).toBe(120); // 4 leituras * 30s
   });
 
-  it("NAO reseta com um blip isolado de velocidade baixa (so continua acumulando)", () => {
+  it("NAO reseta com um blip isolado de velocidade baixa, mas o blip em si nao soma tempo", () => {
     let segundos = calcularParadaToleranteSegundos({ velocidade: 0, anteriorSegundos: 0 }); // 30
-    segundos = calcularParadaToleranteSegundos({ velocidade: 7, anteriorSegundos: segundos }); // ainda <= limiar, continua acumulando
+    segundos = calcularParadaToleranteSegundos({ velocidade: 7, anteriorSegundos: segundos }); // nao reseta, mas tambem nao soma
     segundos = calcularParadaToleranteSegundos({ velocidade: 0, anteriorSegundos: segundos });
-    expect(segundos).toBe(90); // nunca resetou, so seguiu acumulando
+    expect(segundos).toBe(60); // 30 (parado) + 0 (blip, so nao resetou) + 30 (parado) = 60
   });
 
   it("reseta pra 0 quando a velocidade excede o limiar tolerante -- so velocidade decide, posicao nao importa mais", () => {
@@ -2081,12 +2092,12 @@ describe("calcularParadaToleranteSegundos", () => {
     expect(segundos).toBe(0);
   });
 
-  it("no limiar exato (<=) ainda acumula, so acima dele reseta", () => {
+  it("no limiar exato (nao-zero) nao soma tempo, so evita resetar -- so acima dele reseta de verdade", () => {
     const noLimiar = calcularParadaToleranteSegundos({
       velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH,
       anteriorSegundos: 300,
     });
-    expect(noLimiar).toBe(330);
+    expect(noLimiar).toBe(300); // tolera (nao reseta), mas nao soma -- so velocidade===0 soma
     const acimaDoLimiar = calcularParadaToleranteSegundos({
       velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH + 1,
       anteriorSegundos: 300,
@@ -2094,18 +2105,37 @@ describe("calcularParadaToleranteSegundos", () => {
     expect(acimaDoLimiar).toBe(0);
   });
 
+  // Achado CRITICO da revisao independente rodada 2: a fixture da rodada 1
+  // (todas as leituras <=20km/h) nao conseguia distinguir "tolera blip" de
+  // "conta dirigir como parar", porque as duas implementacoes davam o
+  // mesmo resultado nesse caso. Este teste e' o que teria pego o problema:
+  // 40 leituras dirigindo normal (18km/h, nunca parado de verdade) seguidas
+  // de UMA leitura de semaforo -- nao pode acumular quase 20min so por
+  // causa disso.
+  it("CRITICO: dirigir devagar sem nunca parar de verdade NAO acumula tempo -- so a leitura parada (velocidade=0) final conta", () => {
+    let segundos = 0;
+    for (let i = 0; i < 40; i++) {
+      segundos = calcularParadaToleranteSegundos({ velocidade: 18, anteriorSegundos: segundos });
+    }
+    expect(segundos).toBe(0); // 40 leituras dirigindo, nenhuma parada de verdade -- continua 0
+    segundos = calcularParadaToleranteSegundos({ velocidade: 0, anteriorSegundos: segundos });
+    expect(segundos).toBe(30); // so a UNICA leitura parada soma -- bem abaixo do limiar de 2min (120s)
+    expect(segundos / 60).toBeLessThan(RUA_ESTRANHA_PARADO_MIN_MIN);
+  });
+
   // Caso real TTD-7H14 (achado 28/07, ~cron do motor a cada 30s -- ver
   // route.ts:237): sequencia de velocidade REAL levantada pela revisao
   // independente (rodada 1, 5b.1) -- 0,6,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,
-  // 0,0,20,20,0,0,19. O lat/lng real do caso mostra o veiculo se
-  // deslocando uns 10-30m a cada leitura o tempo todo -- mesmoPonto
-  // ficaria FALSE quase sempre, entao este teste deliberadamente NAO passa
-  // mesmoPonto (a funcao nem aceita mais esse campo): prova que o
-  // acumulador cruza os blips usando SO velocidade, sem depender de
-  // posicao ter ficado parada. Sob o paradoMin ESTRITO (===0), qualquer
-  // uma dessas leituras !=0 zerava o relogio -- nunca acumularia os 2min
-  // exigidos de forma confiavel.
-  it("caso real TTD-7H14 (dado real da revisao independente): atravessa os blips usando SO velocidade e ultrapassa RUA_ESTRANHA_PARADO_MIN_MIN", () => {
+  // 0,0,20,20,0,0,19 (12 das 24 leituras sao genuinamente 0). O lat/lng
+  // real do caso mostra o veiculo se deslocando uns 10-30m a cada leitura
+  // o tempo todo -- mesmoPonto ficaria FALSE quase sempre, entao este
+  // teste deliberadamente NAO passa mesmoPonto (a funcao nem aceita mais
+  // esse campo): prova que o acumulador cruza os blips usando SO
+  // velocidade, contando so as leituras genuinamente paradas. Sob o
+  // paradoMin ESTRITO (===0 com reset por posicao), qualquer uma dessas
+  // leituras !=0 zerava o relogio -- nunca acumularia os 2min exigidos de
+  // forma confiavel.
+  it("caso real TTD-7H14 (dado real da revisao independente): atravessa os blips contando so as leituras genuinamente paradas, ultrapassa RUA_ESTRANHA_PARADO_MIN_MIN", () => {
     const velocidades = [0, 6, 7, 7, 7, 7, 0, 0, 0, 0, 0, 7, 7, 0, 0, 10, 10, 0, 0, 20, 20, 0, 0, 19];
     let segundos = 0;
     for (const velocidade of velocidades) {
@@ -2113,11 +2143,11 @@ describe("calcularParadaToleranteSegundos", () => {
     }
     const paradaEfetivaMinFinal = segundos / 60;
     expect(paradaEfetivaMinFinal).toBeGreaterThanOrEqual(RUA_ESTRANHA_PARADO_MIN_MIN);
-    // Nenhuma leitura da sequencia excede o limiar (20km/h) -- nunca reseta,
-    // acumula as 24 leituras inteiras. Prova de que o Padrao B (timer que
-    // nunca acumula) esta corrigido de verdade pro dado REAL desse caso,
-    // nao so pra uma fixture idealizada.
-    expect(segundos).toBe(velocidades.length * 30);
+    // 12 das 24 leituras sao velocidade=0 (genuinamente paradas) -- 12*30s = 360s.
+    // Prova que o Padrao B (timer que nunca acumula) esta corrigido de
+    // verdade pro dado REAL desse caso, contando so tempo genuinamente
+    // parado (nao inflado por leituras de blip).
+    expect(segundos).toBe(360);
   });
 });
 

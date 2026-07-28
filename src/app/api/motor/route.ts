@@ -46,6 +46,7 @@ import {
   alertaElegivelParaAutoResolveRuaEstranha,
   contaComoEventoDeSilenciamento,
   RUA_ESTRANHA_PARADO_MIN_MIN,
+  RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH,
   calcularParadaToleranteSegundos,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
@@ -2625,7 +2626,19 @@ export async function POST(request: Request) {
           // maior agora que a Task 5b.3 abaixo troca a janela de tempo
           // ilimitada por um teto de 60min (jammer trava posicao por ate
           // ~1h dentro dessa janela).
-          if (pos.fresco && !alertaJammer && pos.velocidade === 0) {
+          //
+          // Achado IMPORTANTE da revisao independente (round 2): detectarJammer
+          // exige ignicao ligada (ver detectores.ts) -- se o rastreador for
+          // desligado/cortado com o veiculo parado (ignicao=false), NENHUM
+          // jammer e' detectado, mas pos.fresco continua true por ate ~59min
+          // (fresco = atraso<60min). A mesma leitura congelada seria
+          // reprocessada todo ciclo, paradaEfetivaMin cresceria so pelo
+          // relogio de parede, e o alerta fecharia sozinho dentro da janela
+          // de 60min sem NENHUM dado novo de verdade. pos.atraso<=5
+          // (leitura recente de verdade, nao so "nao expirou ainda") fecha
+          // essa brecha sem custar nada nos casos reais (que sempre tinham
+          // rastreamento ao vivo).
+          if (pos.fresco && pos.atraso <= 5 && !alertaJammer && pos.velocidade === 0) {
             for (const a of alertasAbertos.filter((candidato) => alertaElegivelParaAutoResolveRuaEstranha(candidato, agora))) {
               if (
                 deveAutoResolverRuaEstranha({
@@ -3328,7 +3341,12 @@ export async function POST(request: Request) {
               // foi removida (Padrao A) -- a mensagem nao referencia mais
               // prazo nenhum, so as duas condicoes de seguranca que de fato
               // decidem o auto-resolve (ver deveAutoResolverRuaEstranha).
-              motivo: `parou (pelo menos ${RUA_ESTRANHA_PARADO_MIN_MIN}min sem sair do lugar, tolerando blips de velocidade) e sem area de risco por perto`,
+              // Achado MENOR da revisao independente (round 2): a versao
+              // anterior desta string ("sem sair do lugar") descrevia posicao,
+              // mas o codigo nao checa mais posicao nenhuma (Task 5b.1) -- o
+              // veiculo pode ter percorrido varios metros dirigindo devagar.
+              // Corrigida pra descrever o que o codigo realmente checa.
+              motivo: `velocidade <=${RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH}km/h por >=${RUA_ESTRANHA_PARADO_MIN_MIN}min com leitura atual parada, e sem area de risco por perto`,
             }),
             agora.toISOString(),
           ]

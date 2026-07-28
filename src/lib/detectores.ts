@@ -836,12 +836,12 @@ export const RUA_ESTRANHA_PARADO_MIN_MIN = 2;
 // NAO mexe em paradoMin em si (primitivo compartilhado por muitos outros
 // consumidores em route.ts -- mudar sua semantica arriscaria regressao em
 // coisa nao relacionada). Sinal PROPRIO, so pro auto-resolve de rua-
-// estreita: este limiar decide o que ainda conta como "efetivamente
-// parado" (em vez de exigir velocidade===0 estrito), e
-// calcularParadaToleranteSegundos (abaixo) e' o acumulador -- MESMO
-// espirito do acumulador ja em producao no_raio_dwell_segundos (route.ts,
-// ~linha 2014: acumula so quando devagar, sem resetar por causa de um
-// blip isolado, so zera quando excede o limiar de verdade).
+// estreita: este limiar decide o que ainda TOLERA sem resetar a contagem
+// (nao decide o que conta como "parado" -- so velocidade===0 de verdade
+// soma tempo, ver calcularParadaToleranteSegundos abaixo pro raciocinio
+// completo, incluindo o achado CRITICO da revisao independente round 2:
+// uma primeira versao deste fix somava tempo pra qualquer leitura ate
+// este limiar, contando dirigir devagar como se fosse ter parado).
 //
 // 20km/h cobre o pico observado no caso real (TTD-7H14 chegou a 20) com
 // folga confortavel abaixo de velocidade de desvio de verdade -- dado real
@@ -904,30 +904,42 @@ export function deveAutoResolverRuaEstranha(ctx: {
 // idealizada com mesmoPonto:true hardcoded, fisicamente incompativel com
 // o lat/lng real do caso).
 //
-// Fix: mesmoPonto REMOVIDO da assinatura inteiramente. So velocidade
-// decide -- acumula (+30s) enquanto velocidade<=RUA_ESTRANHA_VELOCIDADE_
-// TOLERANTE_KMH, reseta pra 0 quando excede. Seguro porque o gate de
-// DECISAO final (route.ts, `if (pos.fresco && pos.velocidade === 0)`)
-// continua exigindo velocidade EXATAMENTE 0 no ciclo da decisao -- um
-// veiculo genuinamente cruzando uma rua a 15-18km/h sem nunca realmente
-// parar jamais dispara a decisao, nao importa o valor do acumulador. A
-// posicao (mesmoPonto) so importa pro parado_desde ESTRITO (paradoMin),
-// que continua existindo sem mudanca pra todos os outros consumidores.
+// CRITICO (revisao independente, round 2 apos o fix de mesmoPonto acima):
+// a primeira versao deste fix somava +30s pra QUALQUER velocidade
+// <=RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH (ate 20km/h) -- isso nao tolera
+// blip, CONTA DIRIGIR COMO SE FOSSE PARAR. Cenario real: veiculo sequestrado
+// dirigindo por ruas estreitas a 10-18km/h (velocidade normal pra uma rua
+// estreita, nunca excede o limiar) por 20+ minutos -- o acumulador nunca
+// reseta, so precisa de UMA leitura de semaforo com velocidade=0 no fim pra
+// "paradaEfetivaMin" passar de 20min e o alerta fechar sozinho como falso
+// positivo. O gate de decisao (`pos.velocidade === 0` no ciclo exato) nao
+// protege disso -- ele so exige a leitura ATUAL parada, nao o historico.
+// A comparacao com no_raio_dwell_segundos nos comentarios da versao
+// anterior tambem estava errada nesse ponto: aquele acumulador MANTEM
+// (nao soma) quando devagar mas nao parado, e reseta ao sair do raio --
+// aqui replicado corretamente: SO velocidade===0 de verdade soma tempo;
+// velocidade entre 1 e RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH so evita
+// resetar (tolera o blip), sem fingir que o veiculo parou naquele ciclo.
+// Verificado contra o caso real TTD-7H14: ainda cruza o limiar de 2min
+// (leitura 9, ~4.5min dos 10.6min do episodio), so que agora contando
+// somente as leituras genuinamente paradas (12 das 24 leituras sao 0).
 //
 // Persistido em posicoes_atuais.parada_tolerante_segundos (migration
 // 015), coluna PROPRIA -- nao reusa parado_desde (herdaria o reset por
-// blip que e' o proprio bug) nem escreve em paradoMin.
+// blip que e' o proprio bug) nem escreve em paradoMin. A posicao
+// (mesmoPonto) so importa pro parado_desde ESTRITO (paradoMin), que
+// continua existindo sem mudanca pra todos os outros consumidores.
 export function calcularParadaToleranteSegundos(ctx: {
   velocidade: number;
   anteriorSegundos: number;
 }): number {
-  // Mesmo incremento fixo (30s) ja usado por no_raio_dwell_segundos --
-  // aproxima o intervalo real do cron do motor (~30s, ver route.ts:237 e
-  // scripts/dev/setup-cron-30s.mjs), mesma imprecisao aceita (um ciclo
-  // pulado pela trava de execucao unica so conta como +30 tambem) do
-  // mecanismo ja em producao que este espelha.
   if (ctx.velocidade > RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH) return 0;
-  return ctx.anteriorSegundos + 30;
+  // So velocidade===0 de verdade acumula tempo (mesmo incremento fixo de
+  // 30s ja usado por no_raio_dwell_segundos, aproxima o intervalo real do
+  // cron de ~30s). Velocidade entre 1 e o limiar tolerante NAO soma --
+  // so evita que o proximo 0 reinicie a contagem do zero (o blip em si
+  // nunca conta como tempo parado).
+  return ctx.velocidade === 0 ? ctx.anteriorSegundos + 30 : ctx.anteriorSegundos;
 }
 
 // Achado real 28/07 (Task 6, revisao manual de FP de rua-estreita): 36%
