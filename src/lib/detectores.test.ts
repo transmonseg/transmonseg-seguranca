@@ -688,6 +688,37 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     });
   });
 
+  // Achado real 28/07 (Task 4, caso real TTK-4D14: 84-88km/h no momento do
+  // disparo, perfil de rodovia -- bearing reto diverge de rota real que
+  // curva): liga verificarCorredor (OSRM/Valhalla) na regra de rumo-diverge,
+  // mesmo mecanismo ja usado pelas branches de "afastando de tudo".
+  describe("rumo_diverge: corroboracao contra rota real (Task 4, achado 28/07)", () => {
+    it("marca precisaVerificacaoCorredor=true (liga a verificacao de corredor real, mesmo mecanismo das branches de afastando-de-tudo)", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a?.precisaVerificacaoCorredor).toBe(true);
+    });
+
+    it("NAO marca exigeConfirmacaoCorredor (decisao explicita, Step 3: sinal 'atencao' mais fraco -- corroboracao OPCIONAL, nao EXIGIDA -- nao deveria fail-closed se OSRM/Valhalla estiver indisponivel)", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a?.exigeConfirmacaoCorredor).toBeUndefined();
+    });
+
+    it("NAO marca exigeConfirmacaoCorredor mesmo sem historico de entregas (entregasFeitas=0) -- diferente das branches de afastando-de-tudo, rumo_diverge nao usa semHistorico (nao tem o problema de 'cold start' que aquele campo compensa)", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, divergenciaRumoStreak: 2, entregasFeitas: 0,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a?.origemDesvio).toBe("rumo_diverge");
+      expect(a?.exigeConfirmacaoCorredor).toBeUndefined();
+    });
+  });
+
   it("nao saiu do raio agora: NAO dispara so por divergencia alta numa leitura (precisa da regra geral, streak>=2)", () => {
     const a = detectarDesvio(emMov, {
       ...base, suspensoPorChegada: false, divergenciaRumoStreak: 0,

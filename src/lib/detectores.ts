@@ -1256,6 +1256,35 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // de tudo (o branch de afastandoDeTudo mais abaixo ja cobre esse caso
   // com nivel critico, entao aqui so cobre o caso "aproximando mas direcao
   // errada").
+  // Achado real 28/07 (Task 4 do plano de melhorias pos-baseline, caso real
+  // TTK-4D14: 84-88km/h no momento do disparo, perfil de rodovia -- bearing
+  // reto diverge de uma rota real que curva): liga a MESMA verificacao de
+  // corredor (verificarCorredor, OSRM/Valhalla) ja usada pelas branches de
+  // "afastando de tudo" mais abaixo. Corrobora ao mesmo tempo o caso de
+  // rodovia com curva e o de "muitos destinos" (a rota real confirma contra
+  // o destino especifico, nao so a linha reta), sem precisar desenhar
+  // bearing sensivel a curva do zero.
+  //
+  // Decisao EXPLICITA (Step 3, NAO assumida): as branches de "afastando de
+  // tudo" abaixo TAMBEM setam exigeConfirmacaoCorredor quando semHistorico
+  // (exige confirmacao POSITIVA de "fora" antes de sobreviver -- fail
+  // CLOSED se o corredor estiver indisponivel/orcamento estourado, ver
+  // docstring de exigeConfirmacaoCorredor no tipo Alerta acima e o consumo
+  // em route.ts). rumo_diverge NAO seta esse campo -- decisao consciente,
+  // nao descuido. Motivos: (1) exigeConfirmacaoCorredor existe pra
+  // compensar um problema especifico das branches de afastando-de-tudo
+  // (veiculo com ZERO entregas feitas, sem historico de comportamento
+  // nenhum pra confiar) -- rumo_diverge nao tem esse problema, dispara
+  // igual independente de entregasFeitas; (2) rumo_diverge e' um sinal
+  // estruturalmente mais FRACO (nivel "atencao" hardcoded, nunca "critico",
+  // ao contrario das branches de afastando-de-tudo que usam
+  // exigeConfirmacaoCorredor) -- faz sentido a corroboracao do corredor ser
+  // so OPCIONAL aqui (confirma "dentro" => suprime, mesmo comportamento que
+  // precisaVerificacaoCorredor sozinho ja da; "fora"/"indisponivel"/
+  // "orcamento_estourado" => sobrevive, fail-open) em vez de EXIGIR
+  // confirmacao positiva pra sobreviver -- exigir isso arriscaria perder um
+  // alerta real toda vez que OSRM/Valhalla estiver fora do ar, por um sinal
+  // que ja e' de baixa confianca por natureza.
   if (!afastandoDeTudo && divergenciaRumoDispara(ctx.divergenciaRumoStreak)) {
     const nDestDirecao = ctx.distDestinosM.length;
     return {
@@ -1264,6 +1293,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       origemDesvio: "rumo_diverge",
       motivo: `Direção do movimento diverge da rota esperada há ${ctx.divergenciaRumoStreak} leituras, mesmo aproximando em linha reta de ${nDestDirecao} destino(s)`,
       score: 40,
+      precisaVerificacaoCorredor: true,
     };
   }
 
