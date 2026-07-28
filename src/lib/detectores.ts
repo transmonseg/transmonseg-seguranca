@@ -822,11 +822,16 @@ export const RUA_ESTRANHA_PARADO_MIN_MIN = 2;
 // com QUALQUER leitura de velocidade!=0, mesmo um blip isolado de poucos
 // km/h (ver bloco que calcula parado_desde em route.ts) -- em transito
 // parado-e-anda esse timer nunca acumula os RUA_ESTRANHA_PARADO_MIN_MIN
-// continuos exigidos acima. Caso real TTD-7H14 (~10.6min, 23 leituras):
-// velocidade oscilou 0,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 --
-// o veiculo nunca saiu do lugar de verdade (posicao praticamente parada o
-// tempo todo, ver mesmoPonto), so o sensor de velocidade blipou varias
-// vezes.
+// continuos exigidos acima. Caso real TTD-7H14 (~cron a cada 30s):
+// velocidade oscilou 0,6,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19.
+//
+// Achado da revisao independente (5b.1, rodada 1): o lat/lng REAL desse
+// caso mostra o veiculo se deslocando uns 10-30m a cada leitura o tempo
+// todo -- NAO fica no mesmo ponto (mesmoPonto, usado por parado_desde,
+// ficaria FALSE quase todo ciclo). Por isso o acumulador abaixo NAO usa
+// posicao como gate, so velocidade -- ver comentario em
+// calcularParadaToleranteSegundos pro raciocinio completo de por que uma
+// primeira versao gateada por mesmoPonto reproduzia o proprio bug.
 //
 // NAO mexe em paradoMin em si (primitivo compartilhado por muitos outros
 // consumidores em route.ts -- mudar sua semantica arriscaria regressao em
@@ -836,7 +841,7 @@ export const RUA_ESTRANHA_PARADO_MIN_MIN = 2;
 // calcularParadaToleranteSegundos (abaixo) e' o acumulador -- MESMO
 // espirito do acumulador ja em producao no_raio_dwell_segundos (route.ts,
 // ~linha 2014: acumula so quando devagar, sem resetar por causa de um
-// blip isolado, so zera numa saida de verdade).
+// blip isolado, so zera quando excede o limiar de verdade).
 //
 // 20km/h cobre o pico observado no caso real (TTD-7H14 chegou a 20) com
 // folga confortavel abaixo de velocidade de desvio de verdade -- dado real
@@ -886,19 +891,34 @@ export function deveAutoResolverRuaEstranha(ctx: {
   );
 }
 
-// Task 5, Padrao B: acumulador puro e testavel (route.ts nao tem harness
-// de teste proprio, mesma nota de deveMarcarSaidaParadaConfirmada acima)
-// que implementa a tolerancia a blip descrita em
-// RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH. mesmoPonto e' calculado por
-// route.ts com a MESMA logica de arredondamento a 4 casas decimais ja
-// usada por parado_desde -- recebido pronto aqui, nao recalculado (mesmo
-// padrao de CtxDesvio: booleanos/numeros ja prontos, nunca coordenada
-// crua). Persistido em posicoes_atuais.parada_tolerante_segundos
-// (migration 015), coluna PROPRIA -- nao reusa parado_desde (herdaria o
-// reset por blip que e' o proprio bug) nem escreve em paradoMin.
+// Task 5b.1 (revisao independente, achado MAIS SERIO da rodada 1): a
+// versao original desta funcao usava mesmoPonto (celula de 4 casas
+// decimais, mesma logica de parado_desde) como gate -- pra decidir se
+// acumulava ou resetava. O revisor conferiu o lat/lng REAL do caso
+// TTD-7H14 (nao so a velocidade, que ja tinha sido checada) e o veiculo
+// esta se deslocando uns 10-30m a cada leitura o tempo todo -- mesmoPonto
+// fica FALSE quase todo ciclo pra esse caso real. Com aquele gate, o
+// acumulador resetava quase toda leitura, reproduzindo o EXATO bug
+// original (parado_desde) um nivel abaixo -- nao corrigia o caso real que
+// foi construido pra corrigir (so passava no teste, que usava uma fixture
+// idealizada com mesmoPonto:true hardcoded, fisicamente incompativel com
+// o lat/lng real do caso).
+//
+// Fix: mesmoPonto REMOVIDO da assinatura inteiramente. So velocidade
+// decide -- acumula (+30s) enquanto velocidade<=RUA_ESTRANHA_VELOCIDADE_
+// TOLERANTE_KMH, reseta pra 0 quando excede. Seguro porque o gate de
+// DECISAO final (route.ts, `if (pos.fresco && pos.velocidade === 0)`)
+// continua exigindo velocidade EXATAMENTE 0 no ciclo da decisao -- um
+// veiculo genuinamente cruzando uma rua a 15-18km/h sem nunca realmente
+// parar jamais dispara a decisao, nao importa o valor do acumulador. A
+// posicao (mesmoPonto) so importa pro parado_desde ESTRITO (paradoMin),
+// que continua existindo sem mudanca pra todos os outros consumidores.
+//
+// Persistido em posicoes_atuais.parada_tolerante_segundos (migration
+// 015), coluna PROPRIA -- nao reusa parado_desde (herdaria o reset por
+// blip que e' o proprio bug) nem escreve em paradoMin.
 export function calcularParadaToleranteSegundos(ctx: {
   velocidade: number;
-  mesmoPonto: boolean;
   anteriorSegundos: number;
 }): number {
   // Mesmo incremento fixo (30s) ja usado por no_raio_dwell_segundos --
@@ -906,8 +926,8 @@ export function calcularParadaToleranteSegundos(ctx: {
   // scripts/dev/setup-cron-30s.mjs), mesma imprecisao aceita (um ciclo
   // pulado pela trava de execucao unica so conta como +30 tambem) do
   // mecanismo ja em producao que este espelha.
-  const incremento = ctx.velocidade <= RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH ? 30 : 0;
-  return ctx.mesmoPonto ? ctx.anteriorSegundos + incremento : incremento;
+  if (ctx.velocidade > RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH) return 0;
+  return ctx.anteriorSegundos + 30;
 }
 
 // Achado real 28/07 (Task 6, revisao manual de FP de rua-estreita): 36%
@@ -981,15 +1001,33 @@ export const MOTIVO_RUA_ESTRANHA =
 // Extraido como funcao pura testavel (route.ts nao tem harness de teste
 // proprio, ver nota em detectores.test.ts) -- so alertas 'ativo' sao
 // elegiveis.
-export function alertaElegivelParaAutoResolveRuaEstranha(alerta: {
-  status: string;
-  tipo: string;
-  motivo: string;
-}): boolean {
+//
+// Task 5b.3 (revisao independente rodada 1): idadeAlertaMin foi removido
+// do PADRAO A (deveAutoResolverRuaEstranha nao olha mais idade -- ver
+// comentario la), mas sem NENHUM teto um alerta de dias/semanas (o cron
+// expirar-alertas-ativos-esquecidos so fecha depois de 7 dias) ficaria
+// elegivel pra fechar sozinho na primeira parada tranquila de 2min, sem
+// ninguem saber o que aconteceu ENTRE a criacao e essa parada (ex:
+// sequestro real, veiculo levado dezenas de km, estacionado numa area sem
+// risco corroborado). Teto generoso (60min, quase 2x o pior caso real
+// observado: TTI-6E43 33min) ancorado na CRIACAO do alerta --
+// deliberadamente mais simples que ancorar numa nova "elegibilidade"
+// (exigiria mais um campo persistido). Aplicado AQUI, no filtro de
+// elegibilidade -- nao em deveAutoResolverRuaEstranha, que continua sem
+// saber de tempo: a idade e' sobre QUAL ALERTA e' candidato, nao sobre as
+// condicoes de seguranca em si.
+export const RUA_ESTRANHA_IDADE_MAXIMA_AUTORESOLVE_MS = 60 * 60 * 1000;
+
+export function alertaElegivelParaAutoResolveRuaEstranha(
+  alerta: { status: string; tipo: string; motivo: string; desde: string },
+  agora: Date,
+  idadeMaximaMs: number = RUA_ESTRANHA_IDADE_MAXIMA_AUTORESOLVE_MS
+): boolean {
   return (
     alerta.status === "ativo" &&
     alerta.tipo === "desvio" &&
-    alerta.motivo === MOTIVO_RUA_ESTRANHA
+    alerta.motivo === MOTIVO_RUA_ESTRANHA &&
+    agora.getTime() - new Date(alerta.desde).getTime() <= idadeMaximaMs
   );
 }
 

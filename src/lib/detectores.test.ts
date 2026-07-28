@@ -2048,65 +2048,75 @@ describe("deveAutoResolverRuaEstranha", () => {
 // chamada de deveAutoResolverRuaEstranha acima (ver detectores.ts pro
 // raciocinio completo). route.ts nao tem harness de teste proprio -- esta
 // e' a cobertura real do mecanismo.
+//
+// Task 5b.1 (revisao independente rodada 1, achado MAIS SERIO): a versao
+// original gateava por mesmoPonto -- o revisor conferiu o lat/lng REAL do
+// caso TTD-7H14 e o veiculo se desloca uns 10-30m a cada leitura o tempo
+// todo, entao mesmoPonto ficava FALSE quase todo ciclo e o acumulador
+// resetava quase toda leitura, reproduzindo o proprio bug (parado_desde)
+// um nivel abaixo -- a fixture antiga (mesmoPonto:true hardcoded) nao
+// refletia o dado real, e por isso "passava" sem pegar o problema.
+// mesmoPonto foi REMOVIDO da funcao -- so velocidade decide agora.
 describe("calcularParadaToleranteSegundos", () => {
-  it("acumula quando parado de verdade (velocidade 0, mesmo ponto), igual ao paradoMin estrito faria", () => {
+  it("acumula quando parado de verdade (velocidade 0)", () => {
     let segundos = 0;
     for (let i = 0; i < 4; i++) {
-      segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: true, anteriorSegundos: segundos });
+      segundos = calcularParadaToleranteSegundos({ velocidade: 0, anteriorSegundos: segundos });
     }
     expect(segundos).toBe(120); // 4 leituras * 30s
   });
 
-  it("NAO reseta com um blip isolado de velocidade baixa (so pausa, nao zera)", () => {
-    let segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: true, anteriorSegundos: 0 }); // 30
-    segundos = calcularParadaToleranteSegundos({ velocidade: 7, mesmoPonto: true, anteriorSegundos: segundos }); // ainda <= limiar, continua acumulando
-    segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: true, anteriorSegundos: segundos });
-    expect(segundos).toBe(90); // nunca voltou a 0, so seguiu acumulando
+  it("NAO reseta com um blip isolado de velocidade baixa (so continua acumulando)", () => {
+    let segundos = calcularParadaToleranteSegundos({ velocidade: 0, anteriorSegundos: 0 }); // 30
+    segundos = calcularParadaToleranteSegundos({ velocidade: 7, anteriorSegundos: segundos }); // ainda <= limiar, continua acumulando
+    segundos = calcularParadaToleranteSegundos({ velocidade: 0, anteriorSegundos: segundos });
+    expect(segundos).toBe(90); // nunca resetou, so seguiu acumulando
   });
 
-  it("reseta quando a posicao muda de verdade (saida real, nao blip)", () => {
-    const segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: false, anteriorSegundos: 300 });
-    expect(segundos).toBe(30);
-  });
-
-  it("nao acumula (fica em 0) quando a velocidade excede o limiar tolerante E a posicao mudou", () => {
+  it("reseta pra 0 quando a velocidade excede o limiar tolerante -- so velocidade decide, posicao nao importa mais", () => {
     const segundos = calcularParadaToleranteSegundos({
       velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH + 5,
-      mesmoPonto: false,
       anteriorSegundos: 300,
     });
     expect(segundos).toBe(0);
   });
 
-  it("pausa (nao incrementa, mas tambem nao zera) quando velocidade excede o limiar mas o ponto nao mudou", () => {
-    const segundos = calcularParadaToleranteSegundos({
-      velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH + 5,
-      mesmoPonto: true,
+  it("no limiar exato (<=) ainda acumula, so acima dele reseta", () => {
+    const noLimiar = calcularParadaToleranteSegundos({
+      velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH,
       anteriorSegundos: 300,
     });
-    expect(segundos).toBe(300);
+    expect(noLimiar).toBe(330);
+    const acimaDoLimiar = calcularParadaToleranteSegundos({
+      velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH + 1,
+      anteriorSegundos: 300,
+    });
+    expect(acimaDoLimiar).toBe(0);
   });
 
-  // Caso real TTD-7H14 (achado 28/07, ~10.6min/23 leituras, cron do motor a
-  // cada 30s -- ver route.ts:237): velocidade oscilou
-  // 0,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 sem o veiculo sair
-  // do lugar de verdade (so o sensor de velocidade blipando). Sob o
-  // paradoMin ESTRITO (===0), qualquer uma dessas leituras !=0 zerava o
-  // relogio -- o timer nunca teria uma chance real de acumular os 2min
-  // exigidos de forma confiavel. O acumulador tolerante, no mesmo cenario
-  // (mesmoPonto=true o tempo todo -- o veiculo nunca de fato mudou de
-  // lugar), atravessa os blips e ultrapassa os 2min exigidos por
-  // deveAutoResolverRuaEstranha.
-  it("caso real TTD-7H14: atravessa os blips e ultrapassa RUA_ESTRANHA_PARADO_MIN_MIN", () => {
-    const velocidades = [0, 7, 7, 7, 7, 0, 0, 0, 0, 0, 7, 7, 0, 0, 10, 10, 0, 0, 20, 20, 0, 0, 19];
+  // Caso real TTD-7H14 (achado 28/07, ~cron do motor a cada 30s -- ver
+  // route.ts:237): sequencia de velocidade REAL levantada pela revisao
+  // independente (rodada 1, 5b.1) -- 0,6,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,
+  // 0,0,20,20,0,0,19. O lat/lng real do caso mostra o veiculo se
+  // deslocando uns 10-30m a cada leitura o tempo todo -- mesmoPonto
+  // ficaria FALSE quase sempre, entao este teste deliberadamente NAO passa
+  // mesmoPonto (a funcao nem aceita mais esse campo): prova que o
+  // acumulador cruza os blips usando SO velocidade, sem depender de
+  // posicao ter ficado parada. Sob o paradoMin ESTRITO (===0), qualquer
+  // uma dessas leituras !=0 zerava o relogio -- nunca acumularia os 2min
+  // exigidos de forma confiavel.
+  it("caso real TTD-7H14 (dado real da revisao independente): atravessa os blips usando SO velocidade e ultrapassa RUA_ESTRANHA_PARADO_MIN_MIN", () => {
+    const velocidades = [0, 6, 7, 7, 7, 7, 0, 0, 0, 0, 0, 7, 7, 0, 0, 10, 10, 0, 0, 20, 20, 0, 0, 19];
     let segundos = 0;
     for (const velocidade of velocidades) {
-      segundos = calcularParadaToleranteSegundos({ velocidade, mesmoPonto: true, anteriorSegundos: segundos });
+      segundos = calcularParadaToleranteSegundos({ velocidade, anteriorSegundos: segundos });
     }
     const paradaEfetivaMinFinal = segundos / 60;
     expect(paradaEfetivaMinFinal).toBeGreaterThanOrEqual(RUA_ESTRANHA_PARADO_MIN_MIN);
-    // Nenhuma leitura fica de fora (nunca reseta a 0) -- prova de que o
-    // padrao B (timer que nunca acumula) esta corrigido pra esse caso.
+    // Nenhuma leitura da sequencia excede o limiar (20km/h) -- nunca reseta,
+    // acumula as 24 leituras inteiras. Prova de que o Padrao B (timer que
+    // nunca acumula) esta corrigido de verdade pro dado REAL desse caso,
+    // nao so pra uma fixture idealizada.
     expect(segundos).toBe(velocidades.length * 30);
   });
 });
@@ -2114,20 +2124,57 @@ describe("calcularParadaToleranteSegundos", () => {
 // BLOCKER 2 (revisao independente 27/07): auto-resolve nao pode agir sobre
 // um alerta que o operador ja reconheceu (status='reconhecido') -- so
 // 'ativo' e' elegivel, alem do tipo/motivo ja checados antes.
+//
+// Task 5b.3 (revisao independente rodada 1): idadeAlertaMin foi removido
+// de deveAutoResolverRuaEstranha (Padrao A), mas isso destravava alertas
+// de QUALQUER idade -- teto novo (RUA_ESTRANHA_IDADE_MAXIMA_AUTORESOLVE_MS,
+// 60min) aplicado AQUI, no filtro de elegibilidade, ancorado em
+// alerta.desde.
 describe("alertaElegivelParaAutoResolveRuaEstranha", () => {
   const base = { status: "ativo", tipo: "desvio", motivo: MOTIVO_RUA_ESTRANHA };
+  const agora = new Date("2026-07-28T12:00:00Z");
+  const desdeMinutosAtras = (min: number) => new Date(agora.getTime() - min * 60_000).toISOString();
 
-  it("elegivel quando ativo + tipo desvio + motivo rua estranha", () => {
-    expect(alertaElegivelParaAutoResolveRuaEstranha(base)).toBe(true);
+  it("elegivel quando ativo + tipo desvio + motivo rua estranha + dentro do teto de idade", () => {
+    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, desde: desdeMinutosAtras(3) }, agora)).toBe(true);
   });
   it("NAO elegivel se o operador ja reconheceu o alerta (status='reconhecido')", () => {
-    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, status: "reconhecido" })).toBe(false);
+    expect(
+      alertaElegivelParaAutoResolveRuaEstranha({ ...base, status: "reconhecido", desde: desdeMinutosAtras(3) }, agora)
+    ).toBe(false);
   });
   it("NAO elegivel pra outros tipos de alerta", () => {
-    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, tipo: "parada_anomala" })).toBe(false);
+    expect(
+      alertaElegivelParaAutoResolveRuaEstranha({ ...base, tipo: "parada_anomala", desde: desdeMinutosAtras(3) }, agora)
+    ).toBe(false);
   });
   it("NAO elegivel se o motivo nao bate exatamente (outra regra de desvio)", () => {
-    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, motivo: "Divergencia de rumo geral" })).toBe(false);
+    expect(
+      alertaElegivelParaAutoResolveRuaEstranha(
+        { ...base, motivo: "Divergencia de rumo geral", desde: desdeMinutosAtras(3) },
+        agora
+      )
+    ).toBe(false);
+  });
+  // Task 5b.3: casos reais observados (TTI-6E43 33min, TB466437 18min,
+  // TTD-7H14 10.6min) nunca passaram de 33min -- 30min de idade continua
+  // dentro do padrao real observado e deve ficar elegivel.
+  it("elegivel com 30min de idade (dentro do teto de 60min, ainda no padrao real observado)", () => {
+    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, desde: desdeMinutosAtras(30) }, agora)).toBe(true);
+  });
+  // Task 5b.3: sem ESTE teto, um alerta de dias ficaria elegivel pra
+  // fechar sozinho na primeira parada tranquila, sem ninguem saber o que
+  // aconteceu entre a criacao e essa parada.
+  it("NAO elegivel com 90min de idade (fora do teto de 60min), mesmo com todas as outras condicoes OK", () => {
+    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, desde: desdeMinutosAtras(90) }, agora)).toBe(false);
+  });
+  it("aceita teto de idade customizado (parametro opcional)", () => {
+    expect(
+      alertaElegivelParaAutoResolveRuaEstranha({ ...base, desde: desdeMinutosAtras(10) }, agora, 5 * 60_000)
+    ).toBe(false);
+    expect(
+      alertaElegivelParaAutoResolveRuaEstranha({ ...base, desde: desdeMinutosAtras(10) }, agora, 15 * 60_000)
+    ).toBe(true);
   });
 });
 

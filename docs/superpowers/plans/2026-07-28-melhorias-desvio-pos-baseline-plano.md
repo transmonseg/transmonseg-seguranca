@@ -181,6 +181,89 @@ Causa raiz confirmada hoje com dado real de posição/velocidade de 3 casos (TTI
 
 ---
 
+## Task 5b: Fix round 1 — achados da revisão independente (APPROVE WITH MINOR FIXES, mas 1 achado invalida o caso real motivador)
+
+Revisão (opus, independente) achou 3 problemas reais. O mais sério: **o acumulador de Padrão B, do jeito implementado, NÃO resolve o caso real que motivou ele.**
+
+### 5b.1 — CRÍTICO NA PRÁTICA: `mesmoPonto` não é o gate certo pro acumulador
+
+`calcularParadaToleranteSegundos` usa `mesmoPonto` (célula de 4 casas decimais, mesma lógica de `parado_desde`) pra decidir se acumula ou reseta. Conferi o lat/lng REAL do caso TTD-7H14 (não só a velocidade, que já tinha sido checada) e o veículo está se deslocando uns 10-30m a cada leitura o tempo todo — `mesmoPonto` fica FALSE quase todo ciclo. Com o gate atual, o acumulador reseta quase toda leitura, exatamente como o bug original (`parado_desde`) — **não corrige o caso que ele foi construído pra corrigir**.
+
+**Fix:** tirar `mesmoPonto` do acumulador inteiramente. Usar só velocidade: acumula enquanto `velocidade <= RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH`, reseta pra 0 quando excede. Isso é seguro porque o gate de decisão final (`route.ts`, `if (pos.fresco && pos.velocidade === 0)`) continua EXIGINDO velocidade exatamente 0 no ciclo da decisão — um veículo genuinamente cruzando uma rua a 15-18km/h sem nunca realmente parar jamais dispara a decisão, não importa o valor do acumulador.
+
+```ts
+export function calcularParadaToleranteSegundos(ctx: {
+  velocidade: number;
+  anteriorSegundos: number;
+}): number {
+  if (ctx.velocidade > RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH) return 0;
+  return ctx.anteriorSegundos + 30;
+}
+```
+
+Remover o parâmetro `mesmoPonto` da assinatura e do call site em `route.ts` (a variável `mesmoPonto` continua existindo pra `parado_desde`, só não é mais passada pra esta função). Atualizar o comentário que hoje diz "mesmoPonto é calculado por route.ts... recebido pronto aqui" — não é mais verdade.
+
+**Teste com dado REAL de verdade** (a fixture atual tem `mesmoPonto: true` hardcoded, o que a revisão provou ser fisicamente incompatível com o lat/lng real do caso — substituir):
+
+```ts
+it("caso real TTD-7H14 (28/07): velocidade oscila mas nunca excede o limiar tolerante -- acumula ate o threshold usando SO velocidade, sem depender de posicao", () => {
+  const velocidades = [0,6,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19];
+  let segundos = 0;
+  for (const v of velocidades) segundos = calcularParadaToleranteSegundos({ velocidade: v, anteriorSegundos: segundos });
+  expect(segundos).toBeGreaterThanOrEqual(RUA_ESTRANHA_PARADO_MIN_MIN * 60);
+});
+```
+
+### 5b.2 — IMPORTANTE: falta o guard `!alertaJammer` (presente no mecanismo irmão)
+
+O auto-resolve de rota-concluída (`route.ts`, bloco logo antes) tem `!alertaJammer` explicitamente pra evitar que uma posição CONGELADA por jamming acumule "parado" só pelo relógio de parede durante um possível sequestro em andamento. O bloco de rua-estreita não tem esse guard — e agora que a Task 5b.3 abaixo bounded a idade do alerta em vez de removê-la sem limite, ainda vale fechar esta brecha (jammer pode travar a posição por até ~1h dentro da janela nova). Adicionar `!alertaJammer` ao `if` que guarda o loop de auto-resolve de rua-estreita, mesmo padrão do irmão.
+
+### 5b.3 — IMPORTANTE: remover a janela de tempo por completo destrava alertas de qualquer idade
+
+Sem NENHUM teto, um alerta de rua-estreita aberto há dias (o cron `expirar-alertas-ativos-esquecidos` só fecha depois de 7 dias) pode ser auto-resolvido silenciosamente na primeira parada de 2min com risco baixo — mesmo que o que aconteceu ENTRE a criação e essa parada seja completamente desconhecido (ex: sequestro real, veículo levado 25km, estacionado numa área sem nenhum sinal de risco corroborado). Os casos reais observados (TTI-6E43 33min, TB466437 18min, TTD-7H14 10.6min) NUNCA passaram de 33 minutos — não precisa de teto ilimitado pra cobrir o padrão real.
+
+**Fix:** teto generoso ancorado na criação do alerta (mais simples e seguro que tentar ancorar num novo timestamp de "elegibilidade", que exigiria mais um campo persistido): 60 minutos — folga de quase 2x sobre o pior caso real observado, sem deixar alerta de dias/semanas ser fechado sem revisão.
+
+```ts
+// Task 5b.3 (revisao independente): idadeAlertaMin foi removido do PADRAO A
+// (deveAutoResolverRuaEstranha nao olha mais idade -- ver comentario
+// acima), mas sem NENHUM teto um alerta de dias fica elegivel pra fechar
+// sozinho na primeira parada tranquila, sem ninguem saber o que aconteceu
+// entre a criacao e essa parada. Teto generoso (60min, quase 2x o pior
+// caso real observado: TTI-6E43 33min) ancorado na CRIACAO do alerta --
+// deliberadamente mais simples que ancorar numa nova "elegibilidade"
+// (exigiria mais um campo persistido). Aplicado no filtro de
+// elegibilidade (nao em deveAutoResolverRuaEstranha, que continua sem
+// saber de tempo -- a idade e' sobre QUAL ALERTA e' candidato, nao sobre
+// as condicoes de seguranca em si).
+export const RUA_ESTRANHA_IDADE_MAXIMA_AUTORESOLVE_MS = 60 * 60 * 1000;
+
+export function alertaElegivelParaAutoResolveRuaEstranha(
+  alerta: { status: string; tipo: string; motivo: string; desde: string },
+  agora: Date,
+  idadeMaximaMs: number = RUA_ESTRANHA_IDADE_MAXIMA_AUTORESOLVE_MS
+): boolean {
+  return (
+    alerta.status === "ativo" &&
+    alerta.tipo === "desvio" &&
+    alerta.motivo === MOTIVO_RUA_ESTRANHA &&
+    agora.getTime() - new Date(alerta.desde).getTime() <= idadeMaximaMs
+  );
+}
+```
+
+Call site em `route.ts` (~linha 2605): trocar `alertasAbertos.filter(alertaElegivelParaAutoResolveRuaEstranha)` por `alertasAbertos.filter((a) => alertaElegivelParaAutoResolveRuaEstranha(a, agora))` (`agora` já está em escopo, mesma variável usada em todo o resto do ciclo).
+
+Testes: alerta com 30min de idade + condições de segurança OK → elegível; alerta com 90min de idade (fora do teto de 60min) + mesmas condições → NÃO elegível, mesmo com risco baixo e parado confirmado.
+
+### 5b.4 — Verificação final
+
+Rodar `npx vitest run`, `npx tsc --noEmit`, `npm run build` depois de TODOS os 3 fixes juntos. Confirmar que os testes antigos de `alertaElegivelParaAutoResolveRuaEstranha` (que hoje chamam a função com 1 argumento só) foram atualizados pra nova assinatura de 2-3 argumentos.
+
+**Risco:** o achado 5b.1 é o mais sério — sem ele corrigido, a Task 5 inteira não resolve o problema real que motivou ela (só parece resolver nos testes, que usavam uma fixture idealizada). Revisão independente obrigatória de novo antes de deploy.
+
+---
+
 ## Task 6: Exceção "acabou de sair de parada legítima" pra rua-estreita
 
 **Arquivos:**

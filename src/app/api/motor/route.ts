@@ -1321,15 +1321,29 @@ export async function POST(request: Request) {
           // auto-resolve de rua-estreita (ver calcularParadaToleranteSegundos
           // e RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH em detectores.ts pro
           // raciocinio completo -- caso real TTD-7H14, velocidade oscilando
-          // 0,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 sem nunca
+          // 0,6,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 sem nunca
           // acumular 2min continuos no paradoMin estrito acima). NAO reusa
           // parado_desde/paradoMin (isso herdaria o proprio bug -- reseta
           // com QUALQUER velocidade!=0) nem os altera -- coluna e variavel
           // completamente separadas.
+          //
+          // Task 5b.1 (revisao independente rodada 1, achado MAIS SERIO): a
+          // versao anterior passava mesmoPonto (definido acima) pra esta
+          // funcao -- o revisor conferiu o lat/lng REAL do caso TTD-7H14 e o
+          // veiculo se desloca uns 10-30m a cada leitura o tempo todo, entao
+          // mesmoPonto ficava FALSE quase todo ciclo pra esse caso real,
+          // reproduzindo o proprio bug (parado_desde reseta quase sempre) um
+          // nivel abaixo. mesmoPonto foi REMOVIDO desta chamada -- so
+          // velocidade decide agora (ver calcularParadaToleranteSegundos).
+          // Continua seguro porque o `if (pos.fresco && pos.velocidade ===
+          // 0)` abaixo, no call site de deveAutoResolverRuaEstranha, exige
+          // velocidade EXATAMENTE 0 no ciclo da decisao -- so o "ha quanto
+          // tempo" tolera blips anteriores, a decisao em si nunca dispara
+          // com o veiculo em movimento. mesmoPonto continua em uso acima,
+          // sem mudanca, pelo parado_desde/paradoMin estrito.
           const paradaToleranteAnteriorSegundos = anterior?.parada_tolerante_segundos ?? 0;
           const paradaToleranteSegundos = calcularParadaToleranteSegundos({
             velocidade: pos.velocidade,
-            mesmoPonto: !!mesmoPonto,
             anteriorSegundos: paradaToleranteAnteriorSegundos,
           });
           const paradaEfetivaMin = paradaToleranteSegundos / 60;
@@ -2601,8 +2615,18 @@ export async function POST(request: Request) {
           // paradaEfetivaMin (calculado acima, tolerante a blip -- Padrao
           // B) SO nesta chamada; nenhum outro consumidor de paradoMin
           // neste arquivo muda.
-          if (pos.fresco && pos.velocidade === 0) {
-            for (const a of alertasAbertos.filter(alertaElegivelParaAutoResolveRuaEstranha)) {
+          //
+          // Task 5b.2 (revisao independente rodada 1): !alertaJammer
+          // faltava aqui -- mesmo guard e mesmo motivo do auto-resolve
+          // irmao logo acima (afastando-rota-concluida): sem ele, uma
+          // posicao CONGELADA por jamming podia acumular parada (estrita
+          // ou tolerante) so pelo relogio de parede e auto-resolver o
+          // desvio no meio de um possivel sequestro em andamento -- risco
+          // maior agora que a Task 5b.3 abaixo troca a janela de tempo
+          // ilimitada por um teto de 60min (jammer trava posicao por ate
+          // ~1h dentro dessa janela).
+          if (pos.fresco && !alertaJammer && pos.velocidade === 0) {
+            for (const a of alertasAbertos.filter((candidato) => alertaElegivelParaAutoResolveRuaEstranha(candidato, agora))) {
               if (
                 deveAutoResolverRuaEstranha({
                   paradaEfetivaMin,
