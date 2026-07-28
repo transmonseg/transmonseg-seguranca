@@ -45,7 +45,8 @@ import {
   deveAutoResolverRuaEstranha,
   alertaElegivelParaAutoResolveRuaEstranha,
   contaComoEventoDeSilenciamento,
-  RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN,
+  RUA_ESTRANHA_PARADO_MIN_MIN,
+  calcularParadaToleranteSegundos,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
@@ -623,7 +624,7 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, parada_tolerante_segundos");
 
     const mapaPosAtual = new Map<
       string,
@@ -642,6 +643,11 @@ export async function POST(request: Request) {
         // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
         // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
         saiu_parada_confirmada_em: string | null;
+        // Task 5, Padrao B (28/07): acumulador tolerante a blip, so pro
+        // auto-resolve de rua-estreita -- ver calcularParadaToleranteSegundos
+        // em lib/detectores.ts. Coluna PROPRIA (migration 015), nao
+        // relacionada a parado_desde/paradoMin acima.
+        parada_tolerante_segundos: number;
       }
     >();
 
@@ -664,6 +670,7 @@ export async function POST(request: Request) {
         no_raio_dwell_segundos: row.no_raio_dwell_segundos ?? 0,
         ultima_via_principal_em: row.ultima_via_principal_em ?? null,
         saiu_parada_confirmada_em: row.saiu_parada_confirmada_em ?? null,
+        parada_tolerante_segundos: row.parada_tolerante_segundos ?? 0,
       });
     }
 
@@ -927,6 +934,10 @@ export async function POST(request: Request) {
       // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
       // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
       saiu_parada_confirmada_em: string | null;
+      // Task 5, Padrao B (28/07): acumulador tolerante a blip, so pro
+      // auto-resolve de rua-estreita -- ver calcularParadaToleranteSegundos
+      // em lib/detectores.ts.
+      parada_tolerante_segundos: number;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -1275,20 +1286,25 @@ export async function POST(request: Request) {
             });
           }
 
+          // Verificar se ficou no mesmo lugar (lat/lng arredondados a 4 casas).
+          // Hoisted pra fora do bloco de parado_desde abaixo (Task 5, 28/07)
+          // porque o novo acumulador tolerante-a-blip (paradaTolerante*
+          // abaixo) tambem precisa desse mesmo sinal, independente da
+          // velocidade da leitura atual -- mesma logica exata de antes, so
+          // mudou de lugar.
+          const mesmoPonto =
+            anterior &&
+            anterior.lat !== null &&
+            anterior.lng !== null &&
+            Math.round(anterior.lat * 10000) === Math.round(pos.lat * 10000) &&
+            Math.round(anterior.lng * 10000) === Math.round(pos.lng * 10000);
+
           // Calcular parado_desde
           let parado_desde: string | null = null;
           let paradoMin = 0;
 
           if (pos.velocidade === 0) {
             const estavParado = anterior && anterior.velocidade === 0;
-
-            // Verificar se ficou no mesmo lugar (lat/lng arredondados a 4 casas)
-            const mesmoPonto =
-              anterior &&
-              anterior.lat !== null &&
-              anterior.lng !== null &&
-              Math.round(anterior.lat * 10000) === Math.round(pos.lat * 10000) &&
-              Math.round(anterior.lng * 10000) === Math.round(pos.lng * 10000);
 
             if (estavParado && mesmoPonto && anterior.parado_desde) {
               // Manter parado_desde anterior
@@ -1300,6 +1316,23 @@ export async function POST(request: Request) {
 
             paradoMin = Math.round((agora.getTime() - new Date(parado_desde).getTime()) / 60000);
           }
+
+          // Task 5, Padrao B (28/07): sinal tolerante a blip, so pro
+          // auto-resolve de rua-estreita (ver calcularParadaToleranteSegundos
+          // e RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH em detectores.ts pro
+          // raciocinio completo -- caso real TTD-7H14, velocidade oscilando
+          // 0,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 sem nunca
+          // acumular 2min continuos no paradoMin estrito acima). NAO reusa
+          // parado_desde/paradoMin (isso herdaria o proprio bug -- reseta
+          // com QUALQUER velocidade!=0) nem os altera -- coluna e variavel
+          // completamente separadas.
+          const paradaToleranteAnteriorSegundos = anterior?.parada_tolerante_segundos ?? 0;
+          const paradaToleranteSegundos = calcularParadaToleranteSegundos({
+            velocidade: pos.velocidade,
+            mesmoPonto: !!mesmoPonto,
+            anteriorSegundos: paradaToleranteAnteriorSegundos,
+          });
+          const paradaEfetivaMin = paradaToleranteSegundos / 60;
 
           // Origem pro par O-D do tapete (migration 014, so coleta): celula
           // da ultima parada de 5+ min. Persistida em posicoes_atuais.
@@ -2433,6 +2466,7 @@ export async function POST(request: Request) {
             no_raio_dwell_segundos: noRaioDwellSegundos,
             ultima_via_principal_em: ultimaViaPrincipalEm,
             saiu_parada_confirmada_em: saiuParadaConfirmadaEm,
+            parada_tolerante_segundos: paradaToleranteSegundos,
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -2542,7 +2576,9 @@ export async function POST(request: Request) {
           // Auto-resolucao retroativa da "rua estranha" -- ver
           // deveAutoResolverRuaEstranha em detectores.ts pro raciocinio
           // completo. So roda quando o veiculo esta FRESCO e parado agora
-          // (paradoMin so faz sentido com velocidade===0).
+          // (o gate de tempo real continua exigindo velocidade===0 NESTE
+          // ciclo -- so o "ha quanto tempo" que vira paradaEfetivaMin abaixo
+          // passou a tolerar blips ANTERIORES, ver Task 5/Padrao B).
           // BLOCKER 2 (revisao independente 27/07): alertaElegivelParaAutoResolveRuaEstranha
           // agora tambem exige status==='ativo' -- um alerta que o operador
           // ja reconheceu (status='reconhecido') nao pode ser auto-resolvido
@@ -2558,13 +2594,18 @@ export async function POST(request: Request) {
           // dado de risco faltou. Sem o dado, a funcao pura recusa resolver
           // e o alerta so fica aberto mais um ciclo (mesma direcao de
           // fail-safe de todo outro consumidor de riscoAreaAtual).
+          //
+          // Task 5 (28/07): idadeAlertaMin (janela de 5min contada da
+          // criacao do alerta) foi REMOVIDA -- ver comentario completo em
+          // detectores.ts (Padrao A). paradoMin estrito foi trocado por
+          // paradaEfetivaMin (calculado acima, tolerante a blip -- Padrao
+          // B) SO nesta chamada; nenhum outro consumidor de paradoMin
+          // neste arquivo muda.
           if (pos.fresco && pos.velocidade === 0) {
             for (const a of alertasAbertos.filter(alertaElegivelParaAutoResolveRuaEstranha)) {
-              const idadeAlertaMin = (agora.getTime() - new Date(a.desde).getTime()) / 60_000;
               if (
                 deveAutoResolverRuaEstranha({
-                  idadeAlertaMin,
-                  paradoMin,
+                  paradaEfetivaMin,
                   riscoAreaAtual,
                   riscoDisponivel: riscoPorVeiculo.has(veiculo_id),
                 })
@@ -2863,7 +2904,8 @@ export async function POST(request: Request) {
               ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
               divergencia_rumo_streak, aproximando_streak, origem_celula,
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
-              ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em)
+              ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em,
+              parada_tolerante_segundos)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -2875,21 +2917,22 @@ export async function POST(request: Request) {
              c.aproximando_streak, c.origem_celula, c.no_raio_alvo_codigo,
              c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
              c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb,
-             c.saiu_parada_confirmada_em::timestamptz
+             c.saiu_parada_confirmada_em::timestamptz, c.parada_tolerante_segundos
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
-             $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[]
+             $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[],
+             $31::integer[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
                   ultimo_evento, desvio_inicio, fora_tapete_streak, divergencia_rumo_streak,
                   aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
                   no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio,
-                  saiu_parada_confirmada_em)
+                  saiu_parada_confirmada_em, parada_tolerante_segundos)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -2922,7 +2965,8 @@ export async function POST(request: Request) {
              no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos,
              ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
              divergencia_rumo_inicio = EXCLUDED.divergencia_rumo_inicio,
-             saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em`,
+             saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
+             parada_tolerante_segundos = EXCLUDED.parada_tolerante_segundos`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -2954,6 +2998,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.ultima_via_principal_em),
             posicoesCiclo.map((p) => p.divergencia_rumo_inicio),
             posicoesCiclo.map((p) => p.saiu_parada_confirmada_em),
+            posicoesCiclo.map((p) => p.parada_tolerante_segundos),
           ]
         );
       } catch (errPosicoes) {
@@ -3255,7 +3300,11 @@ export async function POST(request: Request) {
             ids,
             JSON.stringify({
               auto_resolvido: true,
-              motivo: `parou sem area de risco por perto, dentro de ${RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN}min`,
+              // Task 5 (28/07): a janela de tempo (RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN)
+              // foi removida (Padrao A) -- a mensagem nao referencia mais
+              // prazo nenhum, so as duas condicoes de seguranca que de fato
+              // decidem o auto-resolve (ver deveAutoResolverRuaEstranha).
+              motivo: `parou (pelo menos ${RUA_ESTRANHA_PARADO_MIN_MIN}min sem sair do lugar, tolerando blips de velocidade) e sem area de risco por perto`,
             }),
             agora.toISOString(),
           ]

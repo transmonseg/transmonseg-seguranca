@@ -37,8 +37,9 @@ import {
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
   deveAutoResolverRuaEstranha,
-  RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN,
   RUA_ESTRANHA_PARADO_MIN_MIN,
+  RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH,
+  calcularParadaToleranteSegundos,
   MOTIVO_RUA_ESTRANHA,
   alertaElegivelParaAutoResolveRuaEstranha,
   contaComoEventoDeSilenciamento,
@@ -1984,11 +1985,10 @@ describe("temCoordenadaValida", () => {
 });
 
 describe("deveAutoResolverRuaEstranha", () => {
-  it("resolve quando parou >=2min, sem risco, dentro da janela de 5min, com dado de risco disponivel", () => {
+  it("resolve quando parou >=2min (paradaEfetivaMin) e sem risco, com dado de risco disponivel", () => {
     expect(
       deveAutoResolverRuaEstranha({
-        idadeAlertaMin: 3,
-        paradoMin: RUA_ESTRANHA_PARADO_MIN_MIN,
+        paradaEfetivaMin: RUA_ESTRANHA_PARADO_MIN_MIN,
         riscoAreaAtual: 0,
         riscoDisponivel: true,
       })
@@ -1997,8 +1997,7 @@ describe("deveAutoResolverRuaEstranha", () => {
   it("NAO resolve se ainda nao parou o suficiente", () => {
     expect(
       deveAutoResolverRuaEstranha({
-        idadeAlertaMin: 3,
-        paradoMin: RUA_ESTRANHA_PARADO_MIN_MIN - 1,
+        paradaEfetivaMin: RUA_ESTRANHA_PARADO_MIN_MIN - 1,
         riscoAreaAtual: 0,
         riscoDisponivel: true,
       })
@@ -2006,18 +2005,25 @@ describe("deveAutoResolverRuaEstranha", () => {
   });
   it("NAO resolve se tem area de risco por perto", () => {
     expect(
-      deveAutoResolverRuaEstranha({ idadeAlertaMin: 3, paradoMin: 3, riscoAreaAtual: 40, riscoDisponivel: true })
+      deveAutoResolverRuaEstranha({ paradaEfetivaMin: 3, riscoAreaAtual: 40, riscoDisponivel: true })
     ).toBe(false);
   });
-  it("NAO resolve depois da janela de 5min (deixa pro operador revisar manualmente)", () => {
+  // Task 5, Padrao A (28/07, achado real: TTI-6E43 33min, TB466437 18min --
+  // o veiculo levou minutos A MAIS que a antiga janela de 5min pra terminar
+  // a manobra e parar de verdade). A janela de tempo contada da CRIACAO do
+  // alerta (RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN/idadeAlertaMin) foi REMOVIDA
+  // por completo -- agora resolve mesmo com um alerta "velho", contanto que
+  // as condicoes de seguranca (parado + sem risco) estejam satisfeitas.
+  // Mesmo padrao ja validado do auto-resolve irmao
+  // (deveAutoResolverAfastandoRotaConcluida, sem janela de tempo nenhuma).
+  it("resolve mesmo com alerta MUITO velho (>5min, janela antiga removida -- Padrao A)", () => {
     expect(
       deveAutoResolverRuaEstranha({
-        idadeAlertaMin: RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN + 1,
-        paradoMin: 3,
+        paradaEfetivaMin: RUA_ESTRANHA_PARADO_MIN_MIN,
         riscoAreaAtual: 0,
         riscoDisponivel: true,
       })
-    ).toBe(false);
+    ).toBe(true);
   });
   // M4 (revisao independente round 3, 27/07): riscoAreaAtual=0 por FALTA de
   // dado (query em batch falhou neste ciclo) tem que se comportar diferente
@@ -2029,12 +2035,79 @@ describe("deveAutoResolverRuaEstranha", () => {
   it("NAO resolve quando o dado de risco esta indisponivel neste ciclo, mesmo com riscoAreaAtual=0", () => {
     expect(
       deveAutoResolverRuaEstranha({
-        idadeAlertaMin: 3,
-        paradoMin: RUA_ESTRANHA_PARADO_MIN_MIN,
+        paradaEfetivaMin: RUA_ESTRANHA_PARADO_MIN_MIN,
         riscoAreaAtual: 0,
         riscoDisponivel: false,
       })
     ).toBe(false);
+  });
+});
+
+// Task 5, Padrao B (28/07): calcularParadaToleranteSegundos e' o
+// acumulador tolerante a blip que substitui paradoMin estrito SO na
+// chamada de deveAutoResolverRuaEstranha acima (ver detectores.ts pro
+// raciocinio completo). route.ts nao tem harness de teste proprio -- esta
+// e' a cobertura real do mecanismo.
+describe("calcularParadaToleranteSegundos", () => {
+  it("acumula quando parado de verdade (velocidade 0, mesmo ponto), igual ao paradoMin estrito faria", () => {
+    let segundos = 0;
+    for (let i = 0; i < 4; i++) {
+      segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: true, anteriorSegundos: segundos });
+    }
+    expect(segundos).toBe(120); // 4 leituras * 30s
+  });
+
+  it("NAO reseta com um blip isolado de velocidade baixa (so pausa, nao zera)", () => {
+    let segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: true, anteriorSegundos: 0 }); // 30
+    segundos = calcularParadaToleranteSegundos({ velocidade: 7, mesmoPonto: true, anteriorSegundos: segundos }); // ainda <= limiar, continua acumulando
+    segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: true, anteriorSegundos: segundos });
+    expect(segundos).toBe(90); // nunca voltou a 0, so seguiu acumulando
+  });
+
+  it("reseta quando a posicao muda de verdade (saida real, nao blip)", () => {
+    const segundos = calcularParadaToleranteSegundos({ velocidade: 0, mesmoPonto: false, anteriorSegundos: 300 });
+    expect(segundos).toBe(30);
+  });
+
+  it("nao acumula (fica em 0) quando a velocidade excede o limiar tolerante E a posicao mudou", () => {
+    const segundos = calcularParadaToleranteSegundos({
+      velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH + 5,
+      mesmoPonto: false,
+      anteriorSegundos: 300,
+    });
+    expect(segundos).toBe(0);
+  });
+
+  it("pausa (nao incrementa, mas tambem nao zera) quando velocidade excede o limiar mas o ponto nao mudou", () => {
+    const segundos = calcularParadaToleranteSegundos({
+      velocidade: RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH + 5,
+      mesmoPonto: true,
+      anteriorSegundos: 300,
+    });
+    expect(segundos).toBe(300);
+  });
+
+  // Caso real TTD-7H14 (achado 28/07, ~10.6min/23 leituras, cron do motor a
+  // cada 30s -- ver route.ts:237): velocidade oscilou
+  // 0,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 sem o veiculo sair
+  // do lugar de verdade (so o sensor de velocidade blipando). Sob o
+  // paradoMin ESTRITO (===0), qualquer uma dessas leituras !=0 zerava o
+  // relogio -- o timer nunca teria uma chance real de acumular os 2min
+  // exigidos de forma confiavel. O acumulador tolerante, no mesmo cenario
+  // (mesmoPonto=true o tempo todo -- o veiculo nunca de fato mudou de
+  // lugar), atravessa os blips e ultrapassa os 2min exigidos por
+  // deveAutoResolverRuaEstranha.
+  it("caso real TTD-7H14: atravessa os blips e ultrapassa RUA_ESTRANHA_PARADO_MIN_MIN", () => {
+    const velocidades = [0, 7, 7, 7, 7, 0, 0, 0, 0, 0, 7, 7, 0, 0, 10, 10, 0, 0, 20, 20, 0, 0, 19];
+    let segundos = 0;
+    for (const velocidade of velocidades) {
+      segundos = calcularParadaToleranteSegundos({ velocidade, mesmoPonto: true, anteriorSegundos: segundos });
+    }
+    const paradaEfetivaMinFinal = segundos / 60;
+    expect(paradaEfetivaMinFinal).toBeGreaterThanOrEqual(RUA_ESTRANHA_PARADO_MIN_MIN);
+    // Nenhuma leitura fica de fora (nunca reseta a 0) -- prova de que o
+    // padrao B (timer que nunca acumula) esta corrigido pra esse caso.
+    expect(segundos).toBe(velocidades.length * 30);
   });
 });
 

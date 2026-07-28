@@ -795,12 +795,58 @@ export const RISCO_AREA_LIMIAR = 25;
 // disparado). Mantem a deteccao rapida (dispara igual a hoje) e so limpa
 // sozinho o que se confirma como falso positivo -- nao atrasa nenhum caso
 // real.
-// Constantes nomeadas (achado do revisor independente 27/07: estavam
-// hardcoded inline em deveAutoResolverRuaEstranha) -- mesmo espirito de
-// todo limiar deste arquivo, ajustavel com dado real depois.
-export const RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN = 5;
+//
+// Task 5 (28/07) -- 2 padroes reais confirmados hoje (dado real de
+// posicao/velocidade de 3 casos: TTI-6E43 33min, TB466437 18min, TTD-7H14
+// 10.6min) que impediam o disparo a tempo em ~36% dos casos elegiveis:
+//
+// Padrao A -- REMOVIDO (era RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN=5min,
+// constante deletada): a janela era contada a partir da CRIACAO do alerta
+// (idadeAlertaMin), nao do momento em que o veiculo de fato fica parado.
+// Casos reais (TTI-6E43, TB466437) mostraram o veiculo terminando a
+// manobra (virar, entrar na rua) alguns minutos DEPOIS do alerta disparar
+// -- normal -- entao a janela ja tinha fechado quando ele finalmente
+// satisfazia o gate de "parado o suficiente" abaixo. Removida por
+// completo, sem parametro morto -- mesmo padrao ja validado e em producao
+// do auto-resolve irmao (deveAutoResolverAfastandoRotaConcluida, abaixo),
+// que nunca teve janela de tempo nenhuma, so as condicoes de seguranca
+// (risco baixo + parado confirmado). Consistencia deliberada com esse
+// precedente ja revisado.
+//
+// Padrao B -- ver RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH e
+// calcularParadaToleranteSegundos logo abaixo.
 // Minutos parado pra contar como "parou de verdade", nao blip de semaforo.
 export const RUA_ESTRANHA_PARADO_MIN_MIN = 2;
+
+// Task 5, Padrao B (28/07): paradoMin (route.ts, coluna parado_desde) zera
+// com QUALQUER leitura de velocidade!=0, mesmo um blip isolado de poucos
+// km/h (ver bloco que calcula parado_desde em route.ts) -- em transito
+// parado-e-anda esse timer nunca acumula os RUA_ESTRANHA_PARADO_MIN_MIN
+// continuos exigidos acima. Caso real TTD-7H14 (~10.6min, 23 leituras):
+// velocidade oscilou 0,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 --
+// o veiculo nunca saiu do lugar de verdade (posicao praticamente parada o
+// tempo todo, ver mesmoPonto), so o sensor de velocidade blipou varias
+// vezes.
+//
+// NAO mexe em paradoMin em si (primitivo compartilhado por muitos outros
+// consumidores em route.ts -- mudar sua semantica arriscaria regressao em
+// coisa nao relacionada). Sinal PROPRIO, so pro auto-resolve de rua-
+// estreita: este limiar decide o que ainda conta como "efetivamente
+// parado" (em vez de exigir velocidade===0 estrito), e
+// calcularParadaToleranteSegundos (abaixo) e' o acumulador -- MESMO
+// espirito do acumulador ja em producao no_raio_dwell_segundos (route.ts,
+// ~linha 2014: acumula so quando devagar, sem resetar por causa de um
+// blip isolado, so zera numa saida de verdade).
+//
+// 20km/h cobre o pico observado no caso real (TTD-7H14 chegou a 20) com
+// folga confortavel abaixo de velocidade de desvio de verdade -- dado real
+// levantado na Task 7 (28/07, 19 falsos-positivos de rumo-diverge
+// checados): so 1/19 (5%) ficou perto de 10km/h, 74% ficou em 40km/h ou
+// mais. Conceito diferente de DIVERGENCIA_RUMO_VELOCIDADE_MIN_KMH
+// (unitrac.ts) -- la e' "velocidade minima pra bearing fazer sentido", aqui
+// e' "velocidade maxima que ainda conta como efetivamente parado" --
+// constante propria, deliberadamente.
+export const RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH = 20;
 
 // M4 (revisao independente round 3, 27/07): riscoAreaAtual vem de
 // riscoPorVeiculo (route.ts), um Map preenchido por UMA query em batch por
@@ -819,18 +865,49 @@ export const RUA_ESTRANHA_PARADO_MIN_MIN = 2;
 // verdade pro veiculo neste ciclo -- sem ele, a funcao recusa resolver
 // (alerta so fica aberto mais um ciclo, mesma direcao de fail-safe de tudo
 // mais neste arquivo).
+//
+// idadeAlertaMin foi REMOVIDO daqui (Task 5, Padrao A -- ver comentario
+// acima): nao ha mais janela de tempo, sem deixar parametro morto.
+// paradaEfetivaMin substitui o antigo paradoMin estrito NESTA chamada
+// especificamente (Task 5, Padrao B) -- route.ts calcula esse valor
+// tolerante-a-blip via calcularParadaToleranteSegundos e passa aqui; o
+// paradoMin estrito continua existindo em route.ts e sendo usado por
+// TODOS os outros consumidores, sem nenhuma mudanca de comportamento pra
+// eles.
 export function deveAutoResolverRuaEstranha(ctx: {
-  idadeAlertaMin: number;
-  paradoMin: number;
+  paradaEfetivaMin: number;
   riscoAreaAtual: number;
   riscoDisponivel: boolean;
 }): boolean {
   return (
     ctx.riscoDisponivel &&
-    ctx.idadeAlertaMin <= RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN &&
-    ctx.paradoMin >= RUA_ESTRANHA_PARADO_MIN_MIN &&
+    ctx.paradaEfetivaMin >= RUA_ESTRANHA_PARADO_MIN_MIN &&
     ctx.riscoAreaAtual < RISCO_AREA_LIMIAR
   );
+}
+
+// Task 5, Padrao B: acumulador puro e testavel (route.ts nao tem harness
+// de teste proprio, mesma nota de deveMarcarSaidaParadaConfirmada acima)
+// que implementa a tolerancia a blip descrita em
+// RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH. mesmoPonto e' calculado por
+// route.ts com a MESMA logica de arredondamento a 4 casas decimais ja
+// usada por parado_desde -- recebido pronto aqui, nao recalculado (mesmo
+// padrao de CtxDesvio: booleanos/numeros ja prontos, nunca coordenada
+// crua). Persistido em posicoes_atuais.parada_tolerante_segundos
+// (migration 015), coluna PROPRIA -- nao reusa parado_desde (herdaria o
+// reset por blip que e' o proprio bug) nem escreve em paradoMin.
+export function calcularParadaToleranteSegundos(ctx: {
+  velocidade: number;
+  mesmoPonto: boolean;
+  anteriorSegundos: number;
+}): number {
+  // Mesmo incremento fixo (30s) ja usado por no_raio_dwell_segundos --
+  // aproxima o intervalo real do cron do motor (~30s, ver route.ts:237 e
+  // scripts/dev/setup-cron-30s.mjs), mesma imprecisao aceita (um ciclo
+  // pulado pela trava de execucao unica so conta como +30 tambem) do
+  // mecanismo ja em producao que este espelha.
+  const incremento = ctx.velocidade <= RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH ? 30 : 0;
+  return ctx.mesmoPonto ? ctx.anteriorSegundos + incremento : incremento;
 }
 
 // Achado real 28/07 (Task 6, revisao manual de FP de rua-estreita): 36%
@@ -967,8 +1044,11 @@ export const AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN = 2;
 // especifico", ver BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO acima). O caller
 // (route.ts) calcula baseElegivelAutoResolve a partir do areaM2 ja carregado
 // em mapaBasesCliente (sem query nova por veiculo) e so passa ctx.paradoMin
-// quando pos.fresco && pos.velocidade===0 (mesma convencao de
-// deveAutoResolverRuaEstranha: paradoMin so faz sentido com velocidade 0).
+// quando pos.fresco && pos.velocidade===0 (mesma convencao de gate usada
+// pela chamada de deveAutoResolverRuaEstranha em route.ts -- so entra no
+// bloco quando pos.velocidade===0; a partir da Task 5/Padrao B aquela
+// chamada passa paradaEfetivaMin, tolerante a blip, em vez de paradoMin
+// estrito, mas o GATE de entrada continua o mesmo).
 export function deveAutoResolverAfastandoRotaConcluida(ctx: {
   rotaConcluida: boolean;
   baseOcupada: boolean;
