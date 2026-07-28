@@ -46,6 +46,8 @@ import {
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
   AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN,
+  saiuParadaConfirmadaHaMenosDe,
+  JANELA_SAIDA_PARADA_MIN,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -301,6 +303,7 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     saiuDoRaioAgora: false,
     divergenciaGrausAtual: null as number | null,
     quedaClasseViaria: false,
+    saiuParadaConfirmadaRecentemente: false,
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
@@ -820,6 +823,73 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
       expect(a?.origemDesvio).toBe("classe_viaria");
     });
   });
+
+  describe("saiu de parada confirmada recentemente suprime rua-estreita (achado real 28/07, Task 6: 36% dos FP manuais de classe_viaria eram o veiculo saindo de uma parada de entrega legitima e pegando uma rua estreita logo em seguida)", () => {
+    const agora = new Date("2026-07-28T12:00:00.000Z");
+
+    it("saiuParadaConfirmadaHaMenosDe: nunca saiu de parada confirmada (null) -- false", () => {
+      expect(saiuParadaConfirmadaHaMenosDe(null, agora)).toBe(false);
+    });
+
+    it("saiuParadaConfirmadaHaMenosDe: saiu ha 2min (dentro da janela de 5min) -- true", () => {
+      const ha2min = new Date(agora.getTime() - 2 * 60_000).toISOString();
+      expect(saiuParadaConfirmadaHaMenosDe(ha2min, agora)).toBe(true);
+    });
+
+    it("saiuParadaConfirmadaHaMenosDe: saiu ha 10min (fora da janela de 5min) -- false", () => {
+      const ha10min = new Date(agora.getTime() - 10 * 60_000).toISOString();
+      expect(saiuParadaConfirmadaHaMenosDe(ha10min, agora)).toBe(false);
+    });
+
+    it("saiuParadaConfirmadaHaMenosDe: exatamente no limite da janela (5min) -- true (<=, nao <)", () => {
+      const noLimite = new Date(agora.getTime() - JANELA_SAIDA_PARADA_MIN * 60_000).toISOString();
+      expect(saiuParadaConfirmadaHaMenosDe(noLimite, agora)).toBe(true);
+    });
+
+    it("veiculo em rua estreita SEM ter saido de parada recente: dispara normal", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        saiuParadaConfirmadaRecentemente: false,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).not.toBeNull();
+      expect(a?.origemDesvio).toBe("classe_viaria");
+    });
+
+    it("veiculo saiu de parada confirmada ha 2min (dentro da janela): SUPRIME o alerta de rua-estreita", () => {
+      const ha2min = new Date(agora.getTime() - 2 * 60_000).toISOString();
+      const recente = saiuParadaConfirmadaHaMenosDe(ha2min, agora);
+      expect(recente).toBe(true); // pre-condicao do teste
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        saiuParadaConfirmadaRecentemente: recente,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).toBeNull();
+    });
+
+    it("veiculo saiu de parada confirmada ha 10min (fora da janela): dispara normal de novo", () => {
+      const ha10min = new Date(agora.getTime() - 10 * 60_000).toISOString();
+      const recente = saiuParadaConfirmadaHaMenosDe(ha10min, agora);
+      expect(recente).toBe(false); // pre-condicao do teste
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        saiuParadaConfirmadaRecentemente: recente,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).not.toBeNull();
+      expect(a?.origemDesvio).toBe("classe_viaria");
+    });
+
+    it("suprime SO o branch de classe_viaria -- afastando de tudo continua disparando (critico) mesmo com saiuParadaConfirmadaRecentemente=true", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        saiuParadaConfirmadaRecentemente: true,
+        distDestinosM: [6300, 8300, 12300], distDestinosAnteriorM: [6000, 8000, 12000], // afastando de tudo
+      });
+      expect(a?.nivel).toBe("critico"); // veio do branch de afastandoDeTudo, nao suprimido
+    });
+  });
 });
 
 describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- ver CAMADA3_TAPETE_ATIVA)", () => {
@@ -841,6 +911,7 @@ describe("detectarDesvio + Camada 3 (fora do tapete, RELIGADA em 12/07/2026 -- v
     saiuDoRaioAgora: false,
     divergenciaGrausAtual: null as number | null,
     quedaClasseViaria: false,
+    saiuParadaConfirmadaRecentemente: false,
   };
   const emMov2 = posicaoBase({ velocidade: 40 });
 

@@ -49,6 +49,7 @@ import {
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
+  saiuParadaConfirmadaHaMenosDe,
   type Alerta,
   type DesvioInicio,
 } from "@/lib/detectores";
@@ -621,7 +622,7 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em");
 
     const mapaPosAtual = new Map<
       string,
@@ -637,6 +638,9 @@ export async function POST(request: Request) {
         origem_celula: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
         ultima_via_principal_em: string | null;
+        // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
+        // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
+        saiu_parada_confirmada_em: string | null;
       }
     >();
 
@@ -658,6 +662,7 @@ export async function POST(request: Request) {
         no_raio_desde: row.no_raio_desde ?? null,
         no_raio_dwell_segundos: row.no_raio_dwell_segundos ?? 0,
         ultima_via_principal_em: row.ultima_via_principal_em ?? null,
+        saiu_parada_confirmada_em: row.saiu_parada_confirmada_em ?? null,
       });
     }
 
@@ -918,6 +923,9 @@ export async function POST(request: Request) {
       aproximando_streak: number; origem_celula: string | null;
       no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
       ultima_via_principal_em: string | null;
+      // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
+      // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
+      saiu_parada_confirmada_em: string | null;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -2036,6 +2044,22 @@ export async function POST(request: Request) {
               })
             : null;
 
+          // Estado persistido: quando o veiculo saiu pela ultima vez de uma
+          // parada CONFIRMADA (dwell suficiente pra nao ser so uma
+          // passagem, mesmo limiar BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS que
+          // ja diferencia bypass de entrega real) -- achado real 28/07
+          // (Task 6, 36% dos FP manuais de rua-estreita). Mesmo padrao EXATO
+          // de ultima_via_principal_em acima: seta na transicao, propaga
+          // enquanto a janela abaixo nao expira, decai sozinho (sem reset
+          // explicito). saiuDoRaioAgora + dwellAnterior ja calculados acima
+          // pra bypass_entrega -- reaproveitados aqui, mesmo sinal.
+          const saiuParadaConfirmadaAnterior = anterior?.saiu_parada_confirmada_em ?? null;
+          const saiuParadaConfirmadaEm =
+            saiuDoRaioAgora && dwellAnterior >= BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS
+              ? agora.toISOString()
+              : saiuParadaConfirmadaAnterior;
+          const saiuParadaConfirmadaRecentemente = saiuParadaConfirmadaHaMenosDe(saiuParadaConfirmadaEm, agora);
+
           const sabadoDiurnoComRota =
             ehSabadoSP &&
             horaSP >= 6 &&
@@ -2069,6 +2093,7 @@ export async function POST(request: Request) {
                   dentroTapete,
                   familiarVeiculo,
                   quedaClasseViaria,
+                  saiuParadaConfirmadaRecentemente,
                   riscoAreaAtual,
                   foraTapeteStreak,
                   suspensoPorChegada,
@@ -2402,6 +2427,7 @@ export async function POST(request: Request) {
             no_raio_desde: noRaioDesde,
             no_raio_dwell_segundos: noRaioDwellSegundos,
             ultima_via_principal_em: ultimaViaPrincipalEm,
+            saiu_parada_confirmada_em: saiuParadaConfirmadaEm,
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -2832,7 +2858,7 @@ export async function POST(request: Request) {
               ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
               divergencia_rumo_streak, aproximando_streak, origem_celula,
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
-              ultima_via_principal_em, divergencia_rumo_inicio)
+              ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -2843,20 +2869,22 @@ export async function POST(request: Request) {
              c.desvio_inicio::jsonb, c.fora_tapete_streak, c.divergencia_rumo_streak,
              c.aproximando_streak, c.origem_celula, c.no_raio_alvo_codigo,
              c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
-             c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb
+             c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb,
+             c.saiu_parada_confirmada_em::timestamptz
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
-             $26::text[], $27::integer[], $28::text[], $29::text[]
+             $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
                   ultimo_evento, desvio_inicio, fora_tapete_streak, divergencia_rumo_streak,
                   aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
-                  no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio)
+                  no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio,
+                  saiu_parada_confirmada_em)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -2888,7 +2916,8 @@ export async function POST(request: Request) {
              no_raio_desde       = EXCLUDED.no_raio_desde,
              no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos,
              ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
-             divergencia_rumo_inicio = EXCLUDED.divergencia_rumo_inicio`,
+             divergencia_rumo_inicio = EXCLUDED.divergencia_rumo_inicio,
+             saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -2919,6 +2948,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.no_raio_dwell_segundos),
             posicoesCiclo.map((p) => p.ultima_via_principal_em),
             posicoesCiclo.map((p) => p.divergencia_rumo_inicio),
+            posicoesCiclo.map((p) => p.saiu_parada_confirmada_em),
           ]
         );
       } catch (errPosicoes) {

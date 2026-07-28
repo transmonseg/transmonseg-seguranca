@@ -105,6 +105,9 @@ function simular(destino: { lat: number; lng: number }, ciclos: Ciclo[]): (Retur
       // Achado real 27/07: campo novo de CtxDesvio, neutro aqui de proposito
       // -- este arquivo nao exercita o branch de classe viaria.
       quedaClasseViaria: false,
+      // Achado real 28/07 (Task 6): campo novo de CtxDesvio, neutro aqui de
+      // proposito -- este arquivo nao exercita a supressao de rua-estreita.
+      saiuParadaConfirmadaRecentemente: false,
     };
     resultados.push(detectarDesvio(posicaoBase({ velocidade }), ctx));
     anteriorDist = distDestinosM;
@@ -337,6 +340,7 @@ describe("cenarios sinteticos de desvio — trajeto real perturbado (validacao s
         saiuDoRaioAgora: false,
         divergenciaGrausAtual: null,
         quedaClasseViaria: false,
+        saiuParadaConfirmadaRecentemente: false,
       }));
       anteriorDist = distDestinosM;
     }
@@ -598,6 +602,7 @@ describe("parada_fora_tapete nao bloqueia/engole um desvio comportamental real (
       saiuDoRaioAgora: false,
       divergenciaGrausAtual: null,
       quedaClasseViaria: false,
+      saiuParadaConfirmadaRecentemente: false,
       riscoAreaAtual: 0,
       foraTapeteStreak: 0,
     };

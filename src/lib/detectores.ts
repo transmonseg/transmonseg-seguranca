@@ -579,6 +579,15 @@ export type CtxDesvio = {
   // calculado no motor, mesmo campo usado por aplicarBonusClasseViaria) --
   // usado aqui pra disparar um alerta PROPRIO, nao so reforcar um existente.
   quedaClasseViaria: boolean;
+  // Achado real 28/07 (Task 6, 36% dos FP manuais de rua-estreita): true
+  // quando o veiculo saiu de uma parada CONFIRMADA (dwell >=
+  // BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS antes de sair do raio, ver
+  // route.ts/saiuParadaConfirmadaHaMenosDe) ha menos de JANELA_SAIDA_PARADA_MIN
+  // minutos -- veiculo terminando a manobra normal de saida de uma entrega
+  // legitima e entrando numa rua estreita, nao um desvio de verdade. So
+  // SUPRIME o branch de quedaClasseViaria (abaixo); nao mexe em nenhum outro
+  // gatilho de desvio.
+  saiuParadaConfirmadaRecentemente: boolean;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -821,6 +830,40 @@ export function deveAutoResolverRuaEstranha(ctx: {
     ctx.idadeAlertaMin <= RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN &&
     ctx.paradoMin >= RUA_ESTRANHA_PARADO_MIN_MIN &&
     ctx.riscoAreaAtual < RISCO_AREA_LIMIAR
+  );
+}
+
+// Achado real 28/07 (Task 6, revisao manual de FP de rua-estreita): 36%
+// dos casos eram o veiculo saindo de uma parada de entrega LEGITIMA e
+// pegando uma rua estreita logo em seguida. saiu_parada_confirmada_em
+// (posicoes_atuais, migration 011) e' setado por route.ts no ciclo exato
+// da transicao (saiuDoRaioAgora && dwellAnterior >=
+// BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS -- "confirmada" = parou tempo
+// suficiente pra nao ser so uma passagem, mesmo limiar ja usado por
+// detectarBypassEntrega) e propagado enquanto a janela abaixo nao expira
+// (decai sozinho, mesmo espirito de ultima_via_principal_em/
+// JANELA_QUEDA_CLASSE_MIN em route.ts -- sem reset explicito). Mesma ordem
+// de grandeza do JANELA_QUEDA_CLASSE_MIN existente (10min), um pouco menor
+// porque a manobra tipica (sair do raio, virar numa rua estreita) e rapida
+// -- nao precisa da dezena de minutos que justifica o gate de classe
+// viaria em si.
+export const JANELA_SAIDA_PARADA_MIN = 5;
+
+// Funcao pura extraida (em vez de inline em route.ts) pra poder testar a
+// fronteira exata da janela sem simular um ciclo completo do motor --
+// mesmo espirito de deveAutoResolverRuaEstranha acima. route.ts chama isso
+// UMA vez por veiculo/ciclo e passa so o booleano resultante adiante (ver
+// CtxDesvio.saiuParadaConfirmadaRecentemente) -- detectarDesvio continua
+// sem precisar saber a hora atual, mesmo padrao de todo outro campo de
+// CtxDesvio (booleanos/numeros ja calculados, nunca timestamps crus).
+export function saiuParadaConfirmadaHaMenosDe(
+  saiuParadaConfirmadaEm: string | null,
+  agora: Date,
+  janelaMin: number = JANELA_SAIDA_PARADA_MIN
+): boolean {
+  return (
+    saiuParadaConfirmadaEm !== null &&
+    agora.getTime() - new Date(saiuParadaConfirmadaEm).getTime() <= janelaMin * 60_000
   );
 }
 
@@ -1216,7 +1259,17 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // (virada_errada saindo de parada, divergencia de rumo geral) CONTINUAM
   // depois do piso de 2500m de proposito -- essa mudanca e' so pra
   // quedaClasseViaria.
-  if (!afastandoDeTudo && ctx.quedaClasseViaria) {
+  //
+  // Achado real 28/07 (Task 6, revisao manual de FP): 36% dos casos
+  // resolvidos manualmente como falso-positivo desta regra eram o veiculo
+  // saindo de uma parada de entrega LEGITIMA (dwell confirmado, ver
+  // saiuParadaConfirmadaRecentemente acima) e pegando uma rua estreita logo
+  // em seguida -- normal, mas ate aqui a regra nao tinha nenhum sinal disso
+  // (saiuDoRaioAgora e' um pulso de 1 ciclo, dwellSegundosAcumulados zera no
+  // mesmo ciclo da saida). Guard adicional: dentro da janela de saida
+  // recente, suprime SO este branch (o veiculo continua elegivel a
+  // qualquer outro gatilho de desvio nesta mesma chamada).
+  if (!afastandoDeTudo && ctx.quedaClasseViaria && !ctx.saiuParadaConfirmadaRecentemente) {
     return {
       nivel: "atencao",
       tipo: "desvio",
@@ -1705,6 +1758,8 @@ export type CtxAvaliacao = {
   dentroTapete?: boolean | null;
   familiarVeiculo?: boolean | null;
   quedaClasseViaria?: boolean;
+  // Achado real 28/07 (Task 6): ver CtxDesvio.saiuParadaConfirmadaRecentemente.
+  saiuParadaConfirmadaRecentemente?: boolean;
   riscoAreaAtual?: number;
   foraTapeteStreak?: number;
   // Achado real 25/07 (redesign do detector de desvio): ver CtxDesvio.
@@ -1820,6 +1875,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           saiuDoRaioAgora: ctx.saiuDoRaioAgora ?? false,
           divergenciaGrausAtual: ctx.divergenciaGrausAtual ?? null,
           quedaClasseViaria: ctx.quedaClasseViaria ?? false,
+          saiuParadaConfirmadaRecentemente: ctx.saiuParadaConfirmadaRecentemente ?? false,
         }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);
