@@ -42,6 +42,7 @@ import {
   contaComoRotuloHumano,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
+  AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -1781,14 +1782,41 @@ describe("alertaElegivelParaAutoResolveRuaEstranha", () => {
 });
 
 describe("deveAutoResolverAfastandoRotaConcluida", () => {
-  it("resolve quando rota concluida E chegou na base", () => {
-    expect(deveAutoResolverAfastandoRotaConcluida({ rotaConcluida: true, baseOcupada: true })).toBe(true);
+  const tudoOk = {
+    rotaConcluida: true,
+    baseOcupada: true,
+    baseElegivelAutoResolve: true,
+    paradoMin: AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN,
+  };
+
+  it("resolve quando rota concluida, chegou na base, base e' pequena o suficiente E ja parou de verdade", () => {
+    expect(deveAutoResolverAfastandoRotaConcluida(tudoOk)).toBe(true);
   });
   it("NAO resolve se rota nao concluida (mesmo na base)", () => {
-    expect(deveAutoResolverAfastandoRotaConcluida({ rotaConcluida: false, baseOcupada: true })).toBe(false);
+    expect(deveAutoResolverAfastandoRotaConcluida({ ...tudoOk, rotaConcluida: false })).toBe(false);
   });
   it("NAO resolve se ainda nao chegou na base (mesmo com rota concluida) -- protege contra mascarar coacao", () => {
-    expect(deveAutoResolverAfastandoRotaConcluida({ rotaConcluida: true, baseOcupada: false })).toBe(false);
+    expect(deveAutoResolverAfastandoRotaConcluida({ ...tudoOk, baseOcupada: false })).toBe(false);
+  });
+  // FIX 1 (revisao independente 27/07, achado severo): Base Benassi —
+  // CEASA-RJ e' um mercado publico de ~739 mil m² com vias reais e 96
+  // veiculos distintos passando por dentro -- "dentro do poligono" la nao
+  // significa "chegou numa instalacao segura". baseElegivelAutoResolve=false
+  // representa esse caso (base grande demais, ver
+  // BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO) e tem que bloquear sozinho.
+  it("NAO resolve se a base ocupada e' grande demais pra ser considerada patio fechado (ex.: CEASA-RJ)", () => {
+    expect(deveAutoResolverAfastandoRotaConcluida({ ...tudoOk, baseElegivelAutoResolve: false })).toBe(false);
+  });
+  // FIX 2 (revisao independente 27/07): sem exigir parada de verdade, um
+  // veiculo apenas TRANSITANDO pela base a qualquer velocidade satisfazia a
+  // condicao antiga. paradoMin abaixo do minimo representa esse caso.
+  it("NAO resolve se o veiculo ainda nao parou o suficiente (so transitou pela base)", () => {
+    expect(
+      deveAutoResolverAfastandoRotaConcluida({ ...tudoOk, paradoMin: AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN - 1 })
+    ).toBe(false);
+  });
+  it("NAO resolve com paradoMin=0 (veiculo em movimento)", () => {
+    expect(deveAutoResolverAfastandoRotaConcluida({ ...tudoOk, paradoMin: 0 })).toBe(false);
   });
 });
 

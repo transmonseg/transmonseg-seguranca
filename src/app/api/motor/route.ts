@@ -43,6 +43,9 @@ import {
   alertaElegivelParaAutoResolveRuaEstranha,
   contaComoEventoDeSilenciamento,
   RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN,
+  deveAutoResolverAfastandoRotaConcluida,
+  elegivelParaAutoResolveAfastando,
+  BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
   type Alerta,
   type DesvioInicio,
 } from "@/lib/detectores";
@@ -569,10 +572,17 @@ export async function POST(request: Request) {
     const GRUPOS_SEM_GPS = new Set(["PALETEIRAS"]);
 
     // 3a. Carregar bases de cada cliente (polígonos do perímetro real).
-    // Estrutura: cliente_id -> lista de { nome, geom (GeoJSON) }
+    // Estrutura: cliente_id -> lista de { nome, geom (GeoJSON), areaM2 }
+    // areaM2 (revisao independente 27/07, achado severo): calculado UMA VEZ
+    // aqui no load (bases raramente mudam), nao por veiculo/ciclo -- evita
+    // adicionar uma query nova por veiculo so pra checar tamanho. Usado
+    // exclusivamente pelo gate de auto-resolve de "afastando rota concluida"
+    // abaixo (ver BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO em detectores.ts);
+    // baseOcupada continua com o MESMO significado de sempre em qualquer
+    // outro uso neste arquivo (localVeiculo, foraDaBase, cerca virtual etc).
     const mapaBasesCliente = new Map<
       string,
-      { nome: string; geom: GeoJSONGeom | null }[]
+      { nome: string; geom: GeoJSONGeom | null; areaM2: number | null }[]
     >();
 
     {
@@ -582,14 +592,17 @@ export async function POST(request: Request) {
           cliente_id: string;
           nome: string;
           geojson: string;
+          area_m2: number | null;
         }>(
-          `SELECT cliente_id, nome, ST_AsGeoJSON(geom::geometry) AS geojson FROM bases`
+          `SELECT cliente_id, nome, ST_AsGeoJSON(geom::geometry) AS geojson, ST_Area(geom::geography) AS area_m2 FROM bases`
         );
         for (const b of basesRows) {
           const lista = mapaBasesCliente.get(b.cliente_id) ?? [];
           let geom: GeoJSONGeom | null = null;
           try { geom = JSON.parse(b.geojson) as GeoJSONGeom; } catch { /* ignora */ }
-          lista.push({ nome: b.nome, geom });
+          const areaM2Bruta = b.area_m2 != null ? Number(b.area_m2) : NaN;
+          const areaM2 = Number.isFinite(areaM2Bruta) ? areaM2Bruta : null;
+          lista.push({ nome: b.nome, geom, areaM2 });
           mapaBasesCliente.set(b.cliente_id, lista);
         }
       } catch (errBases) {
@@ -696,6 +709,17 @@ export async function POST(request: Request) {
     // o flush abaixo tambem precisa resetar ultima_via_principal_em
     // (posicoes_atuais) desses mesmos veiculos -- ver comentario no flush.
     const ruaEstranhaAutoResolveCiclo: { alerta_id: string; veiculo_id: string }[] = [];
+
+    // Auto-resolucao retroativa de "afastando-se de todos os destinos"
+    // quando a rota foi 100% concluida E o veiculo chegou fisicamente
+    // dentro do poligono de uma base cadastrada -- ver
+    // docs/superpowers/plans/2026-07-27-auto-resolucao-rota-concluida-plano.md
+    // e deveAutoResolverAfastandoRotaConcluida em detectores.ts pro
+    // raciocinio completo (achado real 27/07: ~15 dos 91 casos de
+    // "afastando de destinos" revisados eram esse padrao). Mesmo padrao de
+    // acumulador por ciclo + flush em lote ja usado por
+    // ruaEstranhaAutoResolveCiclo acima.
+    const afastandoRotaConcluidaAutoResolveCiclo: { alerta_id: string }[] = [];
 
     // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
     // mesmo padrao de mapaBaselineVeiculo/Frota acima. So aplica o fator
@@ -2284,6 +2308,67 @@ export async function POST(request: Request) {
             }
           }
 
+          // Auto-resolucao retroativa de "afastando-se de todos os
+          // destinos" quando a rota foi 100% concluida E o veiculo chegou
+          // fisicamente dentro do poligono de uma base cadastrada -- ver
+          // deveAutoResolverAfastandoRotaConcluida em detectores.ts pro
+          // raciocinio completo. NAO usa so "rota concluida" (mesma
+          // condicao do bloco acima) -- esse sinal sozinho e' exatamente o
+          // que um cenario de entrega forcada sob coacao tambem produziria;
+          // por isso exige TAMBEM baseOcupada (ja calculado mais acima
+          // nesta mesma iteracao por veiculo, ~linha 1247, via
+          // pontoEmGeo contra o poligono real da base -- reusado aqui, nao
+          // recalculado). Sem janela de tempo (diferente da rua estranha):
+          // "afastando de tudo" pode legitimamente levar bem mais tempo pra
+          // voltar fisicamente ate a base, entao o check roda enquanto o
+          // alerta continuar ativo, sem prazo.
+          //
+          // FIX 1+2 (revisao independente 27/07): "dentro do poligono" por
+          // si so nao e' garantia de instalacao segura (Base Benassi —
+          // CEASA-RJ e' um mercado publico de 739 mil m² com vias reais e
+          // 96 veiculos distintos passando por dentro) e o check original
+          // nao exigia parada de verdade nem posicao fresca (transitar pela
+          // base a qualquer velocidade, ou usar uma posicao de GPS obsoleta
+          // durante jammer ativo, bastava). baseElegivelAutoResolve exige
+          // que a base ocupada seja pequena o suficiente (ver
+          // BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO em detectores.ts,
+          // calculado uma vez no load de mapaBasesCliente, sem query nova
+          // por veiculo). pos.fresco && pos.velocidade===0 no gate externo +
+          // paradoMin no ctx seguem exatamente a mesma convencao ja usada
+          // pelo auto-resolve de rua estranha logo abaixo.
+          //
+          // !alertaJammer (revisao independente, rodada 2): pos.fresco so
+          // exige atraso<60min, mas detectarJammer ja dispara critico a
+          // partir de 30min (ignicao ligada) -- sem este guard, uma posicao
+          // CONGELADA (jammer ativo, ~85% dos roubos de carga documentados
+          // correlacionam com essa assinatura, ver detectarJammer) dentro
+          // de uma base pequena podia acumular paradoMin so pelo relogio de
+          // parede e auto-resolver o desvio bem no meio da janela em que o
+          // veiculo pode estar sendo sequestrado agora.
+          if (
+            pos.fresco &&
+            !alertaJammer &&
+            pos.velocidade === 0 &&
+            entregas_total > 0 &&
+            entregas_feitas >= entregas_total &&
+            baseOcupada
+          ) {
+            const baseElegivelAutoResolve =
+              baseOcupada.areaM2 != null && baseOcupada.areaM2 < BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO;
+            for (const a of alertasAbertos.filter(elegivelParaAutoResolveAfastando)) {
+              if (
+                deveAutoResolverAfastandoRotaConcluida({
+                  rotaConcluida: true,
+                  baseOcupada: true,
+                  baseElegivelAutoResolve,
+                  paradoMin,
+                })
+              ) {
+                afastandoRotaConcluidaAutoResolveCiclo.push({ alerta_id: a.id });
+              }
+            }
+          }
+
           // Auto-resolucao retroativa da "rua estranha" -- ver
           // deveAutoResolverRuaEstranha em detectores.ts pro raciocinio
           // completo. So roda quando o veiculo esta FRESCO e parado agora
@@ -2942,6 +3027,50 @@ export async function POST(request: Request) {
         );
       } catch (erroResetViaPrincipal) {
         console.warn(`Aviso: erro ao resetar ultima_via_principal_em apos auto-resolve: ${String(erroResetViaPrincipal)}`);
+      }
+    }
+
+    // Flush da auto-resolucao retroativa de "afastando-se de todos os
+    // destinos" quando rota concluida + chegou na base -- ver
+    // docs/superpowers/plans/2026-07-27-auto-resolucao-rota-concluida-plano.md.
+    // Mesmo padrao EXATO do flush de rua estranha acima: dedupe por
+    // alerta_id, SQL cru com merge de contexto (coalesce+||, nunca
+    // overwrite -- preserva lat/lng/geom/tudo que montarContextoDesvio
+    // gravou no insert original, so ACRESCENTA o marcador auto_resolvido;
+    // repete o mesmo raciocinio do incidente de hoje mais cedo, onde
+    // overwrite de contexto destruiu evidencia forense), status='ativo'
+    // como guarda de corrida (nao pisa em cima de uma acao do operador no
+    // meio do ciclo), try/catch isolado (nao derruba o ciclo inteiro se o
+    // UPDATE falhar). SEM chamar registrarCasosDesvioRevisao -- mesmo
+    // motivo do flush de rua estranha (nao poluir calibracao com veredito
+    // de maquina; contaComoRotuloHumano em detectores.ts, usado em
+    // recalibrar-desvio/route.ts, ja exclui essas linhas da calibracao so
+    // pelo marcador auto_resolvido, sem precisar de mudanca la). Tambem nao
+    // precisa de mudanca em mapaTiposSilenciados: contaComoEventoDeSilenciamento
+    // (detectores.ts) ja checa contexto.auto_resolvido===true de forma
+    // generica, nao amarrada a rua estranha.
+    if (afastandoRotaConcluidaAutoResolveCiclo.length > 0) {
+      const porAlertaAfastando = new Map(afastandoRotaConcluidaAutoResolveCiclo.map((r) => [r.alerta_id, r]));
+      const idsAfastando = [...porAlertaAfastando.keys()];
+      try {
+        await pool.query(
+          `UPDATE alertas
+           SET status = 'falso_positivo',
+               resolvido_em = $3,
+               contexto = coalesce(contexto, '{}'::jsonb) || $2::jsonb
+           WHERE id = ANY($1::uuid[])
+             AND status = 'ativo'`,
+          [
+            idsAfastando,
+            JSON.stringify({
+              auto_resolvido: true,
+              motivo: "rota concluida e chegou na base",
+            }),
+            agora.toISOString(),
+          ]
+        );
+      } catch (erroAutoResolveAfastando) {
+        console.warn(`Aviso: erro ao auto-resolver afastando-de-destinos (rota concluida): ${String(erroAutoResolveAfastando)}`);
       }
     }
 

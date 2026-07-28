@@ -776,11 +776,58 @@ export function alertaElegivelParaAutoResolveRuaEstranha(alerta: {
 // Decisao de 21/07 (docs/superpowers/specs/2026-07-21-anotacao-rota-
 // concluida-desvio-design.md) evitava suprimir so por rota_concluida por
 // esse motivo exato -- este design respeita a mesma preocupacao.
+// FIX 1 (revisao independente 27/07, achado severo): poligono de base NAO e'
+// garantia de "instalacao segura da empresa". Consulta real na producao
+// (27/07) via `SELECT nome, ST_Area(geom::geography) AS area_m2 FROM bases`:
+//   Base Nutry (8 veic)      ~11.719 m²   -- patio legitimo, pequeno
+//   Base Nutry (73 veic)     ~53.873 m²   -- patio legitimo, medio
+//   Base Benassi (9 veic)    ~233.964 m²  -- grande, ambiguo (excluido, fail-safe)
+//   Base Benassi — CEASA-RJ  ~739.364 m²  -- mercado publico (CEASA), NAO e'
+//     patio da empresa: contem vias "principal" reais e registrou 96 veiculos
+//     distintos passando por dentro a ate 66km/h. "Dentro do poligono" nesse
+//     caso nao significa "chegou numa instalacao segura" -- e' exatamente o
+//     tipo de area onde um motorista sob coacao (forcado a confirmar entrega
+//     falsamente, depois sequestrado) passaria de carro sem isso ser sinal
+//     de seguranca nenhum.
+// Limiar escolhido: 100.000 m² (10 hectares). Ha um gap de >4x entre a maior
+// base legitima (53.873 m²) e a menor base ambigua (233.964 m²) -- 100.000
+// cai confortavelmente no meio, sem risco de fronteira. Deliberadamente
+// exclui TAMBEM a Base Benassi de 233.964 m² (nao so a CEASA) -- prioridade e'
+// fail-safe, nao maximizar quantas bases qualificam; uma base grande o
+// suficiente pra ter duvida quanto a ser "patio fechado" nao deveria poder
+// mascarar um sequestro sozinha.
+export const BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO = 100_000;
+
+// FIX 2 (revisao independente 27/07): sem isso, o check original so exigia
+// baseOcupada verdadeiro, sem nenhuma exigencia de velocidade/parada/frescor
+// -- um veiculo simplesmente TRANSITANDO pelo poligono a qualquer velocidade
+// satisfazia a condicao, e o check rodava mesmo com posicao de GPS obsoleta
+// (ate ~180min, incluindo durante jammer ativo -- ver detectarJammer, tratado
+// em outro lugar deste arquivo como o indicador mais forte de sequestro,
+// ~85% de correlacao). Mesmo padrao ja usado por deveAutoResolverRuaEstranha
+// (RUA_ESTRANHA_PARADO_MIN_MIN acima): exige parado de verdade, nao um blip.
+export const AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN = 2;
+
+// ctx.baseOcupada mantem o significado de sempre ("dentro do poligono de
+// ALGUMA base") -- ctx.baseElegivelAutoResolve e' a condicao NOVA e mais
+// estreita ("dentro de uma base pequena o suficiente pra este auto-resolve
+// especifico", ver BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO acima). O caller
+// (route.ts) calcula baseElegivelAutoResolve a partir do areaM2 ja carregado
+// em mapaBasesCliente (sem query nova por veiculo) e so passa ctx.paradoMin
+// quando pos.fresco && pos.velocidade===0 (mesma convencao de
+// deveAutoResolverRuaEstranha: paradoMin so faz sentido com velocidade 0).
 export function deveAutoResolverAfastandoRotaConcluida(ctx: {
   rotaConcluida: boolean;
   baseOcupada: boolean;
+  baseElegivelAutoResolve: boolean;
+  paradoMin: number;
 }): boolean {
-  return ctx.rotaConcluida && ctx.baseOcupada;
+  return (
+    ctx.rotaConcluida &&
+    ctx.baseOcupada &&
+    ctx.baseElegivelAutoResolve &&
+    ctx.paradoMin >= AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN
+  );
 }
 
 export const MOTIVO_AFASTANDO_PREFIXO = "Afastando-se de todos";
