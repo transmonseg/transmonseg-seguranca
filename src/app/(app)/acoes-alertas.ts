@@ -73,3 +73,26 @@ export async function resolverVarios(
   revalidatePath("/");
   return { ok: true, resolvidos: ids.length };
 }
+
+// Operador so quer tirar da tela, sem afirmar nada sobre o caso (nem real,
+// nem falso) -- achado real 27-28/07: "Resolver todos" clicado em massa
+// nao e' revisao caso a caso, mas contava como se fosse (contaminava
+// calibracao e qualquer leitura de "quantos confirmados"). Este botao e'
+// pro caso comum (limpar a tela no fim do turno), sem fingir confirmacao.
+// Por isso NAO chama registrarCasosDesvioRevisao (nao e' veredito humano,
+// nao deve alimentar casos_desvio_revisao nem taxaGlobal/segmento algum).
+export async function limparVarios(
+  ids: string[]
+): Promise<ResultadoAcao & { limpos?: number }> {
+  const opId = await operadorAtual();
+  if (!opId) return { erro: "Sessao expirada." };
+  if (ids.length === 0) return { ok: true, limpos: 0 };
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("alertas")
+    .update({ status: "limpo", resolvido_em: new Date().toISOString(), operador_id: opId, ...STRIP_PESADO })
+    .in("id", ids);
+  if (error) return { erro: "Não foi possível limpar os alertas." };
+  revalidatePath("/");
+  return { ok: true, limpos: ids.length };
+}

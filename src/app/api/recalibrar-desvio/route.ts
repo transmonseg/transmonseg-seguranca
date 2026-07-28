@@ -78,10 +78,23 @@ export async function POST(request: Request) {
     // aqui pra ter um segmento `tipo:parada_fora_tapete` de fallback e pra
     // contar na populacao de `taxaGlobal`, mesma logica ja aplicada a
     // bypass_entrega/baseline_veiculo quando ganharam tipo proprio.
+    // status != 'limpo' (28/07): status novo, criado nesta mesma sessao pro
+    // botao "Limpar avisos" (acoes-alertas.ts/limparVarios) -- operador so
+    // tirou da tela, sem afirmar nada sobre o caso. Filtrado aqui direto no
+    // WHERE, e NAO estendendo contaComoRotuloHumano (detectores.ts, abaixo):
+    // aquela funcao resolve uma pergunta diferente -- dentro de linhas JA
+    // fora de 'ativo', o CONTEXTO marca origem automatica (auto_resolvido/
+    // auto_expirado)? 'limpo' e' o proprio STATUS, nao um marcador de
+    // contexto, e por construcao nunca deveria nem entrar no conjunto de
+    // entrada dessa funcao -- diferente de 'resolvido'/'falso_positivo', que
+    // MISTURAM veredito humano genuino e marcador automatico sob o MESMO
+    // status (por isso aqueles precisam do filtro fino de contexto). 'limpo'
+    // nunca foi pensado como sinal de calibracao desde a origem, entao o
+    // filtro grosseiro de status (igual ao 'ativo' logo ao lado) já resolve.
     const { rows: rowsAlertasBrutos } = await pool.query<RowAlertas>(`
       select tipo, status, contexto
       from alertas
-      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete') and status != 'ativo'
+      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete') and status != 'ativo' and status != 'limpo'
     `);
 
     // BLOCKER (revisao independente round 2, 27/07): a auto-resolucao de

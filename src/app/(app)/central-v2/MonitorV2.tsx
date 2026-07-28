@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
-import { resolverAlerta, marcarFalsoPositivo, resolverVarios } from "../acoes-alertas";
+import { resolverAlerta, marcarFalsoPositivo, resolverVarios, limparVarios } from "../acoes-alertas";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
@@ -534,6 +534,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   }, []);
   const [confirmarResolver, setConfirmarResolver] = useState(false);
   const [resolvendoTodos, startResolver] = useTransition();
+  // "Limpar avisos" — irmao de "Resolver todos", mas so tira da tela (ver
+  // limparVarios em acoes-alertas.ts). Estado de confirmacao/transicao
+  // separado de proposito: os 2 botoes ficam lado a lado, cada um com seu
+  // proprio fluxo de confirmar/cancelar.
+  const [confirmarLimpar, setConfirmarLimpar] = useState(false);
+  const [limpandoTodos, startLimpar] = useTransition();
 
   // Filtro por tipo de alerta (sidebar) — multi-select
   const [filtroTipos, setFiltroTipos] = useState<Set<string>>(new Set());
@@ -1090,6 +1096,29 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       });
       await resolverVarios(alvos.map(a => a.id));
       setConfirmarResolver(false);
+    });
+  }, [alertasFiltrados]);
+
+  // Limpa os alertas VISÍVEIS na aba atual (Crítico/Tudo) — so tira da tela,
+  // SEM afirmar que foi revisado caso a caso (diferente de "Resolver todos":
+  // não chama registrarCasosDesvioRevisao, não alimenta calibração). Ver
+  // limparVarios em acoes-alertas.ts.
+  const handleLimparTodos = useCallback(() => {
+    const alvos = alertasFiltrados;
+    if (alvos.length === 0) return;
+    startLimpar(async () => {
+      const ids = new Set(alvos.map(a => a.id));
+      const cvsLimpos = new Set(alvos.map(a => a.cv));
+      setAlertas(a => {
+        const restante = a.filter(x => !ids.has(x.id));
+        const cvsAindaComAlerta = new Set(restante.map(x => x.cv));
+        setVeiculosMapa(vs => vs.map(v =>
+          cvsLimpos.has(v.cv) && !cvsAindaComAlerta.has(v.cv) ? { ...v, nivel: null, tipo: null } : v
+        ));
+        return restante;
+      });
+      await limparVarios(alvos.map(a => a.id));
+      setConfirmarLimpar(false);
     });
   }, [alertasFiltrados]);
 
@@ -2167,9 +2196,19 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             );
           })()}
 
-          {/* Resolver todos — os VISÍVEIS na aba atual (Crítico/Tudo). Some no
-              split view: com 2 secoes (TODOS/SELECIONADOS) o "todos" desse
-              botao fica ambiguo — cada card mantem seu proprio Resolver/Falso. */}
+          {/* Resolver todos / Limpar avisos — os VISÍVEIS na aba atual
+              (Crítico/Tudo). Somem no split view: com 2 secoes (TODOS/
+              SELECIONADOS) o "todos" desses botoes fica ambiguo — cada card
+              mantem seu proprio Resolver/Falso. Os 2 botoes ficam lado a
+              lado, sobre o MESMO conjunto (alertasFiltrados), mas com
+              significados diferentes: "Resolver todos" (resolverVarios)
+              afirma veredito humano e alimenta a calibracao; "Limpar avisos"
+              (limparVarios) so tira da tela, sem fingir revisao caso a caso
+              — pedido do usuario 28/07 depois do achado de que "Resolver
+              todos" clicado em massa contaminava a leitura de "quantos
+              confirmados de verdade". Cada botao tem seu proprio fluxo de
+              confirmar/cancelar (confirmarResolver/confirmarLimpar), so um
+              ativo por vez. */}
           {!splitView && alertasFiltrados.length > 0 && (
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
@@ -2189,15 +2228,41 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                     Cancelar
                   </button>
                 </div>
+              ) : confirmarLimpar ? (
+                <div style={{ display: "flex", gap: 5 }}>
+                  <button onClick={handleLimparTodos} disabled={limpandoTodos} style={{
+                    flex: 1, height: 26, borderRadius: 6,
+                    background: `${T.accent}22`, border: `1px solid ${T.accent}66`, color: T.accent,
+                    fontSize: 10, cursor: "pointer", fontWeight: 700, fontFamily: FONT_SANS,
+                  }}>
+                    {limpandoTodos ? "..." : "CONFIRMAR"}
+                  </button>
+                  <button onClick={() => setConfirmarLimpar(false)} style={{
+                    flex: 1, height: 26, borderRadius: 6,
+                    background: "transparent", border: `1px solid ${T.border}`,
+                    color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
+                  }}>
+                    Cancelar
+                  </button>
+                </div>
               ) : (
-                <button onClick={() => setConfirmarResolver(true)} style={{
-                  width: "100%", height: 26, borderRadius: 6,
-                  background: "transparent", border: `1px solid ${T.border}`,
-                  color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
-                }}>
-                  {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasFiltrados.length})`
-                    : `Resolver todos (${alertasFiltrados.length})`}
-                </button>
+                <div style={{ display: "flex", gap: 5 }}>
+                  <button onClick={() => setConfirmarResolver(true)} style={{
+                    flex: 1, height: 26, borderRadius: 6,
+                    background: "transparent", border: `1px solid ${T.border}`,
+                    color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
+                  }}>
+                    {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasFiltrados.length})`
+                      : `Resolver todos (${alertasFiltrados.length})`}
+                  </button>
+                  <button onClick={() => setConfirmarLimpar(true)} style={{
+                    flex: 1, height: 26, borderRadius: 6,
+                    background: "transparent", border: `1px solid ${T.accent}66`,
+                    color: T.accent, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
+                  }}>
+                    {`Limpar avisos (${alertasFiltrados.length})`}
+                  </button>
+                </div>
               )}
             </div>
           )}

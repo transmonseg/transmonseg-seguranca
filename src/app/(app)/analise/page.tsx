@@ -42,6 +42,11 @@ const LABEL_STATUS: Record<string, string> = {
   reconhecido: "Em atendimento",
   resolvido: "Resolvido",
   falso_positivo: "Falso positivo",
+  // Status novo (28/07): "Limpar avisos" tira da tela sem revisao caso a
+  // caso (ver limparVarios em acoes-alertas.ts) -- visivel como aba propria
+  // (o operador precisa achar essas linhas), mas rotulado de forma que nao
+  // se confunda com "Resolvido" (que implica veredito humano de verdade).
+  limpo: "Limpo (sem revisão)",
 };
 
 const COR_STATUS: Record<string, string> = {
@@ -49,6 +54,9 @@ const COR_STATUS: Record<string, string> = {
   reconhecido: "#f59e0b",
   resolvido: "#22c55e",
   falso_positivo: "#6b7280",
+  // Azul neutro, distinto do verde (resolvido) e do cinza (falso_positivo)
+  // -- nem "sucesso" nem "descartado", so "fora da tela".
+  limpo: "#0ea5e9",
 };
 
 const NOMES_SEMANA = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -163,6 +171,9 @@ export default async function AnalisePage({
   // ─── KPIs ────────────────────────────────────────────────────────────
   const total = filtrados.length;
   const criticos = filtrados.filter((r) => r.nivel === "critico").length;
+  // "limpo" (28/07) já fica de fora aqui por construção — não é
+  // "resolvido" nem "falso_positivo", nunca deve contar como tratado de
+  // verdade (não passou por revisão caso a caso, ver limparVarios).
   const resolvidos = filtrados.filter(
     (r) => r.status === "resolvido" || r.status === "falso_positivo"
   ).length;
@@ -177,7 +188,12 @@ export default async function AnalisePage({
   const taxaResol = total > 0 ? Math.round((resolvidos / total) * 100) : 0;
   const taxaFalso = total > 0 ? Math.round((falsos / total) * 100) : 0;
 
-  const comResolucao = filtrados.filter((r) => r.resolvido_em);
+  // status !== "limpo" (28/07): limparVarios TAMBÉM grava resolvido_em (pra
+  // aproveitar a mesma varredura de retenção/privacidade do motor) — sem
+  // este filtro, um "Limpar avisos" em massa no fim do turno contaminaria o
+  // MTTR com um monte de "resolvido" instantâneo que não foi revisão
+  // nenhuma, só a tela sendo limpa.
+  const comResolucao = filtrados.filter((r) => r.resolvido_em && r.status !== "limpo");
   const mttrMin =
     comResolucao.length > 0
       ? Math.round(
@@ -364,7 +380,7 @@ export default async function AnalisePage({
           <span className="text-xs uppercase tracking-widest leading-none mr-1" style={{ color: "var(--text-dim)", fontSize: "9px" }}>
             Status
           </span>
-          {(["ativo", "reconhecido", "resolvido", "falso_positivo"] as const).map((s) => {
+          {(["ativo", "reconhecido", "resolvido", "falso_positivo", "limpo"] as const).map((s) => {
             const ativo  = statusFiltro === s;
             const cor    = COR_STATUS[s] ?? "var(--text-muted)";
             const cnt    = contStatus(s);

@@ -3385,6 +3385,15 @@ export async function POST(request: Request) {
 
         // Campos pesados (geom, lat, lng, contexto) — zeramos logo que resolve;
         // o motor pode ter resolvido sem limpar, então varremos aqui também.
+        // 'limpo' incluido na lista (28/07, status novo do botao "Limpar
+        // avisos" -- ver acoes-alertas.ts/limparVarios): sem isso essas
+        // linhas nunca entrariam nesta varredura de privacidade nem na
+        // retencao de 30 dias logo abaixo, ficando pra sempre com
+        // geom/lat/lng/contexto completos. E' ortogonal a exclusao de
+        // auto_resolvido/auto_expirado logo abaixo -- aquela e' sobre
+        // CONTEXTO (marcador de origem automatica dentro de uma linha
+        // resolvido/falso_positivo), 'limpo' e' STATUS, passa normalmente
+        // assim que resolvido_em for velho o bastante.
         // CORRECAO (revisao independente round 3, 27/07, achado M2): o
         // comentario anterior aqui (round 2) afirmava que o guard `geom IS
         // NOT NULL` protegia contexto.auto_resolvido por efeito colateral --
@@ -3409,15 +3418,17 @@ export async function POST(request: Request) {
         await pgClean.query(
           `UPDATE alertas
            SET geom = NULL, lat = NULL, lng = NULL, contexto = '{}'
-           WHERE status IN ('resolvido', 'falso_positivo')
+           WHERE status IN ('resolvido', 'falso_positivo', 'limpo')
              AND geom IS NOT NULL
              AND NOT (coalesce(contexto, '{}'::jsonb) ? 'auto_resolvido')
              AND NOT (coalesce(contexto, '{}'::jsonb) ? 'auto_expirado')`
         );
         // Alertas resolvidos > 30 dias: apenas texto necessário para o dashboard.
+        // 'limpo' incluido (28/07) pelo mesmo motivo do UPDATE acima -- sem
+        // isso essas linhas nunca seriam deletadas pela retencao de 30 dias.
         await pgClean.query(
           `DELETE FROM alertas
-           WHERE status IN ('resolvido', 'falso_positivo')
+           WHERE status IN ('resolvido', 'falso_positivo', 'limpo')
              AND COALESCE(resolvido_em, created_at) < now() - interval '30 days'`
         );
         await pgClean.query(
