@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { atualizarBaselineWelford, zScoreBaseline, classificarTipoViagem, type Baseline } from "./baseline-veiculo";
+import {
+  atualizarBaselineWelford, zScoreBaseline, classificarTipoViagem,
+  deveForcarReadmissaoBaseline, BASELINE_N_MAXIMO,
+  type Baseline,
+} from "./baseline-veiculo";
 
 describe("atualizarBaselineWelford (media/variancia incremental, sem guardar amostras cruas)", () => {
   it("primeira amostra vira a media, variancia zero", () => {
@@ -34,10 +38,69 @@ describe("zScoreBaseline", () => {
   it("amostras insuficientes (cold start): retorna null", () => {
     expect(zScoreBaseline(60, { n: 5, media: 40, variancia: 100 }, 20)).toBeNull();
   });
-  it("variancia zero: nao divide por zero, retorna 0 se valor igual, diferenca grande se nao", () => {
+  // Substituir o teste existente "variancia zero: nao divide por zero..."
+  // por este (o comportamento muda: em vez de +-Infinity, agora usa o piso):
+  it("variancia zero: usa o piso de desvio em vez de dividir por zero", () => {
     expect(zScoreBaseline(40, { n: 50, media: 40, variancia: 0 }, 20)).toBe(0);
-    expect(zScoreBaseline(50, { n: 50, media: 40, variancia: 0 }, 20)).toBe(Infinity);
-    expect(zScoreBaseline(30, { n: 50, media: 40, variancia: 0 }, 20)).toBe(-Infinity);
+    expect(zScoreBaseline(50, { n: 50, media: 40, variancia: 0 }, 20)).toBeCloseTo(10 / 3, 5);
+    expect(zScoreBaseline(30, { n: 50, media: 40, variancia: 0 }, 20)).toBeCloseTo(-10 / 3, 5);
+  });
+
+  it("variancia pequena mas nao-zero (caso real RQV-9B26): piso evita explosao de z-score", () => {
+    // n=581, media=6.0, variancia=0.0068 (desvio real ~0.083km/h) -- sem piso,
+    // 58km/h dava z=(58-6)/0.083 ~= 626. Com piso de 3km/h, fica bem menor.
+    const baselineTravado = { n: 581, media: 6.0, variancia: 0.0068 };
+    const z = zScoreBaseline(58, baselineTravado, 20)!;
+    expect(z).toBeCloseTo((58 - 6.0) / 3, 1);
+    expect(z).toBeLessThan(20);
+  });
+
+  it("variancia ja saudavel (acima do piso): nao mexe no desvio calculado", () => {
+    const baselineSaudavel = { n: 100, media: 30, variancia: 100 }; // desvio = 10
+    expect(zScoreBaseline(50, baselineSaudavel, 20)).toBeCloseTo(2, 5);
+  });
+});
+
+describe("atualizarBaselineWelford: teto de peso acumulado (BASELINE_N_MAXIMO)", () => {
+  it("nao ultrapassa o teto mesmo com muitas amostras", () => {
+    let b: Baseline = { n: 0, media: 0, variancia: 0 };
+    for (let i = 0; i < BASELINE_N_MAXIMO + 100; i++) b = atualizarBaselineWelford(b, 10);
+    expect(b.n).toBe(BASELINE_N_MAXIMO);
+  });
+
+  it("depois de saturar, uma amostra nova ainda move a media perceptivelmente", () => {
+    let b: Baseline = { n: 0, media: 0, variancia: 0 };
+    for (let i = 0; i < BASELINE_N_MAXIMO + 50; i++) b = atualizarBaselineWelford(b, 6);
+    expect(b.media).toBeCloseTo(6, 5);
+    const antes = b.media;
+    b = atualizarBaselineWelford(b, 60);
+    // com n tampado, o peso da amostra nova e 1/BASELINE_N_MAXIMO -- deve
+    // mover a media de forma mensuravel, nao travar em ~6 pra sempre.
+    expect(b.media).toBeGreaterThan(antes + 0.05);
+  });
+});
+
+describe("deveForcarReadmissaoBaseline", () => {
+  it("nunca foi excluida (null): nao forca", () => {
+    expect(deveForcarReadmissaoBaseline(null, new Date("2026-07-28T12:00:00Z"))).toBe(false);
+  });
+
+  it("excluida ha menos tempo que o limiar: nao forca", () => {
+    const excluidaDesde = "2026-07-28T10:00:00Z";
+    const agora = new Date("2026-07-28T12:00:00Z"); // 2h depois
+    expect(deveForcarReadmissaoBaseline(excluidaDesde, agora)).toBe(false);
+  });
+
+  it("excluida ha mais tempo que o limiar: forca", () => {
+    const excluidaDesde = "2026-07-28T06:00:00Z";
+    const agora = new Date("2026-07-28T12:00:00Z"); // 6h depois (limiar e 4h)
+    expect(deveForcarReadmissaoBaseline(excluidaDesde, agora)).toBe(true);
+  });
+
+  it("aceita limiar customizado", () => {
+    const excluidaDesde = "2026-07-28T11:00:00Z";
+    const agora = new Date("2026-07-28T12:00:00Z"); // 1h depois
+    expect(deveForcarReadmissaoBaseline(excluidaDesde, agora, 30 * 60 * 1000)).toBe(true); // limiar 30min
   });
 });
 
