@@ -691,6 +691,134 @@ export const FATOR_HORARIO_MAX = 1.6;
 // bastar, sem precisar de combinacao forte tipo favela+tiroteio.
 export const RISCO_AREA_LIMIAR = 25;
 
+// Auto-resolucao retroativa da "rua estranha" (achado real 27/07, revisao
+// manual de 215 alertas: ~69% de falso positivo, padrao dominante era
+// "chegou e parou pouco depois, sem area de risco por perto" -- exatamente
+// o tipo de coisa que so da pra confirmar DEPOIS do alerta ja ter
+// disparado). Mantem a deteccao rapida (dispara igual a hoje) e so limpa
+// sozinho o que se confirma como falso positivo -- nao atrasa nenhum caso
+// real.
+// Constantes nomeadas (achado do revisor independente 27/07: estavam
+// hardcoded inline em deveAutoResolverRuaEstranha) -- mesmo espirito de
+// todo limiar deste arquivo, ajustavel com dado real depois.
+export const RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN = 5;
+// Minutos parado pra contar como "parou de verdade", nao blip de semaforo.
+export const RUA_ESTRANHA_PARADO_MIN_MIN = 2;
+
+// M4 (revisao independente round 3, 27/07): riscoAreaAtual vem de
+// riscoPorVeiculo (route.ts), um Map preenchido por UMA query em batch por
+// ciclo -- se essa query falhar, o Map fica vazio pro ciclo inteiro e TODO
+// veiculo le riscoAreaAtual=0 (fallback deliberado, "falha graciosa: sem
+// dado, risco fica 0", ver comentario no motor). Em QUALQUER outro consumidor
+// de riscoAreaAtual neste arquivo, esse fallback erra pro lado seguro:
+// nunca ACELERA nem SUPRIME um alerta sozinho, so deixa de reforcar um que
+// ja ia disparar por outro motivo (ver riscoAreaAtual em CtxDesvio acima).
+// Aqui seria o oposto -- riscoAreaAtual=0 por FALTA de dado e riscoAreaAtual
+// =0 por dado real "area tranquila confirmada" ficam indistinguiveis, e so
+// o segundo deveria poder fechar o alerta sozinho. Um caminhao parado
+// literalmente dentro de uma favela, no ciclo exato em que a query de risco
+// falhou, seria auto-resolvido por engano. riscoDisponivel (passado pelo
+// caller como riscoPorVeiculo.has(veiculo_id)) EXIGE que o dado exista de
+// verdade pro veiculo neste ciclo -- sem ele, a funcao recusa resolver
+// (alerta so fica aberto mais um ciclo, mesma direcao de fail-safe de tudo
+// mais neste arquivo).
+export function deveAutoResolverRuaEstranha(ctx: {
+  idadeAlertaMin: number;
+  paradoMin: number;
+  riscoAreaAtual: number;
+  riscoDisponivel: boolean;
+}): boolean {
+  return (
+    ctx.riscoDisponivel &&
+    ctx.idadeAlertaMin <= RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN &&
+    ctx.paradoMin >= RUA_ESTRANHA_PARADO_MIN_MIN &&
+    ctx.riscoAreaAtual < RISCO_AREA_LIMIAR
+  );
+}
+
+// Motivo exato gravado pelo branch quedaClasseViaria (abaixo, dentro de
+// detectarDesvio) -- exportado pra route.ts poder identificar de volta
+// quais alertas tipo="desvio" vieram desta regra especifica sem duplicar a
+// string magica (risco real: duas copias divergirem em silencio se o texto
+// mudar num lugar so).
+export const MOTIVO_RUA_ESTRANHA =
+  "Saiu de via principal recentemente e está em rua estreita, fora do raio de qualquer destino conhecido";
+
+// BLOCKER 2 (revisao independente 27/07): o check de auto-resolucao
+// original filtrava so por tipo/motivo, sem olhar status -- podia
+// auto-resolver um alerta que o operador ja tinha clicado "Reconhecer"
+// (status='reconhecido'), puxando o tapete debaixo dele em silencio.
+// Extraido como funcao pura testavel (route.ts nao tem harness de teste
+// proprio, ver nota em detectores.test.ts) -- so alertas 'ativo' sao
+// elegiveis.
+export function alertaElegivelParaAutoResolveRuaEstranha(alerta: {
+  status: string;
+  tipo: string;
+  motivo: string;
+}): boolean {
+  return (
+    alerta.status === "ativo" &&
+    alerta.tipo === "desvio" &&
+    alerta.motivo === MOTIVO_RUA_ESTRANHA
+  );
+}
+
+// BLOCKER 1 (revisao independente 27/07): mapaTiposSilenciados (route.ts)
+// contava QUALQUER linha status='falso_positivo' recente como "operador
+// ensinando o sistema" e silenciava o tipo pro veiculo por 2h -- inclusive
+// as que o proprio auto-resolve acima gerou, o que silenciava tipo="desvio"
+// (inclusive cerca_virtual/comportamental REAIS) quase continuamente, dado
+// que o padrao auto-resolvido e' ~69% dos casos. contexto.auto_resolvido
+// marca a origem; linhas assim NUNCA devem contar pro silenciamento --
+// so falso_positivo marcado por acao humana explicita (resolverAlerta/
+// marcarFalsoPositivo em acoes-alertas.ts) ensina o sistema.
+export function contaComoEventoDeSilenciamento(contexto: unknown): boolean {
+  if (
+    contexto !== null &&
+    typeof contexto === "object" &&
+    (contexto as Record<string, unknown>).auto_resolvido === true
+  ) {
+    return false;
+  }
+  return true;
+}
+
+// M1 (revisao independente round 3, 27/07): contaComoEventoDeSilenciamento
+// acima responde uma pergunta DIFERENTE (deve este falso_positivo silenciar
+// o tipo pro veiculo por 2h?) da que recalibrar-desvio/route.ts precisa
+// (deve esta linha contar como JULGAMENTO HUMANO real pra taxaGlobal e pro
+// segmento grosseiro `tipo:desvio`?). Ate round 2, so
+// contaComoEventoDeSilenciamento existia e a calibracao reusava ela --
+// cobria contexto.auto_resolvido (auto-resolve de "rua estranha", este
+// arquivo), mas NAO contexto.auto_expirado (cron
+// 'expirar-alertas-ativos-esquecidos', scripts/migrations/contabo/
+// 002_retencao.sql), que fecha sozinho como status='resolvido' qualquer
+// alerta 'ativo' esquecido ha 7+ dias. Como desvio NUNCA fecha sozinho por
+// conta propria (so por acao manual do operador ou por esse cron -- ver
+// TIPOS_NAO_GERENCIADOS), TODO desvio que o operador nunca chegou a tratar
+// eventualmente vira uma linha auto_expirado -- e sem este predicado essas
+// linhas contavam como "verdadeiro positivo" (status != 'falso_positivo')
+// na calibracao, inflando taxaGlobal e o segmento tipo:desvio com "operador
+// nunca chegou a ver" disfarcado de "confirmado por revisao humana".
+// Funcao NOVA e separada (em vez de sobrecarregar
+// contaComoEventoDeSilenciamento com uma segunda pergunta -- a resposta
+// certa pra "silenciar por 2h" e pra "conta pra calibracao" nao precisam
+// coincidir, e forcar as duas na mesma funcao esconderia isso): false pra
+// auto_resolvido===true OU auto_expirado===true, true no resto (inclusive
+// {}/null) -- mesmo comportamento default-true de
+// contaComoEventoDeSilenciamento. Usada so em recalibrar-desvio/route.ts
+// (pergunta de pureza de calibracao); motor/route.ts continua usando
+// contaComoEventoDeSilenciamento pra mapaTiposSilenciados -- alerta
+// auto_expirado silenciar o tipo por 2h e' uma questao separada, fora de
+// escopo mudar esse comportamento aqui (ver M1 na revisao round 3).
+export function contaComoRotuloHumano(contexto: unknown): boolean {
+  if (contexto !== null && typeof contexto === "object") {
+    const c = contexto as Record<string, unknown>;
+    if (c.auto_resolvido === true || c.auto_expirado === true) return false;
+  }
+  return true;
+}
+
 // Score de risco da posição ATUAL do veículo (0-100), combinando sinais
 // geográficos/temporais independentes do tapete de rotas. Função pura —
 // o motor busca os dados (favela, tiroteio, roubo_carga por CISP, horário)
@@ -932,7 +1060,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
       nivel: "atencao",
       tipo: "desvio",
       origemDesvio: "classe_viaria",
-      motivo: "Saiu de via principal recentemente e está em rua estreita, fora do raio de qualquer destino conhecido",
+      motivo: MOTIVO_RUA_ESTRANHA,
       score: 40,
     };
   }

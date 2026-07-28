@@ -10,13 +10,14 @@
 
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { contaComoRotuloHumano } from "@/lib/detectores";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const MIN_AMOSTRAS = 20;
 
-type RowAlertas = { tipo: string; status: string };
+type RowAlertas = { tipo: string; status: string; contexto: unknown };
 type RowCasosRevisao = { status: string; segmento: string | null };
 
 // Copia intencional de src/lib/calibracao-desvio.ts, mesmo padrao do script
@@ -66,10 +67,10 @@ export async function POST(request: Request) {
   });
 
   try {
-    // Segmentacao grosseira por tipo -- continua vindo de `alertas`, nao
-    // precisa de `contexto` (que ja esta zerado pelo STRIP_PESADO em
-    // acoes-alertas.ts nesse ponto pra qualquer alerta ja fechado). Tambem a
-    // fonte da populacao mais ampla usada como denominador de `taxaGlobal`.
+    // Segmentacao grosseira por tipo -- continua vindo de `alertas`. Agora
+    // PRECISA de `contexto` (deixou de estar sempre zerado aqui, ver filtro
+    // logo abaixo). Tambem a fonte da populacao mais ampla usada como
+    // denominador de `taxaGlobal`.
     // 'parada_fora_tapete' adicionado 27/07 (revisao adversarial, caso
     // TTK-4D14): tipo NOVO, criado nesta mesma sessao dando ao gatilho
     // "parado fora do tapete" uma vaga propria em vez de reusar tipo=
@@ -77,11 +78,39 @@ export async function POST(request: Request) {
     // aqui pra ter um segmento `tipo:parada_fora_tapete` de fallback e pra
     // contar na populacao de `taxaGlobal`, mesma logica ja aplicada a
     // bypass_entrega/baseline_veiculo quando ganharam tipo proprio.
-    const { rows: rowsAlertas } = await pool.query<RowAlertas>(`
-      select tipo, status
+    const { rows: rowsAlertasBrutos } = await pool.query<RowAlertas>(`
+      select tipo, status, contexto
       from alertas
       where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete') and status != 'ativo'
     `);
+
+    // BLOCKER (revisao independente round 2, 27/07): a auto-resolucao de
+    // "rua estranha" (motor/route.ts) grava status='falso_positivo' com
+    // contexto.auto_resolvido=true -- igual, em status, a uma resolucao
+    // humana real. Sem filtrar essas linhas aqui, elas inflam `taxaGlobal`
+    // (prior Bayesiano compartilhado por TODO segmento, peso MIN_AMOSTRAS)
+    // e o segmento grosseiro `tipo:desvio` (fallback ao vivo que o motor usa
+    // quando o segmento fino tem <20 amostras) -- exatamente o vies que a
+    // remocao de registrarCasosDesvioRevisao em motor/route.ts (busca por
+    // "MEDIUM 3" la) protege do lado FINO (`casos_desvio_revisao`), mas
+    // nunca protegeu deste lado grosseiro por vir de tabela diferente.
+    // M1 (revisao independente round 3, 27/07): a round 2 reusava
+    // contaComoEventoDeSilenciamento (detectores.ts) aqui, mas esse
+    // predicado so cobre contexto.auto_resolvido -- deixava passar
+    // contexto.auto_expirado (cron 'expirar-alertas-ativos-esquecidos',
+    // scripts/migrations/contabo/002_retencao.sql, fecha sozinho como
+    // 'resolvido' qualquer alerta 'ativo' esquecido ha 7+ dias). Como desvio
+    // nunca fecha sozinho por conta propria, TODO desvio nunca tratado pelo
+    // operador eventualmente vira uma linha auto_expirado e contava como
+    // "verdadeiro positivo" aqui -- mesmo vies, so pela porta auto_expirado
+    // em vez de auto_resolvido. Trocado por contaComoRotuloHumano
+    // (detectores.ts), que cobre os dois casos -- essa e' a pergunta de
+    // pureza de calibracao, diferente da pergunta de silenciamento por 2h
+    // que contaComoEventoDeSilenciamento continua respondendo em
+    // mapaTiposSilenciados (motor/route.ts, nao mudado por este achado). O
+    // node-postgres ja desserializa a coluna jsonb pra objeto JS, entao a
+    // mesma funcao pura serve aqui sem duplicar o check.
+    const rowsAlertas = rowsAlertasBrutos.filter((r) => contaComoRotuloHumano(r.contexto));
 
     // Achado real 26/07: a segmentacao FINA (antes `corredor_veredito:X`, lida
     // de `alertas.contexto`) travava com dado congelado -- `contexto` ja esta

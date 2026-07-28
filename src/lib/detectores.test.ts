@@ -33,6 +33,13 @@ import {
   viradaErradaSaindoDeParada,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
+  deveAutoResolverRuaEstranha,
+  RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN,
+  RUA_ESTRANHA_PARADO_MIN_MIN,
+  MOTIVO_RUA_ESTRANHA,
+  alertaElegivelParaAutoResolveRuaEstranha,
+  contaComoEventoDeSilenciamento,
+  contaComoRotuloHumano,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -1693,5 +1700,130 @@ describe("temCoordenadaValida", () => {
   });
   it("aceita coordenada real do Rio", () => {
     expect(temCoordenadaValida({ lat: -22.9, lng: -43.2 })).toBe(true);
+  });
+});
+
+describe("deveAutoResolverRuaEstranha", () => {
+  it("resolve quando parou >=2min, sem risco, dentro da janela de 5min, com dado de risco disponivel", () => {
+    expect(
+      deveAutoResolverRuaEstranha({
+        idadeAlertaMin: 3,
+        paradoMin: RUA_ESTRANHA_PARADO_MIN_MIN,
+        riscoAreaAtual: 0,
+        riscoDisponivel: true,
+      })
+    ).toBe(true);
+  });
+  it("NAO resolve se ainda nao parou o suficiente", () => {
+    expect(
+      deveAutoResolverRuaEstranha({
+        idadeAlertaMin: 3,
+        paradoMin: RUA_ESTRANHA_PARADO_MIN_MIN - 1,
+        riscoAreaAtual: 0,
+        riscoDisponivel: true,
+      })
+    ).toBe(false);
+  });
+  it("NAO resolve se tem area de risco por perto", () => {
+    expect(
+      deveAutoResolverRuaEstranha({ idadeAlertaMin: 3, paradoMin: 3, riscoAreaAtual: 40, riscoDisponivel: true })
+    ).toBe(false);
+  });
+  it("NAO resolve depois da janela de 5min (deixa pro operador revisar manualmente)", () => {
+    expect(
+      deveAutoResolverRuaEstranha({
+        idadeAlertaMin: RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN + 1,
+        paradoMin: 3,
+        riscoAreaAtual: 0,
+        riscoDisponivel: true,
+      })
+    ).toBe(false);
+  });
+  // M4 (revisao independente round 3, 27/07): riscoAreaAtual=0 por FALTA de
+  // dado (query em batch falhou neste ciclo) tem que se comportar diferente
+  // de riscoAreaAtual=0 por dado real "area confirmada tranquila" -- um
+  // caminhao parado dentro de uma favela no ciclo exato em que o dado de
+  // risco falhou nao pode ser lido como "sem risco" so por causa do
+  // fallback. riscoDisponivel=false bloqueia o auto-resolve mesmo com todas
+  // as outras condicoes satisfeitas.
+  it("NAO resolve quando o dado de risco esta indisponivel neste ciclo, mesmo com riscoAreaAtual=0", () => {
+    expect(
+      deveAutoResolverRuaEstranha({
+        idadeAlertaMin: 3,
+        paradoMin: RUA_ESTRANHA_PARADO_MIN_MIN,
+        riscoAreaAtual: 0,
+        riscoDisponivel: false,
+      })
+    ).toBe(false);
+  });
+});
+
+// BLOCKER 2 (revisao independente 27/07): auto-resolve nao pode agir sobre
+// um alerta que o operador ja reconheceu (status='reconhecido') -- so
+// 'ativo' e' elegivel, alem do tipo/motivo ja checados antes.
+describe("alertaElegivelParaAutoResolveRuaEstranha", () => {
+  const base = { status: "ativo", tipo: "desvio", motivo: MOTIVO_RUA_ESTRANHA };
+
+  it("elegivel quando ativo + tipo desvio + motivo rua estranha", () => {
+    expect(alertaElegivelParaAutoResolveRuaEstranha(base)).toBe(true);
+  });
+  it("NAO elegivel se o operador ja reconheceu o alerta (status='reconhecido')", () => {
+    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, status: "reconhecido" })).toBe(false);
+  });
+  it("NAO elegivel pra outros tipos de alerta", () => {
+    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, tipo: "parada_anomala" })).toBe(false);
+  });
+  it("NAO elegivel se o motivo nao bate exatamente (outra regra de desvio)", () => {
+    expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, motivo: "Divergencia de rumo geral" })).toBe(false);
+  });
+});
+
+// BLOCKER 1 (revisao independente 27/07): mapaTiposSilenciados (route.ts)
+// so deve contar linhas falso_positivo marcadas por acao HUMANA explicita
+// -- linhas com contexto.auto_resolvido=true (geradas pelo mecanismo acima)
+// nunca podem silenciar o tipo "desvio" fleet-wide por 2h.
+describe("contaComoEventoDeSilenciamento", () => {
+  it("conta uma linha falso_positivo humana normal (contexto null)", () => {
+    expect(contaComoEventoDeSilenciamento(null)).toBe(true);
+  });
+  it("conta uma linha falso_positivo humana com outro contexto qualquer", () => {
+    expect(contaComoEventoDeSilenciamento({ algumOutroCampo: true })).toBe(true);
+  });
+  it("NAO conta uma linha auto-resolvida (contexto.auto_resolvido=true)", () => {
+    expect(contaComoEventoDeSilenciamento({ auto_resolvido: true, motivo: "parou sem area de risco por perto, dentro de 5min" })).toBe(false);
+  });
+  it("conta quando auto_resolvido esta presente mas false (defensivo)", () => {
+    expect(contaComoEventoDeSilenciamento({ auto_resolvido: false })).toBe(true);
+  });
+});
+
+// M1 (revisao independente round 3, 27/07): recalibrar-desvio/route.ts
+// precisa de um predicado MAIS COMPLETO que contaComoEventoDeSilenciamento
+// (que so cobre auto_resolvido) -- a calibracao tambem nao pode contar
+// linhas fechadas pelo cron de retencao (contexto.auto_expirado=true,
+// scripts/migrations/contabo/002_retencao.sql) como julgamento humano real.
+describe("contaComoRotuloHumano", () => {
+  it("conta uma linha falso_positivo humana normal (contexto null)", () => {
+    expect(contaComoRotuloHumano(null)).toBe(true);
+  });
+  it("conta uma linha falso_positivo humana com outro contexto qualquer", () => {
+    expect(contaComoRotuloHumano({ algumOutroCampo: true })).toBe(true);
+  });
+  it("NAO conta uma linha auto-resolvida (contexto.auto_resolvido=true)", () => {
+    expect(
+      contaComoRotuloHumano({ auto_resolvido: true, motivo: "parou sem area de risco por perto, dentro de 5min" })
+    ).toBe(false);
+  });
+  it("conta quando auto_resolvido esta presente mas false (defensivo)", () => {
+    expect(contaComoRotuloHumano({ auto_resolvido: false })).toBe(true);
+  });
+  it("NAO conta uma linha auto-expirada pelo cron de retencao (contexto.auto_expirado=true)", () => {
+    expect(contaComoRotuloHumano({ auto_expirado: true })).toBe(false);
+  });
+  it("conta quando auto_expirado esta presente mas false (defensivo)", () => {
+    expect(contaComoRotuloHumano({ auto_expirado: false })).toBe(true);
+  });
+  it("NAO conta quando ambos auto_resolvido e auto_expirado estao true", () => {
+    expect(contaComoRotuloHumano({ auto_resolvido: true, auto_expirado: true })).toBe(false);
   });
 });
