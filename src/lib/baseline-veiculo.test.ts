@@ -38,8 +38,7 @@ describe("zScoreBaseline", () => {
   it("amostras insuficientes (cold start): retorna null", () => {
     expect(zScoreBaseline(60, { n: 5, media: 40, variancia: 100 }, 20)).toBeNull();
   });
-  // Substituir o teste existente "variancia zero: nao divide por zero..."
-  // por este (o comportamento muda: em vez de +-Infinity, agora usa o piso):
+  // Comportamento mudou 28/07: antes retornava +-Infinity, agora usa o piso.
   it("variancia zero: usa o piso de desvio em vez de dividir por zero", () => {
     expect(zScoreBaseline(40, { n: 50, media: 40, variancia: 0 }, 20)).toBe(0);
     expect(zScoreBaseline(50, { n: 50, media: 40, variancia: 0 }, 20)).toBeCloseTo(10 / 3, 5);

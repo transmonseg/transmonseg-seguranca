@@ -57,7 +57,7 @@ import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "@/lib/corredor-verificacao";
-import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, type Baseline } from "@/lib/baseline-veiculo";
+import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
 
@@ -1724,7 +1724,7 @@ export async function POST(request: Request) {
                 velocidadeMediaViagemKmh: pos.velocidade,
                 baselineProprio,
                 baselineFrota: baselineFrotaAtual,
-                minAmostrasProprio: 20,
+                minAmostrasProprio: BASELINE_MIN_AMOSTRAS_PROPRIO,
               })
             : null;
           // Achado real 12/07 (autopoluicao confirmada com dado de producao,
@@ -1754,7 +1754,7 @@ export async function POST(request: Request) {
           // decidirAdmissaoBaseline (baseline-veiculo.ts) -- a mais
           // arriscada deste fix, agora testavel isoladamente.
           const chaveBaselineVeiculo = `${veiculo_id}:${tipoViagem}`;
-          const usaBaselineProprio = baselineProprio.n >= 20; // mesmo limiar de minAmostrasProprio acima
+          const usaBaselineProprio = baselineProprio.n >= BASELINE_MIN_AMOSTRAS_PROPRIO;
           const decisaoBaseline = decidirAdmissaoBaseline({
             usaBaselineProprio,
             ehAnomalia: alertaBaseline !== null,
@@ -2895,7 +2895,15 @@ export async function POST(request: Request) {
         if (falhasVeiculo > 0) console.warn(`Aviso: ${falhasVeiculo} falha(s) ao gravar baseline_veiculo neste ciclo`);
       }
 
-      if (!erroLeituraBaselineFrota) {
+      // Achado MENOR da revisao independente 28/07 (round 2): gate tambem
+      // em erroLeituraBaselineVeiculo, nao so erroLeituraBaselineFrota --
+      // se a leitura de baseline_veiculo falhar, mapaBaselineVeiculo fica
+      // vazio, TODO veiculo cai no ramo cold-start de decidirAdmissaoBaseline
+      // (admite sempre, mesmo leitura anomala), e amostrasBaselineCiclo
+      // fica poluido com leituras que deveriam ter sido excluidas -- gravar
+      // isso em baseline_frota (mesmo com a leitura DELA ok) desativaria a
+      // protecao anti-autopoluicao pra frota inteira enquanto durar o erro.
+      if (!erroLeituraBaselineFrota && !erroLeituraBaselineVeiculo) {
         const resultadosFrota = await Promise.allSettled(
           [...porFrota].map(([chave, b]) => {
             const [cliente_id, tipoViagem] = chave.split(":");

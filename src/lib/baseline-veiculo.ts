@@ -46,6 +46,15 @@ export const BASELINE_DESVIO_MINIMO_KMH = 3;
 // comeca a se recuperar dentro do mesmo dia, sem reabrir aquele problema.
 export const BASELINE_EXCLUSAO_MAX_MS = 4 * 60 * 60 * 1000;
 
+// Minimo de amostras pro baseline PROPRIO do veiculo ser confiavel (abaixo
+// disso, cai no fallback de baseline_frota -- ver detectarAnomaliaBaseline
+// em detectores.ts). Compartilhado entre o param minAmostrasProprio (ali) e
+// o gate usaBaselineProprio em route.ts/decidirAdmissaoBaseline: achado
+// MENOR da revisao independente 28/07 -- os dois eram o mesmo "20" literal
+// duplicado em dois lugares, exatamente o tipo de duplicacao que reabriria
+// silenciosamente o bug 5.3 (veiculo novo travado) se um mudasse sem o outro.
+export const BASELINE_MIN_AMOSTRAS_PROPRIO = 20;
+
 // Achado CRITICO da revisao independente 28/07 (simulacao numerica): a
 // versao anterior dividia por n TAMPADO mesmo depois de saturar, entao a
 // variancia so crescia (nunca decaia) -- uma vez n===nMaximo,
