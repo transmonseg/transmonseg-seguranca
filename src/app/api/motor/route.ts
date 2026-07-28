@@ -57,7 +57,7 @@ import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "@/lib/corredor-verificacao";
-import { atualizarBaselineWelford, classificarTipoViagem, deveForcarReadmissaoBaseline, type Baseline } from "@/lib/baseline-veiculo";
+import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
 
@@ -656,9 +656,20 @@ export async function POST(request: Request) {
     // Baseline comportamental por veiculo/frota (Fase 3 do redesenho de
     // 11/07) -- carregado uma vez pra todos os veiculos, mesmo padrao de
     // mapaPosAtual acima (tabelas pequenas, nao precisa filtrar por cliente).
-    const { data: baselineVeiculoRows } = await supabase
+    // Achado CRITICO da revisao independente 28/07: se este select falhar
+    // (ex: deploy rodou antes da migration 008, ou antes do PostgREST
+    // recarregar o schema cache), data vem null/vazio -- leitura vazia e
+    // segura (cai no fallback de cold-start), mas o UPSERT no fim do ciclo
+    // NAO pode gravar de volta um estado derivado dessa leitura falha
+    // (trataria todo veiculo como cold-start e apagaria o historico real).
+    // erroLeituraBaselineVeiculo/Frota controla isso mais abaixo, nos
+    // blocos de escrita.
+    const { data: baselineVeiculoRows, error: erroLeituraBaselineVeiculo } = await supabase
       .from("baseline_veiculo")
       .select("veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, excluida_desde");
+    if (erroLeituraBaselineVeiculo) {
+      console.warn(`Aviso: erro ao ler baseline_veiculo, pulando gravacao de baseline neste ciclo: ${erroLeituraBaselineVeiculo.message}`);
+    }
     const mapaBaselineVeiculo = new Map<string, Baseline & { excluidaDesde: string | null }>();
     for (const r of baselineVeiculoRows ?? []) {
       mapaBaselineVeiculo.set(`${r.veiculo_id}:${r.tipo_viagem}:${r.feature}`, {
@@ -667,9 +678,12 @@ export async function POST(request: Request) {
       });
     }
 
-    const { data: baselineFrotaRows } = await supabase
+    const { data: baselineFrotaRows, error: erroLeituraBaselineFrota } = await supabase
       .from("baseline_frota")
       .select("cliente_id, tipo_viagem, feature, n_amostras, media, variancia");
+    if (erroLeituraBaselineFrota) {
+      console.warn(`Aviso: erro ao ler baseline_frota, pulando gravacao de baseline neste ciclo: ${erroLeituraBaselineFrota.message}`);
+    }
     const mapaBaselineFrota = new Map<string, Baseline>();
     for (const r of baselineFrotaRows ?? []) {
       mapaBaselineFrota.set(`${r.cliente_id}:${r.tipo_viagem}:${r.feature}`, {
@@ -1727,12 +1741,29 @@ export async function POST(request: Request) {
           // e excluida, entao nada nunca mais entra. Se ja faz
           // BASELINE_EXCLUSAO_MAX_MS que este veiculo/tipo vem sendo
           // excluido, forca a readmissao mesmo que ainda pareca anomalo.
+          //
+          // Achado IMPORTANTE da revisao independente 28/07: essa exclusao
+          // so pode ser aplicada quando a anomalia foi medida contra o
+          // baseline PROPRIO do veiculo (n>=20, mesmo limiar de
+          // minAmostrasProprio acima) -- uma leitura que parece anomala so
+          // contra o fallback da frota (cold start, n<20) nao diz nada
+          // sobre autopoluicao do baseline deste veiculo, e a linha dele
+          // nem existe ainda em baseline_veiculo (o UPDATE de marcacao
+          // afetaria 0 linhas silenciosamente), entao excluir aqui travava
+          // o veiculo novo pra sempre. Logica extraida pra
+          // decidirAdmissaoBaseline (baseline-veiculo.ts) -- a mais
+          // arriscada deste fix, agora testavel isoladamente.
           const chaveBaselineVeiculo = `${veiculo_id}:${tipoViagem}`;
-          const forcarReadmissaoBaseline = alertaBaseline !== null &&
-            deveForcarReadmissaoBaseline(baselineProprio.excluidaDesde, agora);
-          if (pos.fresco && pos.velocidade > 0 && (alertaBaseline === null || forcarReadmissaoBaseline)) {
+          const usaBaselineProprio = baselineProprio.n >= 20; // mesmo limiar de minAmostrasProprio acima
+          const decisaoBaseline = decidirAdmissaoBaseline({
+            usaBaselineProprio,
+            ehAnomalia: alertaBaseline !== null,
+            excluidaDesde: baselineProprio.excluidaDesde,
+            agora,
+          });
+          if (pos.fresco && pos.velocidade > 0 && decisaoBaseline.admitir) {
             amostrasBaselineCiclo.push({ veiculo_id, cliente_id, tipoViagem, velocidade: pos.velocidade });
-          } else if (alertaBaseline !== null && baselineProprio.excluidaDesde === null) {
+          } else if (decisaoBaseline.marcarExclusaoAgora) {
             baselineExclusaoCiclo.set(chaveBaselineVeiculo, agora.toISOString());
           }
 
@@ -2829,57 +2860,76 @@ export async function POST(request: Request) {
           ?? { n: 0, media: 0, variancia: 0, excluidaDesde: null };
         porVeiculo.set(chaveVeiculo, atualizarBaselineWelford(atualVeiculo, a.velocidade));
 
+        // baseline_frota usa um teto bem maior (BASELINE_FROTA_N_MAXIMO):
+        // acumula ~1 amostra POR VEICULO ATIVO por ciclo (nao 1 por ciclo
+        // como baseline_veiculo) -- achado da revisao 28/07, ver
+        // BASELINE_FROTA_N_MAXIMO em baseline-veiculo.ts.
         const chaveFrota = `${a.cliente_id}:${a.tipoViagem}`;
         const atualFrota = porFrota.get(chaveFrota)
           ?? mapaBaselineFrota.get(`${chaveFrota}:velocidade_media_kmh`)
           ?? { n: 0, media: 0, variancia: 0 };
-        porFrota.set(chaveFrota, atualizarBaselineWelford(atualFrota, a.velocidade));
+        porFrota.set(chaveFrota, atualizarBaselineWelford(atualFrota, a.velocidade, BASELINE_FROTA_N_MAXIMO));
       }
 
-      const resultadosVeiculo = await Promise.allSettled(
-        [...porVeiculo].map(([chave, b]) => {
-          const [veiculo_id, tipoViagem] = chave.split(":");
-          // Amostra admitida neste ciclo -- sempre zera excluida_desde
-          // (readmissao normal ou forcada, ver BASELINE_EXCLUSAO_MAX_MS).
-          return pool.query(
-            `insert into baseline_veiculo (veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, excluida_desde, atualizado_em)
-             values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, null, now())
-             on conflict (veiculo_id, tipo_viagem, feature)
-             do update set n_amostras = $3, media = $4, variancia = $5, excluida_desde = null, atualizado_em = now()`,
-            [veiculo_id, tipoViagem, b.n, b.media, b.variancia]
-          );
-        })
-      );
-      const falhasVeiculo = resultadosVeiculo.filter((r) => r.status === "rejected").length;
-      if (falhasVeiculo > 0) console.warn(`Aviso: ${falhasVeiculo} falha(s) ao gravar baseline_veiculo neste ciclo`);
+      // Achado CRITICO da revisao independente 28/07: so grava de volta se
+      // a leitura correspondente no INICIO do ciclo teve sucesso -- senao
+      // porVeiculo/porFrota foram computados a partir de um fallback de
+      // cold-start (mapa vazio por causa do erro), e o UPSERT sobrescreveria
+      // o historico real de todo mundo com esse estado falso.
+      if (!erroLeituraBaselineVeiculo) {
+        const resultadosVeiculo = await Promise.allSettled(
+          [...porVeiculo].map(([chave, b]) => {
+            const [veiculo_id, tipoViagem] = chave.split(":");
+            // Amostra admitida neste ciclo -- sempre zera excluida_desde
+            // (readmissao normal ou forcada, ver BASELINE_EXCLUSAO_MAX_MS).
+            return pool.query(
+              `insert into baseline_veiculo (veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, excluida_desde, atualizado_em)
+               values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, null, now())
+               on conflict (veiculo_id, tipo_viagem, feature)
+               do update set n_amostras = $3, media = $4, variancia = $5, excluida_desde = null, atualizado_em = now()`,
+              [veiculo_id, tipoViagem, b.n, b.media, b.variancia]
+            );
+          })
+        );
+        const falhasVeiculo = resultadosVeiculo.filter((r) => r.status === "rejected").length;
+        if (falhasVeiculo > 0) console.warn(`Aviso: ${falhasVeiculo} falha(s) ao gravar baseline_veiculo neste ciclo`);
+      }
 
-      const resultadosFrota = await Promise.allSettled(
-        [...porFrota].map(([chave, b]) => {
-          const [cliente_id, tipoViagem] = chave.split(":");
-          return pool.query(
-            `insert into baseline_frota (cliente_id, tipo_viagem, feature, n_amostras, media, variancia, atualizado_em)
-             values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, now())
-             on conflict (cliente_id, tipo_viagem, feature)
-             do update set n_amostras = $3, media = $4, variancia = $5, atualizado_em = now()`,
-            [cliente_id, tipoViagem, b.n, b.media, b.variancia]
-          );
-        })
-      );
-      const falhasFrota = resultadosFrota.filter((r) => r.status === "rejected").length;
-      if (falhasFrota > 0) console.warn(`Aviso: ${falhasFrota} falha(s) ao gravar baseline_frota neste ciclo`);
+      if (!erroLeituraBaselineFrota) {
+        const resultadosFrota = await Promise.allSettled(
+          [...porFrota].map(([chave, b]) => {
+            const [cliente_id, tipoViagem] = chave.split(":");
+            return pool.query(
+              `insert into baseline_frota (cliente_id, tipo_viagem, feature, n_amostras, media, variancia, atualizado_em)
+               values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, now())
+               on conflict (cliente_id, tipo_viagem, feature)
+               do update set n_amostras = $3, media = $4, variancia = $5, atualizado_em = now()`,
+              [cliente_id, tipoViagem, b.n, b.media, b.variancia]
+            );
+          })
+        );
+        const falhasFrota = resultadosFrota.filter((r) => r.status === "rejected").length;
+        if (falhasFrota > 0) console.warn(`Aviso: ${falhasFrota} falha(s) ao gravar baseline_frota neste ciclo`);
+      }
     }
 
     // Marca excluida_desde pra veiculo/tipo que NAO tiveram amostra admitida
     // neste ciclo (ver BASELINE_EXCLUSAO_MAX_MS em baseline-veiculo.ts) --
     // separado do bloco acima porque aqui nao ha n_amostras/media/variancia
-    // novos pra gravar, so o timestamp de inicio da exclusao.
-    if (baselineExclusaoCiclo.size > 0) {
+    // novos pra gravar, so o timestamp de inicio da exclusao. Tambem pulado
+    // se a leitura de baseline_veiculo falhou (mesmo motivo do bloco acima:
+    // sem leitura confiavel, nao sabemos se ja estava marcado).
+    if (!erroLeituraBaselineVeiculo && baselineExclusaoCiclo.size > 0) {
       const resultadosExclusao = await Promise.allSettled(
         [...baselineExclusaoCiclo].map(([chave, valor]) => {
           const [veiculo_id, tipoViagem] = chave.split(":");
+          // Achado MENOR da revisao independente 28/07: "and excluida_desde
+          // is null" torna "marca so uma vez" atomico a nivel de banco (nao
+          // so no snapshot lido no inicio do ciclo) -- protege contra
+          // ciclos sobrepostos do motor (ja documentado acima, motor_lease).
           return pool.query(
             `update baseline_veiculo set excluida_desde = $3
-             where veiculo_id = $1 and tipo_viagem = $2 and feature = 'velocidade_media_kmh'`,
+             where veiculo_id = $1 and tipo_viagem = $2 and feature = 'velocidade_media_kmh' and excluida_desde is null`,
             [veiculo_id, tipoViagem, valor]
           );
         })
