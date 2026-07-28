@@ -867,6 +867,28 @@ export function saiuParadaConfirmadaHaMenosDe(
   );
 }
 
+// Achado da revisao independente (Task 6): a condicao de transicao em si
+// (saiuDoRaioAgora && dwell>=minimo) nunca tinha teste proprio -- so o
+// resultado ja combinado com o guard de detectarDesvio, entao um mutante
+// que removia o check de dwell (deixando QUALQUER passagem, nao so parada
+// de verdade, marcar a saida) passava nos 504 testes sem quebrar nenhum.
+// Extraida pra cá pra fechar esse buraco. Tambem fecha um segundo achado:
+// sem gate de pos.fresco/alvosApiOk, um blip na API de alvos (buscarAlvos
+// falhou) fazia alvoNoRaioAgora virar null e saiuDoRaioAgora disparar por
+// tabela mesmo com o veiculo parado no MESMO lugar -- combinado com dwell
+// alto (ja estava parado ha tempo), marcava uma "saida" que nunca aconteceu,
+// suprimindo rua-estreita por 5min so por causa do blip.
+export function deveMarcarSaidaParadaConfirmada(ctx: {
+  fresco: boolean;
+  alvosApiOk: boolean;
+  saiuDoRaioAgora: boolean;
+  dwellAnteriorSegundos: number;
+  dwellMinimoSegundos?: number;
+}): boolean {
+  const minimo = ctx.dwellMinimoSegundos ?? BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS;
+  return ctx.fresco && ctx.alvosApiOk && ctx.saiuDoRaioAgora && ctx.dwellAnteriorSegundos >= minimo;
+}
+
 // Motivo exato gravado pelo branch quedaClasseViaria (abaixo, dentro de
 // detectarDesvio) -- exportado pra route.ts poder identificar de volta
 // quais alertas tipo="desvio" vieram desta regra especifica sem duplicar a

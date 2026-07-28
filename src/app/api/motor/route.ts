@@ -50,6 +50,7 @@ import {
   elegivelParaAutoResolveAfastando,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
   saiuParadaConfirmadaHaMenosDe,
+  deveMarcarSaidaParadaConfirmada,
   type Alerta,
   type DesvioInicio,
 } from "@/lib/detectores";
@@ -2054,10 +2055,14 @@ export async function POST(request: Request) {
           // explicito). saiuDoRaioAgora + dwellAnterior ja calculados acima
           // pra bypass_entrega -- reaproveitados aqui, mesmo sinal.
           const saiuParadaConfirmadaAnterior = anterior?.saiu_parada_confirmada_em ?? null;
-          const saiuParadaConfirmadaEm =
-            saiuDoRaioAgora && dwellAnterior >= BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS
-              ? agora.toISOString()
-              : saiuParadaConfirmadaAnterior;
+          const saiuParadaConfirmadaEm = deveMarcarSaidaParadaConfirmada({
+            fresco: pos.fresco,
+            alvosApiOk,
+            saiuDoRaioAgora,
+            dwellAnteriorSegundos: dwellAnterior,
+          })
+            ? agora.toISOString()
+            : saiuParadaConfirmadaAnterior;
           const saiuParadaConfirmadaRecentemente = saiuParadaConfirmadaHaMenosDe(saiuParadaConfirmadaEm, agora);
 
           const sabadoDiurnoComRota =

@@ -48,6 +48,7 @@ import {
   AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN,
   saiuParadaConfirmadaHaMenosDe,
   JANELA_SAIDA_PARADA_MIN,
+  deveMarcarSaidaParadaConfirmada,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -888,6 +889,35 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
         distDestinosM: [6300, 8300, 12300], distDestinosAnteriorM: [6000, 8000, 12000], // afastando de tudo
       });
       expect(a?.nivel).toBe("critico"); // veio do branch de afastandoDeTudo, nao suprimido
+    });
+  });
+
+  describe("deveMarcarSaidaParadaConfirmada (achado da revisao independente, Task 6: condicao de transicao nunca tinha teste proprio)", () => {
+    const ctxBase = { fresco: true, alvosApiOk: true, saiuDoRaioAgora: true, dwellAnteriorSegundos: 120 };
+
+    it("saiu do raio + dwell suficiente (parada de verdade): marca", () => {
+      expect(deveMarcarSaidaParadaConfirmada(ctxBase)).toBe(true);
+    });
+
+    it("dwell insuficiente (so passou, nao parou): NAO marca -- achado da revisao, mutante que removia este check passava nos 504 testes antigos", () => {
+      expect(deveMarcarSaidaParadaConfirmada({ ...ctxBase, dwellAnteriorSegundos: 30 })).toBe(false);
+    });
+
+    it("nao saiu do raio agora: nao marca", () => {
+      expect(deveMarcarSaidaParadaConfirmada({ ...ctxBase, saiuDoRaioAgora: false })).toBe(false);
+    });
+
+    it("posicao nao fresca: nao marca (evita marcar saida com dado atrasado/travado)", () => {
+      expect(deveMarcarSaidaParadaConfirmada({ ...ctxBase, fresco: false })).toBe(false);
+    });
+
+    it("API de alvos fora do ar: nao marca -- achado da revisao (blip na API fazia saiuDoRaioAgora disparar por tabela)", () => {
+      expect(deveMarcarSaidaParadaConfirmada({ ...ctxBase, alvosApiOk: false })).toBe(false);
+    });
+
+    it("aceita limiar de dwell customizado", () => {
+      expect(deveMarcarSaidaParadaConfirmada({ ...ctxBase, dwellAnteriorSegundos: 50, dwellMinimoSegundos: 40 })).toBe(true);
+      expect(deveMarcarSaidaParadaConfirmada({ ...ctxBase, dwellAnteriorSegundos: 30, dwellMinimoSegundos: 40 })).toBe(false);
     });
   });
 });
