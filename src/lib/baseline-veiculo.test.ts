@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   atualizarBaselineWelford, zScoreBaseline, classificarTipoViagem,
-  deveForcarReadmissaoBaseline, BASELINE_N_MAXIMO,
+  deveForcarReadmissaoBaseline, decidirAdmissaoBaseline, BASELINE_N_MAXIMO,
   type Baseline,
 } from "./baseline-veiculo";
 
@@ -78,6 +78,14 @@ describe("atualizarBaselineWelford: teto de peso acumulado (BASELINE_N_MAXIMO)",
     // mover a media de forma mensuravel, nao travar em ~6 pra sempre.
     expect(b.media).toBeGreaterThan(antes + 0.05);
   });
+
+  it("apos saturar, variancia converge pra variancia real (nao cresce sem limite)", () => {
+    let b: Baseline = { n: 0, media: 0, variancia: 0 };
+    // oscila 20/40 -- media real 30, variancia real 100 (sd=10)
+    for (let i = 0; i < BASELINE_N_MAXIMO * 20; i++) b = atualizarBaselineWelford(b, i % 2 === 0 ? 20 : 40);
+    expect(b.variancia).toBeCloseTo(100, -1); // tolerancia ampla, so pra provar que NAO explode
+    expect(b.variancia).toBeLessThan(300); // bem abaixo do que o bug antigo dava (sd=200 -> variancia=40000)
+  });
 });
 
 describe("deveForcarReadmissaoBaseline", () => {
@@ -101,6 +109,32 @@ describe("deveForcarReadmissaoBaseline", () => {
     const excluidaDesde = "2026-07-28T11:00:00Z";
     const agora = new Date("2026-07-28T12:00:00Z"); // 1h depois
     expect(deveForcarReadmissaoBaseline(excluidaDesde, agora, 30 * 60 * 1000)).toBe(true); // limiar 30min
+  });
+});
+
+describe("decidirAdmissaoBaseline", () => {
+  const agora = new Date("2026-07-28T12:00:00Z");
+
+  it("cold-start (usaBaselineProprio=false): sempre admite mesmo com ehAnomalia=true", () => {
+    const r = decidirAdmissaoBaseline({ usaBaselineProprio: false, ehAnomalia: true, excluidaDesde: null, agora });
+    expect(r).toEqual({ admitir: true, marcarExclusaoAgora: false });
+  });
+
+  it("baseline proprio + anomalia + ainda dentro do prazo: exclui e marca", () => {
+    const r = decidirAdmissaoBaseline({ usaBaselineProprio: true, ehAnomalia: true, excluidaDesde: null, agora });
+    expect(r).toEqual({ admitir: false, marcarExclusaoAgora: true });
+  });
+
+  it("baseline proprio + anomalia + ja passou do prazo: admite (forcado) e nao marca de novo", () => {
+    const excluidaDesde = "2026-07-28T06:00:00Z"; // 6h atras, limiar e 4h
+    const r = decidirAdmissaoBaseline({ usaBaselineProprio: true, ehAnomalia: true, excluidaDesde, agora });
+    expect(r).toEqual({ admitir: true, marcarExclusaoAgora: false });
+  });
+
+  it("ja estava marcado + ainda anomalo + dentro do prazo: exclui mas nao marca de novo", () => {
+    const excluidaDesde = "2026-07-28T11:00:00Z"; // 1h atras, dentro do limiar de 4h
+    const r = decidirAdmissaoBaseline({ usaBaselineProprio: true, ehAnomalia: true, excluidaDesde, agora });
+    expect(r).toEqual({ admitir: false, marcarExclusaoAgora: false });
   });
 });
 
