@@ -669,49 +669,84 @@ export function montarContextoDesvio(p: {
   };
 }
 
-// Achado real 28/07 (Task 3 do plano de melhorias pos-baseline): rumo-diverge
-// dispara com !afastandoDeTudo (ver branch em detectarDesvio acima) --
+// Achado real 28/07 (Task 3, REFEITO no Task 4b apos revisao independente
+// -- BLOCK na 1a rodada): rumo-diverge dispara com !afastandoDeTudo --
 // desvioInicio (a ancora que montarContextoDesvio usa pra inicio_ts/
 // afastamento_acumulado_m) so avanca via avancarStreaksDesvio, atrelado ao
-// streak de "afastando de tudo" (desvioStreak). Na maioria dos ciclos em que
-// rumo-diverge e' o alerta vencedor, esse streak esta zerado (desvioInicio
-// null) -- so sobrevivia por ACIDENTE quando um episodio anterior de
-// "afastando de tudo" ainda nao tinha zerado (historese: 1 ciclo de
-// aproximacao congela, so o 2o zera, ver avancarStreaksDesvio). Sem ancora
-// real, route.ts gravava contexto vazio (`{}`), perdendo pra sempre
-// dist_destinos_m/divergencia_rumo_streak/etc. pra este alerta -- nao por
-// decisao, so por acidente de estado alheio.
+// streak de "afastando de tudo" (desvioStreak), entao normalmente esta null
+// quando rumo-diverge e' o alerta vencedor.
 //
-// Fix: quando nao ha desvioInicio real E a origem e' rumo_diverge, sintetiza
-// um "inicio" na posicao/instante ATUAL, com afastamento_acumulado_m=0 (nao
-// ha streak de afastamento por tras deste alerta especifico -- 0 e' o valor
-// HONESTO, nao um placeholder arbitrario).
+// A versao original (Task 3) sintetizava um "inicio" na posicao/instante
+// ATUAL quando desvioInicio era null. A revisao independente (Task 4b)
+// apontou 2 problemas nisso: (1) ambiguidade de diagnostico -- o mesmo
+// campo persistido tinha 2 significados possiveis (inicio real de um
+// episodio de afastando-de-tudo QUE SOBREVIVEU por historese, ou so a
+// posicao atual sem streak nenhum por tras), sem como distinguir os dois
+// depois; (2) deixava a verificacao de corredor da Task 4 SEM ancora
+// utilizavel no caso exato que a motivou (rodovia com curva, TTK-4D14) --
+// usar a posicao atual como origem do corredor seria tautologico (ver
+// corredor-verificacao.ts), entao o fallback so ajudava o contexto, nunca o
+// corredor.
 //
-// IMPORTANTE: isto e' seguro APENAS para persistir contexto (inicio_ts e'
-// so um rotulo, afastamento_acumulado_m so um numero informativo). NUNCA usar
-// este fallback como `origem` de verificarCorredor -- o proprio modulo
-// (corredor-verificacao.ts) documenta que a rota tem que sair de um ponto do
-// PASSADO: usar a posicao atual tornaria a checagem tautologica (toda rota
-// comecaria exatamente onde o veiculo esta, entao "esta em cima da rota que
-// sai de mim mesmo" seria sempre verdade). Por isso este helper NAO e usado
-// pelo gate de precisaVerificacaoCorredor em route.ts (que continua lendo o
-// desvioInicio REAL, possivelmente null) -- so pelo bloco de persistencia de
-// alerta/contexto, mais abaixo no fluxo.
+// Fix definitivo: rumo-diverge ganhou seu PROPRIO anchor real
+// (divergenciaRumoInicio, ver route.ts -- mesmo padrao de desvioInicio,
+// setado na transicao 0->1 da streak de divergencia de rumo, limpo quando
+// ela zera). Como rumo-diverge so dispara com divergenciaRumoStreak >= 2
+// (mesmo guard de divergenciaRumoDispara), esse anchor SEMPRE existe nesse
+// momento (foi setado quando a streak virou 1, pelo menos 1 ciclo atras) --
+// elimina de vez a ambiguidade sintetico-vs-real (so ha UM significado
+// agora, sempre real) e da' a Task 4 uma origem utilizavel pro corredor no
+// mesmo caso. NAO sintetiza mais nada a partir da posicao atual.
 export function desvioInicioEfetivoParaContexto(
   desvioInicio: DesvioInicio | null,
   origemRumoDiverge: boolean,
-  posAtual: { lat: number; lng: number },
-  agoraIso: string,
-  menorDistDestinoM: number | null
+  divergenciaRumoInicio: DesvioInicio | null
 ): DesvioInicio | null {
-  if (desvioInicio !== null) return desvioInicio;
-  if (!origemRumoDiverge) return null;
-  return {
-    lat: posAtual.lat,
-    lng: posAtual.lng,
-    ts: agoraIso,
-    menor_dist_m: menorDistDestinoM ?? 0,
-  };
+  return origemRumoDiverge ? divergenciaRumoInicio : desvioInicio;
+}
+
+// Achado IMPORTANTE da revisao independente 28/07 (Task 4b): agora que a
+// verificacao de corredor roda tambem pra rumo-diverge (Task 4), os
+// vereditos "dentro"/"fora" precisam mexer SO no streak/anchor da regra que
+// efetivamente disparou o alerta verificado -- um alerta FRACO de
+// rumo-diverge (nivel "atencao") nao pode zerar/reescrever uma streak
+// CRITICA de afastando-de-tudo em andamento em paralelo pro MESMO veiculo
+// (e vice-versa: um veredito de afastando-de-tudo nao pode mexer no streak
+// de divergencia de rumo). Os dois streaks sao INDEPENDENTES (streaks e
+// anchors distintos, guards de disparo distintos) e por isso nao podem
+// compartilhar o mesmo efeito colateral -- so por acaso os dois passam pelo
+// MESMO bloco de verificarCorredor (mesmo mecanismo, reaproveitado).
+export type StreaksDesvio = {
+  desvioStreak: number;
+  desvioInicio: DesvioInicio | null;
+  divergenciaRumoStreak: number;
+  divergenciaRumoInicio: DesvioInicio | null;
+};
+
+// Veredito "dentro" (corredor confirma que a posicao atual esta numa
+// estrada real legitima, suprime o alerta): zera SO o streak/anchor da
+// regra vencedora, preserva o outro par intocado.
+export function zerarStreakDaOrigemVencedora(
+  origemRumoDiverge: boolean,
+  atual: StreaksDesvio
+): StreaksDesvio {
+  return origemRumoDiverge
+    ? { ...atual, divergenciaRumoStreak: 0, divergenciaRumoInicio: null }
+    : { ...atual, desvioStreak: 0, desvioInicio: null };
+}
+
+// Veredito "fora" (corredor confirma o desvio, reancorando no ultimo ponto
+// confirmado dentro do corredor -- ver cache.ultimoDentro em route.ts):
+// reescreve SO o anchor da regra vencedora (nunca o streak em si, nunca o
+// outro par), preserva o outro par intocado.
+export function reancorarOrigemVencedora(
+  origemRumoDiverge: boolean,
+  atual: StreaksDesvio,
+  novoAnchor: DesvioInicio
+): StreaksDesvio {
+  return origemRumoDiverge
+    ? { ...atual, divergenciaRumoInicio: novoAnchor }
+    : { ...atual, desvioInicio: novoAnchor };
 }
 
 // Pesos do score de risco de área (0-100). Cada camada contribui

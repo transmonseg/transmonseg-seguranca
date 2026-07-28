@@ -37,6 +37,8 @@ import {
   reduzirPorTransitoInferido,
   montarContextoDesvio,
   desvioInicioEfetivoParaContexto,
+  zerarStreakDaOrigemVencedora,
+  reancorarOrigemVencedora,
   PARADA_FORA_TAPETE_MIN,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
@@ -619,7 +621,7 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em");
 
     const mapaPosAtual = new Map<
       string,
@@ -627,6 +629,10 @@ export async function POST(request: Request) {
         lat: number | null; lng: number | null; velocidade: number | null;
         parado_desde: string | null; desvio_streak: number; desvio_inicio: DesvioInicio | null;
         ultimo_evento: string | null; fora_tapete_streak: number; divergencia_rumo_streak: number;
+        // Achado CRITICO da revisao independente 28/07 (Task 4b): anchor
+        // proprio da streak de divergencia de rumo -- mesmo shape/logica de
+        // desvio_inicio, ver detalhe no bloco que calcula divergenciaRumoStreak.
+        divergencia_rumo_inicio: DesvioInicio | null;
         aproximando_streak: number;
         origem_celula: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
@@ -645,6 +651,7 @@ export async function POST(request: Request) {
         ultimo_evento: row.ultimo_evento ?? null,
         fora_tapete_streak: row.fora_tapete_streak ?? 0,
         divergencia_rumo_streak: row.divergencia_rumo_streak ?? 0,
+        divergencia_rumo_inicio: (row.divergencia_rumo_inicio as DesvioInicio | null) ?? null,
         aproximando_streak: row.aproximando_streak ?? 0,
         origem_celula: row.origem_celula ?? null,
         no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
@@ -905,6 +912,9 @@ export async function POST(request: Request) {
       entregas_total: number; local: string | null; desvio_streak: number; rumo: number | null;
       ultimo_evento: string | null; desvio_inicio: string | null; fora_tapete_streak: number;
       divergencia_rumo_streak: number;
+      // Task 4b (revisao independente 28/07): anchor proprio da streak de
+      // divergencia de rumo, mesmo shape/serializacao de desvio_inicio.
+      divergencia_rumo_inicio: string | null;
       aproximando_streak: number; origem_celula: string | null;
       no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
       ultima_via_principal_em: string | null;
@@ -1538,6 +1548,18 @@ export async function POST(request: Request) {
           // uma divergencia fabricada que pode passar do limiar e disparar
           // "atencao" falso a cada 2 ciclos parados.
           let divergenciaRumoStreak: number = anterior?.divergencia_rumo_streak ?? 0;
+          // Achado CRITICO da revisao independente 28/07 (Task 4b): anchor
+          // PROPRIO da streak de divergencia de rumo, espelhando EXATAMENTE
+          // o padrao ja usado por desvioInicio/desvioStreak acima (mesmo
+          // shape DesvioInicio, mesma logica de setar na transicao 0->1 e
+          // limpar quando a streak zera). Sem isto, a Task 4 (ligar
+          // verificarCorredor em rumo-diverge) era wiring MORTO no caso
+          // exato que a motivou: rumo-diverge disparando SEM nenhum episodio
+          // de "afastando de tudo" antes (desvioInicio null) -- justamente o
+          // padrao rodovia-com-curva (TTK-4D14) que a Task 4 existe pra
+          // cobrir -- porque o gate de verificarCorredor exigia desvioInicio
+          // nao-nulo, e esse so pertence a streak de afastando-de-tudo.
+          let divergenciaRumoInicio: DesvioInicio | null = anterior?.divergencia_rumo_inicio ?? null;
           // Achado real 26/07 (Fase 2): valor CRU do ciclo atual (nao
           // acumulado em streak), exposto pra viradaErradaSaindoDeParada
           // poder decidir com 1 leitura so -- reaproveita o MESMO calculo
@@ -1553,12 +1575,26 @@ export async function POST(request: Request) {
             );
             divergenciaGrausAtual = divergencia;
             if (divergenciaRumoAcimaDoLimiar(divergencia)) {
+              const streakAnteriorDivergencia = divergenciaRumoStreak;
               divergenciaRumoStreak += 1;
+              // Transicao 0->1: mesma logica do desvioInicio acima (anterior!
+              // seguro aqui -- podeAvancarStreaksDesvio so e true quando ha
+              // ciclo anterior, ver devAvancarStreaksDesvio).
+              if (streakAnteriorDivergencia === 0) {
+                divergenciaRumoInicio = {
+                  lat: anterior!.lat!,
+                  lng: anterior!.lng!,
+                  ts: agora.toISOString(),
+                  menor_dist_m: distDestinosAnteriorM.length > 0 ? Math.min(...distDestinosAnteriorM) : 0,
+                };
+              }
             } else {
               divergenciaRumoStreak = 0;
+              divergenciaRumoInicio = null;
             }
           } else {
             divergenciaRumoStreak = 0;
+            divergenciaRumoInicio = null;
           }
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
@@ -2080,34 +2116,58 @@ export async function POST(request: Request) {
           let desvioSuprimidoPorCorredor = false;
 
           // ─── Verificação por corredor real (Camada 1 do desvio) ─────────
-          // Só intercepta desvio comportamental ("Afastando-se..."), nunca
-          // pânico/jammer/etc. A rota SEMPRE sai de desvioInicio (ponto FIXO,
-          // anterior ao início da suspeita) até o destino -- NUNCA da posição
-          // atual (ver comentário em verificarCorredor sobre o incidente de
-          // 10/07). Sem desvioInicio ainda gravado, não dá pra verificar:
-          // deixa passar como hoje (fail-open). Fluxo: cache primeiro (zero
-          // API); sem cache ou fora dele, verifica com OSRM/Valhalla
-          // (throttled, orçamento por ciclo). "dentro" = a posição atual está
-          // numa estrada real que sai de onde o desvio começou e leva a um
-          // destino legítimo: suprime e zera o streak. "fora" = confirma, e
-          // o início real do desvio é onde saiu do corredor. "indisponivel"
-          // = comporta exatamente como hoje (fail-open).
+          // Intercepta desvio comportamental ("Afastando-se...") E, desde a
+          // Task 4 (achado 28/07), rumo-diverge tambem -- nunca panico/
+          // jammer/etc. A rota SEMPRE sai de um ponto FIXO do PASSADO (nunca
+          // da posicao atual, ver comentario em verificarCorredor sobre o
+          // incidente de 10/07) ate o destino. Sem esse ponto ainda gravado,
+          // nao da pra verificar: deixa passar como hoje (fail-open). Fluxo:
+          // cache primeiro (zero API); sem cache ou fora dele, verifica com
+          // OSRM/Valhalla (throttled, orçamento por ciclo). "dentro" = a
+          // posição atual está numa estrada real que sai de onde a suspeita
+          // começou e leva a um destino legítimo: suprime e zera o streak.
+          // "fora" = confirma, e o início real do desvio é onde saiu do
+          // corredor. "indisponivel" = comporta exatamente como hoje
+          // (fail-open).
+          //
+          // Achado CRITICO da revisao independente 28/07 (Task 4b): ate
+          // aqui, o gate e os efeitos "dentro"/"fora" so conheciam
+          // desvioInicio/desvioStreak (o anchor/streak de "afastando de
+          // tudo") -- rumo-diverge (Task 4) dispara justamente quando NAO ha
+          // afastamento de tudo, entao desvioInicio fica null exatamente no
+          // caso que motivou a Task 4 (rodovia com curva, TTK-4D14), e o
+          // wiring nunca rodava pra esse caso. Fix: qual anchor/streak usar
+          // -- pra decidir SE roda a verificacao, qual origem passar pro
+          // OSRM/Valhalla, e quais campos os vereditos "dentro"/"fora"
+          // reescrevem -- passa a depender de QUAL regra e' a vencedora
+          // atual (origemRumoDivergeGanhou), nao mais de um unico
+          // desvioInicio compartilhado. Isso tambem resolve o achado
+          // IMPORTANTE da mesma revisao: um alerta FRACO de rumo-diverge
+          // (nivel "atencao") nao pode zerar/reescrever a streak CRITICA de
+          // afastando-de-tudo de outro episodio em andamento (e vice-versa)
+          // -- os dois streaks sao independentes e nao podem compartilhar o
+          // mesmo efeito colateral.
+          const origemRumoDivergeGanhou = alerta?.tipo === "desvio" && alerta.origemDesvio === "rumo_diverge";
+          // Mesma funcao usada pra Task 3 (contexto persistido) -- a
+          // escolha de qual anchor usar (Step 3b) e' identica nos dois
+          // lugares, ver desvioInicioEfetivoParaContexto em detectores.ts.
+          const anchorCorredor = desvioInicioEfetivoParaContexto(desvioInicio, origemRumoDivergeGanhou, divergenciaRumoInicio);
           let corredorInfo: { veredito: "dentro" | "fora" | "indisponivel" | "orcamento_estourado"; bufferM: number } | null = null;
           if (
             CAMADA_CORREDOR_ATIVA &&
             alerta?.tipo === "desvio" &&
             alerta.precisaVerificacaoCorredor === true &&
             pos.fresco &&
-            desvioInicio
+            anchorCorredor
           ) {
-            const origem = { lat: desvioInicio.lat, lng: desvioInicio.lng };
+            const origem = { lat: anchorCorredor.lat, lng: anchorCorredor.lng };
             const pendentesChave = pendentes.map((pt) => pt.codigo ?? `${pt.lat},${pt.lng}`).sort().join(",");
             const cache = cacheCorredorPorVeiculo.get(veiculo_id);
             const cacheValido =
               cache &&
               cache.expiraEm > Date.now() &&
               cache.pendentesChave === pendentesChave &&
-              cache.origemTs === desvioInicio.ts &&
+              cache.origemTs === anchorCorredor.ts &&
               !paradaLongaInvalidaCache(anterior?.velocidade ?? null, anterior?.parado_desde ?? null, agora.getTime());
 
             if (cacheValido && cache && dentroDoCorredor(pos, cache.polilinha, bufferPorVelocidade(pos.velocidade))) {
@@ -2120,8 +2180,10 @@ export async function POST(request: Request) {
               // de vez, so operador humano resolve/marca falso positivo).
               alerta = null;
               desvioSuprimidoPorCorredor = true;
-              desvioStreak = 0;
-              desvioInicio = null;
+              ({ desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio } = zerarStreakDaOrigemVencedora(
+                origemRumoDivergeGanhou,
+                { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio }
+              ));
             } else if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
               chamadasCorredorNoCiclo++;
               const bufferAtual = bufferPorVelocidade(pos.velocidade);
@@ -2138,22 +2200,29 @@ export async function POST(request: Request) {
                   polilinha: r.corredor,
                   ultimoDentro: { lat: pos.lat, lng: pos.lng },
                   pendentesChave,
-                  origemTs: desvioInicio.ts,
+                  origemTs: anchorCorredor.ts,
                   expiraEm: Date.now() + CORREDOR_CACHE_MS,
                 });
                 alerta = null;
                 desvioSuprimidoPorCorredor = true;
-                desvioStreak = 0;
-                desvioInicio = null;
+                ({ desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio } = zerarStreakDaOrigemVencedora(
+                  origemRumoDivergeGanhou,
+                  { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio }
+                ));
               } else if (r.veredito === "fora") {
                 // Confirma o desvio. Início REAL: onde saiu do corredor.
                 if (cacheValido && cache) {
-                  desvioInicio = {
+                  const novoAnchor: DesvioInicio = {
                     lat: cache.ultimoDentro.lat,
                     lng: cache.ultimoDentro.lng,
                     ts: agora.toISOString(),
-                    menor_dist_m: desvioInicio?.menor_dist_m ?? 0,
+                    menor_dist_m: anchorCorredor.menor_dist_m,
                   };
+                  ({ desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio } = reancorarOrigemVencedora(
+                    origemRumoDivergeGanhou,
+                    { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio },
+                    novoAnchor
+                  ));
                 }
                 cacheCorredorPorVeiculo.delete(veiculo_id);
               }
@@ -2162,6 +2231,14 @@ export async function POST(request: Request) {
               // Orçamento estourado: deixa o alerta seguir como hoje (fail-open),
               // so registra que aconteceu (achado real 10/07: antes disso nao
               // ficava nenhum rastro de que o alerta passou sem verificacao).
+              // Achado IMPORTANTE da revisao independente 28/07 (Task 4b,
+              // Step 5): rumo-diverge agora disputa o MESMO orcamento
+              // compartilhado (ORCAMENTO_CORREDOR_POR_CICLO) que
+              // afastando-de-tudo (alertas CRITICOS). Aceito por ora -- o
+              // fail-open ja existente cobre o caso de orcamento estourado
+              // (o alerta sobrevive normalmente, so sem corroboracao) -- mas
+              // documentado explicitamente aqui pra nao ser "descoberta" de
+              // novo numa auditoria futura como se fosse um bug novo.
               corredorInfo = { veredito: "orcamento_estourado", bufferM: bufferPorVelocidade(pos.velocidade) };
             }
           }
@@ -2311,6 +2388,7 @@ export async function POST(request: Request) {
             desvio_inicio: desvioInicio ? JSON.stringify(desvioInicio) : null,
             fora_tapete_streak: foraTapeteStreak,
             divergencia_rumo_streak: divergenciaRumoStreak,
+            divergencia_rumo_inicio: divergenciaRumoInicio ? JSON.stringify(divergenciaRumoInicio) : null,
             aproximando_streak: aproximandoStreak,
             origem_celula: origemCelula,
             no_raio_alvo_codigo: noRaioAlvoCodigo,
@@ -2526,34 +2604,30 @@ export async function POST(request: Request) {
               // errado, sem "inicio de desvio" por movimento separado).
               const origemClasseViaria = alerta.origemDesvio === "classe_viaria";
               const origemSaidaParada = alerta.origemDesvio === "saida_parada";
-              // Achado real 28/07 (Task 3 do plano de melhorias pos-baseline,
-              // mesma familia de bug do fix de classe_viaria/saida_parada
-              // acima): rumo_diverge (ver detectores.ts) dispara com
-              // !afastandoDeTudo -- desvioInicio (ancorado pelo streak de
-              // "afastando de tudo") normalmente ainda esta null quando ELA
-              // e' a causa primaria do alerta, so sobrevivendo por acidente
-              // quando um episodio anterior de afastando-de-tudo ainda nao
-              // tinha zerado (historese). DIFERENTE de classe_viaria/
-              // saida_parada (que sao EXCLUIDAS de ehDesvio, sempre posicao
-              // ATUAL, contexto simples sem dist_destinos_m): rumo_diverge
-              // especificamente PRECISA do contexto RICO de
-              // montarContextoDesvio (dist_destinos_m/dist_destinos_anterior_m/
-              // divergencia_rumo_streak -- exatamente o dado que este Task
-              // existe pra parar de perder) -- por isso ela e' INCLUIDA em
-              // ehDesvio via o fallback de desvioInicioEfetivoParaContexto
-              // (sintetiza um "inicio" na posicao/instante atual quando nao
-              // ha ancora real, ver detectores.ts). Este fallback e' seguro
-              // APENAS aqui (persistencia de contexto) -- a verificacao de
-              // corredor (Task 4, bloco mais acima) continua lendo o
-              // desvioInicio REAL (nao este), pra nao tornar a checagem
-              // tautologica (ver corredor-verificacao.ts).
+              // Achado real 28/07 (Task 3, REFEITO no Task 4b apos revisao
+              // independente -- BLOCK na 1a rodada): rumo_diverge (ver
+              // detectores.ts) dispara com !afastandoDeTudo -- desvioInicio
+              // (ancorado pelo streak de "afastando de tudo") normalmente
+              // esta null quando ELA e' a causa primaria do alerta.
+              // DIFERENTE de classe_viaria/saida_parada (que sao EXCLUIDAS
+              // de ehDesvio, sempre posicao ATUAL, contexto simples sem
+              // dist_destinos_m): rumo_diverge especificamente PRECISA do
+              // contexto RICO de montarContextoDesvio (dist_destinos_m/
+              // dist_destinos_anterior_m/divergencia_rumo_streak -- exatamente
+              // o dado que a Task 3 existe pra parar de perder) -- por isso
+              // ela e' INCLUIDA em ehDesvio via desvioInicioEfetivoParaContexto,
+              // que agora usa o anchor PROPRIO e sempre-real da streak de
+              // divergencia de rumo (divergenciaRumoInicio, Task 4b -- ja
+              // nao sintetiza mais nada da posicao atual, ver detectores.ts).
+              // Esse MESMO anchor tambem alimenta a verificacao de corredor
+              // da Task 4 (bloco mais acima) quando rumo_diverge e' a regra
+              // vencedora -- um so anchor real, usado nos dois lugares, sem
+              // ambiguidade sintetico-vs-real.
               const origemRumoDiverge = alerta.origemDesvio === "rumo_diverge";
               const desvioInicioParaContexto = desvioInicioEfetivoParaContexto(
                 desvioInicio,
                 origemRumoDiverge,
-                pos,
-                agora.toISOString(),
-                menorDistDestinoM
+                divergenciaRumoInicio
               );
               const ehDesvio = alerta.tipo === "desvio" && desvioInicioParaContexto !== null && !origemClasseViaria && !origemSaidaParada;
               const ehParadaForaTapete = alerta.tipo === "parada_fora_tapete";
@@ -2751,7 +2825,7 @@ export async function POST(request: Request) {
               ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
               divergencia_rumo_streak, aproximando_streak, origem_celula,
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
-              ultima_via_principal_em)
+              ultima_via_principal_em, divergencia_rumo_inicio)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -2762,20 +2836,20 @@ export async function POST(request: Request) {
              c.desvio_inicio::jsonb, c.fora_tapete_streak, c.divergencia_rumo_streak,
              c.aproximando_streak, c.origem_celula, c.no_raio_alvo_codigo,
              c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
-             c.ultima_via_principal_em::timestamptz
+             c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
-             $26::text[], $27::integer[], $28::text[]
+             $26::text[], $27::integer[], $28::text[], $29::text[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
                   ultimo_evento, desvio_inicio, fora_tapete_streak, divergencia_rumo_streak,
                   aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
-                  no_raio_dwell_segundos, ultima_via_principal_em)
+                  no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -2806,7 +2880,8 @@ export async function POST(request: Request) {
              no_raio_alvo_codigo = EXCLUDED.no_raio_alvo_codigo,
              no_raio_desde       = EXCLUDED.no_raio_desde,
              no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos,
-             ultima_via_principal_em = EXCLUDED.ultima_via_principal_em`,
+             ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
+             divergencia_rumo_inicio = EXCLUDED.divergencia_rumo_inicio`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -2836,6 +2911,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.no_raio_desde),
             posicoesCiclo.map((p) => p.no_raio_dwell_segundos),
             posicoesCiclo.map((p) => p.ultima_via_principal_em),
+            posicoesCiclo.map((p) => p.divergencia_rumo_inicio),
           ]
         );
       } catch (errPosicoes) {

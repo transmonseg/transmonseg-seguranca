@@ -230,6 +230,17 @@ NOTIFY pgrst, 'reload schema';
 
 **Risco:** baixo (é so um numero), mas a DECISAO de mudar ou nao precisa ser baseada em dado, nao em suposicao -- essa e a unica tarefa deste plano que pode legitimamente terminar em "nao mexer em nada".
 
+**RESULTADO (28/07, concluído):** levantados os 19 falsos positivos de rumo-diverge de hoje (não só os 3 iniciais), com a velocidade reportada exata no momento do disparo:
+
+| velocidade (km/h) | placas |
+|---|---|
+| 11 | TTE-6D60 |
+| 15-22 | TTM-7C10, TTI-6D27, TTF-5I10 |
+| 30-59 | TUL-1C38, TUC-1D15 (x2), RQQ-1B52 (x2), TTH-6H80, TTF-9C07, TOS-4J82, RQU-0B47 |
+| 68-90 | TTK-4D15, TTH-3C94, TUL-1H29, TTK-4D14, RQQ-1B52, TUL-1C38 |
+
+Só **1 de 19** (5%) está perto do limiar atual (10km/h) — o resto (95%) está bem acima, com 14/19 (74%) a 40km/h ou mais. **Não há padrão de jitter em baixa velocidade que justifique subir o limiar** — a distribuição real confirma que o problema dominante é o de rodovia/curva (Task 4/4b, corredor real), não quase-parado. **Decisão: manter `DIVERGENCIA_RUMO_VELOCIDADE_MIN_KMH = 10` sem alteração.** Nenhum código mudado nesta tarefa.
+
 ---
 
 ## Task 8: Investigar (não corrigir às cegas) a suspeita de via mal classificada no corredor Tancredo Neves
@@ -245,6 +256,13 @@ Checagem prévia das células candidatas (~-22.51,-44.09, vizinhança 3x3) mostr
 **Step 3 (só se confirmado como erro real):** `UPDATE vias_celulas SET classe = '<classe correta>' WHERE celula = '<celula>';` direto no Contabo, célula por célula confirmada — nunca em lote/regex sem checar cada uma. Documentar cada correção com a evidência que a justificou (mesmo padrão de todo o resto desta sessão: nunca corrigir por extrapolação).
 
 **Risco:** nenhum se ficar só na investigação; baixo-médio se uma correção pontual for aplicada (afeta só os veículos que passam por aquela célula específica).
+
+**RESULTADO (28/07, concluído, SEM correção aplicada):** achado o candidato mais forte — TUI-0H19 com 3 leituras seguidas a 39km/h na célula `-22517:-44093` (classe `estreita`). Duas coisas descartaram a hipótese de correção:
+
+1. **Artefato de GPS congelado:** as 3 leituras de 39km/h (12:32:41 a 12:33:37) têm o EXATO mesmo lat/lng — a posição travou enquanto o sensor de velocidade continuou reportando um valor real. Não é uma travessia limpa de 39km/h numa rua estreita, é o mesmo artefato de "posição congelada com velocidade real" já visto noutras partes desta sessão (jammer/GPS).
+2. **Não é uma célula isolada, é uma área contígua grande:** o bloco `estreita` ao redor (`-22514` a `-22518`, múltiplas colunas de longitude) tem 15 células contíguas, com `principal` só na linha imediatamente ao norte (`-22513`) — padrão consistente com "rede de ruas locais genuína ao lado de uma via arterial", não com uma via mal-taggeada isoladamente.
+
+**Decisão: nenhuma correção em `vias_celulas`.** A evidência disponível não atinge o padrão "corrigir só com evidência do caso exato" — é ambígua o bastante (contaminada por artefato de GPS, célula não-isolada) pra não justificar mexer em dado de produção. Mesmo princípio já aplicado ao caso PetroMasa mais cedo nesta sessão (fechado como "não é bug" após checar dado real).
 
 ---
 
@@ -273,6 +291,85 @@ WHERE jobname = 'limpar-casos-desvio-revisao';
 **Nota:** não mexer em `limparVarios` (status `limpo`) nesta tarefa — aquele caso é estruturalmente diferente (operador não afirma nada sobre o caso, por design não deveria alimentar calibração de qualquer forma) e está fora do escopo desta assimetria especificamente.
 
 **Risco:** baixo — só um intervalo de retenção, sem mudança de schema/lógica.
+
+---
+
+## Task 4b: Fix round 1 — achados da revisão independente (BLOCK)
+
+A revisão das Tasks 2-4 achou 1 CRÍTICO + 2 IMPORTANTES. Verdict: BLOCK. Detalhe completo já discutido; aqui a correção exata.
+
+### 4b.1 — CRÍTICO: Task 4 é wiring morto no caso exato que motivou ela
+
+`route.ts:2101` exige `desvioInicio` não-nulo pra rodar `verificarCorredor` — mas pela própria premissa da Task 3, `desvioInicio` (o anchor da streak de "afastando de tudo") fica null quando rumo-diverge dispara sem episódio de afastamento antes (exatamente o caso TTK-4D14, rodovia, sem afastar de nada, só divergindo em linha reta). Resultado: a checagem de corredor nunca roda pro caso que ela devia cobrir.
+
+**Fix:** criar um anchor PRÓPRIO pra streak de divergência de rumo, espelhando EXATAMENTE o padrão já usado por `desvioInicio`/`desvioStreak` (mesmo shape `DesvioInicio {lat,lng,ts,menor_dist_m}`, mesma lógica de setar na transição 0→1 e limpar quando a streak zera).
+
+**Step 1 — Migration:** `scripts/migrations/contabo/013_divergencia_rumo_inicio.sql`
+```sql
+-- scripts/migrations/contabo/013_divergencia_rumo_inicio.sql
+--
+-- Achado CRITICO da revisao independente 28/07 (Tasks 2-4, rumo-diverge):
+-- o wiring de verificarCorredor (Task 4) exigia desvioInicio nao-nulo, mas
+-- esse e' o anchor da streak de AFASTANDO DE TUDO -- fica null exatamente
+-- no caso que motivou a Task 4 (rodovia com curva, divergindo em linha
+-- reta SEM afastar de nada). Anchor proprio, mesmo padrao de desvio_inicio,
+-- pra streak de divergencia de rumo.
+ALTER TABLE posicoes_atuais ADD COLUMN IF NOT EXISTS divergencia_rumo_inicio jsonb NULL DEFAULT NULL;
+
+NOTIFY pgrst, 'reload schema';
+```
+
+**Step 2 — `route.ts`:** ler o campo novo junto com os demais (mesmo select/map que já lê `desvio_inicio`, ~linha 622-644), tipar como `DesvioInicio | null` (reusar o tipo já existente, mesmo shape).
+
+No bloco de cálculo de `divergenciaRumoStreak` (~linha 1539-1561), espelhar exatamente a lógica de `desvioInicio` (~linha 1362, 1384-1393):
+
+```ts
+          let divergenciaRumoStreak: number = anterior?.divergencia_rumo_streak ?? 0;
+          let divergenciaRumoInicio: DesvioInicio | null = anterior?.divergencia_rumo_inicio ?? null;
+          let divergenciaGrausAtual: number | null = null;
+          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
+            const divergencia = divergenciaRumoGraus(
+              anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
+              destinos[idxMaisProximo].lat, destinos[idxMaisProximo].lng,
+              pos.velocidade
+            );
+            divergenciaGrausAtual = divergencia;
+            if (divergenciaRumoAcimaDoLimiar(divergencia)) {
+              const streakAnterior = divergenciaRumoStreak;
+              divergenciaRumoStreak += 1;
+              if (streakAnterior === 0) {
+                divergenciaRumoInicio = {
+                  lat: anterior!.lat!,
+                  lng: anterior!.lng!,
+                  ts: agora.toISOString(),
+                  menor_dist_m: distDestinosAnteriorM.length > 0 ? Math.min(...distDestinosAnteriorM) : 0,
+                };
+              }
+            } else {
+              divergenciaRumoStreak = 0;
+              divergenciaRumoInicio = null;
+            }
+          } else {
+            divergenciaRumoStreak = 0;
+            divergenciaRumoInicio = null;
+          }
+```
+
+Persistir `divergencia_rumo_inicio` no mesmo INSERT/UPSERT em lote que já grava `desvio_inicio`/`divergencia_rumo_streak` (~linha 2311, 2751-2830) — mesma serialização (`JSON.stringify(...)` se não-nulo, `null` senão).
+
+**Step 3 — usar o anchor novo em DOIS lugares:**
+
+(a) **Task 3 (contexto):** trocar a lógica de `desvioInicioEfetivoParaContexto` (a função que a Task 3 criou) pra, quando `origemDesvio === "rumo_diverge"`, usar `divergenciaRumoInicio` (o anchor REAL da própria streak) em vez de sintetizar da posição atual. Como rumo-diverge só dispara com `divergenciaRumoStreak >= 2` (mesmo guard de `divergenciaRumoDispara`), o anchor SEMPRE existe nesse momento (foi setado quando a streak virou 1, pelo menos 1 ciclo atrás) — elimina de vez a ambiguidade "sintético vs real" achada pela revisão (não precisa mais de dois casos/dois significados pro mesmo campo).
+
+(b) **Task 4 (corredor):** no ponto que decide se roda `verificarCorredor` (~linha 2096-2102), quando o alerta vencedor é rumo-diverge, usar `divergenciaRumoInicio` como origem em vez de `desvioInicio` (que continua sendo usado, sem mudança, pros alertas de afastando-de-tudo). Ou seja: a escolha de qual anchor usar como origem do corredor passa a depender de QUAL regra disparou, não mais de um único `desvioInicio` compartilhado.
+
+**Step 4 — endereçar os efeitos colaterais de `precisaVerificacaoCorredor` (achado IMPORTANTE):** ler o bloco que aplica os vereditos "dentro"/"fora" (~linha 2121-2157) — hoje ele SEMPRE mexe em `desvioStreak`/`desvioInicio` (zera em "dentro", reescreve em "fora"). Como agora um alerta de rumo-diverge também passa por esse bloco, mas o anchor relevante pra ELE é `divergenciaRumoInicio` (não `desvioInicio`), decidir explicitamente: os efeitos de "dentro"/"fora" devem mexer no anchor CORRESPONDENTE à regra que disparou (afastando-de-tudo mexe em desvioStreak/desvioInicio como já faz; rumo-diverge deveria mexer em divergenciaRumoStreak/divergenciaRumoInicio, não no do afastando-de-tudo). Implementar essa separação e documentar a decisão com um comentário explicando por que os dois streaks não podem compartilhar o mesmo efeito colateral (um alerta fraco de rumo-diverge não deveria zerar uma streak crítica de afastando-de-tudo em andamento).
+
+**Step 5 — contenção de orçamento (achado IMPORTANTE, menor prioridade mas documentar):** `ORCAMENTO_CORREDOR_POR_CICLO`/`RESERVA_COMPORTAMENTAL_POR_CICLO` — agora que rumo-diverge realmente consome chamadas de corredor, ele disputa o mesmo orçamento que afastando-de-tudo (crítico). Não precisa resolver isso nesta rodada (o comportamento fail-open já existe — alerta sobrevive mesmo com `orcamento_estourado`), mas documentar explicitamente no código que essa disputa existe e é aceita por ora, pra não ser "descoberta" de novo numa auditoria futura.
+
+**Step 6 — testes:** cobrir o cenário exato que motivou a Task 4 — rumo-diverge dispara SEM nenhum episódio de afastando-de-tudo (desvioInicio null), streak de divergência >= 2 (divergenciaRumoInicio não-nulo) — confirmar que a checagem de corredor RODA (não fica mais inerte). Cobrir também: efeito "dentro"/"fora" de rumo-diverge não deve mexer em desvioStreak/desvioInicio de uma streak de afastando-de-tudo em paralelo.
+
+**Risco:** alto — é o coração do achado crítico; revisão independente obrigatória de novo antes de deploy.
 
 ---
 

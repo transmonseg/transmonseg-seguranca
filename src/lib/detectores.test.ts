@@ -31,6 +31,8 @@ import {
   aplicarBonusClasseViaria,
   montarContextoDesvio,
   desvioInicioEfetivoParaContexto,
+  zerarStreakDaOrigemVencedora,
+  reancorarOrigemVencedora,
   viradaErradaSaindoDeParada,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
@@ -1729,37 +1731,48 @@ describe("montarContextoDesvio (achado 26/07: contexto expandido pra analise de 
   });
 });
 
-describe("desvioInicioEfetivoParaContexto (Task 3, achado 28/07: rumo-diverge nao pode perder contexto so por nao ter desvioInicio real)", () => {
-  const posAtual = { lat: -22.91, lng: -43.21 };
-  const agoraIso = "2026-07-28T12:00:00.000Z";
+describe("desvioInicioEfetivoParaContexto (Task 3, REFEITO no Task 4b apos revisao independente: usa o anchor PROPRIO e sempre-real de rumo-diverge, ja nao sintetiza mais nada da posicao atual)", () => {
+  const desvioInicioReal = { lat: -22.9, lng: -43.2, ts: "2026-07-28T11:55:00.000Z", menor_dist_m: 5000 };
+  const divergenciaRumoInicioReal = { lat: -22.92, lng: -43.22, ts: "2026-07-28T11:58:00.000Z", menor_dist_m: 6300 };
 
-  it("desvioInicio real (nao-null): retorna ele mesmo, independente de origemRumoDiverge (preserva o caso 'acidental' ja existente)", () => {
-    const real = { lat: -22.9, lng: -43.2, ts: "2026-07-28T11:55:00.000Z", menor_dist_m: 5000 };
-    expect(desvioInicioEfetivoParaContexto(real, true, posAtual, agoraIso, 4800)).toBe(real);
-    expect(desvioInicioEfetivoParaContexto(real, false, posAtual, agoraIso, 4800)).toBe(real);
+  it("origemRumoDiverge=false (comportamental/cerca_virtual/etc.): retorna desvioInicio, ignora divergenciaRumoInicio (comportamento de hoje, inalterado)", () => {
+    expect(desvioInicioEfetivoParaContexto(desvioInicioReal, false, divergenciaRumoInicioReal)).toBe(desvioInicioReal);
+    expect(desvioInicioEfetivoParaContexto(null, false, divergenciaRumoInicioReal)).toBeNull();
   });
 
-  it("desvioInicio null e origemRumoDiverge=false (ex: comportamental/cerca_virtual): retorna null (preserva comportamento de hoje)", () => {
-    expect(desvioInicioEfetivoParaContexto(null, false, posAtual, agoraIso, 4800)).toBeNull();
+  it("origemRumoDiverge=true: retorna SEMPRE divergenciaRumoInicio, ignora desvioInicio (mesmo se este tambem estiver preenchido -- elimina a ambiguidade sintetico-vs-real achada pela revisao)", () => {
+    expect(desvioInicioEfetivoParaContexto(desvioInicioReal, true, divergenciaRumoInicioReal)).toBe(divergenciaRumoInicioReal);
+    expect(desvioInicioEfetivoParaContexto(null, true, divergenciaRumoInicioReal)).toBe(divergenciaRumoInicioReal);
   });
 
-  it("desvioInicio null e origemRumoDiverge=true: sintetiza um inicio na posicao/instante ATUAL (fix real do Task 3)", () => {
-    const efetivo = desvioInicioEfetivoParaContexto(null, true, posAtual, agoraIso, 4800);
-    expect(efetivo).toEqual({ lat: posAtual.lat, lng: posAtual.lng, ts: agoraIso, menor_dist_m: 4800 });
+  it("origemRumoDiverge=true mas divergenciaRumoInicio null (nao deveria acontecer na pratica -- rumo-diverge so dispara com streak>=2, que garante o anchor -- defensivo): retorna null, NAO sintetiza mais nada da posicao atual", () => {
+    expect(desvioInicioEfetivoParaContexto(desvioInicioReal, true, null)).toBeNull();
+    expect(desvioInicioEfetivoParaContexto(null, true, null)).toBeNull();
   });
 
-  it("desvioInicio null, origemRumoDiverge=true, menorDistDestinoM null (sem destinos -- nao deveria acontecer na pratica, defensivo): usa 0", () => {
-    const efetivo = desvioInicioEfetivoParaContexto(null, true, posAtual, agoraIso, null);
-    expect(efetivo?.menor_dist_m).toBe(0);
+  // Step 6 (Task 4b): esta e' a REGRESSAO exata do achado CRITICO da revisao
+  // independente. route.ts usa esta MESMA funcao pra decidir o `anchorCorredor`
+  // que abre o gate de verificarCorredor (`... && anchorCorredor`, ver
+  // route.ts). Antes do fix, o gate lia so desvioInicio (null neste cenario)
+  // e a checagem de corredor NUNCA rodava pro caso exato que motivou a Task
+  // 4 -- rumo-diverge disparando SEM nenhum episodio de "afastando de tudo"
+  // (rodovia com curva, TTK-4D14: 84-88km/h, sem afastar de nada, so
+  // divergindo em linha reta). Com o anchor proprio, o gate agora resolve
+  // NAO-NULO neste cenario -- a checagem de corredor RODA de verdade.
+  it("Step 6 -- cenario exato da Task 4 (TTK-4D14): rumo-diverge dispara SEM episodio de afastando-de-tudo (desvioInicio null); o anchor que abre o gate de verificarCorredor agora resolve NAO-NULO (antes do fix, o gate ficava morto)", () => {
+    const desvioInicioAusente = null; // sem afastando-de-tudo em curso
+    const anchorQueAbreOGate = desvioInicioEfetivoParaContexto(desvioInicioAusente, true, divergenciaRumoInicioReal);
+    expect(anchorQueAbreOGate).not.toBeNull();
+    expect(anchorQueAbreOGate).toBe(divergenciaRumoInicioReal);
   });
 
-  it("o fallback sintetizado, passado pra montarContextoDesvio, produz afastamento_acumulado_m=0 (honesto: sem streak de afastamento por tras deste alerta) e preserva dist_destinos_m", () => {
-    const efetivo = desvioInicioEfetivoParaContexto(null, true, posAtual, agoraIso, 6300)!;
+  it("o anchor real de rumo-diverge, passado pra montarContextoDesvio, preserva dist_destinos_m/divergencia_rumo_streak e calcula afastamento_acumulado_m a partir do anchor REAL (nao mais fixo em 0)", () => {
+    const efetivo = desvioInicioEfetivoParaContexto(null, true, divergenciaRumoInicioReal)!;
     const ctx = montarContextoDesvio({
       desvioInicio: efetivo,
       dentroTapete: null,
       corredorInfo: undefined,
-      distDestinosM: [6300, 9000],
+      distDestinosM: [6000, 9000],
       distDestinosAnteriorM: [7000, 9500],
       desvioStreak: 0,
       foraTapeteStreak: 0,
@@ -1771,11 +1784,66 @@ describe("desvioInicioEfetivoParaContexto (Task 3, achado 28/07: rumo-diverge na
       segmentoEspecifico: "origem:rumo_diverge",
       taxaFp: undefined,
     });
-    expect(ctx.afastamento_acumulado_m).toBe(0);
-    expect(ctx.dist_destinos_m).toEqual([6300, 9000]);
+    expect(ctx.inicio_ts).toBe(divergenciaRumoInicioReal.ts);
+    expect(ctx.afastamento_acumulado_m).toBe(6000 - divergenciaRumoInicioReal.menor_dist_m); // -300, real, nao mais 0 fixo
+    expect(ctx.dist_destinos_m).toEqual([6000, 9000]);
     expect(ctx.dist_destinos_anterior_m).toEqual([7000, 9500]);
     expect(ctx.divergencia_rumo_streak).toBe(2);
     expect(ctx.calibracao).toEqual({ segmento: "origem:rumo_diverge", taxa_falso_positivo: -1 });
+  });
+});
+
+// Step 6 (Task 4b): achado IMPORTANTE da revisao independente -- os
+// vereditos "dentro"/"fora" da verificacao de corredor tem que mexer SO no
+// streak/anchor da regra que efetivamente disparou o alerta verificado. Um
+// alerta FRACO de rumo-diverge nao pode zerar/reescrever uma streak CRITICA
+// de afastando-de-tudo em andamento em paralelo (e vice-versa).
+describe("zerarStreakDaOrigemVencedora / reancorarOrigemVencedora (Task 4b, achado IMPORTANTE da revisao independente)", () => {
+  const desvioInicioEmAndamento = { lat: -22.9, lng: -43.2, ts: "2026-07-28T11:50:00.000Z", menor_dist_m: 8000 };
+  const divergenciaRumoInicioEmAndamento = { lat: -22.91, lng: -43.21, ts: "2026-07-28T11:58:00.000Z", menor_dist_m: 6300 };
+  const estadoBase = {
+    desvioStreak: 5,
+    desvioInicio: desvioInicioEmAndamento,
+    divergenciaRumoStreak: 3,
+    divergenciaRumoInicio: divergenciaRumoInicioEmAndamento,
+  };
+
+  describe("zerarStreakDaOrigemVencedora (veredito 'dentro')", () => {
+    it("origemRumoDiverge=true: zera SO divergenciaRumoStreak/divergenciaRumoInicio -- desvioStreak/desvioInicio (streak CRITICA de afastando-de-tudo em paralelo) ficam INTOCADOS", () => {
+      const r = zerarStreakDaOrigemVencedora(true, estadoBase);
+      expect(r.divergenciaRumoStreak).toBe(0);
+      expect(r.divergenciaRumoInicio).toBeNull();
+      expect(r.desvioStreak).toBe(5);
+      expect(r.desvioInicio).toBe(desvioInicioEmAndamento);
+    });
+
+    it("origemRumoDiverge=false: zera SO desvioStreak/desvioInicio -- divergenciaRumoStreak/divergenciaRumoInicio (streak de rumo-diverge em paralelo) ficam INTOCADOS", () => {
+      const r = zerarStreakDaOrigemVencedora(false, estadoBase);
+      expect(r.desvioStreak).toBe(0);
+      expect(r.desvioInicio).toBeNull();
+      expect(r.divergenciaRumoStreak).toBe(3);
+      expect(r.divergenciaRumoInicio).toBe(divergenciaRumoInicioEmAndamento);
+    });
+  });
+
+  describe("reancorarOrigemVencedora (veredito 'fora')", () => {
+    const novoAnchor = { lat: -22.95, lng: -43.25, ts: "2026-07-28T12:00:00.000Z", menor_dist_m: 4000 };
+
+    it("origemRumoDiverge=true: reescreve SO divergenciaRumoInicio (nunca o streak em si) -- desvioStreak/desvioInicio ficam INTOCADOS", () => {
+      const r = reancorarOrigemVencedora(true, estadoBase, novoAnchor);
+      expect(r.divergenciaRumoInicio).toBe(novoAnchor);
+      expect(r.divergenciaRumoStreak).toBe(3); // streak em si NUNCA mexido por este veredito
+      expect(r.desvioStreak).toBe(5);
+      expect(r.desvioInicio).toBe(desvioInicioEmAndamento);
+    });
+
+    it("origemRumoDiverge=false: reescreve SO desvioInicio -- divergenciaRumoStreak/divergenciaRumoInicio ficam INTOCADOS", () => {
+      const r = reancorarOrigemVencedora(false, estadoBase, novoAnchor);
+      expect(r.desvioInicio).toBe(novoAnchor);
+      expect(r.desvioStreak).toBe(5);
+      expect(r.divergenciaRumoStreak).toBe(3);
+      expect(r.divergenciaRumoInicio).toBe(divergenciaRumoInicioEmAndamento);
+    });
   });
 });
 
