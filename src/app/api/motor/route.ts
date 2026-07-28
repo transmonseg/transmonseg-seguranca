@@ -57,7 +57,7 @@ import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "@/lib/corredor-verificacao";
-import { atualizarBaselineWelford, classificarTipoViagem, type Baseline } from "@/lib/baseline-veiculo";
+import { atualizarBaselineWelford, classificarTipoViagem, deveForcarReadmissaoBaseline, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
 
@@ -658,11 +658,12 @@ export async function POST(request: Request) {
     // mapaPosAtual acima (tabelas pequenas, nao precisa filtrar por cliente).
     const { data: baselineVeiculoRows } = await supabase
       .from("baseline_veiculo")
-      .select("veiculo_id, tipo_viagem, feature, n_amostras, media, variancia");
-    const mapaBaselineVeiculo = new Map<string, Baseline>();
+      .select("veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, excluida_desde");
+    const mapaBaselineVeiculo = new Map<string, Baseline & { excluidaDesde: string | null }>();
     for (const r of baselineVeiculoRows ?? []) {
       mapaBaselineVeiculo.set(`${r.veiculo_id}:${r.tipo_viagem}:${r.feature}`, {
         n: Number(r.n_amostras), media: r.media, variancia: r.variancia,
+        excluidaDesde: r.excluida_desde ?? null,
       });
     }
 
@@ -681,6 +682,15 @@ export async function POST(request: Request) {
     // principio ja usado pra geocodesPendentes: nao bloquear o caminho
     // critico com round-trips extras por veiculo).
     const amostrasBaselineCiclo: { veiculo_id: string; cliente_id: string; tipoViagem: "urbano" | "rodoviario"; velocidade: number }[] = [];
+    // Achado real 28/07: quando uma leitura e excluida (parece anomala), o
+    // baseline nao ganha amostra nova neste ciclo, mas ainda precisamos
+    // marcar o INICIO da exclusao continua (ver BASELINE_EXCLUSAO_MAX_MS em
+    // baseline-veiculo.ts) -- guardado a parte porque aqui nao ha
+    // n_amostras/media/variancia novos pra gravar, so o timestamp. So
+    // marca o INICIO (nao reescreve se ja estava marcado): resetar pra
+    // null acontece automaticamente no bloco de amostrasBaselineCiclo
+    // sempre que uma amostra e admitida (normal ou forcada).
+    const baselineExclusaoCiclo = new Map<string, string>(); // chave veiculo:tipo -> excluida_desde novo
     // Presenca confirmada por permanencia (romaneio) -- ver
     // docs/superpowers/specs/2026-07-15-presenca-confirmada-romaneio-design.md.
     // Coleta candidatos durante o loop, grava em lote no fim do ciclo (mesmo
@@ -1692,7 +1702,7 @@ export async function POST(request: Request) {
           // de viagem definidos ainda; cada ciclo de 30s vira 1 amostra.
           const tipoViagem = classificarTipoViagem(pos.velocidade);
           const baselineProprio = mapaBaselineVeiculo.get(`${veiculo_id}:${tipoViagem}:velocidade_media_kmh`)
-            ?? { n: 0, media: 0, variancia: 0 };
+            ?? { n: 0, media: 0, variancia: 0, excluidaDesde: null };
           const baselineFrotaAtual = mapaBaselineFrota.get(`${cliente_id}:${tipoViagem}:velocidade_media_kmh`)
             ?? { n: 0, media: 0, variancia: 0 };
           const alertaBaseline = pos.fresco && pos.velocidade > 0
@@ -1710,8 +1720,20 @@ export async function POST(request: Request) {
           // volta a incorporar amostras normais assim que a leitura deixar
           // de ser anomala. Sem isso, o evento anomalo sustentado acabava
           // "acostumando" o proprio baseline com ele mesmo.
-          if (pos.fresco && pos.velocidade > 0 && alertaBaseline === null) {
+          //
+          // Achado real 28/07: sem teto de tempo, essa mesma protecao trava
+          // um baseline que ja ficou estreito demais (variancia ~0) PRA
+          // SEMPRE -- toda leitura normal futura passa a parecer anomala e
+          // e excluida, entao nada nunca mais entra. Se ja faz
+          // BASELINE_EXCLUSAO_MAX_MS que este veiculo/tipo vem sendo
+          // excluido, forca a readmissao mesmo que ainda pareca anomalo.
+          const chaveBaselineVeiculo = `${veiculo_id}:${tipoViagem}`;
+          const forcarReadmissaoBaseline = alertaBaseline !== null &&
+            deveForcarReadmissaoBaseline(baselineProprio.excluidaDesde, agora);
+          if (pos.fresco && pos.velocidade > 0 && (alertaBaseline === null || forcarReadmissaoBaseline)) {
             amostrasBaselineCiclo.push({ veiculo_id, cliente_id, tipoViagem, velocidade: pos.velocidade });
+          } else if (alertaBaseline !== null && baselineProprio.excluidaDesde === null) {
+            baselineExclusaoCiclo.set(chaveBaselineVeiculo, agora.toISOString());
           }
 
           // ─── CERCA VIRTUAL (ver CERCA_VIRTUAL_MODO no topo) ──────────────
@@ -2804,7 +2826,7 @@ export async function POST(request: Request) {
         const chaveVeiculo = `${a.veiculo_id}:${a.tipoViagem}`;
         const atualVeiculo = porVeiculo.get(chaveVeiculo)
           ?? mapaBaselineVeiculo.get(`${chaveVeiculo}:velocidade_media_kmh`)
-          ?? { n: 0, media: 0, variancia: 0 };
+          ?? { n: 0, media: 0, variancia: 0, excluidaDesde: null };
         porVeiculo.set(chaveVeiculo, atualizarBaselineWelford(atualVeiculo, a.velocidade));
 
         const chaveFrota = `${a.cliente_id}:${a.tipoViagem}`;
@@ -2817,11 +2839,13 @@ export async function POST(request: Request) {
       const resultadosVeiculo = await Promise.allSettled(
         [...porVeiculo].map(([chave, b]) => {
           const [veiculo_id, tipoViagem] = chave.split(":");
+          // Amostra admitida neste ciclo -- sempre zera excluida_desde
+          // (readmissao normal ou forcada, ver BASELINE_EXCLUSAO_MAX_MS).
           return pool.query(
-            `insert into baseline_veiculo (veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, atualizado_em)
-             values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, now())
+            `insert into baseline_veiculo (veiculo_id, tipo_viagem, feature, n_amostras, media, variancia, excluida_desde, atualizado_em)
+             values ($1, $2, 'velocidade_media_kmh', $3, $4, $5, null, now())
              on conflict (veiculo_id, tipo_viagem, feature)
-             do update set n_amostras = $3, media = $4, variancia = $5, atualizado_em = now()`,
+             do update set n_amostras = $3, media = $4, variancia = $5, excluida_desde = null, atualizado_em = now()`,
             [veiculo_id, tipoViagem, b.n, b.media, b.variancia]
           );
         })
@@ -2843,6 +2867,25 @@ export async function POST(request: Request) {
       );
       const falhasFrota = resultadosFrota.filter((r) => r.status === "rejected").length;
       if (falhasFrota > 0) console.warn(`Aviso: ${falhasFrota} falha(s) ao gravar baseline_frota neste ciclo`);
+    }
+
+    // Marca excluida_desde pra veiculo/tipo que NAO tiveram amostra admitida
+    // neste ciclo (ver BASELINE_EXCLUSAO_MAX_MS em baseline-veiculo.ts) --
+    // separado do bloco acima porque aqui nao ha n_amostras/media/variancia
+    // novos pra gravar, so o timestamp de inicio da exclusao.
+    if (baselineExclusaoCiclo.size > 0) {
+      const resultadosExclusao = await Promise.allSettled(
+        [...baselineExclusaoCiclo].map(([chave, valor]) => {
+          const [veiculo_id, tipoViagem] = chave.split(":");
+          return pool.query(
+            `update baseline_veiculo set excluida_desde = $3
+             where veiculo_id = $1 and tipo_viagem = $2 and feature = 'velocidade_media_kmh'`,
+            [veiculo_id, tipoViagem, valor]
+          );
+        })
+      );
+      const falhasExclusao = resultadosExclusao.filter((r) => r.status === "rejected").length;
+      if (falhasExclusao > 0) console.warn(`Aviso: ${falhasExclusao} falha(s) ao gravar excluida_desde em baseline_veiculo`);
     }
 
     // Presenca confirmada por permanencia (romaneio) -- ver
