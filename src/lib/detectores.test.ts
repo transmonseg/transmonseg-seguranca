@@ -40,6 +40,8 @@ import {
   alertaElegivelParaAutoResolveRuaEstranha,
   contaComoEventoDeSilenciamento,
   contaComoRotuloHumano,
+  deveAutoResolverAfastandoRotaConcluida,
+  elegivelParaAutoResolveAfastando,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -1775,6 +1777,28 @@ describe("alertaElegivelParaAutoResolveRuaEstranha", () => {
   });
   it("NAO elegivel se o motivo nao bate exatamente (outra regra de desvio)", () => {
     expect(alertaElegivelParaAutoResolveRuaEstranha({ ...base, motivo: "Divergencia de rumo geral" })).toBe(false);
+  });
+});
+
+describe("deveAutoResolverAfastandoRotaConcluida", () => {
+  it("resolve quando rota concluida E chegou na base", () => {
+    expect(deveAutoResolverAfastandoRotaConcluida({ rotaConcluida: true, baseOcupada: true })).toBe(true);
+  });
+  it("NAO resolve se rota nao concluida (mesmo na base)", () => {
+    expect(deveAutoResolverAfastandoRotaConcluida({ rotaConcluida: false, baseOcupada: true })).toBe(false);
+  });
+  it("NAO resolve se ainda nao chegou na base (mesmo com rota concluida) -- protege contra mascarar coacao", () => {
+    expect(deveAutoResolverAfastandoRotaConcluida({ rotaConcluida: true, baseOcupada: false })).toBe(false);
+  });
+});
+
+describe("elegivelParaAutoResolveAfastando (wiring)", () => {
+  it("exige tipo desvio, motivo 'Afastando-se de todos', status ativo", () => {
+    const base = { tipo: "desvio", motivo: "Afastando-se de todos os 5 destinos há 3 leituras seguidas (~3min), +1,0km acumulado", status: "ativo" };
+    expect(elegivelParaAutoResolveAfastando(base)).toBe(true);
+    expect(elegivelParaAutoResolveAfastando({ ...base, status: "reconhecido" })).toBe(false);
+    expect(elegivelParaAutoResolveAfastando({ ...base, tipo: "parada_fora_tapete" })).toBe(false);
+    expect(elegivelParaAutoResolveAfastando({ ...base, motivo: "Direção do movimento diverge da rota esperada" })).toBe(false);
   });
 });
 

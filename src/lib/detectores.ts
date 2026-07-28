@@ -763,6 +763,32 @@ export function alertaElegivelParaAutoResolveRuaEstranha(alerta: {
   );
 }
 
+// Auto-resolucao retroativa de "afastando de todos os destinos" quando a
+// rota foi 100% concluida (achado real 27/07, revisao de 215 alertas: ~15
+// dos 91 casos eram esse padrao -- voltando pra base depois de terminar).
+// NAO usa so "rota concluida" (entregas_feitas>=entregas_total) -- esse
+// sinal sozinho e' EXATAMENTE o que um cenario de entrega forcada sob
+// coacao tambem produziria (motorista forcado a confirmar falsamente,
+// depois desviado). Por isso exige TAMBEM baseOcupada=true (veiculo
+// fisicamente DENTRO do poligono de uma base cadastrada, ja calculado
+// todo ciclo em route.ts) -- sinal muito mais forte, um sequestro
+// terminando dentro de uma base real seria autodestrutivo pro atacante.
+// Decisao de 21/07 (docs/superpowers/specs/2026-07-21-anotacao-rota-
+// concluida-desvio-design.md) evitava suprimir so por rota_concluida por
+// esse motivo exato -- este design respeita a mesma preocupacao.
+export function deveAutoResolverAfastandoRotaConcluida(ctx: {
+  rotaConcluida: boolean;
+  baseOcupada: boolean;
+}): boolean {
+  return ctx.rotaConcluida && ctx.baseOcupada;
+}
+
+export const MOTIVO_AFASTANDO_PREFIXO = "Afastando-se de todos";
+
+export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo: string; status: string }): boolean {
+  return alerta.status === "ativo" && alerta.tipo === "desvio" && alerta.motivo.startsWith(MOTIVO_AFASTANDO_PREFIXO);
+}
+
 // BLOCKER 1 (revisao independente 27/07): mapaTiposSilenciados (route.ts)
 // contava QUALQUER linha status='falso_positivo' recente como "operador
 // ensinando o sistema" e silenciava o tipo pro veiculo por 2h -- inclusive
