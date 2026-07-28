@@ -1127,14 +1127,14 @@ export async function POST(request: Request) {
       // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
       const { data: todosAlertasAbertos } = await supabase
         .from("alertas")
-        .select("id, tipo, veiculo_id, nivel")
+        .select("id, tipo, veiculo_id, nivel, desde, motivo")
         .eq("cliente_id", cliente.id)
         .in("status", ["ativo", "reconhecido"]);
 
-      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string }[]>();
+      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; desde: string; motivo: string }[]>();
       for (const ab of todosAlertasAbertos ?? []) {
         const lista = mapaAlertasAbertos.get(ab.veiculo_id) ?? [];
-        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel });
+        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, desde: ab.desde, motivo: ab.motivo });
         mapaAlertasAbertos.set(ab.veiculo_id, lista);
       }
 
