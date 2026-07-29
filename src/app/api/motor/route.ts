@@ -640,9 +640,29 @@ export async function POST(request: Request) {
     }
 
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
-    const { data: posatuaisRows } = await supabase
+    //
+    // Achado real 29/07 (apontado por 4 revisoes independentes distintas
+    // ao longo do dia anterior, sempre adiado ate agora): sem capturar
+    // `error`, um select que falha (deploy rodou antes de alguma migration
+    // aplicar, ou o cache de schema do PostgREST ainda nao recarregou)
+    // retorna data=null -- mapaPosAtual fica vazio, TODO veiculo cai no
+    // fallback de cold-start (streaks, parado_desde, todos os acumuladores
+    // novos de hoje zerados), e o UPSERT em lote mais abaixo GRAVA esse
+    // estado zerado de volta, apagando o historico real da frota inteira
+    // num ciclo so. Mesmo padrao ja usado pra baseline_veiculo/frota nesta
+    // sessao: captura o erro aqui, e o bloco que faz o UPSERT (mais abaixo,
+    // "Upsert batch de posicoes_atuais") pula a escrita se este read falhou
+    // -- so a escrita que corromperia o estado e' pulada, nao o ciclo
+    // inteiro (deteccao ainda roda, so com anterior=undefined pra este
+    // ciclo, degradacao aceitavel e temporaria; nao persistente).
+    const { data: posatuaisRows, error: erroLeituraPosAtuais } = await supabase
       .from("posicoes_atuais")
       .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos");
+    if (erroLeituraPosAtuais) {
+      const msg = `CRITICO: falha ao ler posicoes_atuais (estado por veiculo perdido neste ciclo, UPSERT sera pulado pra nao gravar cold-start por engano): ${erroLeituraPosAtuais.message}`;
+      console.error(msg);
+      erros.push(msg);
+    }
 
     const mapaPosAtual = new Map<
       string,
@@ -3072,7 +3092,14 @@ export async function POST(request: Request) {
     // de 1 round-trip por veiculo — ver posicoesCiclo acima). Tem que rodar
     // ANTES do detector de favela e da auto-resolucao sem-comunicacao logo
     // abaixo, que dependem de posicoes_atuais ja refletir este ciclo.
-    if (posicoesCiclo.length > 0) {
+    //
+    // Achado real 29/07: pulado inteiro se a leitura no inicio do ciclo
+    // falhou (erroLeituraPosAtuais) -- posicoesCiclo foi montado com
+    // anterior=undefined pra todo mundo nesse caso (cold-start), e gravar
+    // isso de volta apagaria o estado real da frota inteira. Detector ainda
+    // roda neste ciclo (com anterior ausente, degradacao aceitavel/pontual);
+    // so a ESCRITA que persistiria o dano e' pulada.
+    if (!erroLeituraPosAtuais && posicoesCiclo.length > 0) {
       const pgPosicoes = await pool.connect();
       try {
         await pgPosicoes.query(
@@ -3623,7 +3650,19 @@ export async function POST(request: Request) {
     // faz `continue` antes de gerenciar alertas — eles ficam presos indefinidamente.
     // Esta query resolve esses alertas para que na próxima operação o beep dispare
     // com UUIDs frescos (e não fique silenciado por IDs antigos).
-    {
+    //
+    // Achado IMPORTANTE da revisao independente 29/07: esta sweep decide
+    // "sem comunicacao" lendo atraso_min/ignicao de posicoes_atuais -- se o
+    // UPSERT deste ciclo foi pulado (erroLeituraPosAtuais, ver acima), essa
+    // leitura fica com dado de ciclo(s) anteriores. bau/tiroteio NAO estao
+    // na lista de exclusao abaixo (so favela/jammer/panico/desvio/
+    // bypass_entrega/parada_sem_marcacao) -- um veiculo que estava
+    // genuinamente offline no snapshot congelado, mas que na verdade voltou
+    // a se comunicar durante a janela de falha, podia ter um alerta de bau
+    // aberto/tiroteio FRESCO fechado sozinho pela mesma leitura congelada
+    // que criou o alerta. Pula a sweep inteira nesse ciclo -- so um
+    // ciclo de janitorial atrasado, sem custo real.
+    if (!erroLeituraPosAtuais) {
       const pgSemComm = await pool.connect();
       try {
         await pgSemComm.query(`
