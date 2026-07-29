@@ -2130,14 +2130,43 @@ export async function POST(request: Request) {
           // detectarParadaSemMarcacao em detectores.ts. Mesmo padrao EXATO
           // de no_raio_alvo_codigo/no_raio_desde/no_raio_dwell_segundos
           // (bypass_entrega, logo acima), so que pra faixa "perto mas fora
-          // do raio" em vez de "dentro do raio". Achado CRITICO da revisao
-          // independente (round 1): precisa rastrear IDENTIDADE do ponto
-          // (nao so um contador solto), senao o alvo mais proximo trocando
-          // no meio do dwell confunde o acumulador. Seleciona por FAIXA
-          // PROPRIA de cada ponto (achado M1 da mesma revisao: escolher so
-          // pela menor distancia bruta podia esconder um ponto mais distante
-          // mas com raio maior, genuinamente dentro da faixa dele).
-          const faixaPertoAgora = alvoNoRaioAgora === null
+          // do raio" em vez de "dentro do raio".
+          //
+          // Achados CRITICOS da revisao independente (round 2, apos o
+          // redesenho de transicao ja ter corrigido o achado da round 1):
+          //
+          // C1: inferir "saiu da faixa" so por faixaPertoAgora virar null
+          // confundia DOIS eventos opostos -- o veiculo pode ter saido de
+          // verdade (afastou), OU pode ter ENTRADO no raio confirmado
+          // (chegou de verdade, exatamente o caso de sucesso que este
+          // detector existe pra NAO capturar). Fix: so conta como saida se
+          // a distancia FISICA atual ao MESMO ponto rastreado excede
+          // raio+extra -- entrar no raio (distancia <= raio) nunca conta
+          // como saida.
+          //
+          // C2: se buscarAlvos falhar neste ciclo (alvosApiOk=false),
+          // pontosVeiculo/pendentes ficam vazios -- sem gate, TODO veiculo
+          // parado ha 8+min num ponto proximo perderia o rastreio de
+          // uma vez (faixaPertoAgora vira null por FALTA de dado, nao por
+          // ter saido de verdade) e disparava em massa. Mesmo achado ja
+          // corrigido nesta sessao pra saiu_parada_confirmada_em
+          // (deveMarcarSaidaParadaConfirmada exige alvosApiOk). Fix: sem
+          // leitura confiavel de alvos, CONGELA o estado (nao atualiza nem
+          // avalia), em vez de resetar.
+          //
+          // I1: pos.fresco protegia so o alerta, nao o acumulador -- uma
+          // posicao travada (sinal perdido, ainda "fresca" por ate 59min)
+          // continuava somando dwell pelo relogio de parede. Mesmo padrao
+          // ja usado em route.ts (pos.atraso<=5) pra fechar exatamente essa
+          // brecha em outro detector nesta mesma sessao.
+          //
+          // emOperacao REMOVIDO (achado da mesma revisao): causava
+          // descarte SILENCIOSO de transicoes reais fora do horario
+          // (inclusive sabado, que tem rota real pra esta frota,
+          // ver sabadoDiurnoComRota abaixo) -- mesmo padrao de
+          // bypass_entrega, que tambem nao tem esse gate.
+          const leituraAlvosConfiavel = pos.fresco && pos.atraso <= 5 && alvosApiOk;
+          const faixaPertoAgora = leituraAlvosConfiavel && alvoNoRaioAgora === null
             ? pendentes.find((pt, i) => {
                 const d = distDestinosM[i];
                 return d > pt.raio && d <= pt.raio + PARADA_SEM_MARCACAO_RAIO_EXTRA_M;
@@ -2145,39 +2174,52 @@ export async function POST(request: Request) {
             : null;
           const codigoAnteriorFaixaPerto = anterior?.perto_sem_marcacao_codigo ?? null;
           const dwellFaixaPertoAnterior = anterior?.perto_sem_marcacao_segundos ?? 0;
-          const mesmoAlvoFaixaPertoQueAntes =
-            faixaPertoAgora !== null && faixaPertoAgora.pontoCodigo === codigoAnteriorFaixaPerto;
 
-          let pertoSemMarcacaoCodigo: number | null = faixaPertoAgora?.pontoCodigo ?? null;
+          // C1: ponto rastreado ANTES deste ciclo (pode ja nao estar mais
+          // em pendentes, se foi confirmado -- por isso busca no
+          // pontosVeiculo cheio, mesmo padrao de alvoQueSaiu acima).
+          const pontoRastreadoAntes = codigoAnteriorFaixaPerto !== null
+            ? (pontosVeiculo ?? []).find((pt) => pt.pontoCodigo === codigoAnteriorFaixaPerto) ?? null
+            : null;
+          const distanciaAoPontoRastreadoM = pontoRastreadoAntes
+            ? haversineM(pos.lat, pos.lng, pontoRastreadoAntes.lat, pontoRastreadoAntes.lng)
+            : null;
+          const saiuDeVerdadeDaFaixa =
+            leituraAlvosConfiavel &&
+            pontoRastreadoAntes !== null &&
+            distanciaAoPontoRastreadoM !== null &&
+            distanciaAoPontoRastreadoM > pontoRastreadoAntes.raio + PARADA_SEM_MARCACAO_RAIO_EXTRA_M;
+
+          let pertoSemMarcacaoCodigo: number | null = codigoAnteriorFaixaPerto;
           let pertoSemMarcacaoSegundos = dwellFaixaPertoAnterior;
-          if (faixaPertoAgora === null) {
-            // Fora da faixa: zera (o proximo bloco decide se dispara ANTES
-            // de zerar, usando dwellFaixaPertoAnterior capturado acima).
+          if (!leituraAlvosConfiavel) {
+            // C2: sem leitura confiavel, congela o estado (nem reseta nem
+            // acumula) -- proxima leitura confiavel decide.
+          } else if (faixaPertoAgora !== null && faixaPertoAgora.pontoCodigo === codigoAnteriorFaixaPerto) {
+            pertoSemMarcacaoCodigo = faixaPertoAgora.pontoCodigo;
+            pertoSemMarcacaoSegundos = dwellFaixaPertoAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0);
+          } else if (faixaPertoAgora !== null) {
+            // Entrou na faixa de um ponto NOVO (troca de alvo mais
+            // proximo em-faixa) -- comeca contagem nova, nao herda a de
+            // outro ponto.
+            pertoSemMarcacaoCodigo = faixaPertoAgora.pontoCodigo;
+            pertoSemMarcacaoSegundos = pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0;
+          } else if (saiuDeVerdadeDaFaixa) {
+            // Saida FISICA confirmada do ponto rastreado -- zera (o
+            // detector abaixo ja capturou dwellFaixaPertoAnterior antes
+            // deste reset).
             pertoSemMarcacaoCodigo = null;
             pertoSemMarcacaoSegundos = 0;
-          } else if (!mesmoAlvoFaixaPertoQueAntes) {
-            pertoSemMarcacaoSegundos = pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0;
-          } else {
-            pertoSemMarcacaoSegundos = dwellFaixaPertoAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0);
           }
+          // Nenhum dos casos acima (ex: entrou no RAIO CONFIRMADO do ponto
+          // rastreado, C1): mantem o estado como estava, sem zerar --
+          // "chegou de verdade" nao e' saida, e o detector nao deve
+          // disparar (saiuDeVerdadeDaFaixa fica false nesse caso).
 
-          // Transicao de saida (mesmo padrao de saiuDoRaioAgora acima): so
-          // avalia o detector no momento em que SAI da faixa, nunca
-          // enquanto esta parado nela -- achado CRITICO da revisao: a v1
-          // disparava exatamente na mesma faixa (50-200m tipico) que
-          // noCliente/suspenderPorChegada ja tratam como "chegou no
-          // cliente", disparando em toda entrega normal em andamento antes
-          // da confirmacao ter tempo de chegar.
-          const saiuDaFaixaPertoAgora = codigoAnteriorFaixaPerto !== null && faixaPertoAgora === null;
-          const alvoQueSaiuFaixaPerto = (pontosVeiculo ?? []).find((pt) => pt.pontoCodigo === codigoAnteriorFaixaPerto) ?? null;
-          // emOperacao (achado IMPORTANTE da revisao): sem este gate,
-          // veiculo estacionado a noite perto de um pendente nao confirmado
-          // podia disparar de madrugada, unico detector de parada sem esse
-          // gate. pos.fresco: sem ele, posicao travada (sinal perdido)
-          // continua acumulando dwell so pelo relogio de parede.
-          const alertaParadaSemMarcacao = pos.fresco && emOperacao
+          const alvoQueSaiuFaixaPerto = pontoRastreadoAntes;
+          const alertaParadaSemMarcacao = leituraAlvosConfiavel
             ? detectarParadaSemMarcacao({
-                saiuDaFaixaAgora: saiuDaFaixaPertoAgora,
+                saiuDaFaixaAgora: saiuDeVerdadeDaFaixa,
                 mesmoAlvoCodigo: codigoAnteriorFaixaPerto !== null,
                 dwellSegundosAcumulados: dwellFaixaPertoAnterior,
                 entregaConfirmada: alvoQueSaiuFaixaPerto?.feito ?? false,
