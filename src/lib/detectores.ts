@@ -1765,6 +1765,48 @@ export function detectarBypassEntrega(ctx: CtxBypassEntrega): Alerta | null {
   };
 }
 
+// Achado real 28/07 (cliente Nutry Max, casos TTM-7C13 e TUS-1A47 --
+// mandados pelo cliente como "desvio que o sistema nao identificou"):
+// TTM-7C13 parou 9min direto (11:55-12:04) perto de um cliente real, mas
+// FORA do raio registrado da entrega -- nenhum alerta disparou o tempo
+// todo. bypass_entrega ja cobre o caso OPOSTO (passou rapido demais pra
+// ser entrega real, DENTRO do raio); este detector cobre o buraco: parou
+// tempo suficiente pra ser entrega real, perto o bastante de um cliente
+// conhecido, mas fora do raio marcado -- sinal de coordenada/raio errado
+// no cadastro (mesma familia do achado ja conhecido da Nutry Max, "fix de
+// coordenada" ja aplicado antes) ou, mais raro, parada suspeita perto (nao
+// dentro) de um destino real. Mesmo espirito operacional de bypass_entrega
+// (nivel atencao, nao critico -- detector novo, sem historico validado).
+export type CtxParadaSemMarcacao = {
+  distanciaMaisProximoM: number | null;
+  raioMaisProximoM: number | null;
+  jaDentroDeRaio: boolean;
+  dwellSegundosAcumulados: number;
+};
+
+// Faixa "perto mas fora do raio": alem do raio confirmado do proprio ponto
+// (varia por ponto, tipico 50-100m, ver PontoEntrega.raio em unitrac.ts),
+// ate +150m. Cobre coordenada de cadastro imprecisa (endereco vs porta de
+// entrada, estacionamento em dobro) sem virar "qualquer parada em qualquer
+// lugar perto de alguma coisa" -- acima disso nao e mais "perto o bastante
+// pra ser a mesma entrega", e' so uma parada qualquer (ja coberta por
+// parada_anomala/parada_longa se for o caso).
+export const PARADA_SEM_MARCACAO_RAIO_EXTRA_M = 150;
+
+export function detectarParadaSemMarcacao(ctx: CtxParadaSemMarcacao): Alerta | null {
+  if (ctx.jaDentroDeRaio) return null; // ja tratado por no_raio_dwell/bypass_entrega
+  if (ctx.distanciaMaisProximoM === null || ctx.raioMaisProximoM === null) return null;
+  if (ctx.distanciaMaisProximoM <= ctx.raioMaisProximoM) return null; // dentro do raio de verdade, nao e este caso
+  if (ctx.distanciaMaisProximoM > ctx.raioMaisProximoM + PARADA_SEM_MARCACAO_RAIO_EXTRA_M) return null;
+  if (ctx.dwellSegundosAcumulados < BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS) return null;
+  return {
+    nivel: "atencao",
+    tipo: "parada_sem_marcacao",
+    motivo: `Parado perto de um destino conhecido (${Math.round(ctx.distanciaMaisProximoM)}m, raio confirmado é ${ctx.raioMaisProximoM}m) por ${Math.round(ctx.dwellSegundosAcumulados / 60)}min sem confirmar entrega`,
+    score: 40,
+  };
+}
+
 export type CtxAnomaliaBaseline = {
   velocidadeMediaViagemKmh: number;
   baselineProprio: Baseline;
@@ -1816,7 +1858,13 @@ const BONUS_CORROBORACAO_POR_SINAL = 15;
 // genérico exatamente como parada_anomala (nunca esteve aqui) e qualquer
 // outro tipo "gerenciado" (parada_longa, parada_cliente,
 // saida_nao_autorizada, excesso, etc.).
-export const TIPOS_NAO_GERENCIADOS = new Set(["favela", "desvio", "bypass_entrega"]);
+// parada_sem_marcacao (achado real 28/07, cliente Nutry Max) entra aqui pelo
+// mesmo motivo de bypass_entrega: e' um sinal sobre uma parada perto de um
+// destino SEM confirmacao -- pode ser so coordenada de cadastro imprecisa,
+// mas tambem pode ser parada suspeita perto (nao dentro) de um destino real.
+// Merece revisao humana, nao fechamento automatico e silencioso so porque a
+// condicao de distancia/tempo deixou de valer no ciclo seguinte.
+export const TIPOS_NAO_GERENCIADOS = new Set(["favela", "desvio", "bypass_entrega", "parada_sem_marcacao"]);
 
 // Reforco de score da classificacao viaria (via principal -> rua estreita)
 // -- ver docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.

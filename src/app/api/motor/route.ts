@@ -31,6 +31,8 @@ import {
   detectarAceleracaoBrusca,
   calcularRiscoArea,
   detectarBypassEntrega,
+  detectarParadaSemMarcacao,
+  PARADA_SEM_MARCACAO_RAIO_EXTRA_M,
   BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS,
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
@@ -625,7 +627,7 @@ export async function POST(request: Request) {
     // 3. Carregar posicoes_atuais atuais para calcular parado_desde
     const { data: posatuaisRows } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, parada_tolerante_segundos");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_segundos");
 
     const mapaPosAtual = new Map<
       string,
@@ -649,6 +651,10 @@ export async function POST(request: Request) {
         // em lib/detectores.ts. Coluna PROPRIA (migration 015), nao
         // relacionada a parado_desde/paradoMin acima.
         parada_tolerante_segundos: number;
+        // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
+        // detectarParadaSemMarcacao em lib/detectores.ts. Coluna PROPRIA
+        // (migration 016), mesmo padrao de no_raio_dwell_segundos.
+        perto_sem_marcacao_segundos: number;
       }
     >();
 
@@ -672,6 +678,7 @@ export async function POST(request: Request) {
         ultima_via_principal_em: row.ultima_via_principal_em ?? null,
         saiu_parada_confirmada_em: row.saiu_parada_confirmada_em ?? null,
         parada_tolerante_segundos: row.parada_tolerante_segundos ?? 0,
+        perto_sem_marcacao_segundos: row.perto_sem_marcacao_segundos ?? 0,
       });
     }
 
@@ -939,6 +946,9 @@ export async function POST(request: Request) {
       // auto-resolve de rua-estreita -- ver calcularParadaToleranteSegundos
       // em lib/detectores.ts.
       parada_tolerante_segundos: number;
+      // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
+      // detectarParadaSemMarcacao em lib/detectores.ts.
+      perto_sem_marcacao_segundos: number;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -2113,6 +2123,51 @@ export async function POST(request: Request) {
             : saiuParadaConfirmadaAnterior;
           const saiuParadaConfirmadaRecentemente = saiuParadaConfirmadaHaMenosDe(saiuParadaConfirmadaEm, agora);
 
+          // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
+          // detectarParadaSemMarcacao em detectores.ts. Acha o pendente MAIS
+          // PROXIMO com seu raio (nao o destino generico de distDestinosM,
+          // que mistura bases sem raio) reaproveitando distDestinosM ja
+          // calculado acima -- pendentes vem primeiro nesse array, na MESMA
+          // ordem, entao os primeiros pendentes.length itens sao as
+          // distancias certas, sem recalcular haversine.
+          let pendenteMaisProximoDistM: number | null = null;
+          let pendenteMaisProximoRaioM: number | null = null;
+          for (let i = 0; i < pendentes.length; i++) {
+            const d = distDestinosM[i];
+            if (pendenteMaisProximoDistM === null || d < pendenteMaisProximoDistM) {
+              pendenteMaisProximoDistM = d;
+              pendenteMaisProximoRaioM = pendentes[i].raio;
+            }
+          }
+          // Faixa "perto mas fora do raio" -- sem estado por-ponto (v1,
+          // simplificacao aceita): acumula so quando a distancia atual cai
+          // na faixa E o veiculo esta devagar, mesmo limiar de velocidade
+          // ja usado por no_raio_dwell_segundos acima. Zera fora da faixa
+          // (mesmo espirito, sem rastrear identidade do ponto entre ciclos
+          // -- se o pendente mais proximo mudar mas a distancia continuar
+          // na faixa, o acumulador nao percebe a troca; aceito pra v1, caso
+          // raro exigiria o mesmo tipo de tracking por-codigo que
+          // no_raio_dwell ja tem, complexidade desproporcional agora).
+          const dentroDeAlgumRaio = alvoNoRaioAgora !== null;
+          const dentroDaFaixaPertoSemMarcacao =
+            !dentroDeAlgumRaio &&
+            pendenteMaisProximoDistM !== null &&
+            pendenteMaisProximoRaioM !== null &&
+            pendenteMaisProximoDistM > pendenteMaisProximoRaioM &&
+            pendenteMaisProximoDistM <= pendenteMaisProximoRaioM + PARADA_SEM_MARCACAO_RAIO_EXTRA_M;
+          const pertoSemMarcacaoAnterior = anterior?.perto_sem_marcacao_segundos ?? 0;
+          const pertoSemMarcacaoSegundos = dentroDaFaixaPertoSemMarcacao
+            ? pertoSemMarcacaoAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0)
+            : 0;
+          const alertaParadaSemMarcacao = pos.fresco
+            ? detectarParadaSemMarcacao({
+                distanciaMaisProximoM: pendenteMaisProximoDistM,
+                raioMaisProximoM: pendenteMaisProximoRaioM,
+                jaDentroDeRaio: dentroDeAlgumRaio,
+                dwellSegundosAcumulados: pertoSemMarcacaoSegundos,
+              })
+            : null;
+
           const sabadoDiurnoComRota =
             ehSabadoSP &&
             horaSP >= 6 &&
@@ -2355,6 +2410,7 @@ export async function POST(request: Request) {
             alertaCerca,
             alertaBypass,
             alertaBaseline,
+            alertaParadaSemMarcacao,
           ].filter((a): a is Alerta => a !== null);
 
           // Arbitragem FINAL, unica: candidatos core CRUS (sem o desvio
@@ -2482,6 +2538,7 @@ export async function POST(request: Request) {
             ultima_via_principal_em: ultimaViaPrincipalEm,
             saiu_parada_confirmada_em: saiuParadaConfirmadaEm,
             parada_tolerante_segundos: paradaToleranteSegundos,
+            perto_sem_marcacao_segundos: pertoSemMarcacaoSegundos,
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -2942,7 +2999,7 @@ export async function POST(request: Request) {
               divergencia_rumo_streak, aproximando_streak, origem_celula,
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
               ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em,
-              parada_tolerante_segundos)
+              parada_tolerante_segundos, perto_sem_marcacao_segundos)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -2954,7 +3011,8 @@ export async function POST(request: Request) {
              c.aproximando_streak, c.origem_celula, c.no_raio_alvo_codigo,
              c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
              c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb,
-             c.saiu_parada_confirmada_em::timestamptz, c.parada_tolerante_segundos
+             c.saiu_parada_confirmada_em::timestamptz, c.parada_tolerante_segundos,
+             c.perto_sem_marcacao_segundos
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
@@ -2962,14 +3020,14 @@ export async function POST(request: Request) {
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
              $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[],
-             $31::integer[]
+             $31::integer[], $32::integer[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
                   ultimo_evento, desvio_inicio, fora_tapete_streak, divergencia_rumo_streak,
                   aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
                   no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio,
-                  saiu_parada_confirmada_em, parada_tolerante_segundos)
+                  saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_segundos)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -3003,7 +3061,8 @@ export async function POST(request: Request) {
              ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
              divergencia_rumo_inicio = EXCLUDED.divergencia_rumo_inicio,
              saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
-             parada_tolerante_segundos = EXCLUDED.parada_tolerante_segundos`,
+             parada_tolerante_segundos = EXCLUDED.parada_tolerante_segundos,
+             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -3036,6 +3095,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.divergencia_rumo_inicio),
             posicoesCiclo.map((p) => p.saiu_parada_confirmada_em),
             posicoesCiclo.map((p) => p.parada_tolerante_segundos),
+            posicoesCiclo.map((p) => p.perto_sem_marcacao_segundos),
           ]
         );
       } catch (errPosicoes) {
@@ -3487,7 +3547,9 @@ export async function POST(request: Request) {
             -- desvio adicionado 10/07, bypass_entrega adicionado na revisao
             -- final de 22/07: cortar o sinal pode ser um roubo em
             -- andamento, mesmo criterio ja usado pra favela/jammer/panico.
-            AND a.tipo NOT IN ('favela', 'jammer', 'panico', 'desvio', 'bypass_entrega')
+            -- parada_sem_marcacao adicionado 28/07 (mesmo motivo de
+            -- bypass_entrega -- ver TIPOS_NAO_GERENCIADOS em detectores.ts).
+            AND a.tipo NOT IN ('favela', 'jammer', 'panico', 'desvio', 'bypass_entrega', 'parada_sem_marcacao')
             AND p.atraso_min > 120
             AND p.ignicao = false
         `);

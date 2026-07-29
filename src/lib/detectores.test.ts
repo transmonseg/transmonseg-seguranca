@@ -24,6 +24,9 @@ import {
   formataDuracao,
   emHorarioOperacao,
   detectarBypassEntrega,
+  detectarParadaSemMarcacao,
+  type CtxParadaSemMarcacao,
+  PARADA_SEM_MARCACAO_RAIO_EXTRA_M,
   type CtxBypassEntrega,
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
@@ -1546,6 +1549,66 @@ describe("detectarBypassEntrega (achado do audio do cliente 11/07: chegou na por
 
   it("trocou de alvo (nao e o mesmo raio que entrou): nao dispara", () => {
     expect(detectarBypassEntrega({ ...base, mesmoAlvoCodigo: false })).toBeNull();
+  });
+});
+
+describe("detectarParadaSemMarcacao (achado real 28/07, cliente Nutry Max, casos TTM-7C13/TUS-1A47: parou perto de cliente real mas fora do raio registrado, nenhum alerta disparou)", () => {
+  const base: CtxParadaSemMarcacao = {
+    distanciaMaisProximoM: 120,
+    raioMaisProximoM: 50,
+    jaDentroDeRaio: false,
+    dwellSegundosAcumulados: 150,
+  };
+
+  it("fora do raio, dentro da faixa de tolerancia, parado tempo suficiente: dispara atencao", () => {
+    const a = detectarParadaSemMarcacao(base);
+    expect(a?.nivel).toBe("atencao");
+    expect(a?.tipo).toBe("parada_sem_marcacao");
+    expect(a?.motivo).toContain("120m");
+    expect(a?.motivo).toContain("50m");
+  });
+
+  it("ja dentro de algum raio: nao dispara (ja tratado por no_raio_dwell/bypass_entrega)", () => {
+    expect(detectarParadaSemMarcacao({ ...base, jaDentroDeRaio: true })).toBeNull();
+  });
+
+  it("dentro do raio de verdade (distancia <= raio): nao dispara -- nao e este caso", () => {
+    expect(detectarParadaSemMarcacao({ ...base, distanciaMaisProximoM: 50, raioMaisProximoM: 50 })).toBeNull();
+  });
+
+  it("longe demais (alem do raio + PARADA_SEM_MARCACAO_RAIO_EXTRA_M): nao dispara -- nao e mais perto o bastante", () => {
+    expect(
+      detectarParadaSemMarcacao({ ...base, distanciaMaisProximoM: 50 + PARADA_SEM_MARCACAO_RAIO_EXTRA_M + 1 })
+    ).toBeNull();
+  });
+
+  it("no limite exato da faixa (raio + extra): ainda dispara", () => {
+    const a = detectarParadaSemMarcacao({ ...base, distanciaMaisProximoM: 50 + PARADA_SEM_MARCACAO_RAIO_EXTRA_M });
+    expect(a).not.toBeNull();
+  });
+
+  it("dwell insuficiente (< BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS, mesmo limiar do bypass_entrega): nao dispara", () => {
+    expect(detectarParadaSemMarcacao({ ...base, dwellSegundosAcumulados: 90 })).toBeNull();
+  });
+
+  it("sem nenhum pendente por perto (distancia/raio null): nao dispara", () => {
+    expect(detectarParadaSemMarcacao({ ...base, distanciaMaisProximoM: null, raioMaisProximoM: null })).toBeNull();
+  });
+
+  it("caso real TTM-7C13 (28/07): parou 9min perto de cliente fora do raio -- dispararia com o detector novo", () => {
+    // Dwell real observado: 11:55-12:04, ~9min continuo (bem acima dos 120s
+    // exigidos). Distancia exata ao ponto registrado nao ficou disponivel
+    // no contexto persistido do caso (classe_viaria nao grava dist_destinos_m,
+    // achado de sessao anterior) -- teste usa um valor plausivel dentro da
+    // faixa (raio padrao 50m + ~80m) pra fixar o comportamento esperado.
+    const a = detectarParadaSemMarcacao({
+      distanciaMaisProximoM: 130,
+      raioMaisProximoM: 50,
+      jaDentroDeRaio: false,
+      dwellSegundosAcumulados: 9 * 60,
+    });
+    expect(a).not.toBeNull();
+    expect(a?.tipo).toBe("parada_sem_marcacao");
   });
 });
 
