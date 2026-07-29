@@ -257,6 +257,21 @@ function criaPgPool() {
 // 64-88% dos ciclos pulados, stalls de 20+ min, e muito provavelmente o
 // apagao de ~20h de 01-02/07 (achado 10-11/07).
 
+// Achado real 29/07: as falhas de buscarPosicoes/buscarAlvos (Nutry Max e
+// Benassi, recorrentes o dia todo) so apareciam no log como "TypeError:
+// fetch failed" -- a mensagem generica que o fetch() do Node/undici usa pra
+// QUALQUER falha de rede (timeout de conexao, DNS, TLS, conexao resetada,
+// etc). A causa real fica em err.cause (AggregateError/erro especifico do
+// undici), que String(err) nao inclui -- log generico demais pra
+// diagnosticar de verdade qual dessas e' a causa real. Extrai o cause
+// explicitamente quando existir.
+function descreverErroFetch(err: unknown): string {
+  const base = String(err);
+  const cause = err instanceof Error ? err.cause : undefined;
+  if (cause === undefined) return base;
+  return `${base} (cause: ${cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause)})`;
+}
+
 // ─── buscarPosicoes com timeout por AbortController ───────────────────────
 async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
   const controller = new AbortController();
@@ -1121,7 +1136,7 @@ export async function POST(request: Request) {
         const isTimeout = err instanceof Error && err.name === "AbortError";
         const msg = isTimeout
           ? `Timeout (${TIMEOUT_UNITRAC_MS / 1000}s) ao buscar posicoes do cliente ${cliente.id}`
-          : `buscarPosicoes falhou para cliente ${cliente.id}: ${String(err)}`;
+          : `buscarPosicoes falhou para cliente ${cliente.id}: ${descreverErroFetch(err)}`;
         console.error(msg);
         erros.push(msg);
         continue;
@@ -1140,7 +1155,7 @@ export async function POST(request: Request) {
       } else {
         // Nao-critico: mantemos os mapas vazios; alvosApiOk=false impede o
         // detector saida_nao_autorizada de disparar (evita falsos criticos em massa).
-        const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${String(alvosResultado.reason)}`;
+        const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${descreverErroFetch(alvosResultado.reason)}`;
         console.warn(msg);
         erros.push(msg);
       }
