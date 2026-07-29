@@ -2210,6 +2210,17 @@ export async function POST(request: Request) {
             // deste reset).
             pertoSemMarcacaoCodigo = null;
             pertoSemMarcacaoSegundos = 0;
+          } else if (codigoAnteriorFaixaPerto !== null && pontoRastreadoAntes === null) {
+            // Achado IMPORTANTE da revisao independente (round 3): leitura
+            // confiavel, mas o ponto rastreado sumiu de pontosVeiculo (rota
+            // do dia trocou, veiculo ficou sem rota) -- sem isso, o estado
+            // ficava congelado indefinidamente (nenhum branch acima cobre
+            // esse caso) e podia disparar DIAS depois com dwell de outro
+            // dia, na primeira vez que o MESMO pontoCodigo reaparecesse
+            // numa rota futura (cliente recorrente). Descarta sem avaliar
+            // -- nao da pra saber se aquela entrega foi confirmada.
+            pertoSemMarcacaoCodigo = null;
+            pertoSemMarcacaoSegundos = 0;
           }
           // Nenhum dos casos acima (ex: entrou no RAIO CONFIRMADO do ponto
           // rastreado, C1): mantem o estado como estava, sem zerar --
