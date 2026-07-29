@@ -1772,16 +1772,28 @@ export function detectarBypassEntrega(ctx: CtxBypassEntrega): Alerta | null {
 // todo. bypass_entrega ja cobre o caso OPOSTO (passou rapido demais pra
 // ser entrega real, DENTRO do raio); este detector cobre o buraco: parou
 // tempo suficiente pra ser entrega real, perto o bastante de um cliente
-// conhecido, mas fora do raio marcado -- sinal de coordenada/raio errado
-// no cadastro (mesma familia do achado ja conhecido da Nutry Max, "fix de
-// coordenada" ja aplicado antes) ou, mais raro, parada suspeita perto (nao
-// dentro) de um destino real. Mesmo espirito operacional de bypass_entrega
-// (nivel atencao, nao critico -- detector novo, sem historico validado).
+// conhecido, mas fora do raio marcado, e foi embora SEM confirmar.
+//
+// Achado CRITICO da revisao independente (round 1): a primeira versao
+// disparava ENQUANTO o veiculo estava parado na faixa (50-200m tipico) --
+// exatamente a mesma faixa que `noCliente`/`suspenderPorChegada` (route.ts,
+// unitrac.ts) ja tratam como "chegou no cliente" (max(raio,150)). Disparava
+// em toda entrega normal em andamento, antes da confirmacao ter tempo de
+// chegar, e nunca fechava sozinho (nem TIPOS_NAO_GERENCIADOS previa
+// fechamento automatico). Redesenhado pra ser um sinal de TRANSICAO, igual
+// bypass_entrega: so avalia quando o veiculo SAI da faixa (nao enquanto
+// esta nela), e so dispara se a entrega ficou sem confirmar. Isso:
+// (a) nunca dispara numa entrega normal em andamento (so avalia na saida);
+// (b) se a Unitrac confirmar antes de sair, nunca dispara (entregaConfirmada);
+// (c) e' um evento pontual, nao um estado -- faz sentido ficar fora do
+// auto-resolve generico (mesmo motivo de bypass_entrega: cortar o sinal
+// destruiria a evidencia), sem o problema de nunca fechar sozinho que a v1
+// tinha (nao ha re-disparo por ciclo, so 1 alerta por transicao de saida).
 export type CtxParadaSemMarcacao = {
-  distanciaMaisProximoM: number | null;
-  raioMaisProximoM: number | null;
-  jaDentroDeRaio: boolean;
+  saiuDaFaixaAgora: boolean;
+  mesmoAlvoCodigo: boolean;
   dwellSegundosAcumulados: number;
+  entregaConfirmada: boolean;
 };
 
 // Faixa "perto mas fora do raio": alem do raio confirmado do proprio ponto
@@ -1793,16 +1805,24 @@ export type CtxParadaSemMarcacao = {
 // parada_anomala/parada_longa se for o caso).
 export const PARADA_SEM_MARCACAO_RAIO_EXTRA_M = 150;
 
+// Achado da revisao independente (M6): BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS
+// (120s) responde uma pergunta diferente ("parou nem que seja um pouco?").
+// Este detector precisa saber "parou tempo SUFICIENTE pra ser uma tentativa
+// de entrega de verdade, nao so um semaforo ou cruzamento devagar" -- o
+// unico dado real disponivel e' o caso TTM-7C13 (9min continuos). Limiar
+// proprio, abaixo do caso real com folga, mas bem acima do bypass (que
+// alias cobriria exatamente o cenario de trafego lento/cruzamento que a
+// revisao apontou como falso positivo se reusassemos 120s aqui).
+export const PARADA_SEM_MARCACAO_DWELL_MINIMO_SEGUNDOS = 8 * 60;
+
 export function detectarParadaSemMarcacao(ctx: CtxParadaSemMarcacao): Alerta | null {
-  if (ctx.jaDentroDeRaio) return null; // ja tratado por no_raio_dwell/bypass_entrega
-  if (ctx.distanciaMaisProximoM === null || ctx.raioMaisProximoM === null) return null;
-  if (ctx.distanciaMaisProximoM <= ctx.raioMaisProximoM) return null; // dentro do raio de verdade, nao e este caso
-  if (ctx.distanciaMaisProximoM > ctx.raioMaisProximoM + PARADA_SEM_MARCACAO_RAIO_EXTRA_M) return null;
-  if (ctx.dwellSegundosAcumulados < BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS) return null;
+  if (!ctx.saiuDaFaixaAgora || !ctx.mesmoAlvoCodigo) return null;
+  if (ctx.entregaConfirmada) return null;
+  if (ctx.dwellSegundosAcumulados < PARADA_SEM_MARCACAO_DWELL_MINIMO_SEGUNDOS) return null;
   return {
     nivel: "atencao",
     tipo: "parada_sem_marcacao",
-    motivo: `Parado perto de um destino conhecido (${Math.round(ctx.distanciaMaisProximoM)}m, raio confirmado é ${ctx.raioMaisProximoM}m) por ${Math.round(ctx.dwellSegundosAcumulados / 60)}min sem confirmar entrega`,
+    motivo: `Parou perto de um destino conhecido por ${Math.round(ctx.dwellSegundosAcumulados / 60)}min (fora do raio confirmado) e saiu sem confirmar entrega`,
     score: 40,
   };
 }

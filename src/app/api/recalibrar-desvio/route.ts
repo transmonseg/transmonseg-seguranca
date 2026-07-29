@@ -78,6 +78,10 @@ export async function POST(request: Request) {
     // aqui pra ter um segmento `tipo:parada_fora_tapete` de fallback e pra
     // contar na populacao de `taxaGlobal`, mesma logica ja aplicada a
     // bypass_entrega/baseline_veiculo quando ganharam tipo proprio.
+    // 'parada_sem_marcacao' adicionado 28/07 (achado real, cliente Nutry
+    // Max): detector NOVO, "sem historico validado" -- precisa entrar aqui
+    // desde o dia 1, senao a taxa de falso positivo dele nunca e medida
+    // (mesmo achado M3 da revisao independente que motivou esta linha).
     // status != 'limpo' (28/07): status novo, criado nesta mesma sessao pro
     // botao "Limpar avisos" (acoes-alertas.ts/limparVarios) -- operador so
     // tirou da tela, sem afirmar nada sobre o caso. Filtrado aqui direto no
@@ -94,7 +98,7 @@ export async function POST(request: Request) {
     const { rows: rowsAlertasBrutos } = await pool.query<RowAlertas>(`
       select tipo, status, contexto
       from alertas
-      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete') and status != 'ativo' and status != 'limpo'
+      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete', 'parada_sem_marcacao') and status != 'ativo' and status != 'limpo'
     `);
 
     // BLOCKER (revisao independente round 2, 27/07): a auto-resolucao de
