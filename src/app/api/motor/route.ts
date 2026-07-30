@@ -105,6 +105,41 @@ type RomaneioCache = { pontosPorPlaca: Map<string, { nf: string; clienteNome: st
 const CACHE_ROMANEIO_MS = 3 * 60_000;
 const cacheRomaneioPorCliente = new Map<string, RomaneioCache>();
 
+// ─── Fallback de alvos pro detector de desvio quando a Unitrac falha ──────
+// (achado real 29/07): detectarDesvio() bloqueava TODA deteccao
+// comportamental (afastando de tudo, rumo-diverge, classe viaria, virada
+// errada) quando buscarAlvos falhava neste ciclo (alvosApiOk===false, fail
+// CLOSED) -- diferente da cerca virtual, que falha ABERTO ("indisponivel:
+// tenta de novo"). Cliente Nutry Max tem falha RECORRENTE de rede na
+// Unitrac (TypeError: fetch failed, ver descreverErroFetch) -- cada falha
+// desligava desvio pra frota inteira (108 veiculos) ate o proximo fetch
+// bem-sucedido: uma janela real em que um roubo em andamento nao dispararia
+// NENHUM alerta de desvio.
+//
+// Fix: guarda o ultimo fetch bem-sucedido por cliente; quando o fetch do
+// ciclo falha, cai pro ultimo conhecido (se dentro do teto de idade).
+// CORRECAO (revisao independente 29/07, achado Importante -- versao
+// anterior deste comentario dizia o oposto do que o codigo faz): o fallback
+// NAO fica restrito a detectarDesvio -- pontosVeiculo (route.ts, mais
+// abaixo) usa pontosPorPlacaFallback direto, entao bypass_entrega,
+// parada_sem_marcacao (a CONTENTE, nao o gate -- ver leituraAlvosConfiavel),
+// noCliente e suspensoPorChegada TAMBEM veem o fallback quando a Unitrac
+// falha, em vez de mapas vazios. Decisao deliberada apos analise da
+// revisao: dado velho de coordenada+feito e estritamente melhor que dado
+// vazio pra esses consumidores (ex.: bypass_entrega hoje ja default pra
+// entregaConfirmada=false numa falha -- feito e monotono, false->true, entao
+// cache velho so pode errar pro lado de "ainda nao confirmado", nunca o
+// inverso; dwell>=120s de bypass_entrega ja exclui entrega genuina de
+// qualquer forma). alvosApiOk (a flag ESTRITA, live-only) continua gating,
+// sem mudanca, exatamente os consumidores que exigem confirmacao FRESCA:
+// entregasTotal/entregasFeitas (saida_nao_autorizada) e
+// leituraAlvosConfiavel/deveMarcarSaidaParadaConfirmada (o gate de
+// parada_sem_marcacao/rua-estreita, que continua congelando o dwell numa
+// falha, mesmo com pontosVeiculo agora populado pelo fallback).
+type AlvosFallbackCache = { pontosPorPlaca: Map<string, PontoEntrega[]>; capturadoEm: number };
+const ALVOS_FALLBACK_MAX_MS = 30 * 60_000; // teto: nao usa fallback com mais de 30min
+const cacheAlvosFallbackPorCliente = new Map<string, AlvosFallbackCache>();
+
 // Tapete histórico (Camada 2 do desvio): células que a frota já percorreu nos
 // últimos 30 dias, por cliente. É o sinal PRIMÁRIO e precisa estar disponível
 // desde o 1º ciclo suspeito.
@@ -1148,6 +1183,52 @@ export async function POST(request: Request) {
         buscarAlvosComTimeout(cvsCliente),
       ]);
 
+      // Trata alvos ANTES do 'continue' de posicoes logo abaixo (achado
+      // revisao independente 29/07, Minor): as duas chamadas sao
+      // independentes (Promise.allSettled) -- se so buscarPosicoes falhar
+      // neste ciclo, um alvos bem-sucedido nao pode ser descartado sem
+      // alimentar cacheAlvosFallbackPorCliente, senao o fallback envelhece
+      // sem necessidade toda vez que so a OUTRA chamada falha.
+      let entregasPorPlaca = new Map<string, EntregasPlaca>();
+      let pontosPorPlaca = new Map<string, PontoEntrega[]>();
+      let alvosApiOk = false;
+      // Fallback pro detector de desvio (e, rio abaixo, bypass_entrega/
+      // parada_sem_marcacao/noCliente -- ver comentario de
+      // cacheAlvosFallbackPorCliente acima). alvosApiOk (a flag estrita)
+      // continua refletindo so o fetch DESTE ciclo, sem mudanca.
+      let pontosPorPlacaFallback: Map<string, PontoEntrega[]> = new Map();
+      let alvosDestinosDisponiveis = false;
+      if (alvosResultado.status === "fulfilled") {
+        entregasPorPlaca = alvosResultado.value.entregas;
+        pontosPorPlaca = alvosResultado.value.pontos;
+        alvosApiOk = true;
+        alvosDestinosDisponiveis = true;
+        pontosPorPlacaFallback = pontosPorPlaca;
+        // Guard (achado Minor): Unitrac pode responder HTTP 200 com lista
+        // vazia numa falha parcial do lado dela -- nao sobrescreve um
+        // snapshot BOM ja em cache com um vazio (senao o fallback morre bem
+        // antes do teto de 30min, justo quando mais precisaria dele). Sem
+        // cache anterior, grava vazio mesmo (nada melhor pra guardar ainda).
+        if (pontosPorPlaca.size > 0 || !cacheAlvosFallbackPorCliente.has(cliente.id)) {
+          cacheAlvosFallbackPorCliente.set(cliente.id, { pontosPorPlaca, capturadoEm: Date.now() });
+        }
+      } else {
+        // Nao-critico: mantemos os mapas vazios; alvosApiOk=false impede o
+        // detector saida_nao_autorizada de disparar (evita falsos criticos em massa).
+        const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${descreverErroFetch(alvosResultado.reason)}`;
+        console.warn(msg);
+        erros.push(msg);
+
+        const fallback = cacheAlvosFallbackPorCliente.get(cliente.id);
+        if (fallback && Date.now() - fallback.capturadoEm <= ALVOS_FALLBACK_MAX_MS) {
+          pontosPorPlacaFallback = fallback.pontosPorPlaca;
+          alvosDestinosDisponiveis = true;
+          console.warn(
+            `Usando cache de alvos (~${Math.round((Date.now() - fallback.capturadoEm) / 60000)}min atras) pro detector de desvio do cliente ${cliente.id} -- deteccao comportamental segue ativa com destinos ligeiramente desatualizados.`
+          );
+        }
+      }
+
       let posicoesRaw: unknown[];
       if (posicoesResultado.status === "fulfilled") {
         posicoesRaw = posicoesResultado.value;
@@ -1164,21 +1245,6 @@ export async function POST(request: Request) {
 
       // Cliente processou posicoes com sucesso — marcar para filtro de favela.
       clientesComSucesso.add(cliente.id);
-
-      let entregasPorPlaca = new Map<string, EntregasPlaca>();
-      let pontosPorPlaca = new Map<string, PontoEntrega[]>();
-      let alvosApiOk = false;
-      if (alvosResultado.status === "fulfilled") {
-        entregasPorPlaca = alvosResultado.value.entregas;
-        pontosPorPlaca = alvosResultado.value.pontos;
-        alvosApiOk = true;
-      } else {
-        // Nao-critico: mantemos os mapas vazios; alvosApiOk=false impede o
-        // detector saida_nao_autorizada de disparar (evita falsos criticos em massa).
-        const msg = `Aviso: buscarAlvos falhou para cliente ${cliente.id}: ${descreverErroFetch(alvosResultado.reason)}`;
-        console.warn(msg);
-        erros.push(msg);
-      }
 
       // Pontos do romaneio de HOJE pro cliente -- ver
       // docs/superpowers/specs/2026-07-15-romaneio-pontos-entrega-design.md.
@@ -1435,13 +1501,23 @@ export async function POST(request: Request) {
           // numa entrega normal. Ver detectarDesvio em lib/detectores.ts.
           // Rede de seguranca (decisao da spec): se existe romaneio de HOJE
           // pra esse veiculo, ele vira a fonte da lista/coordenada; o status
-          // (feito/pendente) continua vindo da Unitrac (pontosPorPlaca deste
-          // mesmo ciclo -- ver montarPontosDeRomaneio). Sem romaneio de hoje
-          // pro veiculo, cai no caminho 100% Unitrac de sempre.
+          // (feito/pendente) continua vindo da Unitrac (pontosPorPlacaFallback
+          // -- normalmente deste ciclo, ou do ultimo fetch bem-sucedido numa
+          // falha, ver cacheAlvosFallbackPorCliente acima -- ver
+          // montarPontosDeRomaneio). Sem romaneio de hoje pro veiculo, cai no
+          // caminho 100% Unitrac de sempre.
           const romaneioDoVeiculo = romaneioPontosPorPlaca.get(pos.placa);
+          // pontosPorPlacaFallback (nao pontosPorPlaca direto): quando o
+          // fetch de alvos deste ciclo falhou, cai pro ultimo conhecido
+          // (ver cacheAlvosFallbackPorCliente acima) em vez de ficar vazio.
+          // Beneficia toda a cadeia rio abaixo de uma vez so (desvio
+          // comportamental, suspensoPorChegada, foraTapeteStreak,
+          // parada_sem_marcacao, e o entregaConfirmada de bypass_entrega,
+          // que ate aqui SEMPRE lia false numa falha de fetch -- ver
+          // alvoQueSaiu abaixo -- em vez do ultimo status real conhecido).
           const pontosVeiculo = romaneioDoVeiculo && romaneioDoVeiculo.length > 0
-            ? montarPontosDeRomaneio(romaneioDoVeiculo, pontosPorPlaca.get(pos.placa) ?? [])
-            : pontosPorPlaca.get(pos.placa);
+            ? montarPontosDeRomaneio(romaneioDoVeiculo, pontosPorPlacaFallback.get(pos.placa) ?? [])
+            : pontosPorPlacaFallback.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito && temCoordenadaValida(pt));
           const temPendentes = pendentes.length > 0;
@@ -1492,7 +1568,15 @@ export async function POST(request: Request) {
             distanciaAoAnteriorM: temAnterior ? haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng) : null,
             velocidade: pos.velocidade,
           });
-          if (podeAvancarStreaksDesvio) {
+          // Achado da revisao independente 29/07 (fallback de alvos acima):
+          // sem o gate extra, uma falha SUSTENTADA (>30min, cache expirado)
+          // degrada destinos pra bases-only e o streak avancava/zerava com
+          // geometria de "afastando so das bases" -- lixo geometrico que
+          // podia poluir a streak e disparar desvio bogus assim que o
+          // proximo fetch bem-sucedido reabrisse o gate de detectarDesvio.
+          // Congela em vez de avancar quando nao ha dado confiavel (live ou
+          // fallback de cache), mesmo espirito de leituraAlvosConfiavel.
+          if (podeAvancarStreaksDesvio && alvosDestinosDisponiveis) {
             const r = avancarStreaksDesvio(
               afastouDeTudo(distDestinosM, distDestinosAnteriorM),
               { desvioStreak, aproximandoStreak }
@@ -1584,7 +1668,10 @@ export async function POST(request: Request) {
           // sem tapete confiavel ainda, fica 0 (nunca dispara por cold-start,
           // mesma protecao de sempre).
           let foraTapeteStreak: number = anterior?.fora_tapete_streak ?? 0;
-          if (pos.fresco && !saltoImplausivel && contagemTapeteCliente >= TAPETE_MIN_CELULAS) {
+          // alvosDestinosDisponiveis: mesmo achado da revisao 29/07 acima
+          // (desvioStreak) -- sem isso, falha sustentada de alvos degrada
+          // distDestinosM pra bases-only e polui esta streak tambem.
+          if (pos.fresco && !saltoImplausivel && alvosDestinosDisponiveis && contagemTapeteCliente >= TAPETE_MIN_CELULAS) {
             if (!afastouDeTudo(distDestinosM, distDestinosAnteriorM) && dentroTapete === false) {
               foraTapeteStreak += 1;
             } else {
@@ -1614,6 +1701,16 @@ export async function POST(request: Request) {
 
           // Parada no cliente (Benassi): verificar se o veiculo esta parado
           // dentro do raio de qualquer ponto da rota (feito OU pendente).
+          // Nota (revisao independente 29/07, achado Importante): pontosVeiculo
+          // agora pode vir do fallback de alvos (cache, ver acima) numa falha
+          // da Unitrac -- noCliente passa a reconhecer parada em cliente
+          // CONHECIDO mesmo sem fetch fresco. So usa coordenada+raio (ignora
+          // feito/pendente), entao staleness aqui e inofensiva; efeito
+          // colateral aceito e desejado: outros detectores de parada
+          // (parada_longa/parada_anomala/parada_fora_tapete, que hoje
+          // dependem de noCliente=false pra disparar) ficam MENOS propensos a
+          // falso positivo numa falha de Unitrac, na mesma direcao da
+          // diretiva do usuario (FP aceitavel, nunca perder desvio real).
           const maisProximoQualquer = alvoMaisProximoQualquer(pos.lat, pos.lng, pontosVeiculo);
           const noCliente =
             pos.velocidade === 0 &&
@@ -1672,7 +1769,11 @@ export async function POST(request: Request) {
           // podeAvancarStreaksDesvio) ja usado pro streak geral, sem duplicar
           // a chamada de divergenciaRumoGraus.
           let divergenciaGrausAtual: number | null = null;
-          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
+          // alvosDestinosDisponiveis: mesmo achado da revisao 29/07 acima --
+          // sem isso, destinos[idxMaisProximo] pode ser so uma base (falha
+          // sustentada, cache expirado), fabricando divergencia de rumo
+          // contra um alvo que nao e o real.
+          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && alvosDestinosDisponiveis && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
             const divergencia = divergenciaRumoGraus(
               anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
               destinos[idxMaisProximo].lat, destinos[idxMaisProximo].lng,
@@ -2315,7 +2416,13 @@ export async function POST(request: Request) {
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
-                  alvosApiOk,
+                  // Achado real 29/07: SO pro gate de detectarDesvio, usa
+                  // alvosDestinosDisponiveis (true com fallback de cache
+                  // tambem, ver cacheAlvosFallbackPorCliente acima) -- nao a
+                  // flag estrita alvosApiOk. entregasTotal/entregasFeitas
+                  // acima continuam estritos de proposito (saida_nao_autorizada
+                  // nao deve usar contagem de entregas desatualizada).
+                  alvosApiOk: alvosDestinosDisponiveis,
                   sabadoDiurnoComRota,
                   rumoMovimento,
                   distTiroteioM,
