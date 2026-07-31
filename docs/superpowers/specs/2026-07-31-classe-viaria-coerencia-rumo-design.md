@@ -98,6 +98,26 @@ Mesmo processo já usado 2x nesta sessão:
    suprimido erroneamente?
 3. Se limpo (ou com ajuste do limiar), vira `CLASSE_VIARIA_FILTRO_RUMO_ATIVO = true`.
 
+**Backtest manual executado (31/07, antes do deploy em sombra):** amostra de 30
+alertas `classe_viaria` reais do dia, reconstruindo `divergenciaRumoGraus`/
+`rumoCoerenteComDestino` (as MESMAS funções de produção, via `posicoes_historico` +
+`romaneio_pontos` do dia como proxy de destino). 4 casos sem romaneio disponível
+(pulados); dos 26 restantes, 9 teriam `suprimiria: true`, incluindo o `TTS-1A71`
+(664m do destino real, divergência 85,2° — confirma a análise manual original).
+Nenhum caso com sinal de desvio genuíno apareceu suprimido, mas a amostra não tinha
+nenhum alerta com confirmação individual forte de desvio real pra testar contra (só
+`status='falso_positivo'` é sinal forte nesta base — ver achado 27/07); a garantia é
+por ausência de bandeira vermelha, não verificação caso-a-caso como a do TTS-1A71.
+Achado adicional: o piso de 10km/h de `divergenciaRumoGraus` (pensado pro cenário de
+rodovia do `rumo_diverge`) zera o sinal em boa parte dos casos com destino resolvido
+justamente porque rua estreita é onde o veículo anda devagar — reduz a taxa de
+supressão sobre falso-positivos confirmados pra ~38% (5 de 13) na amostra. Não é
+motivo pra não ativar (falso positivo residual é aceitável, mesma diretriz de
+sempre), mas é um limite real de eficácia a considerar durante a calibração do
+limiar. Detalhe completo (tabela linha-a-linha) em
+`.superpowers/sdd/2026-07-31-classe-viaria-coerencia-rumo/task-4-report.md` (local,
+não versionado).
+
 ### Testes
 
 - `detectores.test.ts`: casos unitários pra `rumoCoerenteComDestino` (coerente, não
