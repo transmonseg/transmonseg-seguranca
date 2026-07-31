@@ -130,7 +130,13 @@ export default async function AppLayout({
       </header>
 
       {/* Conteudo principal */}
-      <main className="flex-1 min-h-0 overflow-hidden">
+      {/* overflow-y-auto (nao overflow-hidden): paginas de conteudo normal
+          (romaneio, analise) precisam rolar quando o resultado cresce --
+          achado real 31/07, usuario nao conseguia descer pra ver a lista.
+          A Central (MonitorV2) preenche exatamente height:100% e gerencia
+          seu proprio overflow internamente, entao nao aparece scrollbar
+          dupla nela. */}
+      <main className="flex-1 min-h-0 overflow-y-auto">
         {children}
       </main>
 
