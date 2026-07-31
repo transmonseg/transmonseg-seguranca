@@ -818,160 +818,6 @@ export const FATOR_HORARIO_MAX = 1.6;
 // bastar, sem precisar de combinacao forte tipo favela+tiroteio.
 export const RISCO_AREA_LIMIAR = 25;
 
-// Auto-resolucao retroativa da "rua estranha" (achado real 27/07, revisao
-// manual de 215 alertas: ~69% de falso positivo, padrao dominante era
-// "chegou e parou pouco depois, sem area de risco por perto" -- exatamente
-// o tipo de coisa que so da pra confirmar DEPOIS do alerta ja ter
-// disparado). Mantem a deteccao rapida (dispara igual a hoje) e so limpa
-// sozinho o que se confirma como falso positivo -- nao atrasa nenhum caso
-// real.
-//
-// Task 5 (28/07) -- 2 padroes reais confirmados hoje (dado real de
-// posicao/velocidade de 3 casos: TTI-6E43 33min, TB466437 18min, TTD-7H14
-// 10.6min) que impediam o disparo a tempo em ~36% dos casos elegiveis:
-//
-// Padrao A -- REMOVIDO (era RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN=5min,
-// constante deletada): a janela era contada a partir da CRIACAO do alerta
-// (idadeAlertaMin), nao do momento em que o veiculo de fato fica parado.
-// Casos reais (TTI-6E43, TB466437) mostraram o veiculo terminando a
-// manobra (virar, entrar na rua) alguns minutos DEPOIS do alerta disparar
-// -- normal -- entao a janela ja tinha fechado quando ele finalmente
-// satisfazia o gate de "parado o suficiente" abaixo. Removida por
-// completo, sem parametro morto -- mesmo padrao ja validado e em producao
-// do auto-resolve irmao (deveAutoResolverAfastandoRotaConcluida, abaixo),
-// que nunca teve janela de tempo nenhuma, so as condicoes de seguranca
-// (risco baixo + parado confirmado). Consistencia deliberada com esse
-// precedente ja revisado.
-//
-// Padrao B -- ver RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH e
-// calcularParadaToleranteSegundos logo abaixo.
-// Minutos parado pra contar como "parou de verdade", nao blip de semaforo.
-export const RUA_ESTRANHA_PARADO_MIN_MIN = 2;
-
-// Task 5, Padrao B (28/07): paradoMin (route.ts, coluna parado_desde) zera
-// com QUALQUER leitura de velocidade!=0, mesmo um blip isolado de poucos
-// km/h (ver bloco que calcula parado_desde em route.ts) -- em transito
-// parado-e-anda esse timer nunca acumula os RUA_ESTRANHA_PARADO_MIN_MIN
-// continuos exigidos acima. Caso real TTD-7H14 (~cron a cada 30s):
-// velocidade oscilou 0,6,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19.
-//
-// Achado da revisao independente (5b.1, rodada 1): o lat/lng REAL desse
-// caso mostra o veiculo se deslocando uns 10-30m a cada leitura o tempo
-// todo -- NAO fica no mesmo ponto (mesmoPonto, usado por parado_desde,
-// ficaria FALSE quase todo ciclo). Por isso o acumulador abaixo NAO usa
-// posicao como gate, so velocidade -- ver comentario em
-// calcularParadaToleranteSegundos pro raciocinio completo de por que uma
-// primeira versao gateada por mesmoPonto reproduzia o proprio bug.
-//
-// NAO mexe em paradoMin em si (primitivo compartilhado por muitos outros
-// consumidores em route.ts -- mudar sua semantica arriscaria regressao em
-// coisa nao relacionada). Sinal PROPRIO, so pro auto-resolve de rua-
-// estreita: este limiar decide o que ainda TOLERA sem resetar a contagem
-// (nao decide o que conta como "parado" -- so velocidade===0 de verdade
-// soma tempo, ver calcularParadaToleranteSegundos abaixo pro raciocinio
-// completo, incluindo o achado CRITICO da revisao independente round 2:
-// uma primeira versao deste fix somava tempo pra qualquer leitura ate
-// este limiar, contando dirigir devagar como se fosse ter parado).
-//
-// 20km/h cobre o pico observado no caso real (TTD-7H14 chegou a 20) com
-// folga confortavel abaixo de velocidade de desvio de verdade -- dado real
-// levantado na Task 7 (28/07, 19 falsos-positivos de rumo-diverge
-// checados): so 1/19 (5%) ficou perto de 10km/h, 74% ficou em 40km/h ou
-// mais. Conceito diferente de DIVERGENCIA_RUMO_VELOCIDADE_MIN_KMH
-// (unitrac.ts) -- la e' "velocidade minima pra bearing fazer sentido", aqui
-// e' "velocidade maxima que ainda conta como efetivamente parado" --
-// constante propria, deliberadamente.
-export const RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH = 20;
-
-// M4 (revisao independente round 3, 27/07): riscoAreaAtual vem de
-// riscoPorVeiculo (route.ts), um Map preenchido por UMA query em batch por
-// ciclo -- se essa query falhar, o Map fica vazio pro ciclo inteiro e TODO
-// veiculo le riscoAreaAtual=0 (fallback deliberado, "falha graciosa: sem
-// dado, risco fica 0", ver comentario no motor). Em QUALQUER outro consumidor
-// de riscoAreaAtual neste arquivo, esse fallback erra pro lado seguro:
-// nunca ACELERA nem SUPRIME um alerta sozinho, so deixa de reforcar um que
-// ja ia disparar por outro motivo (ver riscoAreaAtual em CtxDesvio acima).
-// Aqui seria o oposto -- riscoAreaAtual=0 por FALTA de dado e riscoAreaAtual
-// =0 por dado real "area tranquila confirmada" ficam indistinguiveis, e so
-// o segundo deveria poder fechar o alerta sozinho. Um caminhao parado
-// literalmente dentro de uma favela, no ciclo exato em que a query de risco
-// falhou, seria auto-resolvido por engano. riscoDisponivel (passado pelo
-// caller como riscoPorVeiculo.has(veiculo_id)) EXIGE que o dado exista de
-// verdade pro veiculo neste ciclo -- sem ele, a funcao recusa resolver
-// (alerta so fica aberto mais um ciclo, mesma direcao de fail-safe de tudo
-// mais neste arquivo).
-//
-// idadeAlertaMin foi REMOVIDO daqui (Task 5, Padrao A -- ver comentario
-// acima): nao ha mais janela de tempo, sem deixar parametro morto.
-// paradaEfetivaMin substitui o antigo paradoMin estrito NESTA chamada
-// especificamente (Task 5, Padrao B) -- route.ts calcula esse valor
-// tolerante-a-blip via calcularParadaToleranteSegundos e passa aqui; o
-// paradoMin estrito continua existindo em route.ts e sendo usado por
-// TODOS os outros consumidores, sem nenhuma mudanca de comportamento pra
-// eles.
-export function deveAutoResolverRuaEstranha(ctx: {
-  paradaEfetivaMin: number;
-  riscoAreaAtual: number;
-  riscoDisponivel: boolean;
-}): boolean {
-  return (
-    ctx.riscoDisponivel &&
-    ctx.paradaEfetivaMin >= RUA_ESTRANHA_PARADO_MIN_MIN &&
-    ctx.riscoAreaAtual < RISCO_AREA_LIMIAR
-  );
-}
-
-// Task 5b.1 (revisao independente, achado MAIS SERIO da rodada 1): a
-// versao original desta funcao usava mesmoPonto (celula de 4 casas
-// decimais, mesma logica de parado_desde) como gate -- pra decidir se
-// acumulava ou resetava. O revisor conferiu o lat/lng REAL do caso
-// TTD-7H14 (nao so a velocidade, que ja tinha sido checada) e o veiculo
-// esta se deslocando uns 10-30m a cada leitura o tempo todo -- mesmoPonto
-// fica FALSE quase todo ciclo pra esse caso real. Com aquele gate, o
-// acumulador resetava quase toda leitura, reproduzindo o EXATO bug
-// original (parado_desde) um nivel abaixo -- nao corrigia o caso real que
-// foi construido pra corrigir (so passava no teste, que usava uma fixture
-// idealizada com mesmoPonto:true hardcoded, fisicamente incompativel com
-// o lat/lng real do caso).
-//
-// CRITICO (revisao independente, round 2 apos o fix de mesmoPonto acima):
-// a primeira versao deste fix somava +30s pra QUALQUER velocidade
-// <=RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH (ate 20km/h) -- isso nao tolera
-// blip, CONTA DIRIGIR COMO SE FOSSE PARAR. Cenario real: veiculo sequestrado
-// dirigindo por ruas estreitas a 10-18km/h (velocidade normal pra uma rua
-// estreita, nunca excede o limiar) por 20+ minutos -- o acumulador nunca
-// reseta, so precisa de UMA leitura de semaforo com velocidade=0 no fim pra
-// "paradaEfetivaMin" passar de 20min e o alerta fechar sozinho como falso
-// positivo. O gate de decisao (`pos.velocidade === 0` no ciclo exato) nao
-// protege disso -- ele so exige a leitura ATUAL parada, nao o historico.
-// A comparacao com no_raio_dwell_segundos nos comentarios da versao
-// anterior tambem estava errada nesse ponto: aquele acumulador MANTEM
-// (nao soma) quando devagar mas nao parado, e reseta ao sair do raio --
-// aqui replicado corretamente: SO velocidade===0 de verdade soma tempo;
-// velocidade entre 1 e RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH so evita
-// resetar (tolera o blip), sem fingir que o veiculo parou naquele ciclo.
-// Verificado contra o caso real TTD-7H14: ainda cruza o limiar de 2min
-// (leitura 9, ~4.5min dos 10.6min do episodio), so que agora contando
-// somente as leituras genuinamente paradas (12 das 24 leituras sao 0).
-//
-// Persistido em posicoes_atuais.parada_tolerante_segundos (migration
-// 015), coluna PROPRIA -- nao reusa parado_desde (herdaria o reset por
-// blip que e' o proprio bug) nem escreve em paradoMin. A posicao
-// (mesmoPonto) so importa pro parado_desde ESTRITO (paradoMin), que
-// continua existindo sem mudanca pra todos os outros consumidores.
-export function calcularParadaToleranteSegundos(ctx: {
-  velocidade: number;
-  anteriorSegundos: number;
-}): number {
-  if (ctx.velocidade > RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH) return 0;
-  // So velocidade===0 de verdade acumula tempo (mesmo incremento fixo de
-  // 30s ja usado por no_raio_dwell_segundos, aproxima o intervalo real do
-  // cron de ~30s). Velocidade entre 1 e o limiar tolerante NAO soma --
-  // so evita que o proximo 0 reinicie a contagem do zero (o blip em si
-  // nunca conta como tempo parado).
-  return ctx.velocidade === 0 ? ctx.anteriorSegundos + 30 : ctx.anteriorSegundos;
-}
-
 // Achado real 28/07 (Task 6, revisao manual de FP de rua-estreita): 36%
 // dos casos eram o veiculo saindo de uma parada de entrega LEGITIMA e
 // pegando uma rua estreita logo em seguida. saiu_parada_confirmada_em
@@ -989,9 +835,9 @@ export function calcularParadaToleranteSegundos(ctx: {
 export const JANELA_SAIDA_PARADA_MIN = 5;
 
 // Funcao pura extraida (em vez de inline em route.ts) pra poder testar a
-// fronteira exata da janela sem simular um ciclo completo do motor --
-// mesmo espirito de deveAutoResolverRuaEstranha acima. route.ts chama isso
-// UMA vez por veiculo/ciclo e passa so o booleano resultante adiante (ver
+// fronteira exata da janela sem simular um ciclo completo do motor.
+// route.ts chama isso UMA vez por veiculo/ciclo e passa so o booleano
+// resultante adiante (ver
 // CtxDesvio.saiuParadaConfirmadaRecentemente) -- detectarDesvio continua
 // sem precisar saber a hora atual, mesmo padrao de todo outro campo de
 // CtxDesvio (booleanos/numeros ja calculados, nunca timestamps crus).
@@ -1036,42 +882,20 @@ export function deveMarcarSaidaParadaConfirmada(ctx: {
 export const MOTIVO_RUA_ESTRANHA =
   "Saiu de via principal recentemente e está em rua estreita, fora do raio de qualquer destino conhecido";
 
-// BLOCKER 2 (revisao independente 27/07): o check de auto-resolucao
-// original filtrava so por tipo/motivo, sem olhar status -- podia
-// auto-resolver um alerta que o operador ja tinha clicado "Reconhecer"
-// (status='reconhecido'), puxando o tapete debaixo dele em silencio.
-// Extraido como funcao pura testavel (route.ts nao tem harness de teste
-// proprio, ver nota em detectores.test.ts) -- so alertas 'ativo' sao
-// elegiveis.
-//
-// Task 5b.3 (revisao independente rodada 1): idadeAlertaMin foi removido
-// do PADRAO A (deveAutoResolverRuaEstranha nao olha mais idade -- ver
-// comentario la), mas sem NENHUM teto um alerta de dias/semanas (o cron
-// expirar-alertas-ativos-esquecidos so fecha depois de 7 dias) ficaria
-// elegivel pra fechar sozinho na primeira parada tranquila de 2min, sem
-// ninguem saber o que aconteceu ENTRE a criacao e essa parada (ex:
-// sequestro real, veiculo levado dezenas de km, estacionado numa area sem
-// risco corroborado). Teto generoso (60min, quase 2x o pior caso real
-// observado: TTI-6E43 33min) ancorado na CRIACAO do alerta --
-// deliberadamente mais simples que ancorar numa nova "elegibilidade"
-// (exigiria mais um campo persistido). Aplicado AQUI, no filtro de
-// elegibilidade -- nao em deveAutoResolverRuaEstranha, que continua sem
-// saber de tempo: a idade e' sobre QUAL ALERTA e' candidato, nao sobre as
-// condicoes de seguranca em si.
-export const RUA_ESTRANHA_IDADE_MAXIMA_AUTORESOLVE_MS = 60 * 60 * 1000;
-
-export function alertaElegivelParaAutoResolveRuaEstranha(
-  alerta: { status: string; tipo: string; motivo: string; desde: string },
-  agora: Date,
-  idadeMaximaMs: number = RUA_ESTRANHA_IDADE_MAXIMA_AUTORESOLVE_MS
-): boolean {
-  return (
-    alerta.status === "ativo" &&
-    alerta.tipo === "desvio" &&
-    alerta.motivo === MOTIVO_RUA_ESTRANHA &&
-    agora.getTime() - new Date(alerta.desde).getTime() <= idadeMaximaMs
-  );
-}
+// REMOVIDO (achado real 31/07, cliente Nutry Max): o auto-resolve
+// automatico de rua-estreita (deveAutoResolverRuaEstranha +
+// alertaElegivelParaAutoResolveRuaEstranha + calcularParadaToleranteSegundos,
+// removidos daqui) fechava sozinho, em 1-4min, casos que o cliente confirmou
+// serem desvio REAL (RQV-6C22, TUC-1D15: motorista sem saber a rota --
+// mesma assinatura de "parou pouco depois, area sem risco" que o desenho
+// original assumia ser sempre falso positivo, mas que tambem acontece com
+// motorista perdido tentando se situar). Diretiva explicita do usuario:
+// "essa porra de se auto resolver bora acabar com isso" -- nunca mais
+// fechar sozinho, exatamente como todo outro tipo de desvio (afastando de
+// tudo, cerca virtual, virada errada) ja nao fecha. classe_viaria
+// (MOTIVO_RUA_ESTRANHA, acima) continua disparando normalmente -- so o
+// fechamento automatico foi removido; agora exige resolucao humana ou
+// "Limpar avisos", igual a qualquer outro desvio.
 
 // Auto-resolucao retroativa de "afastando de todos os destinos" quando a
 // rota foi 100% concluida (achado real 27/07, revisao de 215 alertas: ~15
@@ -1114,8 +938,7 @@ export const BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO = 100_000;
 // satisfazia a condicao, e o check rodava mesmo com posicao de GPS obsoleta
 // (ate ~180min, incluindo durante jammer ativo -- ver detectarJammer, tratado
 // em outro lugar deste arquivo como o indicador mais forte de sequestro,
-// ~85% de correlacao). Mesmo padrao ja usado por deveAutoResolverRuaEstranha
-// (RUA_ESTRANHA_PARADO_MIN_MIN acima): exige parado de verdade, nao um blip.
+// ~85% de correlacao). Exige parado de verdade, nao um blip.
 export const AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN = 2;
 
 // ctx.baseOcupada mantem o significado de sempre ("dentro do poligono de
@@ -1124,11 +947,7 @@ export const AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN = 2;
 // especifico", ver BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO acima). O caller
 // (route.ts) calcula baseElegivelAutoResolve a partir do areaM2 ja carregado
 // em mapaBasesCliente (sem query nova por veiculo) e so passa ctx.paradoMin
-// quando pos.fresco && pos.velocidade===0 (mesma convencao de gate usada
-// pela chamada de deveAutoResolverRuaEstranha em route.ts -- so entra no
-// bloco quando pos.velocidade===0; a partir da Task 5/Padrao B aquela
-// chamada passa paradaEfetivaMin, tolerante a blip, em vez de paradoMin
-// estrito, mas o GATE de entrada continua o mesmo).
+// quando pos.fresco && pos.velocidade===0.
 export function deveAutoResolverAfastandoRotaConcluida(ctx: {
   rotaConcluida: boolean;
   baseOcupada: boolean;
@@ -1152,12 +971,11 @@ export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo:
 // BLOCKER 1 (revisao independente 27/07): mapaTiposSilenciados (route.ts)
 // contava QUALQUER linha status='falso_positivo' recente como "operador
 // ensinando o sistema" e silenciava o tipo pro veiculo por 2h -- inclusive
-// as que o proprio auto-resolve acima gerou, o que silenciava tipo="desvio"
-// (inclusive cerca_virtual/comportamental REAIS) quase continuamente, dado
-// que o padrao auto-resolvido e' ~69% dos casos. contexto.auto_resolvido
-// marca a origem; linhas assim NUNCA devem contar pro silenciamento --
-// so falso_positivo marcado por acao humana explicita (resolverAlerta/
-// marcarFalsoPositivo em acoes-alertas.ts) ensina o sistema.
+// as que um auto-resolve gerou (hoje, so o de "afastando de tudo" quando
+// rota concluida). contexto.auto_resolvido marca a origem; linhas assim
+// NUNCA devem contar pro silenciamento -- so falso_positivo marcado por
+// acao humana explicita (resolverAlerta/marcarFalsoPositivo em
+// acoes-alertas.ts) ensina o sistema.
 export function contaComoEventoDeSilenciamento(contexto: unknown): boolean {
   if (
     contexto !== null &&

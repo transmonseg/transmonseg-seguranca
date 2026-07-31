@@ -46,12 +46,7 @@ import {
   PARADA_FORA_TAPETE_MIN,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
-  deveAutoResolverRuaEstranha,
-  alertaElegivelParaAutoResolveRuaEstranha,
   contaComoEventoDeSilenciamento,
-  RUA_ESTRANHA_PARADO_MIN_MIN,
-  RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH,
-  calcularParadaToleranteSegundos,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
@@ -701,7 +696,7 @@ export async function POST(request: Request) {
     // ciclo, degradacao aceitavel e temporaria; nao persistente).
     const { data: posatuaisRows, error: erroLeituraPosAtuais } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos, divergencia_rumo_caminho_m");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos, divergencia_rumo_caminho_m");
     if (erroLeituraPosAtuais) {
       const msg = `CRITICO: falha ao ler posicoes_atuais (estado por veiculo perdido neste ciclo, UPSERT sera pulado pra nao gravar cold-start por engano): ${erroLeituraPosAtuais.message}`;
       console.error(msg);
@@ -730,11 +725,6 @@ export async function POST(request: Request) {
         // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
         // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
         saiu_parada_confirmada_em: string | null;
-        // Task 5, Padrao B (28/07): acumulador tolerante a blip, so pro
-        // auto-resolve de rua-estreita -- ver calcularParadaToleranteSegundos
-        // em lib/detectores.ts. Coluna PROPRIA (migration 015), nao
-        // relacionada a parado_desde/paradoMin acima.
-        parada_tolerante_segundos: number;
         // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
         // detectarParadaSemMarcacao em lib/detectores.ts. Colunas PROPRIAS
         // (migration 016), mesmo padrao de no_raio_alvo_codigo/no_raio_dwell_segundos.
@@ -763,7 +753,6 @@ export async function POST(request: Request) {
         no_raio_dwell_segundos: row.no_raio_dwell_segundos ?? 0,
         ultima_via_principal_em: row.ultima_via_principal_em ?? null,
         saiu_parada_confirmada_em: row.saiu_parada_confirmada_em ?? null,
-        parada_tolerante_segundos: row.parada_tolerante_segundos ?? 0,
         perto_sem_marcacao_codigo: row.perto_sem_marcacao_codigo ?? null,
         perto_sem_marcacao_segundos: row.perto_sem_marcacao_segundos ?? 0,
       });
@@ -845,11 +834,6 @@ export async function POST(request: Request) {
     // contexto -- nunca muda nivel/status, nunca fecha o alerta.
     const rotaConcluidaCiclo: { alerta_id: string; entregasFeitas: number; entregasTotal: number }[] = [];
 
-    // veiculo_id incluido junto (M3, revisao independente round 3, 27/07):
-    // o flush abaixo tambem precisa resetar ultima_via_principal_em
-    // (posicoes_atuais) desses mesmos veiculos -- ver comentario no flush.
-    const ruaEstranhaAutoResolveCiclo: { alerta_id: string; veiculo_id: string }[] = [];
-
     // Auto-resolucao retroativa de "afastando-se de todos os destinos"
     // quando a rota foi 100% concluida E o veiculo chegou fisicamente
     // dentro do poligono de uma base cadastrada -- ver
@@ -857,8 +841,8 @@ export async function POST(request: Request) {
     // e deveAutoResolverAfastandoRotaConcluida em detectores.ts pro
     // raciocinio completo (achado real 27/07: ~15 dos 91 casos de
     // "afastando de destinos" revisados eram esse padrao). Mesmo padrao de
-    // acumulador por ciclo + flush em lote ja usado por
-    // ruaEstranhaAutoResolveCiclo acima.
+    // acumulador por ciclo + flush em lote ja usado por rotaConcluidaCiclo
+    // acima.
     const afastandoRotaConcluidaAutoResolveCiclo: { alerta_id: string }[] = [];
 
     // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
@@ -1040,10 +1024,6 @@ export async function POST(request: Request) {
       // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
       // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
       saiu_parada_confirmada_em: string | null;
-      // Task 5, Padrao B (28/07): acumulador tolerante a blip, so pro
-      // auto-resolve de rua-estreita -- ver calcularParadaToleranteSegundos
-      // em lib/detectores.ts.
-      parada_tolerante_segundos: number;
       // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
       // detectarParadaSemMarcacao em lib/detectores.ts.
       perto_sem_marcacao_codigo: number | null;
@@ -1356,27 +1336,27 @@ export async function POST(request: Request) {
       // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
       const { data: todosAlertasAbertos } = await supabase
         .from("alertas")
-        .select("id, tipo, veiculo_id, nivel, desde, motivo, status")
+        .select("id, tipo, veiculo_id, nivel, motivo, status")
         .eq("cliente_id", cliente.id)
         .in("status", ["ativo", "reconhecido"]);
 
-      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; desde: string; motivo: string; status: string }[]>();
+      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; motivo: string; status: string }[]>();
       for (const ab of todosAlertasAbertos ?? []) {
         const lista = mapaAlertasAbertos.get(ab.veiculo_id) ?? [];
-        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, desde: ab.desde, motivo: ab.motivo, status: ab.status });
+        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, motivo: ab.motivo, status: ab.status });
         mapaAlertasAbertos.set(ab.veiculo_id, lista);
       }
 
       // BLOCKER 1 (revisao independente 27/07): esta query alimenta
       // mapaTiposSilenciados, que foi desenhada em torno de uma acao HUMANA
       // deliberada ("marcar falso positivo" na UI, ver acoes-alertas.ts) --
-      // "ensinar o sistema" a ignorar aquele tipo pro veiculo por 2h. O
-      // auto-resolve de "rua estranha" (ver contaComoEventoDeSilenciamento
-      // em detectores.ts) reusa o mesmo status='falso_positivo' mas NAO e'
-      // uma decisao humana; sem o filtro abaixo ele silenciaria tipo="desvio"
-      // fleet-wide quase continuamente (o padrao auto-resolvido e' ~69% dos
-      // casos), inclusive escondendo desvios reais (cerca_virtual,
-      // comportamental). contexto precisa vir junto pra dar pra distinguir.
+      // "ensinar o sistema" a ignorar aquele tipo pro veiculo por 2h.
+      // Auto-resolves (ver contaComoEventoDeSilenciamento em detectores.ts
+      // -- hoje so o de "afastando de tudo" quando rota concluida) reusam o
+      // mesmo status='falso_positivo' mas NAO sao decisao humana; sem o
+      // filtro abaixo silenciariam o tipo fleet-wide so por terem marcado
+      // varios casos como resolvidos sozinhos. contexto precisa vir junto
+      // pra dar pra distinguir.
       const { data: todosFalsosRecentes } = await supabase
         .from("alertas")
         .select("tipo, veiculo_id, contexto")
@@ -1457,37 +1437,6 @@ export async function POST(request: Request) {
 
             paradoMin = Math.round((agora.getTime() - new Date(parado_desde).getTime()) / 60000);
           }
-
-          // Task 5, Padrao B (28/07): sinal tolerante a blip, so pro
-          // auto-resolve de rua-estreita (ver calcularParadaToleranteSegundos
-          // e RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH em detectores.ts pro
-          // raciocinio completo -- caso real TTD-7H14, velocidade oscilando
-          // 0,6,7,7,7,7,0,0,0,0,0,7,7,0,0,10,10,0,0,20,20,0,0,19 sem nunca
-          // acumular 2min continuos no paradoMin estrito acima). NAO reusa
-          // parado_desde/paradoMin (isso herdaria o proprio bug -- reseta
-          // com QUALQUER velocidade!=0) nem os altera -- coluna e variavel
-          // completamente separadas.
-          //
-          // Task 5b.1 (revisao independente rodada 1, achado MAIS SERIO): a
-          // versao anterior passava mesmoPonto (definido acima) pra esta
-          // funcao -- o revisor conferiu o lat/lng REAL do caso TTD-7H14 e o
-          // veiculo se desloca uns 10-30m a cada leitura o tempo todo, entao
-          // mesmoPonto ficava FALSE quase todo ciclo pra esse caso real,
-          // reproduzindo o proprio bug (parado_desde reseta quase sempre) um
-          // nivel abaixo. mesmoPonto foi REMOVIDO desta chamada -- so
-          // velocidade decide agora (ver calcularParadaToleranteSegundos).
-          // Continua seguro porque o `if (pos.fresco && pos.velocidade ===
-          // 0)` abaixo, no call site de deveAutoResolverRuaEstranha, exige
-          // velocidade EXATAMENTE 0 no ciclo da decisao -- so o "ha quanto
-          // tempo" tolera blips anteriores, a decisao em si nunca dispara
-          // com o veiculo em movimento. mesmoPonto continua em uso acima,
-          // sem mudanca, pelo parado_desde/paradoMin estrito.
-          const paradaToleranteAnteriorSegundos = anterior?.parada_tolerante_segundos ?? 0;
-          const paradaToleranteSegundos = calcularParadaToleranteSegundos({
-            velocidade: pos.velocidade,
-            anteriorSegundos: paradaToleranteAnteriorSegundos,
-          });
-          const paradaEfetivaMin = paradaToleranteSegundos / 60;
 
           // Origem pro par O-D do tapete (migration 014, so coleta): celula
           // da ultima parada de 5+ min. Persistida em posicoes_atuais.
@@ -2329,9 +2278,9 @@ export async function POST(request: Request) {
           //
           // I1: pos.fresco protegia so o alerta, nao o acumulador -- uma
           // posicao travada (sinal perdido, ainda "fresca" por ate 59min)
-          // continuava somando dwell pelo relogio de parede. Mesmo padrao
-          // ja usado em route.ts (pos.atraso<=5) pra fechar exatamente essa
-          // brecha em outro detector nesta mesma sessao.
+          // continuava somando dwell pelo relogio de parede. Fix: exige
+          // pos.atraso<=5 (leitura recente de verdade, nao so "nao expirou
+          // ainda") antes de acumular.
           //
           // emOperacao REMOVIDO (achado da mesma revisao): causava
           // descarte SILENCIOSO de transicoes reais fora do horario
@@ -2850,7 +2799,6 @@ export async function POST(request: Request) {
             no_raio_dwell_segundos: noRaioDwellSegundos,
             ultima_via_principal_em: ultimaViaPrincipalEm,
             saiu_parada_confirmada_em: saiuParadaConfirmadaEm,
-            parada_tolerante_segundos: paradaToleranteSegundos,
             perto_sem_marcacao_codigo: pertoSemMarcacaoCodigo,
             perto_sem_marcacao_segundos: pertoSemMarcacaoSegundos,
           });
@@ -2924,8 +2872,8 @@ export async function POST(request: Request) {
           // BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO em detectores.ts,
           // calculado uma vez no load de mapaBasesCliente, sem query nova
           // por veiculo). pos.fresco && pos.velocidade===0 no gate externo +
-          // paradoMin no ctx seguem exatamente a mesma convencao ja usada
-          // pelo auto-resolve de rua estranha logo abaixo.
+          // paradoMin no ctx exigem parada de verdade e leitura fresca antes
+          // de sequer considerar o auto-resolve.
           //
           // !alertaJammer (revisao independente, rodada 2): pos.fresco so
           // exige atraso<60min, mas detectarJammer ja dispara critico a
@@ -2955,70 +2903,6 @@ export async function POST(request: Request) {
                 })
               ) {
                 afastandoRotaConcluidaAutoResolveCiclo.push({ alerta_id: a.id });
-              }
-            }
-          }
-
-          // Auto-resolucao retroativa da "rua estranha" -- ver
-          // deveAutoResolverRuaEstranha em detectores.ts pro raciocinio
-          // completo. So roda quando o veiculo esta FRESCO e parado agora
-          // (o gate de tempo real continua exigindo velocidade===0 NESTE
-          // ciclo -- so o "ha quanto tempo" que vira paradaEfetivaMin abaixo
-          // passou a tolerar blips ANTERIORES, ver Task 5/Padrao B).
-          // BLOCKER 2 (revisao independente 27/07): alertaElegivelParaAutoResolveRuaEstranha
-          // agora tambem exige status==='ativo' -- um alerta que o operador
-          // ja reconheceu (status='reconhecido') nao pode ser auto-resolvido
-          // por baixo dele.
-          // M4 (revisao independente round 3, 27/07): riscoDisponivel =
-          // riscoPorVeiculo.has(veiculo_id) -- o MESMO Map de onde
-          // riscoAreaAtual acima foi derivado (linha ~1652). Se a query em
-          // batch que popula esse Map falhar neste ciclo (ver try/catch la
-          // em cima, ~linha 745), riscoAreaAtual cai no fallback 0 pra TODO
-          // veiculo, indistinguivel de "area confirmada tranquila" -- sem
-          // este gate, um veiculo parado dentro de uma area de risco de
-          // verdade seria auto-resolvido por engano no exato ciclo em que o
-          // dado de risco faltou. Sem o dado, a funcao pura recusa resolver
-          // e o alerta so fica aberto mais um ciclo (mesma direcao de
-          // fail-safe de todo outro consumidor de riscoAreaAtual).
-          //
-          // Task 5 (28/07): idadeAlertaMin (janela de 5min contada da
-          // criacao do alerta) foi REMOVIDA -- ver comentario completo em
-          // detectores.ts (Padrao A). paradoMin estrito foi trocado por
-          // paradaEfetivaMin (calculado acima, tolerante a blip -- Padrao
-          // B) SO nesta chamada; nenhum outro consumidor de paradoMin
-          // neste arquivo muda.
-          //
-          // Task 5b.2 (revisao independente rodada 1): !alertaJammer
-          // faltava aqui -- mesmo guard e mesmo motivo do auto-resolve
-          // irmao logo acima (afastando-rota-concluida): sem ele, uma
-          // posicao CONGELADA por jamming podia acumular parada (estrita
-          // ou tolerante) so pelo relogio de parede e auto-resolver o
-          // desvio no meio de um possivel sequestro em andamento -- risco
-          // maior agora que a Task 5b.3 abaixo troca a janela de tempo
-          // ilimitada por um teto de 60min (jammer trava posicao por ate
-          // ~1h dentro dessa janela).
-          //
-          // Achado IMPORTANTE da revisao independente (round 2): detectarJammer
-          // exige ignicao ligada (ver detectores.ts) -- se o rastreador for
-          // desligado/cortado com o veiculo parado (ignicao=false), NENHUM
-          // jammer e' detectado, mas pos.fresco continua true por ate ~59min
-          // (fresco = atraso<60min). A mesma leitura congelada seria
-          // reprocessada todo ciclo, paradaEfetivaMin cresceria so pelo
-          // relogio de parede, e o alerta fecharia sozinho dentro da janela
-          // de 60min sem NENHUM dado novo de verdade. pos.atraso<=5
-          // (leitura recente de verdade, nao so "nao expirou ainda") fecha
-          // essa brecha sem custar nada nos casos reais (que sempre tinham
-          // rastreamento ao vivo).
-          if (pos.fresco && pos.atraso <= 5 && !alertaJammer && pos.velocidade === 0) {
-            for (const a of alertasAbertos.filter((candidato) => alertaElegivelParaAutoResolveRuaEstranha(candidato, agora))) {
-              if (
-                deveAutoResolverRuaEstranha({
-                  paradaEfetivaMin,
-                  riscoAreaAtual,
-                  riscoDisponivel: riscoPorVeiculo.has(veiculo_id),
-                })
-              ) {
-                ruaEstranhaAutoResolveCiclo.push({ alerta_id: a.id, veiculo_id });
               }
             }
           }
@@ -3322,7 +3206,7 @@ export async function POST(request: Request) {
               divergencia_rumo_streak, aproximando_streak, origem_celula,
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
               ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em,
-              parada_tolerante_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos,
+              perto_sem_marcacao_codigo, perto_sem_marcacao_segundos,
               divergencia_rumo_caminho_m)
            SELECT
              c.veiculo_id, c.lat, c.lng,
@@ -3335,7 +3219,7 @@ export async function POST(request: Request) {
              c.aproximando_streak, c.origem_celula, c.no_raio_alvo_codigo,
              c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
              c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb,
-             c.saiu_parada_confirmada_em::timestamptz, c.parada_tolerante_segundos,
+             c.saiu_parada_confirmada_em::timestamptz,
              c.perto_sem_marcacao_codigo, c.perto_sem_marcacao_segundos,
              c.divergencia_rumo_caminho_m
            FROM unnest(
@@ -3345,14 +3229,14 @@ export async function POST(request: Request) {
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
              $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[],
-             $31::integer[], $32::integer[], $33::integer[], $34::float8[]
+             $31::integer[], $32::integer[], $33::float8[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
                   ultimo_evento, desvio_inicio, fora_tapete_streak, divergencia_rumo_streak,
                   aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
                   no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio,
-                  saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_codigo,
+                  saiu_parada_confirmada_em, perto_sem_marcacao_codigo,
                   perto_sem_marcacao_segundos, divergencia_rumo_caminho_m)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
@@ -3387,7 +3271,6 @@ export async function POST(request: Request) {
              ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
              divergencia_rumo_inicio = EXCLUDED.divergencia_rumo_inicio,
              saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
-             parada_tolerante_segundos = EXCLUDED.parada_tolerante_segundos,
              perto_sem_marcacao_codigo = EXCLUDED.perto_sem_marcacao_codigo,
              perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos,
              divergencia_rumo_caminho_m = EXCLUDED.divergencia_rumo_caminho_m`,
@@ -3422,7 +3305,6 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.ultima_via_principal_em),
             posicoesCiclo.map((p) => p.divergencia_rumo_inicio),
             posicoesCiclo.map((p) => p.saiu_parada_confirmada_em),
-            posicoesCiclo.map((p) => p.parada_tolerante_segundos),
             posicoesCiclo.map((p) => p.perto_sem_marcacao_codigo),
             posicoesCiclo.map((p) => p.perto_sem_marcacao_segundos),
             posicoesCiclo.map((p) => p.divergencia_rumo_caminho_m),
@@ -3666,140 +3548,32 @@ export async function POST(request: Request) {
       if (falhasRotaConcluida > 0) console.warn(`Aviso: ${falhasRotaConcluida} falha(s) ao anotar rota concluida neste ciclo`);
     }
 
-    // Flush da auto-resolucao de "rua estranha" -- marca falso_positivo
-    // (nao "resolvido": e o rotulo semanticamente correto aqui). MEDIUM 3
-    // (revisao independente 27/07): NAO chama registrarCasosDesvioRevisao
-    // aqui -- essa chamada alimentaria casos_desvio_revisao com o proprio
-    // veredito do auto-resolve, o que faria a calibracao FINA por segmento
-    // (corredor_veredito:X / origem:saida_parada, lida de
-    // contexto_detector->'calibracao'->'segmento' em
-    // recalibrar-desvio/route.ts) convergir na opiniao do heuristico em vez
-    // de aprender algo novo de revisao humana real.
-    // CORRECAO (revisao independente round 2, 27/07): essa remocao, sozinha,
-    // NUNCA protegeu taxaGlobal nem o segmento grosseiro `tipo:desvio` --
-    // os dois sao calculados direto da tabela `alertas` (nao de
-    // casos_desvio_revisao) em recalibrar-desvio/route.ts. Quem protege esse
-    // lado grosseiro hoje e' contaComoRotuloHumano (detectores.ts), usado no
-    // filtro de recalibrar-desvio/route.ts -- cobre tanto auto_resolvido
-    // (este mecanismo) quanto auto_expirado (cron de retencao, ver
-    // scripts/migrations/contabo/002_retencao.sql), achado M1 da revisao
-    // round 3.
-    // Resolucoes humanas via resolverAlerta/marcarFalsoPositivo/resolverVarios
-    // (acoes-alertas.ts, intocado por esta mudanca) continuam sendo a UNICA
-    // fonte de dado de calibracao real (fina e grosseira).
-    if (ruaEstranhaAutoResolveCiclo.length > 0) {
-      // LOW 4 (revisao independente round 2, 27/07): dedupe por alerta_id
-      // antes do .in(...), mesmo padrao de porAlerta/porAlertaRota acima
-      // (proximidadeDesvioCiclo/rotaConcluidaCiclo) -- evita mandar o mesmo
-      // id duas vezes pro .in() de um UPDATE em lote. Inocuo aqui (o loop de
-      // deteccao so pode marcar um dado alerta uma vez por ciclo), mas
-      // mantem o estilo do arquivo em vez de confiar nisso por acidente.
-      const porAlertaAutoResolve = new Map(ruaEstranhaAutoResolveCiclo.map((r) => [r.alerta_id, r]));
-      const ids = [...porAlertaAutoResolve.keys()];
-      // L5 (revisao independente round 3, 27/07): trocado de supabase-js
-      // .update() (overwrite TOTAL de `contexto`, zerando lat/lng/geom
-      // junto) pra SQL cru com merge jsonb (`contexto || $2::jsonb`), MESMO
-      // PADRAO ja usado por proximidadeDesvioCiclo/rotaConcluidaCiclo acima.
-      // Isso preserva tudo que montarContextoDesvio gravou no insert
-      // (classe_via_atual, queda_classe_viaria, dentro_tapete,
-      // risco_area_atual, calibracao, dist_destinos_m, etc.), so
-      // ACRESCENTANDO o marcador auto_resolvido -- e o que permite repetir
-      // no futuro a mesma revisao manual de 215 casos que motivou esta
-      // feature inteira; um alerta auto-fechado sem esse contexto seria
-      // evidencia forense morta. lat/lng NAO sao mais zerados aqui, ao
-      // contrario de STRIP_PESADO (acoes-alertas.ts) -- aquele e' pra
-      // resolucao HUMANA (a UI ja mostrou o mapa, a coordenada nao faz mais
-      // falta); aqui e' o unico registro de ONDE o veiculo estava parado
-      // quando o heuristico decidiu fechar, dado necessario pra qualquer
-      // reauditoria futura do mesmo tipo. `geom` fica de fora do SET de
-      // proposito -- nada neste codebase escreve geom em NENHUM alerta hoje
-      // (nem o insert normal, nem este flush), entao tocar nele aqui so
-      // seria ruido; ver M2 (comentario da varredura periodica mais abaixo,
-      // "Campos pesados") pra qual e' a protecao REAL do marcador
-      // auto_resolvido daqui pra frente.
-      // .eq("status","ativo") do supabase-js virou "AND status = 'ativo'"
-      // no WHERE -- mesmo motivo de antes (LOW 5, revisao independente
-      // 27/07): evita sobrescrever em silencio uma mudanca de status que
-      // tenha acontecido no meio do ciclo (ex.: operador agindo na mesma
-      // janela de ~30s).
-      try {
-        await pool.query(
-          `UPDATE alertas
-           SET status = 'falso_positivo',
-               resolvido_em = $3,
-               contexto = coalesce(contexto, '{}'::jsonb) || $2::jsonb
-           WHERE id = ANY($1::uuid[])
-             AND status = 'ativo'`,
-          [
-            ids,
-            JSON.stringify({
-              auto_resolvido: true,
-              // Task 5 (28/07): a janela de tempo (RUA_ESTRANHA_JANELA_AUTORESOLVE_MIN)
-              // foi removida (Padrao A) -- a mensagem nao referencia mais
-              // prazo nenhum, so as duas condicoes de seguranca que de fato
-              // decidem o auto-resolve (ver deveAutoResolverRuaEstranha).
-              // Achado MENOR da revisao independente (round 2): a versao
-              // anterior desta string ("sem sair do lugar") descrevia posicao,
-              // mas o codigo nao checa mais posicao nenhuma (Task 5b.1) -- o
-              // veiculo pode ter percorrido varios metros dirigindo devagar.
-              // Corrigida pra descrever o que o codigo realmente checa.
-              motivo: `velocidade <=${RUA_ESTRANHA_VELOCIDADE_TOLERANTE_KMH}km/h por >=${RUA_ESTRANHA_PARADO_MIN_MIN}min com leitura atual parada, e sem area de risco por perto`,
-            }),
-            agora.toISOString(),
-          ]
-        );
-      } catch (erroAutoResolve) {
-        console.warn(`Aviso: erro ao auto-resolver rua estranha: ${String(erroAutoResolve)}`);
-      }
-
-      // M3 (revisao independente round 3, 27/07): fechar o alerta sozinho
-      // NAO reseta o relogio "saiu de via principal ha <10min"
-      // (ultima_via_principal_em, ver JANELA_QUEDA_CLASSE_MIN acima) do
-      // mesmo veiculo -- se ele continuar parado no mesmo lugar,
-      // quedaClasseViaria permanece true por ate ~10min depois do
-      // fechamento, entao o MESMO gatilho recria um alerta novo no proximo
-      // ciclo, que seria auto-resolvido de novo ~2min depois, repetindo ate
-      // a janela de 10min expirar sozinha (flicker: fecha/reabre a cada
-      // ciclo). O episodio foi adjudicado como falso positivo -- so um NOVO
-      // deslocamento por via principal de verdade deveria poder reativar o
-      // gatilho, entao zera o relogio pros veiculos que tiveram um alerta
-      // auto-resolvido neste ciclo. Roda DEPOIS do upsert de posicoes_atuais
-      // (~linha 2570 acima, dentro de posicoesCiclo), entao sobrescreve
-      // corretamente o valor que aquele upsert acabou de gravar neste mesmo
-      // ciclo (que ainda carregava o relogio antigo, calculado ANTES de
-      // sabermos que o alerta ia ser auto-resolvido).
-      const veiculoIdsParaResetarViaPrincipal = [
-        ...new Set([...porAlertaAutoResolve.values()].map((r) => r.veiculo_id)),
-      ];
-      try {
-        await pool.query(
-          `UPDATE posicoes_atuais SET ultima_via_principal_em = NULL WHERE veiculo_id = ANY($1::uuid[])`,
-          [veiculoIdsParaResetarViaPrincipal]
-        );
-      } catch (erroResetViaPrincipal) {
-        console.warn(`Aviso: erro ao resetar ultima_via_principal_em apos auto-resolve: ${String(erroResetViaPrincipal)}`);
-      }
-    }
+    // REMOVIDO (achado real 31/07, cliente Nutry Max): o flush de
+    // auto-resolucao de "rua estranha" fechava sozinho, em 1-4min, casos
+    // confirmados pelo cliente como desvio REAL (RQV-6C22, TUC-1D15 --
+    // motorista sem saber a rota, mesma assinatura de "parou pouco depois,
+    // area sem risco" que o desenho original assumia ser sempre falso
+    // positivo). Diretiva explicita do usuario: nunca mais fechar sozinho,
+    // igual todo outro tipo de desvio ja nao fecha -- ver comentario em
+    // detectores.ts. classe_viaria continua disparando normalmente, so o
+    // fechamento automatico foi removido.
 
     // Flush da auto-resolucao retroativa de "afastando-se de todos os
     // destinos" quando rota concluida + chegou na base -- ver
     // docs/superpowers/plans/2026-07-27-auto-resolucao-rota-concluida-plano.md.
-    // Mesmo padrao EXATO do flush de rua estranha acima: dedupe por
+    // Mesmo padrao das outras auto-resolucoes deste arquivo: dedupe por
     // alerta_id, SQL cru com merge de contexto (coalesce+||, nunca
     // overwrite -- preserva lat/lng/geom/tudo que montarContextoDesvio
-    // gravou no insert original, so ACRESCENTA o marcador auto_resolvido;
-    // repete o mesmo raciocinio do incidente de hoje mais cedo, onde
-    // overwrite de contexto destruiu evidencia forense), status='ativo'
-    // como guarda de corrida (nao pisa em cima de uma acao do operador no
-    // meio do ciclo), try/catch isolado (nao derruba o ciclo inteiro se o
-    // UPDATE falhar). SEM chamar registrarCasosDesvioRevisao -- mesmo
-    // motivo do flush de rua estranha (nao poluir calibracao com veredito
-    // de maquina; contaComoRotuloHumano em detectores.ts, usado em
-    // recalibrar-desvio/route.ts, ja exclui essas linhas da calibracao so
-    // pelo marcador auto_resolvido, sem precisar de mudanca la). Tambem nao
-    // precisa de mudanca em mapaTiposSilenciados: contaComoEventoDeSilenciamento
-    // (detectores.ts) ja checa contexto.auto_resolvido===true de forma
-    // generica, nao amarrada a rua estranha.
+    // gravou no insert original, so ACRESCENTA o marcador auto_resolvido),
+    // status='ativo' como guarda de corrida (nao pisa em cima de uma acao
+    // do operador no meio do ciclo), try/catch isolado (nao derruba o
+    // ciclo inteiro se o UPDATE falhar). SEM chamar registrarCasosDesvioRevisao
+    // -- nao poluir calibracao com veredito de maquina; contaComoRotuloHumano
+    // (detectores.ts), usado em recalibrar-desvio/route.ts, ja exclui essas
+    // linhas da calibracao so pelo marcador auto_resolvido, sem precisar de
+    // mudanca la. Tambem nao precisa de mudanca em mapaTiposSilenciados:
+    // contaComoEventoDeSilenciamento (detectores.ts) ja checa
+    // contexto.auto_resolvido===true de forma generica.
     if (afastandoRotaConcluidaAutoResolveCiclo.length > 0) {
       const porAlertaAfastando = new Map(afastandoRotaConcluidaAutoResolveCiclo.map((r) => [r.alerta_id, r]));
       const idsAfastando = [...porAlertaAfastando.keys()];
