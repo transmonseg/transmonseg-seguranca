@@ -51,33 +51,41 @@ export async function POST(request: Request) {
     console.error(`Erro ao buscar romaneio_pontos pendentes: ${erroCandidatos.message}`);
   }
 
-  if (!candidatos || candidatos.length === 0) {
-    return Response.json({ processados: 0 });
-  }
+  // Achado real 31/07: este `if` costumava dar `return` direto aqui quando
+  // nao havia nada pendente -- o caso NORMAL do dia a dia, uma vez que o
+  // lote inicial de um romaneio ja foi processado. Isso deixava a fase de
+  // fallback Unitrac (mais abaixo) INALCANCAVEL na pratica -- o cron roda
+  // toda vez sem nada pendente, sempre retornava antes de chegar la. Agora
+  // so pula o processamento principal (pendentes = []), sem `return`, pra
+  // sempre chegar no fallback.
+  let pendentes: { id: string; endereco_bruto: string }[] = [];
 
-  // Reivindica ANTES de processar. Achado real 27/07 (pego em teste ao
-  // vivo com 2 chamadas concorrentes): so filtrar por id aqui NAO basta
-  // -- se 2 invocacoes fizerem o SELECT acima quase ao mesmo tempo,
-  // ambas veem as MESMAS linhas ainda "pendente"/"processando" (a raca
-  // esta exatamente nessa janela), e um UPDATE só por id reivindicaria
-  // pra AMBAS igualmente, processando tudo 2x. Reaplicar a MESMA condicao
-  // do SELECT no UPDATE torna a reivindicacao atomica de verdade: a
-  // primeira invocacao a rodar o UPDATE muda o status, a segunda tenta
-  // atualizar as mesmas linhas mas elas ja nao batem mais na condicao
-  // (nao estao mais "pendente" nem com reivindicacao velha) -- o UPDATE
-  // dela simplesmente nao afeta essas linhas, e o .select() retorna a
-  // lista real (menor) do que ela conseguiu reivindicar de verdade.
-  const idsCandidatos = candidatos.map((c) => c.id);
-  const { data: pendentes, error: erroReivindicar } = await admin
-    .from("romaneio_pontos")
-    .update({ geocode_status: "processando", geocode_reivindicado_em: new Date().toISOString() })
-    .in("id", idsCandidatos)
-    .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
-    .select("id, endereco_bruto");
+  if (candidatos && candidatos.length > 0) {
+    // Reivindica ANTES de processar. Achado real 27/07 (pego em teste ao
+    // vivo com 2 chamadas concorrentes): so filtrar por id aqui NAO basta
+    // -- se 2 invocacoes fizerem o SELECT acima quase ao mesmo tempo,
+    // ambas veem as MESMAS linhas ainda "pendente"/"processando" (a raca
+    // esta exatamente nessa janela), e um UPDATE só por id reivindicaria
+    // pra AMBAS igualmente, processando tudo 2x. Reaplicar a MESMA condicao
+    // do SELECT no UPDATE torna a reivindicacao atomica de verdade: a
+    // primeira invocacao a rodar o UPDATE muda o status, a segunda tenta
+    // atualizar as mesmas linhas mas elas ja nao batem mais na condicao
+    // (nao estao mais "pendente" nem com reivindicacao velha) -- o UPDATE
+    // dela simplesmente nao afeta essas linhas, e o .select() retorna a
+    // lista real (menor) do que ela conseguiu reivindicar de verdade.
+    const idsCandidatos = candidatos.map((c) => c.id);
+    const { data: reivindicados, error: erroReivindicar } = await admin
+      .from("romaneio_pontos")
+      .update({ geocode_status: "processando", geocode_reivindicado_em: new Date().toISOString() })
+      .in("id", idsCandidatos)
+      .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
+      .select("id, endereco_bruto");
 
-  if (erroReivindicar || !pendentes) {
-    console.error(`Erro ao reivindicar romaneio_pontos: ${erroReivindicar?.message}`);
-    return Response.json({ processados: 0 });
+    if (erroReivindicar) {
+      console.error(`Erro ao reivindicar romaneio_pontos: ${erroReivindicar.message}`);
+    } else if (reivindicados) {
+      pendentes = reivindicados;
+    }
   }
 
   const buscarCache = async (chaveNormalizada: string) => {
