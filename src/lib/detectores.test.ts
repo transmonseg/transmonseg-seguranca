@@ -894,6 +894,48 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     });
   });
 
+  describe("classeViariaSuprimidaPorRumo suprime SEM early-return mascarar os branches seguintes (achado do revisor final 31/07: supressao pos-hoc em route.ts nao dava chance dos branches SEGUINTES, incluindo o critico de foraTapeteStreak, serem avaliados -- detectarDesvio ja tinha retornado. Fix: o proprio detectarDesvio deixa de retornar cedo quando suprimido, e cai pros proximos branches normalmente)", () => {
+    it("classeViariaSuprimidaPorRumo=true, nada mais bate: cai pro fallthrough (null), NAO retorna o alerta de classe_viaria", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorRumo: true,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000], // aproximando -- sem isso disparia classe_viaria
+      });
+      expect(a).toBeNull();
+    });
+
+    it("classeViariaSuprimidaPorRumo=false (ou ausente): dispara normal, comportamento de hoje intacto", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorRumo: false,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).not.toBeNull();
+      expect(a?.origemDesvio).toBe("classe_viaria");
+    });
+
+    it("suprime SO o branch de classe_viaria -- afastando de tudo continua disparando (critico), a mesma protecao que ja existia pra saiuParadaConfirmadaRecentemente", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorRumo: true,
+        distDestinosM: [6300, 8300, 12300], distDestinosAnteriorM: [6000, 8000, 12000], // afastando de tudo
+      });
+      expect(a?.nivel).toBe("critico"); // veio do branch de afastandoDeTudo, nao mascarado pela supressao
+    });
+
+    it("o achado real que motivou o fix: classe_viaria suprimido + fora do tapete (CRITICO) no MESMO ciclo -- antes da correcao, o early-return de classe_viaria nunca deixava esse critico ser avaliado; agora dispara", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorRumo: true,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000], // aproximando (nao afastando de tudo)
+        dentroTapete: false, foraTapeteStreak: 10, familiarVeiculo: false,
+      });
+      expect(a).not.toBeNull();
+      expect(a?.nivel).toBe("critico");
+      expect(a?.origemDesvio).toBe("comportamental");
+    });
+  });
+
   describe("deveMarcarSaidaParadaConfirmada (achado da revisao independente, Task 6: condicao de transicao nunca tinha teste proprio)", () => {
     const ctxBase = { fresco: true, alvosApiOk: true, saiuDoRaioAgora: true, dwellAnteriorSegundos: 120 };
 

@@ -2375,6 +2375,21 @@ export async function POST(request: Request) {
             horaSP < 20 &&
             pendentes.some((pt) => pt.dataInicio != null && pt.dataInicio.startsWith(dataHojeSP));
 
+          // Achado real 31/07 (revisao final): precisa saber ANTES de montarCandidatosCore
+          // se o classe_viaria SERIA candidato neste ciclo -- movido pra antes da chamada
+          // porque o ctx que entra em montarCandidatosCore precisa disso como INPUT (pra
+          // detectarDesvio poder deixar de retornar cedo e continuar checando os outros
+          // tipos, incluindo o critico "caminho nunca percorrido" -- suprimir So DEPOIS
+          // que detectarDesvio ja tinha retornado esse alerta mascarava esse critico sem
+          // deixar ele aparecer). Ver docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
+          let classeViariaRumoSombra: { divergenciaGraus: number | null; limiar: number; suprimiria: boolean } | null = null;
+          const classeViariaSeriaCandidata = !afastouDeTudo(distDestinosM, distDestinosAnteriorM) && quedaClasseViaria && !saiuParadaConfirmadaRecentemente;
+          if (classeViariaSeriaCandidata) {
+            const suprimiria = rumoCoerenteComDestino(divergenciaGrausAtual, RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS);
+            classeViariaRumoSombra = { divergenciaGraus: divergenciaGrausAtual, limiar: RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS, suprimiria };
+          }
+          const classeViariaSuprimidaPorRumo = CLASSE_VIARIA_FILTRO_RUMO_ATIVO && (classeViariaRumoSombra?.suprimiria ?? false);
+
           // Achado real 12/07: avaliar() JA incluia detectarJammer(p) como um
           // dos seus proprios candidatos (arbitrados junto com desvio pela
           // mesma arbitrarCandidatos) -- pular avaliar() inteira quando ha
@@ -2403,6 +2418,7 @@ export async function POST(request: Request) {
                   familiarVeiculo,
                   quedaClasseViaria,
                   saiuParadaConfirmadaRecentemente,
+                  classeViariaSuprimidaPorRumo,
                   riscoAreaAtual,
                   foraTapeteStreak,
                   suspensoPorChegada,
@@ -2631,21 +2647,6 @@ export async function POST(request: Request) {
             }
           }
 
-          // Achado real 31/07 (TTS-1A71): veredito de sombra do filtro de coerencia
-          // de rumo pro classe_viaria -- calcula sempre que o candidato existiu
-          // neste ciclo (candidatosCore, independente de ter vencido a arbitragem
-          // ainda). A supressao de verdade (quando a flag ativar) acontece no
-          // filtro de candidatosCoreFinal abaixo, NAO aqui -- nulling `alerta` neste
-          // ponto nao teria efeito, ele e reatribuido na arbitragem final. Ver
-          // docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
-          let classeViariaRumoSombra: { divergenciaGraus: number | null; limiar: number; suprimiria: boolean } | null = null;
-          const candidatoClasseViaria = candidatosCore.find((c) => c.origemDesvio === "classe_viaria");
-          if (candidatoClasseViaria) {
-            const suprimiria = rumoCoerenteComDestino(divergenciaGrausAtual, RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS);
-            classeViariaRumoSombra = { divergenciaGraus: divergenciaGrausAtual, limiar: RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS, suprimiria };
-          }
-          const classeViariaSuprimidaPorRumo = CLASSE_VIARIA_FILTRO_RUMO_ATIVO && (classeViariaRumoSombra?.suprimiria ?? false);
-
           // Achado real 30/07 (Task 7): diferente do bloco acima (Task 5, so
           // roda quando rumo-diverge venceu a arbitragem E o corredor ja
           // confirmou "fora"), este grava TODO ciclo em que o episodio de
@@ -2704,11 +2705,9 @@ export async function POST(request: Request) {
           // comentario acima de candidatosCore -- e essa uniao numa unica
           // chamada de arbitrarCandidatos que evita o bug do bonus
           // duplicado.
-          const candidatosCoreFinal = candidatosCore.filter((c) => {
-            if (desvioSuprimidoPorCorredor && c.tipo === "desvio") return false;
-            if (classeViariaSuprimidaPorRumo && c.origemDesvio === "classe_viaria") return false;
-            return true;
-          });
+          const candidatosCoreFinal = desvioSuprimidoPorCorredor
+            ? candidatosCore.filter((c) => c.tipo !== "desvio")
+            : candidatosCore;
           alerta = arbitrarCandidatos([...candidatosCoreFinal, ...extras]);
           if (alerta) {
             if (pos.fresco) {

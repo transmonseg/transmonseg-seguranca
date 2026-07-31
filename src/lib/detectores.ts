@@ -588,6 +588,19 @@ export type CtxDesvio = {
   // SUPRIME o branch de quedaClasseViaria (abaixo); nao mexe em nenhum outro
   // gatilho de desvio.
   saiuParadaConfirmadaRecentemente: boolean;
+  // Achado real 31/07 (revisao final, achado do revisor): filtro de
+  // coerencia de rumo (shadow mode, CLASSE_VIARIA_FILTRO_RUMO_ATIVO) NAO
+  // pode suprimir o alerta classe_viaria DEPOIS que detectarDesvio ja
+  // retornou -- essa funcao retorna no PRIMEIRO branch que bate, entao um
+  // supressao pos-hoc em route.ts nunca dava chance dos branches
+  // SEGUINTES (rumo_diverge, saida_parada, e sobretudo o critico "caminho
+  // nunca percorrido" abaixo) serem avaliados: silencio total no ciclo, em
+  // vez de "alerta errado". true = a decisao (rumo coerente com o destino)
+  // ja foi tomada em route.ts ANTES desta chamada; a funcao deve tratar
+  // este ciclo como se quedaClasseViaria nao tivesse batido, e cair pros
+  // proximos branches normalmente. undefined/false = comportamento de hoje
+  // (flag desligada = nunca suprime).
+  classeViariaSuprimidaPorRumo?: boolean;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -1331,7 +1344,7 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // mesmo ciclo da saida). Guard adicional: dentro da janela de saida
   // recente, suprime SO este branch (o veiculo continua elegivel a
   // qualquer outro gatilho de desvio nesta mesma chamada).
-  if (!afastandoDeTudo && ctx.quedaClasseViaria && !ctx.saiuParadaConfirmadaRecentemente) {
+  if (!afastandoDeTudo && ctx.quedaClasseViaria && !ctx.saiuParadaConfirmadaRecentemente && !ctx.classeViariaSuprimidaPorRumo) {
     return {
       nivel: "atencao",
       tipo: "desvio",
@@ -1890,6 +1903,8 @@ export type CtxAvaliacao = {
   quedaClasseViaria?: boolean;
   // Achado real 28/07 (Task 6): ver CtxDesvio.saiuParadaConfirmadaRecentemente.
   saiuParadaConfirmadaRecentemente?: boolean;
+  // Achado real 31/07 (revisao final): ver CtxDesvio.classeViariaSuprimidaPorRumo.
+  classeViariaSuprimidaPorRumo?: boolean;
   riscoAreaAtual?: number;
   foraTapeteStreak?: number;
   // Achado real 25/07 (redesign do detector de desvio): ver CtxDesvio.
@@ -2006,6 +2021,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           divergenciaGrausAtual: ctx.divergenciaGrausAtual ?? null,
           quedaClasseViaria: ctx.quedaClasseViaria ?? false,
           saiuParadaConfirmadaRecentemente: ctx.saiuParadaConfirmadaRecentemente ?? false,
+          classeViariaSuprimidaPorRumo: ctx.classeViariaSuprimidaPorRumo,
         }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);
