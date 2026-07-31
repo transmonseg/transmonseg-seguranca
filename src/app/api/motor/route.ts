@@ -41,6 +41,8 @@ import {
   desvioInicioEfetivoParaContexto,
   zerarStreakDaOrigemVencedora,
   reancorarOrigemVencedora,
+  razaoRetidaoRumo,
+  limiarRazaoRetidaoRumo,
   PARADA_FORA_TAPETE_MIN,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
@@ -172,6 +174,13 @@ const cacheContagemFamiliaridadePorCliente = new Map<string, ContagemFamiliarida
 // desvioInicio (ponto FIXO, ultima posicao confirmada ANTES da suspeita de
 // desvio comecar), nunca da posicao atual -- ver verificarCorredor().
 const CAMADA_CORREDOR_ATIVA = true;
+// ─── Filtro comportamental de rumo-diverge (achado real 30/07) ────────────
+// Ver docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
+// SOMBRA (false): so loga contexto.retidao_rumo_sombra, nao muda nada no
+// alerta. Depois de alguns dias de dado real confirmando que nenhum
+// desvio genuino cai em "veredito_suprimiria: true", vira true (mesmo
+// padrao sombra->ativa ja usado por CERCA_VIRTUAL_MODO).
+const RUMO_DIVERGE_FILTRO_COMPORTAMENTAL_ATIVO = false;
 // Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
 // suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
 // confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
@@ -2614,6 +2623,45 @@ export async function POST(request: Request) {
             }
           }
 
+          // Achado real 30/07: veredito de sombra do filtro comportamental --
+          // so calcula quando rumo-diverge foi a regra vencedora E o corredor
+          // confirmou "fora" (as duas condicoes que a spec exige pra sequer
+          // considerar suprimir). Ver
+          // docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
+          let retidaoRumoSombra: {
+            caminhoM: number; liquidoM: number | null; razao: number | null; limiar: number; veredito_suprimiria: boolean;
+          } | null = null;
+          if (origemRumoDivergeGanhou && corredorInfo?.veredito === "fora" && divergenciaRumoInicio && menorDistDestinoM !== null) {
+            // CORRIGIDO na revisao da Task 4 (achado Important): NAO usar
+            // haversineM(divergenciaRumoInicio.lat/lng, pos) -- esse lat/lng e'
+            // REESCRITO pelo reancorarOrigemVencedora sempre que o corredor
+            // confirma "fora" (exatamente os 25/27 casos reais que este filtro
+            // existe pra pegar), desalinhando numerador (caminho, que conta desde
+            // o INICIO real) e denominador (que passaria a contar so desde a
+            // reancora). Fix: usar a MESMA formula ja empregada por
+            // afastamentoAcumuladoM pro streak irmao (diferenca de menor_dist_m,
+            // nao haversine de posicao) -- menor_dist_m E' preservado atraves do
+            // reancor (confirmado na revisao: reancorarOrigemVencedora so reescreve
+            // lat/lng, novoAnchor.menor_dist_m vem de anchorCorredor.menor_dist_m,
+            // que foi capturado ANTES de qualquer reescrita neste ciclo). Bonus:
+            // essa formula mede progresso real rumo ao destino, nao so forma da
+            // trajetoria -- pega tambem o caso de um veiculo andando muito em linha
+            // reta mas PERPENDICULAR a qualquer destino (caminho grande, progresso
+            // ~0), que a versao com haversine de posicao deixaria passar.
+            const liquidoM = Math.abs(menorDistDestinoM - divergenciaRumoInicio.menor_dist_m);
+            const razao = razaoRetidaoRumo(divergenciaRumoCaminhoM, liquidoM);
+            const limiar = limiarRazaoRetidaoRumo(menorDistDestinoM);
+            // razao === null: sem deslocamento liquido suficiente pra confiar no
+            // sinal -- erra pro lado de NAO suprimir (diretiva do usuario: falso
+            // positivo aceitavel, nunca perder desvio real).
+            const veredito_suprimiria = razao !== null && razao < limiar;
+            retidaoRumoSombra = { caminhoM: divergenciaRumoCaminhoM, liquidoM, razao, limiar, veredito_suprimiria };
+            if (RUMO_DIVERGE_FILTRO_COMPORTAMENTAL_ATIVO && veredito_suprimiria) {
+              alerta = null;
+              desvioSuprimidoPorCorredor = true;
+            }
+          }
+
           // Achado real 11/07: alerta "sem historico de comportamento" (0
           // entregas feitas) so pode sobreviver com confirmacao EXPLICITA do
           // corredor que a rota esta "dentro". Supressao so acontece em
@@ -3095,6 +3143,7 @@ export async function POST(request: Request) {
                         quedaClasseViaria,
                         segmentoEspecifico,
                         taxaFp,
+                        retidaoRumoSombra,
                       })
                     : ehParadaForaTapete
                       ? contextoParadaForaTapete
@@ -3156,6 +3205,7 @@ export async function POST(request: Request) {
                             quedaClasseViaria,
                             segmentoEspecifico,
                             taxaFp,
+                            retidaoRumoSombra,
                           }),
                         }
                       : ehParadaForaTapete
