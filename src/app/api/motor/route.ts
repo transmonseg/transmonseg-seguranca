@@ -1006,6 +1006,16 @@ export async function POST(request: Request) {
       velocidade: number; veredito: string; pendentes: number; buffer_m: number;
     }[] = [];
 
+    // Achado real 30/07 (Task 7, apos o backtest da Task 6 revelar que o
+    // veredito de sombra unico da Task 5 nao discrimina nada): log de serie
+    // temporal do sinal comportamental de rumo-diverge, mesmo padrao de
+    // cerca_sombra (nao-destrutivo, nunca interfere em nenhum alerta).
+    const rumoDivergeSombraCiclo: {
+      veiculo_id: string; cliente_id: string; streak: number; caminho_m: number;
+      liquido_m: number; razao: number | null; limiar: number;
+      dist_min_destino_m: number; veredito_suprimiria: boolean;
+    }[] = [];
+
     // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
     // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
     // pool.connect()+query POR VEICULO dentro do loop. Achado 07/07/2026
@@ -2662,6 +2672,29 @@ export async function POST(request: Request) {
             }
           }
 
+          // Achado real 30/07 (Task 7): diferente do bloco acima (Task 5, so
+          // roda quando rumo-diverge venceu a arbitragem E o corredor ja
+          // confirmou "fora"), este grava TODO ciclo em que o episodio de
+          // divergencia esta ativo -- da a serie temporal completa (streak
+          // 1, 2, 3... ate o episodio zerar), nao so o instante frio de
+          // criacao do alerta.
+          if (pos.fresco && divergenciaRumoInicio && menorDistDestinoM !== null) {
+            const liquidoSombraM = Math.abs(menorDistDestinoM - divergenciaRumoInicio.menor_dist_m);
+            const razaoSombra = razaoRetidaoRumo(divergenciaRumoCaminhoM, liquidoSombraM);
+            const limiarSombra = limiarRazaoRetidaoRumo(menorDistDestinoM);
+            rumoDivergeSombraCiclo.push({
+              veiculo_id,
+              cliente_id,
+              streak: divergenciaRumoStreak,
+              caminho_m: divergenciaRumoCaminhoM,
+              liquido_m: liquidoSombraM,
+              razao: razaoSombra,
+              limiar: limiarSombra,
+              dist_min_destino_m: menorDistDestinoM,
+              veredito_suprimiria: razaoSombra !== null && razaoSombra < limiarSombra,
+            });
+          }
+
           // Achado real 11/07: alerta "sem historico de comportamento" (0
           // entregas feitas) so pode sobreviver com confirmacao EXPLICITA do
           // corredor que a rota esta "dentro". Supressao so acontece em
@@ -3438,6 +3471,13 @@ export async function POST(request: Request) {
     if (cercaSombraCiclo.length > 0) {
       const { error: erroSombra } = await supabase.from("cerca_sombra").insert(cercaSombraCiclo);
       if (erroSombra) console.warn(`Aviso: erro ao gravar cerca_sombra: ${erroSombra.message}`);
+    }
+
+    // Rumo-diverge (modo sombra, serie temporal): mesmo padrao nao-critico
+    // de cercaSombraCiclo -- falha aqui nunca derruba o motor.
+    if (rumoDivergeSombraCiclo.length > 0) {
+      const { error: erroRumoDivergeSombra } = await supabase.from("rumo_diverge_sombra").insert(rumoDivergeSombraCiclo);
+      if (erroRumoDivergeSombra) console.warn(`Aviso: erro ao gravar rumo_diverge_sombra: ${erroRumoDivergeSombra.message}`);
     }
 
     // Atualiza baseline_veiculo e baseline_frota incrementalmente (Welford)
