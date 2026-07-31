@@ -108,6 +108,18 @@ const PREFIXOS_VIA = new Set([
   "RODOVIA", "ROD", "ALAMEDA", "AL", "PRACA", "PC", "LARGO",
 ]);
 
+// Conectores -- removidos de QUALQUER posicao do nome (nao so prefixo),
+// achado real 31/07: aparecem de forma INCONSISTENTE entre o romaneio e o
+// OSM, nos dois sentidos -- "RUA EDITH DE CASTRO LEITE" (romaneio) vs
+// "EDITH CASTRO LEITE" (OSM) tem "de" a mais no romaneio; "RUA JOAO LUIZ
+// SIQUEIRA" (romaneio) vs "JOAO LUIZ DE SIQUEIRA" (OSM) tem "de" a mais no
+// OSM. Sem geocode do Google (usuario decidiu nao vincular faturamento),
+// esse e' o proximo lugar de ganho gratis -- ver migration 021
+// (vias_nomes.nome_sem_conectores, mesma remocao aplicada aos dados ja
+// armazenados via coluna gerada, sem precisar reingestao do GeoJSON
+// original que ja nao existe mais em disco).
+const CONECTORES = new Set(["DE", "DA", "DO", "DAS", "DOS"]);
+
 export function normalizarNomeRua(rua: string): string {
   const semAcento = rua
     .normalize("NFD")
@@ -116,8 +128,9 @@ export function normalizarNomeRua(rua: string): string {
     .trim()
     .replace(/\s+/g, " ");
   const tokens = semAcento.split(" ");
-  if (tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])) {
-    return tokens.slice(1).join(" ");
-  }
-  return semAcento;
+  const semPrefixo = tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])
+    ? tokens.slice(1)
+    : tokens;
+  const semConectores = semPrefixo.filter((t) => !CONECTORES.has(t));
+  return semConectores.join(" ");
 }

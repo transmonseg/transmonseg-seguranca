@@ -35,19 +35,19 @@ describe("extrairCidadeDoEndereco", () => {
 });
 
 describe("normalizarNomeRua", () => {
-  it("maiusculas e remove acentos", () => {
-    expect(normalizarNomeRua("Rua Vinícius de Moraes")).toBe("VINICIUS DE MORAES");
+  it("maiusculas, remove acentos e conectores", () => {
+    expect(normalizarNomeRua("Rua Vinícius de Moraes")).toBe("VINICIUS MORAES");
   });
 
   it("remove prefixo de tipo de via reconhecido", () => {
     expect(normalizarNomeRua("RUA MONS MIGUEL REIS MELLO")).toBe("MONS MIGUEL REIS MELLO");
     expect(normalizarNomeRua("AV AMARAL PEIXOTO")).toBe("AMARAL PEIXOTO");
     expect(normalizarNomeRua("Avenida Amaral Peixoto")).toBe("AMARAL PEIXOTO");
-    expect(normalizarNomeRua("TRAVESSA DA PAZ")).toBe("DA PAZ");
+    expect(normalizarNomeRua("TRAVESSA DA PAZ")).toBe("PAZ");
     expect(normalizarNomeRua("EST NATIVIDADE RAPOSO")).toBe("NATIVIDADE RAPOSO");
     expect(normalizarNomeRua("ESTRADA NATIVIDADE RAPOSO")).toBe("NATIVIDADE RAPOSO");
     expect(normalizarNomeRua("ROD BR 356")).toBe("BR 356");
-    expect(normalizarNomeRua("PRACA DA SE")).toBe("DA SE");
+    expect(normalizarNomeRua("PRACA DA SE")).toBe("SE");
   });
 
   it("bate igual independente de abreviacao (romaneio vs OSM)", () => {
@@ -56,6 +56,13 @@ describe("normalizarNomeRua", () => {
 
   it("sem prefixo reconhecido: mantem a string (so normaliza case/acento)", () => {
     expect(normalizarNomeRua("Beco Sem Nome")).toBe("BECO SEM NOME");
+  });
+
+  it("remove conectores (de/da/do/das/dos) de qualquer posicao -- achado real 31/07", () => {
+    // Romaneio com "de" a mais que o OSM.
+    expect(normalizarNomeRua("RUA EDITH DE CASTRO LEITE")).toBe(normalizarNomeRua("EDITH CASTRO LEITE"));
+    // OSM com "de" a mais que o romaneio -- o oposto tambem acontece.
+    expect(normalizarNomeRua("RUA JOAO LUIZ SIQUEIRA")).toBe(normalizarNomeRua("JOAO LUIZ DE SIQUEIRA"));
   });
 
   it("colapsa espacos multiplos", () => {

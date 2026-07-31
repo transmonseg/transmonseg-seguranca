@@ -123,8 +123,13 @@ export async function POST(request: Request) {
     }
   }
 
+  // nome_sem_conectores (nao nome_normalizado direto): achado real 31/07,
+  // conectores (de/da/do) aparecem de forma inconsistente entre o romaneio
+  // e o OSM nos dois sentidos -- coluna gerada (migration 021) remove dos
+  // dois lados pra bater independente de qual fonte inclui o conector.
+  // normalizarNomeRua ja aplica a mesma remocao no termo de busca.
   const buscarCandidatosPorNome = async (nomeNormalizado: string) => {
-    const { data } = await admin.from("vias_nomes").select("lat, lng").eq("nome_normalizado", nomeNormalizado);
+    const { data } = await admin.from("vias_nomes").select("lat, lng").eq("nome_sem_conectores", nomeNormalizado);
     return data ?? [];
   };
 

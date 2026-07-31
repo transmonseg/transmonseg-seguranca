@@ -12,11 +12,15 @@ const ARQUIVO_ORIGEM = process.argv[2]
 const TAMANHO_LOTE = 5000;
 
 // Duplicado de src/lib/romaneio-geocode-local.ts (script .mjs nao importa
-// de src/lib/*.ts).
+// de src/lib/*.ts) -- manter em sincronia se normalizarNomeRua la mudar.
 const PREFIXOS_VIA = new Set([
   "RUA", "R", "AV", "AVENIDA", "TRAVESSA", "TRAV", "ESTRADA", "EST",
   "RODOVIA", "ROD", "ALAMEDA", "AL", "PRACA", "PC", "LARGO",
 ]);
+
+// Achado real 31/07: conectores removidos de qualquer posicao (nao so
+// prefixo) -- ver comentario em src/lib/romaneio-geocode-local.ts.
+const CONECTORES = new Set(["DE", "DA", "DO", "DAS", "DOS"]);
 
 function normalizarNomeRua(rua) {
   const semAcento = rua
@@ -26,10 +30,11 @@ function normalizarNomeRua(rua) {
     .trim()
     .replace(/\s+/g, " ");
   const tokens = semAcento.split(" ");
-  if (tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])) {
-    return tokens.slice(1).join(" ");
-  }
-  return semAcento;
+  const semPrefixo = tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])
+    ? tokens.slice(1)
+    : tokens;
+  const semConectores = semPrefixo.filter((t) => !CONECTORES.has(t));
+  return semConectores.join(" ");
 }
 
 function pontoMedio(coords) {
