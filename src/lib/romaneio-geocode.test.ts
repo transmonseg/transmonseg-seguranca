@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { normalizarEndereco, geocodificarEndereco, geocodificarLocal } from "./romaneio-geocode";
+import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe } from "./romaneio-geocode";
 
 describe("normalizarEndereco", () => {
   it("maiuscula, sem espacos duplicados, sem espaco nas pontas", () => {
@@ -7,16 +7,18 @@ describe("normalizarEndereco", () => {
   });
 });
 
-describe("geocodificarEndereco (fallback: cache -> local -> google -> nominatim -- SEM fallback pra Unitrac de proposito, ver achado real 15/07)", () => {
+describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> nominatim -- SEM fallback pra Unitrac de proposito, ver achado real 15/07)", () => {
   const mockDeps = (overrides: Partial<{
     buscarCache: () => Promise<{ lat: number; lng: number; fonte: string } | null>;
     salvarCache: () => Promise<void>;
+    geocodificarCnefeDep: () => Promise<{ lat: number; lng: number } | null>;
     geocodificarLocalDep: () => Promise<{ lat: number; lng: number } | null>;
     geocodificarGoogle: () => Promise<{ lat: number; lng: number } | null>;
     geocodificarNominatim: () => Promise<{ lat: number; lng: number } | null>;
   }> = {}) => ({
     buscarCache: vi.fn(overrides.buscarCache ?? (async () => null)),
     salvarCache: vi.fn(overrides.salvarCache ?? (async () => {})),
+    geocodificarCnefeDep: vi.fn(overrides.geocodificarCnefeDep ?? (async () => null)),
     geocodificarLocalDep: vi.fn(overrides.geocodificarLocalDep ?? (async () => null)),
     geocodificarGoogle: vi.fn(overrides.geocodificarGoogle ?? (async () => null)),
     geocodificarNominatim: vi.fn(overrides.geocodificarNominatim ?? (async () => null)),
@@ -26,12 +28,23 @@ describe("geocodificarEndereco (fallback: cache -> local -> google -> nominatim 
     const deps = mockDeps({ buscarCache: async () => ({ lat: 1, lng: 2, fonte: "google" }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
     expect(r).toEqual({ lat: 1, lng: 2, fonte: "google" });
+    expect(deps.geocodificarCnefeDep).not.toHaveBeenCalled();
     expect(deps.geocodificarLocalDep).not.toHaveBeenCalled();
     expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
   });
 
-  it("cache miss, local funciona: usa local e salva no cache", async () => {
+  it("cache miss, CNEFE funciona: usa CNEFE e salva no cache, nao chama local/Google/Nominatim -- achado real 31/07, CNEFE roda primeiro por ser mais preciso", async () => {
+    const deps = mockDeps({ geocodificarCnefeDep: async () => ({ lat: 9, lng: 10 }) });
+    const r = await geocodificarEndereco("Rua X, 1", null, deps);
+    expect(r).toEqual({ lat: 9, lng: 10, fonte: "cnefe" });
+    expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), { lat: 9, lng: 10, fonte: "cnefe" });
+    expect(deps.geocodificarLocalDep).not.toHaveBeenCalled();
+    expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
+    expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
+  });
+
+  it("CNEFE falha, local funciona: usa local e salva no cache", async () => {
     const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 7, lng: 8 }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
     expect(r).toEqual({ lat: 7, lng: 8, fonte: "local" });
@@ -40,7 +53,7 @@ describe("geocodificarEndereco (fallback: cache -> local -> google -> nominatim 
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
   });
 
-  it("local falha, Google funciona: usa Google e salva no cache", async () => {
+  it("CNEFE e local falham, Google funciona: usa Google e salva no cache", async () => {
     const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
     expect(r).toEqual({ lat: 3, lng: 4, fonte: "google" });
@@ -48,13 +61,13 @@ describe("geocodificarEndereco (fallback: cache -> local -> google -> nominatim 
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
   });
 
-  it("local e Google falham, Nominatim funciona: usa Nominatim e salva no cache", async () => {
+  it("CNEFE, local e Google falham, Nominatim funciona: usa Nominatim e salva no cache", async () => {
     const deps = mockDeps({ geocodificarNominatim: async () => ({ lat: 5, lng: 6 }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
     expect(r).toEqual({ lat: 5, lng: 6, fonte: "nominatim" });
   });
 
-  it("local, Google e Nominatim falham: null (NUNCA cai pra coordenada da Unitrac -- decisao explicita do usuario, o ponto todo do romaneio e nao reusar coordenada que pode estar errada)", async () => {
+  it("todas as fontes falham: null (NUNCA cai pra coordenada da Unitrac -- decisao explicita do usuario, o ponto todo do romaneio e nao reusar coordenada que pode estar errada)", async () => {
     const deps = mockDeps();
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
     expect(r).toBeNull();
@@ -66,11 +79,69 @@ describe("geocodificarEndereco (fallback: cache -> local -> google -> nominatim 
     expect(deps.geocodificarGoogle).toHaveBeenCalledWith("RUA RESENDE, 358, FLUMINENSE, São Pedro da Aldeia, RJ, Brasil");
   });
 
-  it("geocodificarLocalDep continua recebendo o enderecoBruto ORIGINAL (parsing de rua nao e afetado pelo sufixo)", async () => {
+  it("geocodificarCnefeDep e geocodificarLocalDep continuam recebendo o enderecoBruto ORIGINAL (parsing de rua nao e afetado pelo sufixo)", async () => {
     const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 7, lng: 8 }) });
     const enderecoOriginal = "RUA RESENDE, 358 - FLUMINENSE, SAO PEDRO DA AL - LOJA 02";
     await geocodificarEndereco(enderecoOriginal, null, deps);
+    expect(deps.geocodificarCnefeDep).toHaveBeenCalledWith(enderecoOriginal, null);
     expect(deps.geocodificarLocalDep).toHaveBeenCalledWith(enderecoOriginal, null);
+  });
+});
+
+describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/022_cnefe_enderecos.sql)", () => {
+  const mockDeps = (overrides: Partial<{
+    buscarPorRuaNumero: () => Promise<{ lat: number; lng: number }[]>;
+    buscarPorRua: () => Promise<{ lat: number; lng: number }[]>;
+    buscarPorSimilaridade: () => Promise<{ lat: number; lng: number }[]>;
+  }> = {}) => ({
+    buscarPorRuaNumero: vi.fn(overrides.buscarPorRuaNumero ?? (async () => [])),
+    buscarPorRua: vi.fn(overrides.buscarPorRua ?? (async () => [])),
+    buscarPorSimilaridade: vi.fn(overrides.buscarPorSimilaridade ?? (async () => [])),
+  });
+
+  it("sem candidato em nenhum nivel: null", async () => {
+    const deps = mockDeps();
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    expect(r).toBeNull();
+  });
+
+  it("bate por rua+numero exato: usa esse resultado, nao chega a buscar so por rua nem por similaridade", async () => {
+    const deps = mockDeps({ buscarPorRuaNumero: async () => [{ lat: 1, lng: 2 }] });
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    expect(r).toEqual({ lat: 1, lng: 2 });
+    expect(deps.buscarPorRua).not.toHaveBeenCalled();
+    expect(deps.buscarPorSimilaridade).not.toHaveBeenCalled();
+  });
+
+  it("rua+numero nao bate, cai pra so rua: nao chega a buscar por similaridade", async () => {
+    const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    expect(r).toEqual({ lat: 3, lng: 4 });
+    expect(deps.buscarPorSimilaridade).not.toHaveBeenCalled();
+  });
+
+  it("rua+numero e so-rua nao batem, cai pra similaridade (pg_trgm)", async () => {
+    const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: 5, lng: 6 }] });
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    expect(r).toEqual({ lat: 5, lng: 6 });
+  });
+
+  it("numero S/N: nao tenta buscar por rua+numero, vai direto pra so-rua", async () => {
+    const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
+    const r = await geocodificarCnefe("RUA X, S/N - BAIRRO, CIDADE - *", null, deps);
+    expect(r).toEqual({ lat: 3, lng: 4 });
+    expect(deps.buscarPorRuaNumero).not.toHaveBeenCalled();
+  });
+
+  it("multiplos candidatos: escolhe o mais proximo do ponto de cidade (mesma logica de geocodificarLocal)", async () => {
+    const pontoCidade = { lat: -21.05, lng: -41.98 };
+    const candidatos = [
+      { lat: -22.9, lng: -43.2 },
+      { lat: -21.06, lng: -41.97 },
+    ];
+    const deps = mockDeps({ buscarPorRua: async () => candidatos });
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", pontoCidade, deps);
+    expect(r).toEqual(candidatos[1]);
   });
 });
 

@@ -4,7 +4,7 @@
 // api/motor/route.ts) -- mesma chave do Google, mesmo User-Agent do
 // Nominatim -- so na direcao contraria.
 
-import { extrairRuaDoEndereco, normalizarNomeRua, montarEnderecoParaGeocode } from "./romaneio-geocode-local";
+import { extrairRuaDoEndereco, extrairNumeroDoEndereco, normalizarNomeRua, montarEnderecoParaGeocode } from "./romaneio-geocode-local";
 import { haversineM } from "./unitrac";
 
 export function normalizarEndereco(enderecoBruto: string): string {
@@ -13,33 +13,27 @@ export function normalizarEndereco(enderecoBruto: string): string {
 
 const DISTANCIA_MAX_MATCH_LOCAL_M = 30_000; // 30km -- nome bateu, mas e outra regiao
 
-// Geocodificacao LOCAL via extrato OSM (vias_nomes) -- ver
-// docs/superpowers/specs/2026-07-22-geocodificacao-local-romaneio-design.md.
-// Bate o nome da rua contra candidatos ja ingeridos; quando ha mais de
-// um candidato (rua repetida em cidades diferentes), escolhe o mais
-// proximo do ponto de referencia da cidade (resolvido 1x por lote, ver
-// processar-geocode/route.ts).
+// Compartilhado entre geocodificarLocal (OSM) e geocodificarCnefe (IBGE) --
+// quando ha mais de um candidato (rua repetida em cidades diferentes),
+// escolhe o mais proximo do ponto de referencia da cidade (resolvido 1x
+// por lote, ver processar-geocode/route.ts).
 //
-// Desvio deliberado da spec original (que so checava distancia com 2+
-// candidatos, deixando candidato UNICO passar direto): candidato unico
-// TAMBEM e checado contra o ponto de cidade quando ele existe. Motivo
-// descoberto durante esta mesma feature (ver achado lateral da Task 5):
-// nome de cidade pode ser ambiguo no Brasil inteiro (ex.: "Natividade"
-// existe no RJ E no Tocantins, ~1500km de distancia) -- se a resolucao
-// de cidade (Nominatim) acertar a cidade ERRADA, um candidato local
-// UNICO e "correto" segundo o nome ainda estaria a milhares de km do
-// ponto de cidade (tambem errado) resolvido nesse ciclo. Checar sempre
-// que ha ponto de cidade disponivel pega esse caso; SEM ponto de cidade
-// (linha abaixo), nao ha nada pra comparar, entao o candidato unico
+// Desvio deliberado da spec original do match OSM (que so checava
+// distancia com 2+ candidatos, deixando candidato UNICO passar direto):
+// candidato unico TAMBEM e checado contra o ponto de cidade quando ele
+// existe. Motivo descoberto durante essa feature (ver achado lateral da
+// Task 5 de 22/07): nome de cidade pode ser ambiguo no Brasil inteiro
+// (ex.: "Natividade" existe no RJ E no Tocantins, ~1500km de distancia)
+// -- se a resolucao de cidade (Nominatim) acertar a cidade ERRADA, um
+// candidato local UNICO e "correto" segundo o nome ainda estaria a
+// milhares de km do ponto de cidade (tambem errado) resolvido nesse
+// ciclo. Checar sempre que ha ponto de cidade disponivel pega esse caso;
+// SEM ponto de cidade, nao ha nada pra comparar, entao o candidato unico
 // passa direto como antes.
-export async function geocodificarLocal(
-  enderecoBruto: string,
-  pontoCidade: { lat: number; lng: number } | null,
-  buscarCandidatosPorNome: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>
-): Promise<{ lat: number; lng: number } | null> {
-  const rua = extrairRuaDoEndereco(enderecoBruto);
-  const nomeNormalizado = normalizarNomeRua(rua);
-  const candidatos = await buscarCandidatosPorNome(nomeNormalizado);
+function escolherCandidatoMaisProximo(
+  candidatos: { lat: number; lng: number }[],
+  pontoCidade: { lat: number; lng: number } | null
+): { lat: number; lng: number } | null {
   if (candidatos.length === 0) return null;
   if (!pontoCidade) return candidatos[0];
 
@@ -52,6 +46,57 @@ export async function geocodificarLocal(
   return menorDist <= DISTANCIA_MAX_MATCH_LOCAL_M ? melhor : null;
 }
 
+// Geocodificacao LOCAL via extrato OSM (vias_nomes) -- ver
+// docs/superpowers/specs/2026-07-22-geocodificacao-local-romaneio-design.md.
+// Bate o nome da rua contra candidatos ja ingeridos.
+export async function geocodificarLocal(
+  enderecoBruto: string,
+  pontoCidade: { lat: number; lng: number } | null,
+  buscarCandidatosPorNome: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>
+): Promise<{ lat: number; lng: number } | null> {
+  const rua = extrairRuaDoEndereco(enderecoBruto);
+  const nomeNormalizado = normalizarNomeRua(rua);
+  const candidatos = await buscarCandidatosPorNome(nomeNormalizado);
+  return escolherCandidatoMaisProximo(candidatos, pontoCidade);
+}
+
+// Geocodificacao via CNEFE (IBGE, Censo 2022) -- achado real 31/07, ver
+// migration contabo/022_cnefe_enderecos.sql. Endereco+coordenada real
+// coletado por recenseador em campo, mais preciso que o extrato OSM (que
+// so tem nome de rua + ponto medio do trecho) pra rua de cidade pequena/
+// bairro informal -- por isso roda ANTES do match OSM na cadeia de
+// geocodificarEndereco. Tres niveis, do mais preciso pro mais amplo:
+// (1) rua+numero exato (imovel especifico), (2) so rua (qualquer numero
+// naquela rua), (3) similaridade de nome via pg_trgm (pega variacao tipo
+// abreviacao -- "FRANCISCO" vs "F." -- que nem o match exato da rua
+// resolve). Cada nivel so roda se o anterior nao achou nada.
+export async function geocodificarCnefe(
+  enderecoBruto: string,
+  pontoCidade: { lat: number; lng: number } | null,
+  deps: {
+    buscarPorRuaNumero: (nomeNormalizado: string, numero: string) => Promise<{ lat: number; lng: number }[]>;
+    buscarPorRua: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>;
+    buscarPorSimilaridade: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>;
+  }
+): Promise<{ lat: number; lng: number } | null> {
+  const rua = extrairRuaDoEndereco(enderecoBruto);
+  const nomeNormalizado = normalizarNomeRua(rua);
+  const numero = extrairNumeroDoEndereco(enderecoBruto);
+
+  if (numero && !/^S\/?N$/i.test(numero)) {
+    const porRuaNumero = await deps.buscarPorRuaNumero(nomeNormalizado, numero);
+    const resultado = escolherCandidatoMaisProximo(porRuaNumero, pontoCidade);
+    if (resultado) return resultado;
+  }
+
+  const porRua = await deps.buscarPorRua(nomeNormalizado);
+  const resultadoRua = escolherCandidatoMaisProximo(porRua, pontoCidade);
+  if (resultadoRua) return resultadoRua;
+
+  const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado);
+  return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade);
+}
+
 // SEM fallback pra coordenada da Unitrac de proposito -- achado real 15/07:
 // no romaneio de teste (22 pontos, veiculo TUL1C38), 18 cairiam no fallback
 // da Unitrac (Nominatim gratuito nao cobre a maioria das ruas de cidade
@@ -60,11 +105,12 @@ export async function geocodificarLocal(
 // coordenada "as vezes errada" que o romaneio existe pra evitar. Decisao
 // explicita do usuario: se nao geocodificar, o ponto fica sem coordenada
 // (excluido da lista de pendentes pelo motor) em vez de reusar a Unitrac.
-export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "local" } | null;
+export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" } | null;
 
 type Deps = {
   buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string } | null>;
   salvarCache: (chave: string, r: { lat: number; lng: number; fonte: string }) => Promise<void>;
+  geocodificarCnefeDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
   geocodificarLocalDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
   geocodificarGoogle: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
   geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
@@ -77,7 +123,18 @@ export async function geocodificarEndereco(
 ): Promise<ResultadoGeocode> {
   const chave = normalizarEndereco(enderecoBruto);
   const doCache = await deps.buscarCache(chave);
-  if (doCache) return { lat: doCache.lat, lng: doCache.lng, fonte: doCache.fonte as "google" | "nominatim" | "local" };
+  if (doCache) return { lat: doCache.lat, lng: doCache.lng, fonte: doCache.fonte as "google" | "nominatim" | "local" | "cnefe" };
+
+  // CNEFE roda ANTES do OSM (geocodificarLocalDep) -- achado real 31/07:
+  // endereco+coordenada real de campo (IBGE) e' mais preciso que o extrato
+  // OSM (nome de rua + ponto medio) pra rua de cidade pequena/bairro
+  // informal, exatamente o gargalo que restava depois de descartar Google
+  // Geocoding (usuario recusou vincular faturamento).
+  const cnefe = await deps.geocodificarCnefeDep(enderecoBruto, pontoCidade);
+  if (cnefe) {
+    await deps.salvarCache(chave, { ...cnefe, fonte: "cnefe" });
+    return { ...cnefe, fonte: "cnefe" };
+  }
 
   const local = await deps.geocodificarLocalDep(enderecoBruto, pontoCidade);
   if (local) {

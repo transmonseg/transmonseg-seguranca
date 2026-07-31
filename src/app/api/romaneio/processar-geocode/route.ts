@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada } from "@/lib/romaneio-geocode-local";
 
 export const maxDuration = 60;
@@ -133,6 +133,27 @@ export async function POST(request: Request) {
     return data ?? [];
   };
 
+  // CNEFE (IBGE, Censo 2022) -- achado real 31/07, ver migration
+  // contabo/022_cnefe_enderecos.sql. Roda ANTES do match OSM
+  // (buscarCandidatosPorNome acima) na cadeia de geocodificarEndereco --
+  // endereco+coordenada real de campo, mais preciso que nome de rua + ponto
+  // medio do trecho.
+  const buscarCnefePorRuaNumero = async (nomeNormalizado: string, numero: string) => {
+    const { data } = await admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).limit(50);
+    return data ?? [];
+  };
+  const buscarCnefePorRua = async (nomeNormalizado: string) => {
+    const { data } = await admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).limit(200);
+    return data ?? [];
+  };
+  // pg_trgm -- pega variacao tipo abreviacao ("FRANCISCO" vs "F.") que nem
+  // o match exato da rua resolve. RPC (nao dá pra fazer ORDER BY
+  // similarity() pelo query builder do Supabase-js).
+  const buscarCnefePorSimilaridade = async (nomeNormalizado: string) => {
+    const { data } = await admin.rpc("cnefe_buscar_por_similaridade", { termo: nomeNormalizado, limite: 5 });
+    return data ?? [];
+  };
+
   let ok = 0;
   let falhou = 0;
 
@@ -144,6 +165,11 @@ export async function POST(request: Request) {
     const geocode = await geocodificarEndereco(linha.endereco_bruto, pontoCidade, {
       buscarCache,
       salvarCache,
+      geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, {
+        buscarPorRuaNumero: buscarCnefePorRuaNumero,
+        buscarPorRua: buscarCnefePorRua,
+        buscarPorSimilaridade: buscarCnefePorSimilaridade,
+      }),
       geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
       geocodificarGoogle,
       geocodificarNominatim: geocodificarNominatimThrottled,
