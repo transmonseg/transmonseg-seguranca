@@ -18,6 +18,87 @@ export function extrairCidadeDoEndereco(enderecoBruto: string): string | null {
   return cidade || null;
 }
 
+export function extrairNumeroDoEndereco(enderecoBruto: string): string | null {
+  const partes = enderecoBruto.split(",");
+  if (partes.length < 2) return null;
+  const numero = partes[1].split(" - ")[0]?.trim();
+  return numero || null;
+}
+
+export function extrairBairroDoEndereco(enderecoBruto: string): string | null {
+  const partes = enderecoBruto.split(",");
+  if (partes.length < 3) return null;
+  const bairro = partes[1].split(" - ")[1]?.trim();
+  return bairro || null;
+}
+
+// Municipios do RJ (fonte: IBGE) -- so usado pra EXPANDIR nome de cidade
+// cortado no romaneio (achado real 31/07: o PDF de origem trunca o campo
+// de cidade em ~15 caracteres, ex. "SAO PEDRO DA AL" em vez de "São Pedro
+// da Aldeia", "SANTA MARIA MAD" em vez de "Santa Maria Madalena") --
+// enviar o nome cortado pro Google/Nominatim direto falha quase sempre.
+const MUNICIPIOS_RJ = [
+  "Angra dos Reis", "Aperibé", "Araruama", "Areal", "Armação dos Búzios",
+  "Arraial do Cabo", "Barra do Piraí", "Barra Mansa", "Belford Roxo",
+  "Bom Jardim", "Bom Jesus do Itabapoana", "Cabo Frio", "Cachoeiras de Macacu",
+  "Cambuci", "Campos dos Goytacazes", "Cantagalo", "Carapebus", "Cardoso Moreira",
+  "Carmo", "Casimiro de Abreu", "Comendador Levy Gasparian", "Conceição de Macabu",
+  "Cordeiro", "Duas Barras", "Duque de Caxias", "Engenheiro Paulo de Frontin",
+  "Guapimirim", "Iguaba Grande", "Itaboraí", "Itaguaí", "Italva", "Itaocara",
+  "Itaperuna", "Itatiaia", "Japeri", "Laje do Muriaé", "Macaé", "Macuco",
+  "Magé", "Mangaratiba", "Maricá", "Mendes", "Mesquita", "Miguel Pereira",
+  "Miracema", "Natividade", "Nilópolis", "Niterói", "Nova Friburgo",
+  "Nova Iguaçu", "Paracambi", "Paraíba do Sul", "Parati", "Paty do Alferes",
+  "Petrópolis", "Pinheiral", "Piraí", "Porciúncula", "Porto Real",
+  "Quatis", "Queimados", "Quissamã", "Resende", "Rio Bonito", "Rio Claro",
+  "Rio das Flores", "Rio das Ostras", "Rio de Janeiro", "Santa Maria Madalena",
+  "Santo Antônio de Pádua", "São Fidélis", "São Francisco de Itabapoana",
+  "São Gonçalo", "São João da Barra", "São João de Meriti", "São José de Ubá",
+  "São José do Vale do Rio Preto", "São Pedro da Aldeia", "São Sebastião do Alto",
+  "Sapucaia", "Saquarema", "Seropédica", "Silva Jardim", "Sumidouro",
+  "Tanguá", "Teresópolis", "Trajano de Moraes", "Três Rios", "Valença",
+  "Varre-Sai", "Vassouras", "Volta Redonda",
+];
+
+function semAcentoMaiusculo(s: string): string {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().trim().replace(/\s+/g, " ");
+}
+
+const MUNICIPIOS_RJ_NORMALIZADOS = MUNICIPIOS_RJ.map(semAcentoMaiusculo);
+
+// Comprimento minimo do prefixo pra tentar expandir -- curto demais (ex.
+// "SAO") bate em varios municipios ao mesmo tempo (ambiguo demais pra
+// arriscar). O achado real (15 caracteres) fica bem acima disso.
+const EXPANSAO_CIDADE_PREFIXO_MINIMO = 10;
+
+export function expandirCidadeTruncada(cidade: string): string {
+  const normalizada = semAcentoMaiusculo(cidade);
+  if (MUNICIPIOS_RJ_NORMALIZADOS.includes(normalizada)) return cidade;
+  if (normalizada.length < EXPANSAO_CIDADE_PREFIXO_MINIMO) return cidade;
+  const candidatos = MUNICIPIOS_RJ.filter((_, i) => MUNICIPIOS_RJ_NORMALIZADOS[i].startsWith(normalizada));
+  return candidatos.length === 1 ? candidatos[0] : cidade;
+}
+
+// Monta uma string enxuta especificamente pra mandar pro Google/Nominatim
+// -- SEM o sufixo de complemento de entrega (ex. "LOJA 02", "KM 270
+// QUADRA F 101", "1 PISO PARTE UNIDADE DO SHOPPING 530AB"), que nao faz
+// parte do endereco postal e so confunde o geocoder (achado real 31/07).
+// NAO usar essa string pra `extrairRuaDoEndereco`/`extrairCidadeDoEndereco`
+// -- o formato de saida (separado por virgula simples) nao e' compativel
+// com o parsing dessas funcoes, que esperam o formato original do romaneio.
+export function montarEnderecoParaGeocode(enderecoBruto: string): string {
+  const rua = extrairRuaDoEndereco(enderecoBruto);
+  const numero = extrairNumeroDoEndereco(enderecoBruto);
+  const bairro = extrairBairroDoEndereco(enderecoBruto);
+  const cidadeBruta = extrairCidadeDoEndereco(enderecoBruto);
+  const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
+  const numeroValido = numero && !/^S\/?N$/i.test(numero) ? numero : null;
+  const ruaComNumero = numeroValido ? `${rua}, ${numeroValido}` : rua;
+  return [ruaComNumero, bairro, cidade, "RJ", "Brasil"]
+    .filter((p): p is string => !!p)
+    .join(", ");
+}
+
 // Tipos de via reconhecidos como PREFIXO do nome -- removidos por completo
 // (nao canonicalizados) pra bater independente de qual abreviacao o
 // romaneio ou o OSM usarem (ex.: "AV" vs "Avenida" viram a mesma coisa

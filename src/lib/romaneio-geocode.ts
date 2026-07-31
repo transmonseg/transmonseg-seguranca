@@ -4,7 +4,7 @@
 // api/motor/route.ts) -- mesma chave do Google, mesmo User-Agent do
 // Nominatim -- so na direcao contraria.
 
-import { extrairRuaDoEndereco, normalizarNomeRua } from "./romaneio-geocode-local";
+import { extrairRuaDoEndereco, normalizarNomeRua, montarEnderecoParaGeocode } from "./romaneio-geocode-local";
 import { haversineM } from "./unitrac";
 
 export function normalizarEndereco(enderecoBruto: string): string {
@@ -84,12 +84,19 @@ export async function geocodificarEndereco(
     await deps.salvarCache(chave, { ...local, fonte: "local" });
     return { ...local, fonte: "local" };
   }
-  const google = await deps.geocodificarGoogle(enderecoBruto);
+  // Google/Nominatim recebem uma string enxuta (rua+numero, bairro, cidade
+  // -- com cidade cortada ja expandida -- RJ, Brasil), SEM o sufixo de
+  // complemento de entrega do romaneio (ex. "LOJA 02", "KM 270 QUADRA F
+  // 101") -- achado real 31/07: mandar isso pro geocoder direto atrapalha
+  // mais do que ajuda. geocodificarLocalDep acima usa enderecoBruto original
+  // de proposito (so extrai a rua, sufixo nao atrapalha esse parsing).
+  const enderecoParaGeocode = montarEnderecoParaGeocode(enderecoBruto);
+  const google = await deps.geocodificarGoogle(enderecoParaGeocode);
   if (google) {
     await deps.salvarCache(chave, { ...google, fonte: "google" });
     return { ...google, fonte: "google" };
   }
-  const nominatim = await deps.geocodificarNominatim(enderecoBruto);
+  const nominatim = await deps.geocodificarNominatim(enderecoParaGeocode);
   if (nominatim) {
     await deps.salvarCache(chave, { ...nominatim, fonte: "nominatim" });
     return { ...nominatim, fonte: "nominatim" };

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { extrairRuaDoEndereco, extrairCidadeDoEndereco, normalizarNomeRua } from "./romaneio-geocode-local";
+import {
+  extrairRuaDoEndereco, extrairCidadeDoEndereco, normalizarNomeRua,
+  extrairNumeroDoEndereco, extrairBairroDoEndereco, expandirCidadeTruncada,
+  montarEnderecoParaGeocode,
+} from "./romaneio-geocode-local";
 
 describe("extrairRuaDoEndereco", () => {
   it("extrai o texto antes da primeira virgula", () => {
@@ -56,5 +60,66 @@ describe("normalizarNomeRua", () => {
 
   it("colapsa espacos multiplos", () => {
     expect(normalizarNomeRua("RUA   COM    ESPACOS")).toBe("COM ESPACOS");
+  });
+});
+
+describe("extrairNumeroDoEndereco", () => {
+  it("extrai o numero antes do primeiro ' - ' do segundo trecho", () => {
+    expect(extrairNumeroDoEndereco("RUA MONS MIGUEL REIS MELLO, 33 - LIBERDADE, NATIVIDADE - *")).toBe("33");
+  });
+
+  it("funciona com S/N", () => {
+    expect(extrairNumeroDoEndereco("EST NATIVIDADE RAPOSO, S/N - ZONA RURAL, NATIVIDADE - .")).toBe("S/N");
+  });
+
+  it("endereco mal formado (menos de 1 virgula): retorna null", () => {
+    expect(extrairNumeroDoEndereco("SEM VIRGULA NENHUMA")).toBeNull();
+  });
+});
+
+describe("extrairBairroDoEndereco", () => {
+  it("extrai o texto depois do ' - ' do segundo trecho", () => {
+    expect(extrairBairroDoEndereco("RUA MONS MIGUEL REIS MELLO, 33 - LIBERDADE, NATIVIDADE - *")).toBe("LIBERDADE");
+  });
+
+  it("endereco mal formado (menos de 2 virgulas): retorna null", () => {
+    expect(extrairBairroDoEndereco("SO UMA, VIRGULA")).toBeNull();
+  });
+});
+
+describe("expandirCidadeTruncada", () => {
+  it("expande cidade cortada em 15 caracteres (achado real 31/07)", () => {
+    expect(expandirCidadeTruncada("SAO PEDRO DA AL")).toBe("São Pedro da Aldeia");
+    expect(expandirCidadeTruncada("SANTA MARIA MAD")).toBe("Santa Maria Madalena");
+  });
+
+  it("cidade ja completa e valida: mantem como veio", () => {
+    expect(expandirCidadeTruncada("NATIVIDADE")).toBe("NATIVIDADE");
+    expect(expandirCidadeTruncada("Rio de Janeiro")).toBe("Rio de Janeiro");
+  });
+
+  it("prefixo curto demais (ambiguo, bateria em varios municipios): mantem como veio", () => {
+    expect(expandirCidadeTruncada("SAO")).toBe("SAO");
+  });
+
+  it("nao bate com nenhum municipio do RJ: mantem como veio", () => {
+    expect(expandirCidadeTruncada("CIDADE INVENTADA QUE NAO EXISTE")).toBe("CIDADE INVENTADA QUE NAO EXISTE");
+  });
+});
+
+describe("montarEnderecoParaGeocode", () => {
+  it("monta rua+numero, bairro, cidade (expandida), RJ, Brasil -- sem o sufixo de complemento", () => {
+    expect(montarEnderecoParaGeocode("RUA MONS MIGUEL REIS MELLO, 33 - LIBERDADE, NATIVIDADE - *"))
+      .toBe("RUA MONS MIGUEL REIS MELLO, 33, LIBERDADE, NATIVIDADE, RJ, Brasil");
+  });
+
+  it("expande cidade truncada na montagem final", () => {
+    expect(montarEnderecoParaGeocode("RUA RESENDE, 358 - FLUMINENSE, SAO PEDRO DA AL - ."))
+      .toBe("RUA RESENDE, 358, FLUMINENSE, São Pedro da Aldeia, RJ, Brasil");
+  });
+
+  it("S/N nao vira parte do numero (rua sozinha)", () => {
+    expect(montarEnderecoParaGeocode("EST NATIVIDADE RAPOSO, S/N - ZONA RURAL, NATIVIDADE - ."))
+      .toBe("EST NATIVIDADE RAPOSO, ZONA RURAL, NATIVIDADE, RJ, Brasil");
   });
 });

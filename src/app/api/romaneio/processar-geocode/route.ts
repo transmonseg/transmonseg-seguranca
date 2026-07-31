@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
-import { extrairCidadeDoEndereco } from "@/lib/romaneio-geocode-local";
+import { extrairCidadeDoEndereco, expandirCidadeTruncada } from "@/lib/romaneio-geocode-local";
 
 export const maxDuration = 60;
 
@@ -98,8 +98,15 @@ export async function POST(request: Request) {
   // por endereco) -- cacheados em romaneio_geocode_cache com prefixo
   // "CIDADE:" pra nao colidir com chaves de endereco completo. Poucas
   // dezenas por lote no maximo, throttle simples ja basta.
+  // expandirCidadeTruncada ANTES de deduplicar/resolver: achado real 31/07,
+  // o PDF de origem corta o nome da cidade em ~15 caracteres (ex. "SANTA
+  // MARIA MAD") -- mandar isso pro Nominatim como nome de cidade falha
+  // quase sempre. Ver src/lib/romaneio-geocode-local.ts.
   const cidadesUnicas = [...new Set(
-    pendentes.map((l) => extrairCidadeDoEndereco(l.endereco_bruto)).filter((c): c is string => c !== null)
+    pendentes
+      .map((l) => extrairCidadeDoEndereco(l.endereco_bruto))
+      .filter((c): c is string => c !== null)
+      .map(expandirCidadeTruncada)
   )];
   const pontosCidade = new Map<string, { lat: number; lng: number }>();
   for (const cidade of cidadesUnicas) {
@@ -125,7 +132,8 @@ export async function POST(request: Request) {
   let falhou = 0;
 
   for (const linha of pendentes) {
-    const cidade = extrairCidadeDoEndereco(linha.endereco_bruto);
+    const cidadeBruta = extrairCidadeDoEndereco(linha.endereco_bruto);
+    const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
     const pontoCidade = cidade ? pontosCidade.get(cidade) ?? null : null;
 
     const geocode = await geocodificarEndereco(linha.endereco_bruto, pontoCidade, {

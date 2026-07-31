@@ -59,6 +59,19 @@ describe("geocodificarEndereco (fallback: cache -> local -> google -> nominatim 
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
     expect(r).toBeNull();
   });
+
+  it("Google/Nominatim recebem o endereco LIMPO (sem sufixo de complemento, cidade expandida) -- achado real 31/07, ver montarEnderecoParaGeocode", async () => {
+    const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
+    await geocodificarEndereco("RUA RESENDE, 358 - FLUMINENSE, SAO PEDRO DA AL - LOJA 02", null, deps);
+    expect(deps.geocodificarGoogle).toHaveBeenCalledWith("RUA RESENDE, 358, FLUMINENSE, São Pedro da Aldeia, RJ, Brasil");
+  });
+
+  it("geocodificarLocalDep continua recebendo o enderecoBruto ORIGINAL (parsing de rua nao e afetado pelo sufixo)", async () => {
+    const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 7, lng: 8 }) });
+    const enderecoOriginal = "RUA RESENDE, 358 - FLUMINENSE, SAO PEDRO DA AL - LOJA 02";
+    await geocodificarEndereco(enderecoOriginal, null, deps);
+    expect(deps.geocodificarLocalDep).toHaveBeenCalledWith(enderecoOriginal, null);
+  });
 });
 
 describe("geocodificarLocal", () => {
