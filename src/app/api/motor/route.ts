@@ -65,7 +65,6 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
-import { montarPontosDeRomaneio } from "@/lib/romaneio";
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -1481,6 +1480,13 @@ export async function POST(request: Request) {
           // falha, ver cacheAlvosFallbackPorCliente acima -- ver
           // montarPontosDeRomaneio). Sem romaneio de hoje pro veiculo, cai no
           // caminho 100% Unitrac de sempre.
+          // Achado real 31/07 (cliente Nutry Max): a Central NAO PODE MAIS
+          // ser afetada pelo romaneio -- decisao revertida (era 15/07: usar
+          // romaneio quando existisse pro veiculo). Motivo: usuario quer o
+          // romaneio isolado numa tela/motor proprios, ver
+          // docs/superpowers/specs/2026-07-31-central-romaneio-paralela-design.md.
+          // pontosVeiculo agora e SEMPRE Unitrac (pontosPorPlacaFallback),
+          // igual era antes de 15/07.
           const romaneioDoVeiculo = romaneioPontosPorPlaca.get(pos.placa);
           // pontosPorPlacaFallback (nao pontosPorPlaca direto): quando o
           // fetch de alvos deste ciclo falhou, cai pro ultimo conhecido
@@ -1490,9 +1496,7 @@ export async function POST(request: Request) {
           // parada_sem_marcacao, e o entregaConfirmada de bypass_entrega,
           // que ate aqui SEMPRE lia false numa falha de fetch -- ver
           // alvoQueSaiu abaixo -- em vez do ultimo status real conhecido).
-          const pontosVeiculo = romaneioDoVeiculo && romaneioDoVeiculo.length > 0
-            ? montarPontosDeRomaneio(romaneioDoVeiculo, pontosPorPlacaFallback.get(pos.placa) ?? [])
-            : pontosPorPlacaFallback.get(pos.placa);
+          const pontosVeiculo = pontosPorPlacaFallback.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito && temCoordenadaValida(pt));
           const temPendentes = pendentes.length > 0;
