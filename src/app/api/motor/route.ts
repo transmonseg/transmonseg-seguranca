@@ -692,7 +692,7 @@ export async function POST(request: Request) {
     // ciclo, degradacao aceitavel e temporaria; nao persistente).
     const { data: posatuaisRows, error: erroLeituraPosAtuais } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos, divergencia_rumo_caminho_m");
     if (erroLeituraPosAtuais) {
       const msg = `CRITICO: falha ao ler posicoes_atuais (estado por veiculo perdido neste ciclo, UPSERT sera pulado pra nao gravar cold-start por engano): ${erroLeituraPosAtuais.message}`;
       console.error(msg);
@@ -709,6 +709,11 @@ export async function POST(request: Request) {
         // proprio da streak de divergencia de rumo -- mesmo shape/logica de
         // desvio_inicio, ver detalhe no bloco que calcula divergenciaRumoStreak.
         divergencia_rumo_inicio: DesvioInicio | null;
+        // Achado real 30/07: acumulador de distancia percorrida durante a
+        // streak de divergencia de rumo -- mesmo ciclo de vida de
+        // divergencia_rumo_inicio (migration 017). Ver
+        // docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
+        divergencia_rumo_caminho_m: number;
         aproximando_streak: number;
         origem_celula: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
@@ -741,6 +746,7 @@ export async function POST(request: Request) {
         fora_tapete_streak: row.fora_tapete_streak ?? 0,
         divergencia_rumo_streak: row.divergencia_rumo_streak ?? 0,
         divergencia_rumo_inicio: (row.divergencia_rumo_inicio as DesvioInicio | null) ?? null,
+        divergencia_rumo_caminho_m: row.divergencia_rumo_caminho_m ?? 0,
         aproximando_streak: row.aproximando_streak ?? 0,
         origem_celula: row.origem_celula ?? null,
         no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
@@ -1008,6 +1014,7 @@ export async function POST(request: Request) {
       // Task 4b (revisao independente 28/07): anchor proprio da streak de
       // divergencia de rumo, mesmo shape/serializacao de desvio_inicio.
       divergencia_rumo_inicio: string | null;
+      divergencia_rumo_caminho_m: number;
       aproximando_streak: number; origem_celula: string | null;
       no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
       ultima_via_principal_em: string | null;
@@ -1762,6 +1769,7 @@ export async function POST(request: Request) {
           // cobrir -- porque o gate de verificarCorredor exigia desvioInicio
           // nao-nulo, e esse so pertence a streak de afastando-de-tudo.
           let divergenciaRumoInicio: DesvioInicio | null = anterior?.divergencia_rumo_inicio ?? null;
+          let divergenciaRumoCaminhoM: number = anterior?.divergencia_rumo_caminho_m ?? 0;
           // Achado real 26/07 (Fase 2): valor CRU do ciclo atual (nao
           // acumulado em streak), exposto pra viradaErradaSaindoDeParada
           // poder decidir com 1 leitura so -- reaproveita o MESMO calculo
@@ -1783,6 +1791,14 @@ export async function POST(request: Request) {
             if (divergenciaRumoAcimaDoLimiar(divergencia)) {
               const streakAnteriorDivergencia = divergenciaRumoStreak;
               divergenciaRumoStreak += 1;
+              // Achado real 30/07: acumula a distancia percorrida NESTE ciclo --
+              // na transicao 0->1 (mesmo ciclo que ancora divergenciaRumoInicio em
+              // anterior!), o "caminho" comeca do zero com o segmento
+              // anterior->atual (nao soma em cima de um valor de um episodio
+              // ANTERIOR ja encerrado); em ciclos seguintes da MESMA streak,
+              // continua somando.
+              const segmentoM = haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng);
+              divergenciaRumoCaminhoM = streakAnteriorDivergencia === 0 ? segmentoM : divergenciaRumoCaminhoM + segmentoM;
               // Transicao 0->1: mesma logica do desvioInicio acima (anterior!
               // seguro aqui -- podeAvancarStreaksDesvio so e true quando ha
               // ciclo anterior, ver devAvancarStreaksDesvio).
@@ -1797,10 +1813,12 @@ export async function POST(request: Request) {
             } else {
               divergenciaRumoStreak = 0;
               divergenciaRumoInicio = null;
+              divergenciaRumoCaminhoM = 0;
             }
           } else {
             divergenciaRumoStreak = 0;
             divergenciaRumoInicio = null;
+            divergenciaRumoCaminhoM = 0;
           }
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
@@ -2535,6 +2553,7 @@ export async function POST(request: Request) {
                 origemRumoDivergeGanhou,
                 { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio }
               ));
+              if (origemRumoDivergeGanhou) divergenciaRumoCaminhoM = 0;
             } else if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
               chamadasCorredorNoCiclo++;
               const bufferAtual = bufferPorVelocidade(pos.velocidade);
@@ -2560,6 +2579,7 @@ export async function POST(request: Request) {
                   origemRumoDivergeGanhou,
                   { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio }
                 ));
+                if (origemRumoDivergeGanhou) divergenciaRumoCaminhoM = 0;
               } else if (r.veredito === "fora") {
                 // Confirma o desvio. Início REAL: onde saiu do corredor.
                 if (cacheValido && cache) {
@@ -2741,6 +2761,7 @@ export async function POST(request: Request) {
             fora_tapete_streak: foraTapeteStreak,
             divergencia_rumo_streak: divergenciaRumoStreak,
             divergencia_rumo_inicio: divergenciaRumoInicio ? JSON.stringify(divergenciaRumoInicio) : null,
+            divergencia_rumo_caminho_m: divergenciaRumoCaminhoM,
             aproximando_streak: aproximandoStreak,
             origem_celula: origemCelula,
             no_raio_alvo_codigo: noRaioAlvoCodigo,
@@ -3218,7 +3239,8 @@ export async function POST(request: Request) {
               divergencia_rumo_streak, aproximando_streak, origem_celula,
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
               ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em,
-              parada_tolerante_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos)
+              parada_tolerante_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos,
+              divergencia_rumo_caminho_m)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -3231,7 +3253,8 @@ export async function POST(request: Request) {
              c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
              c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb,
              c.saiu_parada_confirmada_em::timestamptz, c.parada_tolerante_segundos,
-             c.perto_sem_marcacao_codigo, c.perto_sem_marcacao_segundos
+             c.perto_sem_marcacao_codigo, c.perto_sem_marcacao_segundos,
+             c.divergencia_rumo_caminho_m
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
@@ -3239,7 +3262,7 @@ export async function POST(request: Request) {
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
              $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[],
-             $31::integer[], $32::integer[], $33::integer[]
+             $31::integer[], $32::integer[], $33::integer[], $34::float8[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
@@ -3247,7 +3270,7 @@ export async function POST(request: Request) {
                   aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
                   no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio,
                   saiu_parada_confirmada_em, parada_tolerante_segundos, perto_sem_marcacao_codigo,
-                  perto_sem_marcacao_segundos)
+                  perto_sem_marcacao_segundos, divergencia_rumo_caminho_m)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -3283,7 +3306,8 @@ export async function POST(request: Request) {
              saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
              parada_tolerante_segundos = EXCLUDED.parada_tolerante_segundos,
              perto_sem_marcacao_codigo = EXCLUDED.perto_sem_marcacao_codigo,
-             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos`,
+             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos,
+             divergencia_rumo_caminho_m = EXCLUDED.divergencia_rumo_caminho_m`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -3318,6 +3342,7 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.parada_tolerante_segundos),
             posicoesCiclo.map((p) => p.perto_sem_marcacao_codigo),
             posicoesCiclo.map((p) => p.perto_sem_marcacao_segundos),
+            posicoesCiclo.map((p) => p.divergencia_rumo_caminho_m),
           ]
         );
       } catch (errPosicoes) {
