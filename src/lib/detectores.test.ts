@@ -2399,3 +2399,49 @@ describe("limiarRazaoRetidaoRumo", () => {
     expect(limiarRazaoRetidaoRumo(33_113)).toBe(1.4);
   });
 });
+
+describe("montarContextoDesvio — retidao_rumo_sombra", () => {
+  it("inclui retidao_rumo_sombra quando fornecido", () => {
+    const ctx = montarContextoDesvio({
+      desvioInicio: { lat: -22.9, lng: -43.2, ts: "2026-07-30T12:00:00.000Z", menor_dist_m: 5000 },
+      dentroTapete: null,
+      distDestinosM: [4800],
+      distDestinosAnteriorM: [5000],
+      desvioStreak: 0,
+      foraTapeteStreak: 0,
+      divergenciaRumoStreak: 2,
+      riscoAreaAtual: 0,
+      familiarVeiculo: null,
+      classeViaAtual: null,
+      quedaClasseViaria: false,
+      segmentoEspecifico: null,
+      taxaFp: undefined,
+      retidaoRumoSombra: {
+        caminhoM: 6478, liquidoM: 4677, razao: 1.385, limiar: 1.4, veredito_suprimiria: true,
+      },
+    });
+    expect(ctx.retidao_rumo_sombra).toEqual({
+      caminho_m: 6478, liquido_m: 4677, razao: 1.385, limiar: 1.4, veredito_suprimiria: true,
+    });
+  });
+
+  it("omite retidao_rumo_sombra quando não fornecido (undefined) ou null", () => {
+    const base = {
+      desvioInicio: { lat: -22.9, lng: -43.2, ts: "2026-07-30T12:00:00.000Z", menor_dist_m: 5000 },
+      dentroTapete: null,
+      distDestinosM: [4800],
+      distDestinosAnteriorM: [5000],
+      desvioStreak: 0,
+      foraTapeteStreak: 0,
+      divergenciaRumoStreak: 2,
+      riscoAreaAtual: 0,
+      familiarVeiculo: null,
+      classeViaAtual: null,
+      quedaClasseViaria: false,
+      segmentoEspecifico: null,
+      taxaFp: undefined,
+    };
+    expect(montarContextoDesvio(base)).not.toHaveProperty("retidao_rumo_sombra");
+    expect(montarContextoDesvio({ ...base, retidaoRumoSombra: null })).not.toHaveProperty("retidao_rumo_sombra");
+  });
+});

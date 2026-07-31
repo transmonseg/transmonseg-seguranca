@@ -639,6 +639,18 @@ export interface ContextoDesvio {
   queda_classe_viaria: boolean;
   afastamento_acumulado_m: number;
   calibracao?: { segmento: string | null; taxa_falso_positivo: number };
+  // Achado real 30/07: sombra do filtro comportamental de rumo-diverge --
+  // ver docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
+  // So presente quando origemDesvio==="rumo_diverge" E o corredor rodou
+  // pra este alerta (route.ts). Puramente informativo enquanto
+  // RUMO_DIVERGE_FILTRO_COMPORTAMENTAL_ATIVO for false.
+  retidao_rumo_sombra?: {
+    caminho_m: number;
+    liquido_m: number | null;
+    razao: number | null;
+    limiar: number;
+    veredito_suprimiria: boolean;
+  };
 }
 
 export function montarContextoDesvio(p: {
@@ -656,6 +668,13 @@ export function montarContextoDesvio(p: {
   quedaClasseViaria: boolean;
   segmentoEspecifico: string | null;
   taxaFp: number | undefined;
+  retidaoRumoSombra?: {
+    caminhoM: number;
+    liquidoM: number | null;
+    razao: number | null;
+    limiar: number;
+    veredito_suprimiria: boolean;
+  } | null;
 }): ContextoDesvio {
   return {
     inicio_ts: p.desvioInicio.ts,
@@ -674,6 +693,17 @@ export function montarContextoDesvio(p: {
     afastamento_acumulado_m: Math.min(...p.distDestinosM) - p.desvioInicio.menor_dist_m,
     ...(p.segmentoEspecifico !== null || p.taxaFp !== undefined
       ? { calibracao: { segmento: p.segmentoEspecifico, taxa_falso_positivo: p.taxaFp ?? -1 } }
+      : {}),
+    ...(p.retidaoRumoSombra
+      ? {
+          retidao_rumo_sombra: {
+            caminho_m: p.retidaoRumoSombra.caminhoM,
+            liquido_m: p.retidaoRumoSombra.liquidoM,
+            razao: p.retidaoRumoSombra.razao,
+            limiar: p.retidaoRumoSombra.limiar,
+            veredito_suprimiria: p.retidaoRumoSombra.veredito_suprimiria,
+          },
+        }
       : {}),
   };
 }
