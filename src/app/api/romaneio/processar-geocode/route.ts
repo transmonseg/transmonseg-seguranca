@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada } from "@/lib/romaneio-geocode-local";
+import { buscarAlvos } from "@/lib/unitrac";
 
 export const maxDuration = 60;
 
@@ -188,5 +189,49 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou });
+  // Fallback Unitrac pros que falharam de vez (nenhuma fonte gratuita achou)
+  // -- achado real 31/07, pedido explicito do usuario: pros poucos casos
+  // que sobram depois de CNEFE+OSM+similaridade+Nominatim, prefere usar a
+  // coordenada da Unitrac (mesmo sabendo que pode ser imprecisa, mesmo
+  // motivo do achado de 15/07) a deixar a entrega sem coordenada nenhuma.
+  // Diferente da decisao de 15/07 (que era sobre a MAIORIA cair nesse
+  // fallback): aqui e' so os ~8% residuais que nada mais resolveu, risco
+  // bem menor. Roda sobre TODOS os falhou historicos (nao so o lote de
+  // hoje), limitado por ciclo pra nao estourar o orcamento de tempo.
+  const LOTE_FALLBACK_UNITRAC = 30;
+  const { data: semGeocode } = await admin
+    .from("romaneio_pontos")
+    .select("id, nf, placa, veiculo_id")
+    .eq("geocode_status", "falhou")
+    .not("veiculo_id", "is", null)
+    .limit(LOTE_FALLBACK_UNITRAC);
+
+  let fallbackUnitrac = 0;
+  if (semGeocode && semGeocode.length > 0) {
+    const veiculoIds = [...new Set(semGeocode.map((l) => l.veiculo_id))];
+    const { data: veiculosData } = await admin.from("veiculos").select("id, cv").in("id", veiculoIds);
+    const cvsUnicos = [...new Set((veiculosData ?? []).map((v) => v.cv).filter((cv): cv is string => !!cv))];
+
+    if (cvsUnicos.length > 0) {
+      try {
+        const alvos = await buscarAlvos(cvsUnicos);
+        const alvoPorPlacaNf = new Map(alvos.map((a) => [`${a.placa}:${a.alvodocumento}`, a]));
+
+        for (const linha of semGeocode) {
+          const alvo = alvoPorPlacaNf.get(`${linha.placa}:${linha.nf}`);
+          if (alvo?.pontolatitude && alvo?.pontolongitude) {
+            const { error: erroFallback } = await admin
+              .from("romaneio_pontos")
+              .update({ lat: alvo.pontolatitude, lng: alvo.pontolongitude, geocode_status: "ok" })
+              .eq("id", linha.id);
+            if (!erroFallback) fallbackUnitrac++;
+          }
+        }
+      } catch (e) {
+        console.warn(`Aviso: erro no fallback Unitrac do geocode: ${e}`);
+      }
+    }
+  }
+
+  return Response.json({ processados: pendentes.length, ok, falhou, fallbackUnitrac });
 }
