@@ -1,5 +1,6 @@
 import Link from "next/link";
 import RelogioAoVivo from "./components/RelogioAoVivo";
+import RomaneioStatusBadge from "./components/RomaneioStatusBadge";
 import { createClient } from "@/lib/supabase/server";
 import { sair } from "../login/actions";
 
@@ -74,6 +75,7 @@ export default async function AppLayout({
 
           {/* Lado direito: relógio + ao vivo + operador */}
           <div className="flex items-center gap-5">
+            <RomaneioStatusBadge />
             <RelogioAoVivo />
             <div className="w-px h-8" style={{ backgroundColor: "var(--border)" }} />
             <div className="hidden sm:flex items-center gap-2">

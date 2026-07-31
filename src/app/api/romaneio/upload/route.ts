@@ -42,6 +42,8 @@ export async function POST(request: Request) {
   const veiculoPorPlaca = new Map((veiculos ?? []).map((v) => [v.placa, v]));
   const placasNaoEncontradas = placasUnicas.filter((p) => !veiculoPorPlaca.has(p));
 
+  const enviadoPor = (user.user_metadata?.nome as string | undefined) ?? user.email ?? null;
+
   const linhasParaInserir = linhas.map((l) => {
     const placaNormalizada = normalizarPlaca(l.placaBruta);
     const veiculo = veiculoPorPlaca.get(placaNormalizada);
@@ -59,6 +61,7 @@ export async function POST(request: Request) {
       lng: null,
       geocode_status: "pendente",
       modo_teste: modoTeste,
+      enviado_por: enviadoPor,
     };
   });
 
