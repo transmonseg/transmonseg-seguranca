@@ -53,6 +53,9 @@ import {
   saiuParadaConfirmadaHaMenosDe,
   JANELA_SAIDA_PARADA_MIN,
   deveMarcarSaidaParadaConfirmada,
+  razaoRetidaoRumo,
+  limiarRazaoRetidaoRumo,
+  RETIDAO_RUMO_LIQUIDO_MINIMO_M,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -2358,5 +2361,41 @@ describe("contaComoRotuloHumano", () => {
   });
   it("NAO conta quando ambos auto_resolvido e auto_expirado estao true", () => {
     expect(contaComoRotuloHumano({ auto_resolvido: true, auto_expirado: true })).toBe(false);
+  });
+});
+
+describe("razaoRetidaoRumo", () => {
+  it("calcula a razão caminho/líquido normalmente", () => {
+    expect(razaoRetidaoRumo(22944, 19521)).toBeCloseTo(1.1753, 3);
+  });
+
+  it("retorna null quando o deslocamento líquido é menor que o piso mínimo", () => {
+    expect(razaoRetidaoRumo(2829, 100)).toBeNull();
+  });
+
+  it("aceita o piso mínimo exato (não é 'menor que')", () => {
+    expect(razaoRetidaoRumo(200, RETIDAO_RUMO_LIQUIDO_MINIMO_M)).toBe(1);
+  });
+
+  it("caso real TTI-6D27 (desvio confirmado manualmente): razão alta", () => {
+    expect(razaoRetidaoRumo(7720, 2461)).toBeCloseTo(3.1373, 3);
+  });
+
+  it("caso real TUL-1H29 (falso positivo de rodovia): razão baixa", () => {
+    expect(razaoRetidaoRumo(25767, 25319)).toBeCloseTo(1.0177, 3);
+  });
+});
+
+describe("limiarRazaoRetidaoRumo", () => {
+  it("usa o limiar de destino curto abaixo de 10km", () => {
+    expect(limiarRazaoRetidaoRumo(2505)).toBe(1.9);
+  });
+
+  it("usa o limiar de destino longo a partir de 10km (inclusive)", () => {
+    expect(limiarRazaoRetidaoRumo(10_000)).toBe(1.4);
+  });
+
+  it("usa o limiar de destino longo bem acima de 10km", () => {
+    expect(limiarRazaoRetidaoRumo(33_113)).toBe(1.4);
   });
 });

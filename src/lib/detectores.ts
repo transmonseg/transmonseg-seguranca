@@ -1238,6 +1238,47 @@ function divergenciaRumoDispara(streak: number): boolean {
   return streak >= DIVERGENCIA_RUMO_STREAK_MIN;
 }
 
+// Achado real 30/07 (analise manual de 41 alertas ativos, apagao no RJ
+// impediu revisao de operador): 25 de 27 alertas rumo-diverge tinham
+// corredor confirmando "fora" mas trajetoria quase reta (razao
+// caminho-percorrido/deslocamento-liquido ~1.0-1.3, sem parada nem
+// reversao) -- corredor sozinho nao e confiavel como corroboracao pra
+// esta regra especifica em rotas de 2.5-45km. Ver
+// docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
+//
+// Piso de deslocamento liquido: abaixo disso a razao degenera (mesmo
+// problema que fez o caso TTF-5I10, achado 29/07 mas de OUTRO detector
+// -- cerca virtual -- parecer uma razao de 4,4 com so 643m de
+// deslocamento real). Sem deslocamento liquido suficiente, a razao nao
+// significa nada -- retorna null, o caller trata como "sem sinal
+// confiavel" e NAO suprime (erra pro lado de manter o alerta).
+export const RETIDAO_RUMO_LIQUIDO_MINIMO_M = 200;
+
+export function razaoRetidaoRumo(
+  caminhoAcumuladoM: number,
+  afastamentoLiquidoM: number
+): number | null {
+  if (afastamentoLiquidoM < RETIDAO_RUMO_LIQUIDO_MINIMO_M) return null;
+  return caminhoAcumuladoM / afastamentoLiquidoM;
+}
+
+// Limiares de PARTIDA (dado real de 30/07/2026, 41 casos ativos) -- nao
+// finais, ajustar com o resultado do periodo de sombra (ver spec).
+// Destino CURTO e naturalmente MAIS sinuoso que destino longo (achado da
+// pesquisa ~/pesquisas/pesquisa-desvio-rota-fp-reducao-2026-07-30.md:
+// circuity/directness ratio decai com a distancia) -- por isso o limiar
+// curto e MAIOR (exige mais sinuosidade real antes de considerar
+// suspeito o bastante pra IGNORAR o corredor), nao menor.
+const RETIDAO_RUMO_DIST_CURTA_M = 10_000;
+const RETIDAO_RUMO_LIMIAR_CURTA = 1.9;
+const RETIDAO_RUMO_LIMIAR_LONGA = 1.4;
+
+export function limiarRazaoRetidaoRumo(distMinDestinoM: number): number {
+  return distMinDestinoM < RETIDAO_RUMO_DIST_CURTA_M
+    ? RETIDAO_RUMO_LIMIAR_CURTA
+    : RETIDAO_RUMO_LIMIAR_LONGA;
+}
+
 // Achado real 26/07 (Fase 2 -- casos reais da cliente Nutry Max, ver
 // docs/superpowers/specs/2026-07-26-fase2-historico-casos-e-regras-simples-design.md):
 // o piso de streak>=2 da regra geral de divergencia de rumo (acima) existe
