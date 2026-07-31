@@ -40,7 +40,7 @@ describe("normalizarNomeRua", () => {
   });
 
   it("remove prefixo de tipo de via reconhecido", () => {
-    expect(normalizarNomeRua("RUA MONS MIGUEL REIS MELLO")).toBe("MONS MIGUEL REIS MELLO");
+    expect(normalizarNomeRua("RUA MONS MIGUEL REIS MELLO")).toBe("MONSENHOR MIGUEL REIS MELLO");
     expect(normalizarNomeRua("AV AMARAL PEIXOTO")).toBe("AMARAL PEIXOTO");
     expect(normalizarNomeRua("Avenida Amaral Peixoto")).toBe("AMARAL PEIXOTO");
     expect(normalizarNomeRua("TRAVESSA DA PAZ")).toBe("PAZ");
@@ -55,7 +55,7 @@ describe("normalizarNomeRua", () => {
   });
 
   it("sem prefixo reconhecido: mantem a string (so normaliza case/acento)", () => {
-    expect(normalizarNomeRua("Beco Sem Nome")).toBe("BECO SEM NOME");
+    expect(normalizarNomeRua("Novo Horizonte")).toBe("NOVO HORIZONTE");
   });
 
   it("remove conectores (de/da/do/das/dos) de qualquer posicao -- achado real 31/07", () => {
@@ -63,6 +63,23 @@ describe("normalizarNomeRua", () => {
     expect(normalizarNomeRua("RUA EDITH DE CASTRO LEITE")).toBe(normalizarNomeRua("EDITH CASTRO LEITE"));
     // OSM com "de" a mais que o romaneio -- o oposto tambem acontece.
     expect(normalizarNomeRua("RUA JOAO LUIZ SIQUEIRA")).toBe(normalizarNomeRua("JOAO LUIZ DE SIQUEIRA"));
+  });
+
+  it("remove MAIS DE UM prefixo em sequencia -- achado real 31/07 (segunda rodada), PDF as vezes repete o tipo abreviado E por extenso", () => {
+    expect(normalizarNomeRua("AV AVENIDA VICTOR SENCE")).toBe("VICTOR SENCE");
+    expect(normalizarNomeRua("R ESTRADA CONSERVATORIA")).toBe("CONSERVATORIA");
+    expect(normalizarNomeRua("AREA AVENIDA NILO PECANHA")).toBe("NILO PECANHA");
+  });
+
+  it("reconhece tipos de via adicionados na segunda rodada (VILA, SERVIDAO, SITIO, AREA)", () => {
+    expect(normalizarNomeRua("VILA ORATORIA")).toBe("ORATORIA");
+    expect(normalizarNomeRua("SERVIDAO FRANCISCO JULIO DE OLIVEIRA")).toBe("FRANCISCO JULIO OLIVEIRA");
+    expect(normalizarNomeRua("SITIO GRANJA TATIANA")).toBe("GRANJA TATIANA");
+  });
+
+  it("expande titulo abreviado -- achado real 31/07 (segunda rodada): CNEFE grava por extenso", () => {
+    expect(normalizarNomeRua("PC DR ORLANDO OBERLAENDER")).toBe("DOUTOR ORLANDO OBERLAENDER");
+    expect(normalizarNomeRua("RUA CEL FULANO")).toBe("CORONEL FULANO");
   });
 
   it("colapsa espacos multiplos", () => {

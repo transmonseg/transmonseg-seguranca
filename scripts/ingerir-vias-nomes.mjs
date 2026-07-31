@@ -16,11 +16,25 @@ const TAMANHO_LOTE = 5000;
 const PREFIXOS_VIA = new Set([
   "RUA", "R", "AV", "AVENIDA", "TRAVESSA", "TRAV", "ESTRADA", "EST",
   "RODOVIA", "ROD", "ALAMEDA", "AL", "PRACA", "PC", "LARGO",
+  "VILA", "VL", "SERVIDAO", "SITIO", "SIT", "AREA", "LADEIRA", "BECO",
+  "VIELA", "CAMINHO", "LOTEAMENTO",
 ]);
 
 // Achado real 31/07: conectores removidos de qualquer posicao (nao so
 // prefixo) -- ver comentario em src/lib/romaneio-geocode-local.ts.
 const CONECTORES = new Set(["DE", "DA", "DO", "DAS", "DOS"]);
+
+// Achado real 31/07 (segunda rodada): titulos abreviados -- ver comentario
+// em src/lib/romaneio-geocode-local.ts.
+const ABREVIACOES_TITULO = new Map([
+  ["DR", "DOUTOR"], ["DRA", "DOUTORA"],
+  ["PROF", "PROFESSOR"], ["PROFA", "PROFESSORA"],
+  ["CEL", "CORONEL"], ["GEN", "GENERAL"],
+  ["PRES", "PRESIDENTE"], ["ENG", "ENGENHEIRO"],
+  ["CAP", "CAPITAO"], ["TEN", "TENENTE"],
+  ["MONS", "MONSENHOR"], ["CMTE", "COMANDANTE"],
+  ["MAJ", "MAJOR"], ["ALM", "ALMIRANTE"],
+]);
 
 function normalizarNomeRua(rua) {
   const semAcento = rua
@@ -29,11 +43,12 @@ function normalizarNomeRua(rua) {
     .toUpperCase()
     .trim()
     .replace(/\s+/g, " ");
-  const tokens = semAcento.split(" ");
-  const semPrefixo = tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])
-    ? tokens.slice(1)
-    : tokens;
-  const semConectores = semPrefixo.filter((t) => !CONECTORES.has(t));
+  let tokens = semAcento.split(" ");
+  while (tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])) {
+    tokens = tokens.slice(1);
+  }
+  const semAbreviacoes = tokens.map((t) => ABREVIACOES_TITULO.get(t) ?? t);
+  const semConectores = semAbreviacoes.filter((t) => !CONECTORES.has(t));
   return semConectores.join(" ");
 }
 

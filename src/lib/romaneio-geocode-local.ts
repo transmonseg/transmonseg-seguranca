@@ -101,11 +101,15 @@ export function montarEnderecoParaGeocode(enderecoBruto: string): string {
 
 // Tipos de via reconhecidos como PREFIXO do nome -- removidos por completo
 // (nao canonicalizados) pra bater independente de qual abreviacao o
-// romaneio ou o OSM usarem (ex.: "AV" vs "Avenida" viram a mesma coisa
-// depois de remover o prefixo dos dois lados).
+// romaneio ou o OSM/CNEFE usarem (ex.: "AV" vs "Avenida" viram a mesma
+// coisa depois de remover o prefixo dos dois lados). Lista expandida
+// 31/07 (segunda rodada, apos CNEFE) com tipos achados nos enderecos que
+// ainda falhavam: VILA, SERVIDAO, SITIO/SIT, AREA.
 const PREFIXOS_VIA = new Set([
   "RUA", "R", "AV", "AVENIDA", "TRAVESSA", "TRAV", "ESTRADA", "EST",
   "RODOVIA", "ROD", "ALAMEDA", "AL", "PRACA", "PC", "LARGO",
+  "VILA", "VL", "SERVIDAO", "SITIO", "SIT", "AREA", "LADEIRA", "BECO",
+  "VIELA", "CAMINHO", "LOTEAMENTO",
 ]);
 
 // Conectores -- removidos de QUALQUER posicao do nome (nao so prefixo),
@@ -120,6 +124,22 @@ const PREFIXOS_VIA = new Set([
 // original que ja nao existe mais em disco).
 const CONECTORES = new Set(["DE", "DA", "DO", "DAS", "DOS"]);
 
+// Titulos abreviados no romaneio que o CNEFE (e provavelmente o OSM) grava
+// por extenso -- achado real 31/07 (segunda rodada): "PC DR ORLANDO
+// OBERLAENDER" (romaneio) nao batia com "DOUTOR ORLANDO OBERLAENDER"
+// (CNEFE, confirmado via query real). Expande pro lado do romaneio, nao
+// canonicaliza pra abreviado, porque a fonte de dado (CNEFE) usa forma
+// extensa de forma consistente.
+const ABREVIACOES_TITULO = new Map([
+  ["DR", "DOUTOR"], ["DRA", "DOUTORA"],
+  ["PROF", "PROFESSOR"], ["PROFA", "PROFESSORA"],
+  ["CEL", "CORONEL"], ["GEN", "GENERAL"],
+  ["PRES", "PRESIDENTE"], ["ENG", "ENGENHEIRO"],
+  ["CAP", "CAPITAO"], ["TEN", "TENENTE"],
+  ["MONS", "MONSENHOR"], ["CMTE", "COMANDANTE"],
+  ["MAJ", "MAJOR"], ["ALM", "ALMIRANTE"],
+]);
+
 export function normalizarNomeRua(rua: string): string {
   const semAcento = rua
     .normalize("NFD")
@@ -127,10 +147,15 @@ export function normalizarNomeRua(rua: string): string {
     .toUpperCase()
     .trim()
     .replace(/\s+/g, " ");
-  const tokens = semAcento.split(" ");
-  const semPrefixo = tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])
-    ? tokens.slice(1)
-    : tokens;
-  const semConectores = semPrefixo.filter((t) => !CONECTORES.has(t));
+  let tokens = semAcento.split(" ");
+  // Loop, nao "if" unico -- achado real 31/07: o PDF de origem as vezes
+  // repete o tipo abreviado E por extenso ("AV AVENIDA X", "R ESTRADA X",
+  // "AREA AVENIDA X") -- um strip so deixava a segunda palavra do tipo
+  // grudada no nome, nunca batia com o CNEFE/OSM.
+  while (tokens.length > 1 && PREFIXOS_VIA.has(tokens[0])) {
+    tokens = tokens.slice(1);
+  }
+  const semAbreviacoes = tokens.map((t) => ABREVIACOES_TITULO.get(t) ?? t);
+  const semConectores = semAbreviacoes.filter((t) => !CONECTORES.has(t));
   return semConectores.join(" ");
 }
