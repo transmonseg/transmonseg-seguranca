@@ -36,6 +36,8 @@ export default function RomaneioPage() {
   const [resultado, setResultado] = useState<ResultadoUpload | null>(null);
 
   const [status, setStatus] = useState<StatusGeocode | null>(null);
+  const [revertendo, setRevertendo] = useState(false);
+  const [mensagemReverter, setMensagemReverter] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const pararPolling = () => {
@@ -81,6 +83,34 @@ export default function RomaneioPage() {
     }
   };
 
+  const reverter = async (romaneioData: string) => {
+    if (!confirm(`Reverter o romaneio de ${romaneioData}? Isso apaga todos os pontos extraídos desse dia -- não afeta o motor (ele já não usa mais o romaneio, só a Unitrac).`)) {
+      return;
+    }
+    setRevertendo(true);
+    setMensagemReverter(null);
+    try {
+      const res = await fetch("/api/romaneio/reverter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ romaneioData }),
+      });
+      const data = (await res.json()) as { ok: boolean; erro?: string; linhasRemovidas?: number };
+      if (data.ok) {
+        pararPolling();
+        setResultado(null);
+        setStatus(null);
+        setMensagemReverter(`Romaneio de ${romaneioData} revertido -- ${data.linhasRemovidas} linhas removidas.`);
+      } else {
+        setMensagemReverter(data.erro ?? "Falha ao reverter.");
+      }
+    } catch (e) {
+      setMensagemReverter(`Falha de rede: ${String(e)}`);
+    } finally {
+      setRevertendo(false);
+    }
+  };
+
   useEffect(() => () => pararPolling(), []);
 
   return (
@@ -120,6 +150,10 @@ export default function RomaneioPage() {
         {processando ? "Processando..." : "Processar romaneio"}
       </button>
 
+      {mensagemReverter && (
+        <p className="mt-3 text-sm" style={{ color: "var(--text)" }}>{mensagemReverter}</p>
+      )}
+
       {resultado && (
         <div
           className="mt-6 p-4 rounded text-sm"
@@ -127,8 +161,18 @@ export default function RomaneioPage() {
         >
           {resultado.ok ? (
             <>
-              <p className="font-medium mb-2">
-                Romaneio de {resultado.romaneioData} — {resultado.totalLinhas} linhas recebidas.
+              <p className="font-medium mb-2 flex items-center gap-3">
+                <span>
+                  Romaneio de {resultado.romaneioData} — {resultado.totalLinhas} linhas recebidas.
+                </span>
+                <button
+                  onClick={() => reverter(resultado.romaneioData!)}
+                  disabled={revertendo}
+                  className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50"
+                  style={{ border: "1px solid var(--danger, #e55)", color: "var(--danger, #e55)" }}
+                >
+                  {revertendo ? "Revertendo..." : "Reverter este romaneio"}
+                </button>
                 {resultado.modoTeste && (
                   <span className="ml-2" style={{ color: "var(--accent)" }}>
                     (MODO TESTE — não afeta a detecção)
