@@ -43,6 +43,8 @@ import {
   reancorarOrigemVencedora,
   razaoRetidaoRumo,
   limiarRazaoRetidaoRumo,
+  rumoCoerenteComDestino,
+  RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS,
   PARADA_FORA_TAPETE_MIN,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
@@ -175,6 +177,10 @@ const CAMADA_CORREDOR_ATIVA = true;
 // desvio genuino cai em "veredito_suprimiria: true", vira true (mesmo
 // padrao sombra->ativa ja usado por CERCA_VIRTUAL_MODO).
 const RUMO_DIVERGE_FILTRO_COMPORTAMENTAL_ATIVO = false;
+// SOMBRA (false): so loga contexto.rumo_coerente_sombra, nao muda nada no
+// comportamento real ainda. Ver
+// docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
+const CLASSE_VIARIA_FILTRO_RUMO_ATIVO = false;
 // Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
 // suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
 // confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
@@ -2625,6 +2631,21 @@ export async function POST(request: Request) {
             }
           }
 
+          // Achado real 31/07 (TTS-1A71): veredito de sombra do filtro de coerencia
+          // de rumo pro classe_viaria -- calcula sempre que o candidato existiu
+          // neste ciclo (candidatosCore, independente de ter vencido a arbitragem
+          // ainda). A supressao de verdade (quando a flag ativar) acontece no
+          // filtro de candidatosCoreFinal abaixo, NAO aqui -- nulling `alerta` neste
+          // ponto nao teria efeito, ele e reatribuido na arbitragem final. Ver
+          // docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
+          let classeViariaRumoSombra: { divergenciaGraus: number | null; limiar: number; suprimiria: boolean } | null = null;
+          const candidatoClasseViaria = candidatosCore.find((c) => c.origemDesvio === "classe_viaria");
+          if (candidatoClasseViaria) {
+            const suprimiria = rumoCoerenteComDestino(divergenciaGrausAtual, RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS);
+            classeViariaRumoSombra = { divergenciaGraus: divergenciaGrausAtual, limiar: RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS, suprimiria };
+          }
+          const classeViariaSuprimidaPorRumo = CLASSE_VIARIA_FILTRO_RUMO_ATIVO && (classeViariaRumoSombra?.suprimiria ?? false);
+
           // Achado real 30/07 (Task 7): diferente do bloco acima (Task 5, so
           // roda quando rumo-diverge venceu a arbitragem E o corredor ja
           // confirmou "fora"), este grava TODO ciclo em que o episodio de
@@ -2683,9 +2704,11 @@ export async function POST(request: Request) {
           // comentario acima de candidatosCore -- e essa uniao numa unica
           // chamada de arbitrarCandidatos que evita o bug do bonus
           // duplicado.
-          const candidatosCoreFinal = desvioSuprimidoPorCorredor
-            ? candidatosCore.filter((c) => c.tipo !== "desvio")
-            : candidatosCore;
+          const candidatosCoreFinal = candidatosCore.filter((c) => {
+            if (desvioSuprimidoPorCorredor && c.tipo === "desvio") return false;
+            if (classeViariaSuprimidaPorRumo && c.origemDesvio === "classe_viaria") return false;
+            return true;
+          });
           alerta = arbitrarCandidatos([...candidatosCoreFinal, ...extras]);
           if (alerta) {
             if (pos.fresco) {
@@ -3019,6 +3042,15 @@ export async function POST(request: Request) {
                 queda_classe_viaria: quedaClasseViaria,
                 dentro_tapete: dentroTapete,
                 risco_area_atual: riscoAreaAtual,
+                ...(classeViariaRumoSombra
+                  ? {
+                      rumo_coerente_sombra: {
+                        divergencia_graus: classeViariaRumoSombra.divergenciaGraus,
+                        limiar: classeViariaRumoSombra.limiar,
+                        suprimiria: classeViariaRumoSombra.suprimiria,
+                      },
+                    }
+                  : {}),
                 ...(segmentoEspecifico !== null || taxaFp !== undefined
                   ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
                   : {}),
