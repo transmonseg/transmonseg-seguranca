@@ -50,6 +50,7 @@ import {
   razaoRetidaoRumo,
   limiarRazaoRetidaoRumo,
   RETIDAO_RUMO_LIQUIDO_MINIMO_M,
+  rumoCoerenteComDestino,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -2218,5 +2219,23 @@ describe("montarContextoDesvio — retidao_rumo_sombra", () => {
     };
     expect(montarContextoDesvio(base)).not.toHaveProperty("retidao_rumo_sombra");
     expect(montarContextoDesvio({ ...base, retidaoRumoSombra: null })).not.toHaveProperty("retidao_rumo_sombra");
+  });
+});
+
+describe("rumoCoerenteComDestino", () => {
+  it("divergencia baixa (rumo alinhado com o destino): coerente, suprimiria", () => {
+    expect(rumoCoerenteComDestino(10, 100)).toBe(true);
+  });
+
+  it("divergencia exatamente no limiar: coerente (inclusive)", () => {
+    expect(rumoCoerenteComDestino(100, 100)).toBe(true);
+  });
+
+  it("divergencia acima do limiar: nao coerente, mantem o alerta", () => {
+    expect(rumoCoerenteComDestino(150, 100)).toBe(false);
+  });
+
+  it("divergencia null (sem sinal confiavel): mantem o alerta -- erra pro lado seguro", () => {
+    expect(rumoCoerenteComDestino(null, 100)).toBe(false);
   });
 });

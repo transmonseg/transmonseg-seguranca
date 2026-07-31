@@ -882,6 +882,27 @@ export function deveMarcarSaidaParadaConfirmada(ctx: {
 export const MOTIVO_RUA_ESTRANHA =
   "Saiu de via principal recentemente e está em rua estreita, fora do raio de qualquer destino conhecido";
 
+// Achado real 31/07 (TTS-1A71): limiar inicial igual ao ja usado como
+// "divergencia significativa" em divergenciaRumoAcimaDoLimiar (unitrac.ts)
+// -- consistencia de interpretacao do angulo nesta base de codigo. NAO
+// reaproveita a MESMA constante de proposito (podem divergir no futuro se
+// o dado do periodo de sombra mostrar que devia). Ver
+// docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
+export const RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS = 100;
+
+// Retorna true quando o rumo de movimento esta ALINHADO com a direcao do
+// destino pendente mais proximo -- rua estreita provavelmente E' o caminho
+// certo pra chegar la, nao desvio. null (sem posicao anterior valida, sem
+// destino disponivel, etc) mantem o alerta -- mesma diretiva de sempre:
+// falso positivo aceitavel, nunca perder desvio real por falta de sinal.
+export function rumoCoerenteComDestino(
+  divergenciaGraus: number | null,
+  limiarGraus: number
+): boolean {
+  if (divergenciaGraus === null) return false;
+  return divergenciaGraus <= limiarGraus;
+}
+
 // REMOVIDO (achado real 31/07, cliente Nutry Max): o auto-resolve
 // automatico de rua-estreita (deveAutoResolverRuaEstranha +
 // alertaElegivelParaAutoResolveRuaEstranha + calcularParadaToleranteSegundos,
