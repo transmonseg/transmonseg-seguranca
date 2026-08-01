@@ -73,6 +73,7 @@ import {
   paradaRecentePertoDeEntrega,
   padraoEntrega,
   destinoAlinhadoAproximando,
+  classeViariaDeveEmitir,
   PLACAR_AMARELO,
   PLACAR_AMARELO_DESLIGA,
   PLACAR_VERMELHO,
@@ -219,6 +220,21 @@ const RUMO_DIVERGE_FILTRO_COMPORTAMENTAL_ATIVO = false;
 // comportamento real ainda. Ver
 // docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
 const CLASSE_VIARIA_FILTRO_RUMO_ATIVO = false;
+// Ao contrario das flags de sombra acima (nascem false, so viram true
+// depois de dias confirmando com dado real), esta nasce LIGADA: e a
+// TROCA DE REGRA decidida em 01/08 com base em dado real ja coletado --
+// das 53 alertas classe_viaria das ultimas 4h de 31/07, 31 tinham placar
+// medido no instante do disparo, 25 com placar EXATAMENTE 0, 6 entre 0 e
+// 15, ZERO acima de 15 (ver CLASSE_VIARIA_PLACAR_MINIMO em
+// lib/placar-desvio.ts pro raciocinio completo). Gate na EMISSAO: um
+// alerta com origemDesvio "classe_viaria" so e persistido se o placar de
+// desvio do ciclo (calculado de qualquer forma, sombra) tiver cruzado o
+// minimo. quedaClasseViaria (deteccao) e a verificacao de corredor
+// (S3 do placar) continuam rodando exatamente como antes -- o gate e
+// so na hora de decidir se o alerta sobrevive pra virar linha em
+// `alertas`. Desligar reverte pro comportamento antigo (classe_viaria
+// emite sozinho) instantaneamente, sem precisar reverter o commit.
+const CLASSE_VIARIA_EXIGE_PLACAR_ATIVO = true;
 // Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
 // suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
 // confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
@@ -2910,70 +2926,30 @@ export async function POST(request: Request) {
             }
           }
 
-          // Determinar nivel da posicao atual
-          let nivel: string;
-          if (alertaJammer) {
-            // Jammer: critico, vermelho, independente de fresco
-            nivel = "vermelho";
-          } else if (ehSemComunicacao) {
-            // Dado congelado sem ignicao ou morto — nivel cinza (informativo)
-            nivel = "cinza";
-          } else if (alerta?.nivel === "critico") {
-            nivel = "vermelho";
-          } else if (alerta?.nivel === "atencao") {
-            nivel = "amarelo";
-          } else {
-            nivel = "verde";
-          }
-
-          // ─── Localização do veículo (agora que sabemos o nível) ─────────
-          // Base > endereço (parado OU em alerta, inclusive em movimento) > Em deslocamento.
-          // Achado real 10/07 (investigacao de lentidao do ciclo): o geocode
-          // reverso rodava AQUI, sequencial, um veiculo por vez (ate 30
-          // chamadas de ate 4s cada por ciclo) -- era o maior custo do
-          // caminho critico da DETECCAO, sendo que o endereco e so rotulo de
-          // exibicao. Agora: cache sincrono aqui (hit = usa na hora); miss =
-          // vira null (o upsert usa COALESCE, entao o rotulo ANTERIOR fica na
-          // tela) e entra na fila geocodesPendentes, processada em PARALELO
-          // depois do upsert de posicoes, fora do caminho da deteccao.
-          let localVeiculo: string | null = null;
-          if (baseOcupada) {
-            localVeiculo = baseOcupada.nome;
-          } else if (pos.fresco) {
-            const emAlerta = nivel === "vermelho" || nivel === "amarelo";
-            if (pos.velocidade === 0 || emAlerta) {
-              const emCache = cacheGeocode.get(chaveGeocode(pos.lat, pos.lng));
-              if (emCache !== undefined) {
-                localVeiculo = emCache;
-              } else {
-                geocodesPendentes.push({ veiculo_id, lat: pos.lat, lng: pos.lng });
-              }
-            } else {
-              localVeiculo = "Em deslocamento";
-            }
-          }
-
-          // ─── Nível "concluido": recolhido na base com entregas feitas ──
-          // Sobrescreve verde/amarelo (informativo, nao e alerta).
-          if (
-            nivel === "verde" &&
-            !foraDaBase &&
-            !pos.ignicao &&
-            entregas_feitas > 0
-          ) {
-            nivel = "concluido";
-          }
-
-          const motivo = alertaJammer
-            ? alertaJammer.motivo
-            : ehSemComunicacao
-              ? `Sem comunicacao ha ${pos.atraso}min`
-              : (alerta?.motivo ?? null);
-
-          // ─── Placar de desvio (Fase 1, SOMBRA) -- cálculo final ─────────
+          // ─── Placar de desvio (Fase 1, SOMBRA + gate classe_viaria) ─────
           // Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md e
-          // src/lib/placar-desvio.ts. Só calcula, persiste (junto dos
-          // streaks, mesmo UPSERT) e loga -- NUNCA muda alerta/nível/UI.
+          // src/lib/placar-desvio.ts. Calcula, persiste (junto dos streaks,
+          // mesmo UPSERT) e loga -- segue em SOMBRA (nunca muda alerta/
+          // nível/UI) pra TODAS as origens, EXCETO classe_viaria: desde
+          // 01/08 (CLASSE_VIARIA_EXIGE_PLACAR_ATIVO acima), o placar deste
+          // ciclo tambem decide se aquela origem especifica emite (gate
+          // logo abaixo, apos atualizarPlacar).
+          //
+          // Achado real 01/08 (ordenacao): este bloco MOROU logo apos
+          // "const motivo" (abaixo) ate esta revisao -- ou seja, DEPOIS de
+          // "Determinar nivel"/"localizacao"/"motivo" jah terem lido
+          // `alerta`. Um gate aqui dentro so conseguia impedir a
+          // PERSISTENCIA em `alertas` (mais abaixo no arquivo), mas nao o
+          // pin amarelo/vermelho fantasma no mapa (nivel/motivo em
+          // posicoes_atuais, que sao gravados com o valor pre-gate). Subiu
+          // pra ANTES de "Determinar nivel" -- unica mudanca de ordem
+          // deste patch; todas as ENTRADAS deste bloco (corredorInfo/
+          // s3ForaDoCorredorPlacar, sinaisPlacar, etc.) ja estavam
+          // disponiveis neste ponto mesmo antes da mudanca, entao mover e'
+          // so aritmetica pura sobre valores ja computados, sem novo
+          // calculo. A verificacao de corredor em si (Camada 1, que
+          // alimenta S3) NAO se move -- continua rodando exatamente onde
+          // sempre rodou, bem acima.
           const placarAnterior = anterior?.placar_desvio ?? 0;
           const estadoPlacarAnterior = anterior?.placar_desvio_estado ?? null;
 
@@ -3050,6 +3026,38 @@ export async function POST(request: Request) {
             suspensoPorChegada
           );
 
+          // ─── Gate de emissao do classe_viaria (troca de regra 01/08) ────
+          // Ver CLASSE_VIARIA_EXIGE_PLACAR_ATIVO (acima, perto de
+          // CLASSE_VIARIA_FILTRO_RUMO_ATIVO) e CLASSE_VIARIA_PLACAR_MINIMO/
+          // classeViariaDeveEmitir em lib/placar-desvio.ts pro dado real e
+          // raciocinio completo. Gate na EMISSAO, nunca na DETECCAO:
+          // quedaClasseViaria (mais acima) e a verificacao de corredor
+          // (Camada 1, que alimenta s3ForaDoCorredorPlacar acima -- usado
+          // no calculo de placarNovo que acabou de rodar) ja rodaram
+          // normalmente, intactas, antes deste ponto. Um alerta que
+          // chegou aqui como origemDesvio="classe_viaria" (ja venceu toda
+          // a arbitragem contra os outros candidatos/extras acima) so
+          // sobrevive se o placar deste ciclo cravou o minimo.
+          if (
+            CLASSE_VIARIA_EXIGE_PLACAR_ATIVO &&
+            alerta?.tipo === "desvio" &&
+            alerta.origemDesvio === "classe_viaria" &&
+            !classeViariaDeveEmitir(placarNovo)
+          ) {
+            alerta = null;
+            // Auditabilidade (licao do incidente real de 31/07: um
+            // mecanismo automatico que esconde alerta sem deixar rastro
+            // ja causou incidente neste projeto -- auto-resolve fechou 2
+            // desvios reais em silencio). Toda supressao fica marcada no
+            // jsonb `componentes` do log -- muta o MESMO objeto (nao cria
+            // um novo) porque placarDesvioSombraContexto abaixo reusa
+            // esta referencia, e o gate do log logo abaixo
+            // (`Object.keys(componentesPlacar).length > 0`) precisa desta
+            // chave pra logar o ciclo mesmo quando o placar for 0 (caso
+            // mais comum no dado real: 25 das 31 supressoes medidas).
+            componentesPlacar.classeViariaSuprimida = true;
+          }
+
           // Histerese do amarelo (só pro LOG na Fase 1 -- não afeta UI/alerta
           // nenhum): liga a partir de PLACAR_AMARELO, só desliga abaixo de
           // PLACAR_AMARELO_DESLIGA. Vermelho não tem histerese (Fase 1).
@@ -3088,6 +3096,72 @@ export async function POST(request: Request) {
           // detectores atuais (mesmo padrão de rumo_coerente_sombra, ver uso
           // mais abaixo) -- nunca lido por nenhum detector, só auditoria.
           const placarDesvioSombraContexto = { placar: placarNovo, componentes: componentesPlacar };
+
+          // Determinar nivel da posicao atual. Roda DEPOIS do gate de
+          // classe_viaria acima -- se o alerta foi suprimido ali, `alerta`
+          // ja esta null aqui, e nivel/motivo abaixo refletem isso
+          // corretamente (sem o gate rodar antes, o pin amarelo/vermelho
+          // "fantasma" apareceria no mapa mesmo com o alerta nunca
+          // persistido em `alertas`, ver comentario do bloco do placar
+          // acima).
+          let nivel: string;
+          if (alertaJammer) {
+            // Jammer: critico, vermelho, independente de fresco
+            nivel = "vermelho";
+          } else if (ehSemComunicacao) {
+            // Dado congelado sem ignicao ou morto — nivel cinza (informativo)
+            nivel = "cinza";
+          } else if (alerta?.nivel === "critico") {
+            nivel = "vermelho";
+          } else if (alerta?.nivel === "atencao") {
+            nivel = "amarelo";
+          } else {
+            nivel = "verde";
+          }
+
+          // ─── Localização do veículo (agora que sabemos o nível) ─────────
+          // Base > endereço (parado OU em alerta, inclusive em movimento) > Em deslocamento.
+          // Achado real 10/07 (investigacao de lentidao do ciclo): o geocode
+          // reverso rodava AQUI, sequencial, um veiculo por vez (ate 30
+          // chamadas de ate 4s cada por ciclo) -- era o maior custo do
+          // caminho critico da DETECCAO, sendo que o endereco e so rotulo de
+          // exibicao. Agora: cache sincrono aqui (hit = usa na hora); miss =
+          // vira null (o upsert usa COALESCE, entao o rotulo ANTERIOR fica na
+          // tela) e entra na fila geocodesPendentes, processada em PARALELO
+          // depois do upsert de posicoes, fora do caminho da deteccao.
+          let localVeiculo: string | null = null;
+          if (baseOcupada) {
+            localVeiculo = baseOcupada.nome;
+          } else if (pos.fresco) {
+            const emAlerta = nivel === "vermelho" || nivel === "amarelo";
+            if (pos.velocidade === 0 || emAlerta) {
+              const emCache = cacheGeocode.get(chaveGeocode(pos.lat, pos.lng));
+              if (emCache !== undefined) {
+                localVeiculo = emCache;
+              } else {
+                geocodesPendentes.push({ veiculo_id, lat: pos.lat, lng: pos.lng });
+              }
+            } else {
+              localVeiculo = "Em deslocamento";
+            }
+          }
+
+          // ─── Nível "concluido": recolhido na base com entregas feitas ──
+          // Sobrescreve verde/amarelo (informativo, nao e alerta).
+          if (
+            nivel === "verde" &&
+            !foraDaBase &&
+            !pos.ignicao &&
+            entregas_feitas > 0
+          ) {
+            nivel = "concluido";
+          }
+
+          const motivo = alertaJammer
+            ? alertaJammer.motivo
+            : ehSemComunicacao
+              ? `Sem comunicacao ha ${pos.atraso}min`
+              : (alerta?.motivo ?? null);
 
           // 5. Posicao acumulada pro batch de fim de ciclo (ver posicoesCiclo
           // acima) — nao escreve no banco aqui, so guarda em memoria.

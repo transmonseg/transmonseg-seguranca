@@ -4,6 +4,8 @@ import {
   paradaRecentePertoDeEntrega,
   padraoEntrega,
   destinoAlinhadoAproximando,
+  classeViariaDeveEmitir,
+  CLASSE_VIARIA_PLACAR_MINIMO,
   type SinaisPlacar,
   type PontoJanela,
   type DestinoPlacar,
@@ -319,5 +321,31 @@ describe("destinoAlinhadoAproximando", () => {
       {}
     );
     expect(r).toBe(false);
+  });
+});
+
+// Gate de emissao do classe_viaria (troca de regra 01/08, ver route.ts
+// CLASSE_VIARIA_EXIGE_PLACAR_ATIVO e comentario de CLASSE_VIARIA_PLACAR_MINIMO
+// acima): dado real que fundamenta o corte -- 53 alertas classe_viaria/4h,
+// 31 medidos, 25 com placar 0, 6 entre 0 e 15, ZERO >=15.
+describe("classeViariaDeveEmitir", () => {
+  it("placar 0 (o caso mais comum real, 25/31) -> nao emite", () => {
+    expect(classeViariaDeveEmitir(0)).toBe(false);
+  });
+
+  it("placar abaixo do minimo (ex: 8, dentro da faixa 0-15 real, 6/31) -> nao emite", () => {
+    expect(classeViariaDeveEmitir(8)).toBe(false);
+  });
+
+  it("placar logo abaixo do minimo (14) -> nao emite", () => {
+    expect(classeViariaDeveEmitir(14)).toBe(false);
+  });
+
+  it("placar exatamente no minimo (15) -> emite (limiar inclusivo)", () => {
+    expect(classeViariaDeveEmitir(CLASSE_VIARIA_PLACAR_MINIMO)).toBe(true);
+  });
+
+  it("placar acima do minimo (ex: S1+S2+S3 = 8+6+8 = 22) -> emite", () => {
+    expect(classeViariaDeveEmitir(22)).toBe(true);
   });
 });
