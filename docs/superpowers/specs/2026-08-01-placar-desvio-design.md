@@ -43,8 +43,10 @@ Rollout em duas fases, mesmo padrão já usado 3x no projeto
 
 ## Sinais e pesos iniciais
 
-Contribuição POR CICLO (~1 min). Pesos iniciais são chute educado — a
-calibração da Fase 1 os ajusta contra o gabarito. Todos os sinais somam só
+Contribuição POR CICLO (~30s — `cron motor-tick-30s`; corrigido na revisão
+pós-implementação de 01/08, este documento originalmente assumia ~1min).
+Pesos iniciais são chute educado — a calibração da Fase 1 os ajusta contra
+o gabarito. Todos os sinais somam só
 sob os guards já existentes dos streaks de desvio (`pos.fresco`,
 `!saltoImplausivel`, `!suspensoPorChegada`, `podeAvancarStreaksDesvio`,
 `alvosDestinosDisponiveis`, `destinos.length > 0`).
@@ -71,8 +73,15 @@ divergência 1,1°). Coerência só desconta com o trio direção+perto+aproxima
 placar = clamp(0, 100, placar_anterior * 0.90 + soma_dos_sinais_do_ciclo)
 ```
 
-- Decaimento de 10%/ciclo: evidência velha perde valor sozinha; carro que
-  voltou ao normal zera em ~10 min sem precisar de reset explícito.
+- Decaimento de 10%/ciclo. **Correção pós-revisão-final (01/08)**: o ciclo
+  real do motor é ~30s (`cron motor-tick-30s`), não ~1min como este
+  documento assumia originalmente na tabela de sinais abaixo — decaimento
+  efetivo é portanto ~0.81/min (dois ciclos de 0.90 por minuto), e o carro
+  que voltou ao normal zera em ~5min (não ~10min), sem precisar de reset
+  explícito. Com o piso adicionado na correção pós-revisão-final (abaixo de
+  0.5 o placar zera de vez, `PLACAR_PISO_ZERAR` em `placar-desvio.ts`) isso
+  agora é um zero de verdade, não só assintótico — decaimento puro nunca
+  batia 0 sozinho antes dessa correção.
 - `suspensoPorChegada` (chegou no destino): placar zera na hora.
 - Histerese: amarelo liga em ≥40 e só desliga em <25; vermelho liga em ≥70
   e resolve com a mesma regra de resolução do desvio atual
@@ -89,8 +98,11 @@ ciclo, pra auditoria).
    `contexto.placar_desvio_sombra` dos alertas de desvio emitidos pelos
    detectores atuais (mesmo padrão do `rumo_coerente_sombra` já em produção)
    E numa tabela própria `placar_desvio_log` (veiculo_id, criado_em, placar,
-   componentes jsonb, teria_amarelo, teria_vermelho) — só quando placar > 0,
-   pra não inflar a tabela com frota parada.
+   componentes jsonb, teria_amarelo, teria_vermelho) — quando placar > 0 OU
+   há algum componente no ciclo (corrigido na revisão pós-implementação
+   01/08: `placar > 0` sozinho escondia ciclos com desconto que segurou o
+   placar em 0, e o ciclo de `zeradoPorChegada`), pra não inflar a tabela
+   com frota parada sem nada acontecendo.
 2. Rótulos: o clique do operador (Falso/Resolver) já alimenta
    `casos_desvio_revisao`. O join placar×rótulo é a base da calibração.
 3. Backtest imediato: os 16 casos de 01/08 reprocessados manualmente
@@ -100,6 +112,21 @@ ciclo, pra auditoria).
    úteis), o vermelho teria coberto todos os casos que o operador marcou
    como reais (zero falso negativo) E suprimido ≥80% dos marcados como
    falso positivo. Empate/dúvida → mais sombra, não menos critério.
+
+**Nota de metodologia (correção pós-revisão-final, 01/08)**: a avaliação
+desse critério precisa EXCLUIR a contribuição de S3 (fora do corredor) do
+placar. S3 só existe (o corredor só é verificado) quando os detectores
+antigos (`afastando_de_tudo`/`rumo_diverge`/`classe_viaria`) já dispararam
+— é `verificarCorredor` reaproveitando o MESMO veredito de camada 1 desses
+detectores, não um cálculo independente. Contar S3 no critério de aprovação
+é circular: mede se o placar concorda com os detectores que ele deveria
+substituir, usando um sinal que só existe porque eles já concordaram.
+Além disso, os números do backtest da Task 4 (16 casos de 01/08
+reprocessados) NÃO servem de baseline pra essa avaliação — aquele backtest
+rodou com posições em downsample de 1min (granularidade dos dados
+históricos disponíveis na hora), não com o ciclo real de ~30s corrigido
+acima; os pesos e durações (D1/D2, streaks) foram calibrados pra uma
+cadência que não é a de produção.
 
 ## Fase 2 — troca
 
@@ -114,6 +141,16 @@ ciclo, pra auditoria).
 - `contexto` do alerta vermelho lista os componentes que somaram (ex.:
   "afastando há 6 min (+48), fora do corredor (+8), rua desconhecida (+3)")
   — explicabilidade pro operador no lugar dos motivos genéricos de hoje.
+- **Requisito novo (correção pós-revisão-final, 01/08)**: a verificação de
+  corredor (`verificarCorredor`/S3) não pode mais depender de um detector
+  antigo já ter disparado pra existir (ver nota de metodologia da Fase 1
+  acima — essa dependência é o que torna S3 circular hoje). Na Fase 2, a
+  verificação de corredor passa a ser disparada pelo próprio placar
+  (nível amarelo) e/ou mantendo as condições dos detectores antigos como
+  gatilho INTERNO (dispara o cálculo do corredor) sem que isso, sozinho,
+  gere alerta ao usuário — o alerta e o nível continuam vindo só do
+  placar. Sem isso, S3 na Fase 2 herdaria o mesmo problema de circularidade
+  que a Fase 1 tem hoje.
 
 ## Riscos e mitigação
 

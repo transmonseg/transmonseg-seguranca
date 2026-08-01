@@ -77,6 +77,7 @@ import {
   PLACAR_AMARELO_DESLIGA,
   PLACAR_VERMELHO,
   S5_ESTAGNADO_MIN,
+  S2_RUMO_LIMIAR_GRAUS,
   type SinaisPlacar,
   type PontoJanela as PontoJanelaPlacar,
   type DestinoPlacar,
@@ -1927,13 +1928,34 @@ export async function POST(request: Request) {
           // `destinos` acima: pendentes primeiro, bases depois) -- reusa a
           // distância já calculada, não recalcula. Bases ficam de fora (D3 é
           // sobre destino alinhado com uma ENTREGA, não retorno à base).
+          //
+          // Achado pos-revisao-final 01/08: isto é um DESCONTO (D3), então
+          // NÃO usa podeSomarSinaisPlacar (guard das contribuições
+          // POSITIVAS S1/S2/S4/S5) -- usava antes por engano, e isso
+          // mantinha D3 sempre vazio (array nunca preenchido) sempre que
+          // qualquer parte daquele guard mais restrito falhasse (ex.:
+          // podeAvancarStreaksDesvio=false), mesmo com D1/D2 rodando
+          // normalmente no mesmo ciclo. Guard correto = mesmo que D1/D2 já
+          // usam (pos.fresco && temPendentes, ver `if (!pos.fresco ||
+          // !temPendentes)` mais abaixo): descontos aplicam sempre que
+          // computáveis.
           const rumoDivergenciaPorDestinoPlacar: { codigo: string; divergenciaGraus: number; distM: number }[] = [];
-          if (podeSomarSinaisPlacar) {
+          if (pos.fresco && temPendentes) {
             for (let i = 0; i < pendentes.length; i++) {
               const pt = pendentes[i];
               const divergenciaPt = divergenciaRumoGraus(
                 anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
-                pt.lat, pt.lng, pos.velocidade
+                pt.lat, pt.lng,
+                // Bypassa o piso de velocidade de divergenciaRumoGraus
+                // (999 = sem piso, ver default do parametro em unitrac.ts)
+                // SÓ pra este calculo POR DESTINO usado exclusivamente pelo
+                // D3. D3 tem corroborador independente -- distância caindo
+                // + <1500m (D3_DIST_MAX_M) -- então rumo ruidoso em baixa
+                // velocidade é aceitável pra um DESCONTO; um falso desconto
+                // é mais seguro que um falso ponto (que o piso continua
+                // protegendo: S2 e os detectores existentes NÃO mudam,
+                // seguem passando pos.velocidade normalmente).
+                999
               );
               if (divergenciaPt === null) continue;
               rumoDivergenciaPorDestinoPlacar.push({
@@ -3001,7 +3023,7 @@ export async function POST(request: Request) {
 
             sinaisPlacar = {
               s1AfastandoDeTudo: podeSomarSinaisPlacar && afastandoDeTudoAtual,
-              s2RumoDivergente: divergenciaGrausAtual !== null && divergenciaGrausAtual > 100,
+              s2RumoDivergente: divergenciaGrausAtual !== null && divergenciaGrausAtual > S2_RUMO_LIMIAR_GRAUS,
               s3ForaDoCorredor: s3ForaDoCorredorPlacar,
               // S4: célula atual não visitada por ESTE veículo antes --
               // celulasFamiliaridadeVeiculo já é a MESMA query batched por
@@ -3043,9 +3065,16 @@ export async function POST(request: Request) {
             amareloAtivo: amareloAtivoPlacar,
           };
 
-          // Log sombra: só grava quando placar > 0 (não inflar a tabela com
-          // frota parada, decisão explícita da spec).
-          if (placarNovo > 0) {
+          // Log sombra: grava quando placar > 0 OU houve algum componente no
+          // ciclo (não inflar a tabela com frota parada, decisão explícita
+          // da spec -- mas achado pos-revisao-final 01/08: `placar > 0`
+          // sozinho escondia ciclos com desconto que SEGUROU o placar em 0
+          // -- ex.: só D1/D2/D4 disparando sem nenhum sinal de soma -- e o
+          // ciclo de `zeradoPorChegada`, ambos com componentes reais mas
+          // placar final 0. Object.keys > 0 cobre os dois: componentes
+          // sempre tem pelo menos uma chave quando algo foi computado
+          // (inclusive "zeradoPorChegada").
+          if (placarNovo > 0 || Object.keys(componentesPlacar).length > 0) {
             placarDesvioLogCiclo.push({
               veiculo_id,
               placar: placarNovo,
