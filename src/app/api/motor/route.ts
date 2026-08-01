@@ -2615,13 +2615,25 @@ export async function POST(request: Request) {
               anterior?.placar_desvio_estado?.distPorCodigo ?? {}
             );
           }
-          // Criterio: PROVA POSITIVA de atividade de entrega -- qualquer um
-          // dos tres descontos basta (nao precisam bater juntos). Dado real
-          // que fundamenta o desenho: em 32 ciclos de classe_viaria logados,
-          // D3 disparou 18x, D2 7x, D1 4x.
+          // Criterio: PROVA POSITIVA de atividade de entrega -- D1 ou D3
+          // basta (nao precisam bater juntos). Dado real que fundamenta o
+          // desenho: em 32 ciclos de classe_viaria logados, D3 disparou 18x,
+          // D2 7x, D1 4x.
+          //
+          // D2 (padraoEntrega) foi DELIBERADAMENTE deixado de fora, por
+          // recomendacao da revisao independente 01/08: e' o unico dos tres
+          // sem NENHUMA restricao de proximidade ou de direcao (so olha
+          // "media <=25km/h + 2 paradas nos ultimos 10min"), entao um
+          // caminhao sequestrado em area urbana continua satisfazendo D2 por
+          // ate 10min depois do sequestro, faca o que fizer -- a mesma
+          // janela grudenta que reprovou o desenho anterior. Custo medido de
+          // tirar: D2 sozinho responde por 3 das 29 supressoes (10%), e
+          // D1||D3 ja cobre 26 das 29. D1 exige parada perto de um destino;
+          // D3 exige rumo alinhado E distancia CAINDO neste ciclo, entao os
+          // dois morrem sozinhos quando o comportamento deixa de ser entrega.
           const classeViariaSuprimidaPorEntrega =
             CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO &&
-            (d1ParadaPertoDeEntregaAtual || d2PadraoEntregaAtual || d3DestinoAlinhadoAproximandoAtual);
+            (d1ParadaPertoDeEntregaAtual || d3DestinoAlinhadoAproximandoAtual);
 
           // Achado real 12/07: avaliar() JA incluia detectarJammer(p) como um
           // dos seus proprios candidatos (arbitrados junto com desvio pela
@@ -3099,9 +3111,13 @@ export async function POST(request: Request) {
             // ADICIONAL pra auditoria (o que exatamente foi suprimido e
             // por qual motivo), nao o que garante o log em si.
             componentesPlacar.classeViariaSuprimida = true;
+            // So D1/D3 -- D2 nao entra no criterio (ver comentario na
+            // composicao de classeViariaSuprimidaPorEntrega). Se D2 estava
+            // ativo no ciclo, isso ja aparece no proprio componentesPlacar
+            // via componentesDoCiclo; aqui o campo registra a CAUSA da
+            // supressao, entao listar d2 seria mentira de auditoria.
             const motivosSupressao: string[] = [];
             if (d1ParadaPertoDeEntregaAtual) motivosSupressao.push("d1");
-            if (d2PadraoEntregaAtual) motivosSupressao.push("d2");
             if (d3DestinoAlinhadoAproximandoAtual) motivosSupressao.push("d3");
             componentesPlacar.classeViariaSuprimidaPor = motivosSupressao.join(",");
           }
