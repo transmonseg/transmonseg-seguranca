@@ -497,6 +497,33 @@ export const FORA_TAPETE_STREAK_MIN_FAMILIAR = 5;
 // de forma mais fina, mas e um projeto proprio.
 const CAMADA3_TAPETE_ATIVA = true;
 
+// ─── Regra simples (decisao explicita do usuario, 01/08) ──────────────
+// "ta se afastando dos clientes, e desvio. ta indo em direcao, nao e
+// desvio. mas pode nao estar se afastando e estar indo pra um lugar sem
+// sentido -- ai e desvio."
+//
+// Duas condicoes, so isso:
+//   1. Afastando de TODOS os destinos + base  -> desvio
+//   2. Indo pra lugar sem sentido (fora do tapete: caminho que a frota
+//      nunca percorreu / fora da rota real do corredor) -> desvio
+//
+// true  = as TRES regras que disparam com o veiculo indo em direcao a um
+//         cliente ficam desligadas: classe_viaria (rua estreita),
+//         saida_parada (virada errada saindo de parada) e rumo_diverge
+//         (direcao diverge). Elas nao sao "lugar sem sentido" -- sao o
+//         veiculo entregando.
+// false = restaura exatamente o comportamento anterior a 01/08.
+//
+// Dado real que motivou (ultimos 3 dias em producao):
+//   rua estreita ......... 201 alertas (130 marcados falso pelo operador)
+//   rumo diverge ..........  37 alertas (17 falso, ZERO marcado real)
+//   virada saindo parada ..   4 alertas (nenhum marcado real)
+//   fora da rota real .....  18 alertas (2 marcados REAIS)  <- mantida
+//   afastando de todos ....  ~20 alertas                    <- mantida
+// As tres desligadas somam 242 dos ~280 alertas do periodo. As duas
+// mantidas sao as que produziram os unicos casos reais.
+const DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE = true;
+
 // A Unitrac NÃO fornece rota planejada nem ordem confiável de entregas.
 // Desvio aqui é comportamento: o veículo se afastando de TODOS os destinos
 // legítimos (cada entrega pendente + cada base) em vez de progredir rumo a
@@ -621,6 +648,10 @@ export type CtxDesvio = {
   // medido em producao era ~12, nunca >=15). undefined/false =
   // comportamento de hoje (nunca suprime).
   classeViariaSuprimidaPorEntrega?: boolean;
+  // Override da politica DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE (topo do
+  // arquivo). Producao NAO passa -- so os testes que documentam as tres
+  // regras desligadas em 01/08 (classe_viaria, saida_parada, rumo_diverge).
+  desvioSoAfastandoOuForaDoTapete?: boolean;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -1326,6 +1357,13 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
 
   const afastandoDeTudo = afastouDeTudo(ctx.distDestinosM, ctx.distDestinosAnteriorM);
 
+  // Politica de producao (ver DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE no
+  // topo). O override por ctx existe pros testes que documentam o
+  // comportamento das tres regras desligadas -- producao nao passa o
+  // campo e cai no default.
+  const desvioSoAfastandoOuForaDoTapete =
+    ctx.desvioSoAfastandoOuForaDoTapete ?? DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE;
+
   // Achado real 27/07 (pedido explicito do usuario, revisão de regras):
   // ate hoje, sair de via principal pra rua estreita (quedaClasseViaria)
   // so REFORCAVA um alerta que ja ia disparar por outro motivo
@@ -1364,7 +1402,13 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // mesmo ciclo da saida). Guard adicional: dentro da janela de saida
   // recente, suprime SO este branch (o veiculo continua elegivel a
   // qualquer outro gatilho de desvio nesta mesma chamada).
+  //
+  // DESLIGADA em 01/08 por DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE (ver a
+  // constante no topo do arquivo): o veiculo aqui esta indo EM DIRECAO a
+  // um cliente (e' o proprio !afastandoDeTudo) -- pela regra do usuario
+  // isso nao e' desvio. 201 alertas em 3 dias, 130 marcados falso.
   if (
+    !desvioSoAfastandoOuForaDoTapete &&
     !afastandoDeTudo &&
     ctx.quedaClasseViaria &&
     !ctx.saiuParadaConfirmadaRecentemente &&
@@ -1427,7 +1471,10 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // divergencia de rumo (mesma guarda !afastandoDeTudo) por ser a
   // checagem mais rapida; a ordem entre os dois nao importa na pratica,
   // os dois sinais nunca coincidem de forma relevante.
-  if (!afastandoDeTudo && viradaErradaSaindoDeParada(ctx.saiuDoRaioAgora, ctx.divergenciaGrausAtual)) {
+  //
+  // DESLIGADA em 01/08 por DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE: mesma
+  // razao do classe_viaria -- veiculo indo em direcao a cliente.
+  if (!desvioSoAfastandoOuForaDoTapete && !afastandoDeTudo && viradaErradaSaindoDeParada(ctx.saiuDoRaioAgora, ctx.divergenciaGrausAtual)) {
     return {
       nivel: "atencao",
       tipo: "desvio",
@@ -1474,7 +1521,10 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // confirmacao positiva pra sobreviver -- exigir isso arriscaria perder um
   // alerta real toda vez que OSRM/Valhalla estiver fora do ar, por um sinal
   // que ja e' de baixa confianca por natureza.
-  if (!afastandoDeTudo && divergenciaRumoDispara(ctx.divergenciaRumoStreak)) {
+  //
+  // DESLIGADA em 01/08 por DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE: 37
+  // alertas em 3 dias, ZERO marcados como real pelo operador.
+  if (!desvioSoAfastandoOuForaDoTapete && !afastandoDeTudo && divergenciaRumoDispara(ctx.divergenciaRumoStreak)) {
     const nDestDirecao = ctx.distDestinosM.length;
     return {
       nivel: "atencao",
@@ -1933,6 +1983,10 @@ export type CtxAvaliacao = {
   classeViariaSuprimidaPorRumo?: boolean;
   // Achado real 01/08: ver CtxDesvio.classeViariaSuprimidaPorEntrega.
   classeViariaSuprimidaPorEntrega?: boolean;
+  // Override da politica DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE (topo do
+  // arquivo). Producao NAO passa -- so os testes que documentam as tres
+  // regras desligadas em 01/08 (classe_viaria, saida_parada, rumo_diverge).
+  desvioSoAfastandoOuForaDoTapete?: boolean;
   riscoAreaAtual?: number;
   foraTapeteStreak?: number;
   // Achado real 25/07 (redesign do detector de desvio): ver CtxDesvio.
@@ -2051,6 +2105,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           saiuParadaConfirmadaRecentemente: ctx.saiuParadaConfirmadaRecentemente ?? false,
           classeViariaSuprimidaPorRumo: ctx.classeViariaSuprimidaPorRumo,
           classeViariaSuprimidaPorEntrega: ctx.classeViariaSuprimidaPorEntrega,
+          desvioSoAfastandoOuForaDoTapete: ctx.desvioSoAfastandoOuForaDoTapete,
         }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);

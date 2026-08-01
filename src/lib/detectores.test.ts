@@ -288,7 +288,15 @@ describe("avaliar - cenarios parada_cliente", () => {
 
 describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos flood ao vivo 06/07)", () => {
   // 3 destinos (2 pendentes + 1 base) — cenario tipico com varias entregas.
+  //
+  // desvioSoAfastandoOuForaDoTapete: false -- este bloco documenta o
+  // comportamento das regras que a POLITICA DE PRODUCAO desligou em 01/08
+  // (classe_viaria/rua estreita, saida_parada, rumo_diverge). Os testes
+  // seguem valendo como registro do que essas regras fazem e como
+  // reverter (ver DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE em detectores.ts).
+  // A politica de producao em si tem bloco proprio no fim do arquivo.
   const base = {
+    desvioSoAfastandoOuForaDoTapete: false,
     distDestinosM: [6000, 8000, 12000],
     distDestinosAnteriorM: [5000, 7000, 11000],
     temPendentes: true,
@@ -2332,5 +2340,84 @@ describe("rumoCoerenteComDestino", () => {
 
   it("divergencia null (sem sinal confiavel): mantem o alerta -- erra pro lado seguro", () => {
     expect(rumoCoerenteComDestino(null, 100)).toBe(false);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// POLITICA DE PRODUCAO desde 01/08: DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE
+//
+// Regra do usuario, textual: "ta se afastando dos clientes, e desvio. ta
+// indo em direcao, nao e desvio. mas pode nao estar se afastando e estar
+// indo pra um lugar sem sentido -- ai e desvio."
+//
+// Duas condicoes disparam, e SO elas. Estes testes rodam SEM override,
+// exercitando o default real de producao.
+// ───────────────────────────────────────────────────────────────────────
+describe("politica de producao 01/08: so afastando-de-todos ou lugar-sem-sentido", () => {
+  // Veiculo APROXIMANDO de todos os destinos (distancia caindo) -- pela
+  // regra do usuario, isso nao e desvio, aconteca o que acontecer.
+  const aproximando = {
+    distDestinosM: [5000, 7000, 11000],
+    distDestinosAnteriorM: [6000, 8000, 12000],
+    temPendentes: true,
+    emOperacao: true,
+    foraDaBase: true,
+    entregasFeitas: 2,
+    streak: 0,
+    afastamentoAcumuladoM: 0,
+    dentroTapete: null as boolean | null,
+    familiarVeiculo: null as boolean | null,
+    riscoAreaAtual: 0,
+    foraTapeteStreak: 0,
+    suspensoPorChegada: false,
+    divergenciaRumoStreak: 0,
+    saiuDoRaioAgora: false,
+    divergenciaGrausAtual: null as number | null,
+    quedaClasseViaria: false,
+    saiuParadaConfirmadaRecentemente: false,
+  };
+  const emMov = posicaoBase({ velocidade: 40 });
+
+  it("rua estreita indo em direcao ao cliente: NAO e desvio (era a regra de 201 alertas/3 dias, 130 marcados falso)", () => {
+    expect(detectarDesvio(emMov, { ...aproximando, quedaClasseViaria: true })).toBeNull();
+  });
+
+  it("direcao divergente indo em direcao ao cliente: NAO e desvio (era 37 alertas/3 dias, ZERO marcado real)", () => {
+    expect(detectarDesvio(emMov, { ...aproximando, divergenciaRumoStreak: 5 })).toBeNull();
+  });
+
+  it("virada errada saindo de parada, indo em direcao: NAO e desvio", () => {
+    expect(
+      detectarDesvio(emMov, { ...aproximando, saiuDoRaioAgora: true, divergenciaGrausAtual: 150 })
+    ).toBeNull();
+  });
+
+  it("CONDICAO 1 -- afastando de TODOS os destinos com streak>=2: E desvio", () => {
+    const a = detectarDesvio(emMov, {
+      ...aproximando,
+      distDestinosM: [6000, 8000, 12000],
+      distDestinosAnteriorM: [5000, 7000, 11000],
+      streak: 2,
+      afastamentoAcumuladoM: 300,
+      dentroTapete: true,
+    });
+    expect(a).not.toBeNull();
+    expect(a?.tipo).toBe("desvio");
+  });
+
+  it("CONDICAO 2 -- lugar sem sentido: aproximando MAS por caminho que a frota nunca percorreu: E desvio (critico)", () => {
+    const a = detectarDesvio(emMov, { ...aproximando, foraTapeteStreak: 3 });
+    expect(a).not.toBeNull();
+    expect(a?.nivel).toBe("critico");
+    expect(a?.motivo).toContain("caminho que a frota nunca percorreu");
+  });
+
+  it("reversibilidade: com desvioSoAfastandoOuForaDoTapete=false, rua estreita volta a disparar", () => {
+    const a = detectarDesvio(emMov, {
+      ...aproximando,
+      quedaClasseViaria: true,
+      desvioSoAfastandoOuForaDoTapete: false,
+    });
+    expect(a?.origemDesvio).toBe("classe_viaria");
   });
 });
