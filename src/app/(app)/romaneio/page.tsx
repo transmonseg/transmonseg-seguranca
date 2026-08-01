@@ -29,6 +29,13 @@ type StatusGeocode = {
   pontos: PontoProcessado[];
 };
 
+// Achado real 01/08: separado do resultado do upload de propósito -- o
+// botão de reset precisa ficar disponível mesmo se a pessoa saiu da tela
+// e voltou (resultado é estado local, some ao recarregar a página).
+function hojeSP(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+}
+
 export default function RomaneioPage() {
   const [arquivo, setArquivo] = useState<File | null>(null);
   const [modoTeste, setModoTeste] = useState(false);
@@ -38,7 +45,15 @@ export default function RomaneioPage() {
   const [status, setStatus] = useState<StatusGeocode | null>(null);
   const [revertendo, setRevertendo] = useState(false);
   const [mensagemReverter, setMensagemReverter] = useState<string | null>(null);
+  // null ate montar no cliente -- evita mismatch de hidratacao (SSR roda
+  // em outro instante que o hydrate no navegador, podem cair em dias
+  // diferentes bem na virada da meia-noite).
+  const [hoje, setHoje] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    setHoje(hojeSP());
+  }, []);
 
   const pararPolling = () => {
     if (pollRef.current) {
@@ -84,7 +99,7 @@ export default function RomaneioPage() {
   };
 
   const reverter = async (romaneioData: string) => {
-    if (!confirm(`Reverter o romaneio de ${romaneioData}? Isso apaga todos os pontos extraídos desse dia -- não afeta o motor (ele já não usa mais o romaneio, só a Unitrac).`)) {
+    if (!confirm(`Resetar o romaneio de ${romaneioData}? Isso apaga todos os pontos extraídos desse dia -- não afeta o motor (ele já não usa mais o romaneio, só a Unitrac). Você vai poder subir o arquivo de novo do zero.`)) {
       return;
     }
     setRevertendo(true);
@@ -165,14 +180,6 @@ export default function RomaneioPage() {
                 <span>
                   Romaneio de {resultado.romaneioData} — {resultado.totalLinhas} linhas recebidas.
                 </span>
-                <button
-                  onClick={() => reverter(resultado.romaneioData!)}
-                  disabled={revertendo}
-                  className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50"
-                  style={{ border: "1px solid var(--danger, #e55)", color: "var(--danger, #e55)" }}
-                >
-                  {revertendo ? "Revertendo..." : "Reverter este romaneio"}
-                </button>
                 {resultado.modoTeste && (
                   <span className="ml-2" style={{ color: "var(--accent)" }}>
                     (MODO TESTE — não afeta a detecção)
@@ -231,6 +238,23 @@ export default function RomaneioPage() {
           )}
         </div>
       )}
+
+      <div className="mt-10 pt-6" style={{ borderTop: "1px solid var(--border)" }}>
+        <h2 className="text-sm font-semibold mb-2" style={{ color: "var(--text)" }}>
+          Configurações
+        </h2>
+        <p className="text-sm mb-3" style={{ color: "var(--text-dim)" }}>
+          Apaga os pontos do romaneio de hoje{hoje ? ` (${hoje})` : ""} e deixa pronto pra subir o arquivo de novo do zero.
+        </p>
+        <button
+          onClick={() => reverter(hoje ?? hojeSP())}
+          disabled={revertendo || !hoje}
+          className="px-3 py-1.5 rounded text-sm font-medium disabled:opacity-50"
+          style={{ border: "1px solid var(--danger, #e55)", color: "var(--danger, #e55)" }}
+        >
+          {revertendo ? "Resetando..." : "Resetar romaneio de hoje"}
+        </button>
+      </div>
     </div>
   );
 }
