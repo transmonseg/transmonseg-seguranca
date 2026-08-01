@@ -250,6 +250,24 @@ const CLASSE_VIARIA_FILTRO_RUMO_ATIVO = false;
 // da arbitragem. Desligar reverte pro comportamento antigo (classe_viaria
 // dispara sozinho) instantaneamente, sem precisar reverter o commit.
 const CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO = true;
+
+// ─── Parada no local conta como entregue (usuario, 01/08) ─────────────
+// "os pontos de entrega, se tem parada no local, conta como entregue".
+//
+// A Unitrac so marca entrega como feita quando alguem aponta no aparelho.
+// Entrega feita e nao apontada segue "pendente" pro motor, entao o
+// caminhao saindo dali -- inclusive voltando pra base no fim do dia --
+// parece se AFASTAR de um destino, que e o gatilho da regra principal de
+// desvio. Achado real 01/08: TUL-1H29 voltando pra base (87,9km -> 85,3km
+// em 12min, se aproximando) disparou desvio carregando 9 pendentes
+// fantasma.
+//
+// Regra: ficou parado dentro do raio do ponto por
+// ENTREGA_PRESENCA_MIN_SEG -> grava em entregas_presenca e o ponto sai da
+// lista de pendentes do dia. false = comportamento anterior (so pt.feito
+// da Unitrac decide).
+const ENTREGA_PRESENCA_ATIVA = true;
+const ENTREGA_PRESENCA_MIN_SEG = 120;
 // Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
 // suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
 // confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
@@ -895,6 +913,9 @@ export async function POST(request: Request) {
     // Coleta candidatos durante o loop, grava em lote no fim do ciclo (mesmo
     // padrao de amostrasBaselineCiclo acima).
     const presencaConfirmadaCiclo: { veiculo_id: string; nf: string }[] = [];
+    // Parada no local conta como entregue (usuario, 01/08) -- coletado por
+    // veiculo, gravado em UM insert no fim do ciclo (ver ENTREGA_PRESENCA_ATIVA).
+    const presencaEntregaCiclo: { veiculo_id: string; ponto_codigo: number; parado_seg: number }[] = [];
     // Anotacao de proximidade em alertas de desvio ATIVOS -- achado real
     // 18/07 (analise pedida pelo usuario, ver
     // docs/superpowers/specs/2026-07-18-anotacao-proximidade-desvio-design.md):
@@ -1255,6 +1276,38 @@ export async function POST(request: Request) {
       }
     }
 
+    // Presenca de entrega (decisao do usuario 01/08): "os pontos de entrega,
+    // se tem parada no local, conta como entregue".
+    //
+    // Motivo real: a Unitrac so marca entrega como feita quando alguem aponta
+    // no aparelho. Entrega feita e nao apontada continua "pendente" pro motor,
+    // entao o caminhao saindo dali (inclusive voltando pra base no fim do dia)
+    // parece estar se AFASTANDO de um destino -- o gatilho da regra principal.
+    // Achado real 01/08 que motivou: TUL-1H29 voltando pra base (87,9km ->
+    // 85,3km em 12min, se APROXIMANDO) disparou desvio porque ainda carregava
+    // 9 pendentes fantasma de entregas ja realizadas.
+    //
+    // Chave do Set: "${veiculo_id}:${ponto_codigo}" (so o dia de hoje).
+    async function buscarPresencaEntregaCliente(veiculoIds: string[]): Promise<Set<string>> {
+      if (veiculoIds.length === 0) return new Set();
+      const pgPresenca = await pool.connect();
+      try {
+        const { rows } = await pgPresenca.query<{ veiculo_id: string; ponto_codigo: string }>(
+          `SELECT veiculo_id, ponto_codigo
+             FROM entregas_presenca
+            WHERE dia = current_date AND veiculo_id = ANY($1::uuid[])`,
+          [veiculoIds]
+        );
+        return new Set(rows.map((r) => `${r.veiculo_id}:${r.ponto_codigo}`));
+      } catch {
+        // Falha de leitura -> Set vazio = nenhum ponto sai de pendente =
+        // comportamento de antes desta feature. Fail-safe.
+        return new Set();
+      } finally {
+        pgPresenca.release();
+      }
+    }
+
     // Janela de 10min de posicoes_historico pro placar de desvio (D1/D2 --
     // paradaRecentePertoDeEntrega/padraoEntrega, ver placar-desvio.ts) --
     // UMA query batched por CLIENTE (mesmo padrao das funcoes acima:
@@ -1463,6 +1516,10 @@ export async function POST(request: Request) {
       // Placar de desvio (D1/D2): janela de 10min de TODOS os veiculos do
       // cliente, 1 query batched (ver buscarJanelaHistoricoCliente acima).
       const janelaHistoricoCliente = await buscarJanelaHistoricoCliente(veiculoIdsCliente);
+      // Presenca de entrega (decisao do usuario 01/08): pontos onde o
+      // veiculo JA ficou parado o tempo minimo hoje contam como entregues,
+      // mesmo sem marcacao na Unitrac. 1 query batched por cliente.
+      const presencaEntregaCliente = await buscarPresencaEntregaCliente(veiculoIdsCliente);
       // Geocode restrito deste ciclo (ver comentario acima de preencherGeocodeCacheCandidatos).
       await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
@@ -1632,7 +1689,20 @@ export async function POST(request: Request) {
           // alvoQueSaiu abaixo -- em vez do ultimo status real conhecido).
           const pontosVeiculo = pontosPorPlacaFallback.get(pos.placa);
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
-          const pendentes = (pontosVeiculo ?? []).filter((pt) => !pt.feito && temCoordenadaValida(pt));
+          // "Parada no local conta como entregue" (usuario, 01/08): alem do
+          // pt.feito da Unitrac, tira da lista de pendentes todo ponto onde
+          // este veiculo ja ficou parado o tempo minimo HOJE (ver
+          // buscarPresencaEntregaCliente + a gravacao mais abaixo).
+          const pendentes = (pontosVeiculo ?? []).filter(
+            (pt) =>
+              !pt.feito &&
+              temCoordenadaValida(pt) &&
+              !(
+                ENTREGA_PRESENCA_ATIVA &&
+                pt.pontoCodigo != null &&
+                presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)
+              )
+          );
           const temPendentes = pendentes.length > 0;
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))
@@ -2417,6 +2487,25 @@ export async function POST(request: Request) {
           // mesmo par repetidas vezes sem problema.
           if (romaneioDoVeiculo && romaneioDoVeiculo.length > 0 && alvoNoRaioAgora?.documento && noRaioDwellSegundos >= BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS) {
             presencaConfirmadaCiclo.push({ veiculo_id, nf: alvoNoRaioAgora.documento });
+          }
+
+          // Parada no local conta como entregue (usuario, 01/08 -- ver
+          // ENTREGA_PRESENCA_ATIVA no topo). Diferente do bloco de romaneio
+          // acima, este vale pra QUALQUER ponto da Unitrac (com ou sem
+          // romaneio) e alimenta a lista de pendentes do proximo ciclo.
+          // Idempotente: ON CONFLICT DO NOTHING no flush.
+          if (
+            ENTREGA_PRESENCA_ATIVA &&
+            pos.fresco &&
+            alvoNoRaioAgora?.pontoCodigo != null &&
+            noRaioDwellSegundos >= ENTREGA_PRESENCA_MIN_SEG &&
+            !presencaEntregaCliente.has(`${veiculo_id}:${alvoNoRaioAgora.pontoCodigo}`)
+          ) {
+            presencaEntregaCiclo.push({
+              veiculo_id,
+              ponto_codigo: alvoNoRaioAgora.pontoCodigo,
+              parado_seg: noRaioDwellSegundos,
+            });
           }
 
           const saiuDoRaioAgora = codigoAnteriorNoRaio !== null && alvoNoRaioAgora === null;
@@ -3987,6 +4076,33 @@ export async function POST(request: Request) {
       );
       const falhasPresenca = resultadosPresenca.filter((r) => r.status === "rejected").length;
       if (falhasPresenca > 0) console.warn(`Aviso: ${falhasPresenca} falha(s) ao gravar presenca_confirmada_em neste ciclo`);
+    }
+
+    // Parada no local conta como entregue (usuario, 01/08 -- ver
+    // ENTREGA_PRESENCA_ATIVA). UM insert multi-row por ciclo, nunca um por
+    // veiculo. ON CONFLICT DO NOTHING: a primeira gravacao do dia manda, e
+    // ciclos seguintes no mesmo ponto nao fazem nada.
+    if (presencaEntregaCiclo.length > 0) {
+      const presencaUnica = [
+        ...new Map(
+          presencaEntregaCiclo.map((p) => [`${p.veiculo_id}:${p.ponto_codigo}`, p])
+        ).values(),
+      ];
+      try {
+        await pool.query(
+          `INSERT INTO entregas_presenca (veiculo_id, ponto_codigo, dia, parado_seg)
+           SELECT v, p, current_date, s
+             FROM unnest($1::uuid[], $2::bigint[], $3::int[]) AS t(v, p, s)
+           ON CONFLICT DO NOTHING`,
+          [
+            presencaUnica.map((p) => p.veiculo_id),
+            presencaUnica.map((p) => p.ponto_codigo),
+            presencaUnica.map((p) => p.parado_seg),
+          ]
+        );
+      } catch (e) {
+        console.warn(`Aviso: falha ao gravar entregas_presenca neste ciclo: ${String(e)}`);
+      }
     }
 
     // Anotacao de proximidade em alertas de desvio ativos -- ver
