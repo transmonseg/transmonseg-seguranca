@@ -936,6 +936,59 @@ describe("detectarDesvio (v4: afastamento de TODOS os destinos, corrigido apos f
     });
   });
 
+  describe("classeViariaSuprimidaPorEntrega suprime SEM early-return mascarar os branches seguintes (redesign 01/08 pos-revisao-independente: a 1a versao do gate suprimia DEPOIS da arbitragem em route.ts, com limiar numerico de placar -- Critical 1: limiar inalcancavel na pratica nesse branch; Critical 2: supressao pos-hoc mascarava os branches seguintes, o MESMO anti-padrao ja documentado/corrigido acima pra classeViariaSuprimidaPorRumo; Critical 3: `alerta = null` sem re-arbitrar descartava candidatos empatados. Fix: mesmo padrao de classeViariaSuprimidaPorRumo -- entra como INPUT do ctx, detectarDesvio cai pros proximos branches normalmente)", () => {
+    it("classeViariaSuprimidaPorEntrega=true, nada mais bate: cai pro fallthrough (null), NAO retorna o alerta de classe_viaria", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorEntrega: true,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000], // aproximando -- sem isso disparia classe_viaria
+      });
+      expect(a).toBeNull();
+    });
+
+    it("classeViariaSuprimidaPorEntrega=false (ou ausente): dispara normal, comportamento de hoje intacto", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorEntrega: false,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).not.toBeNull();
+      expect(a?.origemDesvio).toBe("classe_viaria");
+    });
+
+    it("suprime SO o branch de classe_viaria -- afastando de tudo continua disparando (critico), a mesma protecao que ja existia pra saiuParadaConfirmadaRecentemente/classeViariaSuprimidaPorRumo", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorEntrega: true,
+        distDestinosM: [6300, 8300, 12300], distDestinosAnteriorM: [6000, 8000, 12000], // afastando de tudo
+      });
+      expect(a?.nivel).toBe("critico"); // veio do branch de afastandoDeTudo, nao mascarado pela supressao
+    });
+
+    it("Critical 2 do revisor, travado: classe_viaria suprimido + fora do tapete (CRITICO, \"caminho nunca percorrido\") no MESMO ciclo -- a supressao pos-hoc antiga nunca deixava esse branch ser avaliado (detectarDesvio ja tinha retornado classe_viaria primeiro); com o gate na deteccao, o fallthrough alcanca o branch critico normalmente", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorEntrega: true,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000], // aproximando (nao afastando de tudo)
+        dentroTapete: false, foraTapeteStreak: 10, familiarVeiculo: false,
+      });
+      expect(a).not.toBeNull();
+      expect(a?.nivel).toBe("critico");
+      expect(a?.origemDesvio).toBe("comportamental");
+      expect(a?.motivo).toContain("caminho que a frota nunca percorreu antes");
+    });
+
+    it("classeViariaSuprimidaPorRumo E classeViariaSuprimidaPorEntrega juntos (independentes, qualquer um basta pra suprimir): ainda cai pro fallthrough", () => {
+      const a = detectarDesvio(emMov, {
+        ...base, suspensoPorChegada: false, quedaClasseViaria: true,
+        classeViariaSuprimidaPorRumo: true,
+        classeViariaSuprimidaPorEntrega: true,
+        distDestinosM: [6300], distDestinosAnteriorM: [7000],
+      });
+      expect(a).toBeNull();
+    });
+  });
+
   describe("deveMarcarSaidaParadaConfirmada (achado da revisao independente, Task 6: condicao de transicao nunca tinha teste proprio)", () => {
     const ctxBase = { fresco: true, alvosApiOk: true, saiuDoRaioAgora: true, dwellAnteriorSegundos: 120 };
 

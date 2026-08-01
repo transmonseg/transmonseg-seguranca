@@ -73,7 +73,6 @@ import {
   paradaRecentePertoDeEntrega,
   padraoEntrega,
   destinoAlinhadoAproximando,
-  classeViariaDeveEmitir,
   PLACAR_AMARELO,
   PLACAR_AMARELO_DESLIGA,
   PLACAR_VERMELHO,
@@ -223,18 +222,34 @@ const CLASSE_VIARIA_FILTRO_RUMO_ATIVO = false;
 // Ao contrario das flags de sombra acima (nascem false, so viram true
 // depois de dias confirmando com dado real), esta nasce LIGADA: e a
 // TROCA DE REGRA decidida em 01/08 com base em dado real ja coletado --
-// das 53 alertas classe_viaria das ultimas 4h de 31/07, 31 tinham placar
-// medido no instante do disparo, 25 com placar EXATAMENTE 0, 6 entre 0 e
-// 15, ZERO acima de 15 (ver CLASSE_VIARIA_PLACAR_MINIMO em
-// lib/placar-desvio.ts pro raciocinio completo). Gate na EMISSAO: um
-// alerta com origemDesvio "classe_viaria" so e persistido se o placar de
-// desvio do ciclo (calculado de qualquer forma, sombra) tiver cruzado o
-// minimo. quedaClasseViaria (deteccao) e a verificacao de corredor
-// (S3 do placar) continuam rodando exatamente como antes -- o gate e
-// so na hora de decidir se o alerta sobrevive pra virar linha em
-// `alertas`. Desligar reverte pro comportamento antigo (classe_viaria
-// emite sozinho) instantaneamente, sem precisar reverter o commit.
-const CLASSE_VIARIA_EXIGE_PLACAR_ATIVO = true;
+// classe_viaria era a maior fonte de falso positivo do sistema (~69%
+// historico; 53 alertas so nas 4h anteriores a 31/07).
+//
+// Redesign 01/08 pos-revisao-independente (a 1a versao deste gate, com
+// limiar numerico de placar >=15 aplicado DEPOIS da arbitragem, foi
+// reprovada com 3 findings Critical -- ver historico do commit anterior):
+// o criterio agora e' PROVA POSITIVA de atividade de entrega no ciclo --
+// suprime classe_viaria quando qualquer DESCONTO do placar de desvio
+// (D1 parada perto de entrega, D2 padrao de entrega, D3 destino alinhado
+// aproximando -- ver lib/placar-desvio.ts) esta ativo. D3 em particular
+// e' literalmente "indo em direcao a um cliente perto e se aproximando"
+// -- a queixa textual do cliente sobre esta regra. Dado real: em 32
+// ciclos de classe_viaria logados em placar_desvio_log, D3 disparou 18x,
+// D2 7x, D1 4x.
+//
+// Gate na DETECCAO (nao na emissao pos-arbitragem, ver
+// classeViariaSuprimidaPorEntrega em CtxDesvio/detectarDesvio,
+// detectores.ts -- mesmo padrao ja usado por classeViariaSuprimidaPorRumo
+// acima): classeViariaSuprimidaPorEntrega entra como INPUT do ctx que
+// monta os candidatos, entao quando suprime, detectarDesvio cai
+// naturalmente pros proximos branches (rumo_diverge, saida_parada, e
+// sobretudo o critico "caminho nunca percorrido") em vez de retornar
+// classe_viaria e nunca chegar la. quedaClasseViaria (deteccao) e a
+// verificacao de corredor (S3 do placar) continuam rodando exatamente
+// como antes -- o gate so decide se o BRANCH de classe_viaria participa
+// da arbitragem. Desligar reverte pro comportamento antigo (classe_viaria
+// dispara sozinho) instantaneamente, sem precisar reverter o commit.
+const CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO = true;
 // Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
 // suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
 // confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
@@ -1072,7 +1087,7 @@ export async function POST(request: Request) {
     // placar > 0 (pra nao inflar a tabela com frota parada, decisao
     // explicita da spec), nunca muda nenhum alerta.
     const placarDesvioLogCiclo: {
-      veiculo_id: string; placar: number; componentes: Record<string, number | boolean>;
+      veiculo_id: string; placar: number; componentes: Record<string, number | boolean | string>;
       teria_amarelo: boolean; teria_vermelho: boolean;
     }[] = [];
 
@@ -2573,6 +2588,41 @@ export async function POST(request: Request) {
           }
           const classeViariaSuprimidaPorRumo = CLASSE_VIARIA_FILTRO_RUMO_ATIVO && (classeViariaRumoSombra?.suprimiria ?? false);
 
+          // Achado real 01/08 (redesign pos-revisao-independente, ver
+          // CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO acima pro
+          // raciocinio/dado completo): D1/D2/D3 do placar de desvio
+          // (lib/placar-desvio.ts) precisam existir AQUI, antes de
+          // montarCandidatosCore, pelo MESMO motivo de
+          // classeViariaRumoSombra/classeViariaSuprimidaPorRumo acima --
+          // o ctx que entra nela precisa do resultado como INPUT. Guard
+          // identico ao "Guard 7" do bloco de calculo final do placar mais
+          // abaixo (sem posicao fresca OU sem pendente, os tres ficam
+          // false). FONTE UNICA: o bloco do placar mais abaixo REUSA estas
+          // MESMAS variaveis pra sinaisPlacar.d1/d2/d3 -- nao recalcula.
+          let d1ParadaPertoDeEntregaAtual = false;
+          let d2PadraoEntregaAtual = false;
+          let d3DestinoAlinhadoAproximandoAtual = false;
+          if (pos.fresco && temPendentes) {
+            const destinosPlacarD1: DestinoPlacar[] = pendentes.map((pt) => ({
+              lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: codigoDestinoPlacar(pt),
+            }));
+            const janelaVeiculoPlacar = janelaHistoricoCliente.get(veiculo_id) ?? [];
+            d1ParadaPertoDeEntregaAtual = paradaRecentePertoDeEntrega(janelaVeiculoPlacar, destinosPlacarD1);
+            d2PadraoEntregaAtual = padraoEntrega(janelaVeiculoPlacar);
+            d3DestinoAlinhadoAproximandoAtual = destinoAlinhadoAproximando(
+              { lat: pos.lat, lng: pos.lng },
+              rumoDivergenciaPorDestinoPlacar,
+              anterior?.placar_desvio_estado?.distPorCodigo ?? {}
+            );
+          }
+          // Criterio: PROVA POSITIVA de atividade de entrega -- qualquer um
+          // dos tres descontos basta (nao precisam bater juntos). Dado real
+          // que fundamenta o desenho: em 32 ciclos de classe_viaria logados,
+          // D3 disparou 18x, D2 7x, D1 4x.
+          const classeViariaSuprimidaPorEntrega =
+            CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO &&
+            (d1ParadaPertoDeEntregaAtual || d2PadraoEntregaAtual || d3DestinoAlinhadoAproximandoAtual);
+
           // Achado real 12/07: avaliar() JA incluia detectarJammer(p) como um
           // dos seus proprios candidatos (arbitrados junto com desvio pela
           // mesma arbitrarCandidatos) -- pular avaliar() inteira quando ha
@@ -2602,6 +2652,7 @@ export async function POST(request: Request) {
                   quedaClasseViaria,
                   saiuParadaConfirmadaRecentemente,
                   classeViariaSuprimidaPorRumo,
+                  classeViariaSuprimidaPorEntrega,
                   riscoAreaAtual,
                   foraTapeteStreak,
                   suspensoPorChegada,
@@ -2926,30 +2977,27 @@ export async function POST(request: Request) {
             }
           }
 
-          // ─── Placar de desvio (Fase 1, SOMBRA + gate classe_viaria) ─────
+          // ─── Placar de desvio (Fase 1, SOMBRA) -- cálculo final ─────────
           // Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md e
           // src/lib/placar-desvio.ts. Calcula, persiste (junto dos streaks,
-          // mesmo UPSERT) e loga -- segue em SOMBRA (nunca muda alerta/
-          // nível/UI) pra TODAS as origens, EXCETO classe_viaria: desde
-          // 01/08 (CLASSE_VIARIA_EXIGE_PLACAR_ATIVO acima), o placar deste
-          // ciclo tambem decide se aquela origem especifica emite (gate
-          // logo abaixo, apos atualizarPlacar).
+          // mesmo UPSERT) e loga -- segue em SOMBRA, nunca muda alerta/
+          // nível/UI diretamente. D1/D2/D3 (sinaisPlacar.d1/d2/d3 abaixo)
+          // SAO os mesmos `d1ParadaPertoDeEntregaAtual`/`d2PadraoEntregaAtual`/
+          // `d3DestinoAlinhadoAproximandoAtual` computados mais acima (antes
+          // de montarCandidatosCore) pra alimentar
+          // classeViariaSuprimidaPorEntrega -- fonte unica, reusados aqui,
+          // nao recalculados.
           //
-          // Achado real 01/08 (ordenacao): este bloco MOROU logo apos
-          // "const motivo" (abaixo) ate esta revisao -- ou seja, DEPOIS de
-          // "Determinar nivel"/"localizacao"/"motivo" jah terem lido
-          // `alerta`. Um gate aqui dentro so conseguia impedir a
-          // PERSISTENCIA em `alertas` (mais abaixo no arquivo), mas nao o
-          // pin amarelo/vermelho fantasma no mapa (nivel/motivo em
-          // posicoes_atuais, que sao gravados com o valor pre-gate). Subiu
-          // pra ANTES de "Determinar nivel" -- unica mudanca de ordem
-          // deste patch; todas as ENTRADAS deste bloco (corredorInfo/
-          // s3ForaDoCorredorPlacar, sinaisPlacar, etc.) ja estavam
-          // disponiveis neste ponto mesmo antes da mudanca, entao mover e'
-          // so aritmetica pura sobre valores ja computados, sem novo
-          // calculo. A verificacao de corredor em si (Camada 1, que
-          // alimenta S3) NAO se move -- continua rodando exatamente onde
-          // sempre rodou, bem acima.
+          // Achado real 01/08 (ordenacao, mantido de uma revisao anterior
+          // deste bloco): este trecho fica ANTES de "Determinar nivel"/
+          // "localizacao"/"motivo" (mais abaixo) -- essa reordenacao foi
+          // auditada e aprovada numa revisao independente; nao mexe no
+          // resultado de nivel/motivo hoje (o gate de classe_viaria mudou
+          // de lugar pra deteccao, ver CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO
+          // acima), mas mante-la evita reintroduzir o problema original
+          // (calculo tardio deixando nivel/motivo lerem `alerta` antes do
+          // placar do ciclo estar pronto) se um gate futuro voltar a
+          // depender do placar nesse ponto.
           const placarAnterior = anterior?.placar_desvio ?? 0;
           const estadoPlacarAnterior = anterior?.placar_desvio_estado ?? null;
 
@@ -2992,10 +3040,6 @@ export async function POST(request: Request) {
             const minutosEstagnadoPlacar = (agora.getTime() - new Date(entregasFeitasDesdePlacar).getTime()) / 60000;
 
             const celulaAtualPlacar = celulaDe(pos.lat, pos.lng);
-            const destinosPlacarD1: DestinoPlacar[] = pendentes.map((pt) => ({
-              lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: codigoDestinoPlacar(pt),
-            }));
-            const janelaVeiculoPlacar = janelaHistoricoCliente.get(veiculo_id) ?? [];
 
             sinaisPlacar = {
               s1AfastandoDeTudo: podeSomarSinaisPlacar && afastandoDeTudoAtual,
@@ -3010,13 +3054,14 @@ export async function POST(request: Request) {
               s5DiaEstagnado:
                 podeSomarSinaisPlacar && pendentes.length >= 2 && pos.velocidade > 0 &&
                 minutosEstagnadoPlacar >= S5_ESTAGNADO_MIN,
-              d1ParadaPertoDeEntrega: paradaRecentePertoDeEntrega(janelaVeiculoPlacar, destinosPlacarD1),
-              d2PadraoEntrega: padraoEntrega(janelaVeiculoPlacar),
-              d3DestinoAlinhadoAproximando: destinoAlinhadoAproximando(
-                { lat: pos.lat, lng: pos.lng },
-                rumoDivergenciaPorDestinoPlacar,
-                estadoPlacarAnterior?.distPorCodigo ?? {}
-              ),
+              // D1/D2/D3: reusa os MESMOS valores calculados mais acima
+              // (antes de montarCandidatosCore, ver
+              // classeViariaSuprimidaPorEntrega) -- fonte unica, nao
+              // recalcula paradaRecentePertoDeEntrega/padraoEntrega/
+              // destinoAlinhadoAproximando aqui.
+              d1ParadaPertoDeEntrega: d1ParadaPertoDeEntregaAtual,
+              d2PadraoEntrega: d2PadraoEntregaAtual,
+              d3DestinoAlinhadoAproximando: d3DestinoAlinhadoAproximandoAtual,
             };
           }
 
@@ -3026,36 +3071,39 @@ export async function POST(request: Request) {
             suspensoPorChegada
           );
 
-          // ─── Gate de emissao do classe_viaria (troca de regra 01/08) ────
-          // Ver CLASSE_VIARIA_EXIGE_PLACAR_ATIVO (acima, perto de
-          // CLASSE_VIARIA_FILTRO_RUMO_ATIVO) e CLASSE_VIARIA_PLACAR_MINIMO/
-          // classeViariaDeveEmitir em lib/placar-desvio.ts pro dado real e
-          // raciocinio completo. Gate na EMISSAO, nunca na DETECCAO:
-          // quedaClasseViaria (mais acima) e a verificacao de corredor
-          // (Camada 1, que alimenta s3ForaDoCorredorPlacar acima -- usado
-          // no calculo de placarNovo que acabou de rodar) ja rodaram
-          // normalmente, intactas, antes deste ponto. Um alerta que
-          // chegou aqui como origemDesvio="classe_viaria" (ja venceu toda
-          // a arbitragem contra os outros candidatos/extras acima) so
-          // sobrevive se o placar deste ciclo cravou o minimo.
-          if (
-            CLASSE_VIARIA_EXIGE_PLACAR_ATIVO &&
-            alerta?.tipo === "desvio" &&
-            alerta.origemDesvio === "classe_viaria" &&
-            !classeViariaDeveEmitir(placarNovo)
-          ) {
-            alerta = null;
-            // Auditabilidade (licao do incidente real de 31/07: um
-            // mecanismo automatico que esconde alerta sem deixar rastro
-            // ja causou incidente neste projeto -- auto-resolve fechou 2
-            // desvios reais em silencio). Toda supressao fica marcada no
-            // jsonb `componentes` do log -- muta o MESMO objeto (nao cria
-            // um novo) porque placarDesvioSombraContexto abaixo reusa
-            // esta referencia, e o gate do log logo abaixo
-            // (`Object.keys(componentesPlacar).length > 0`) precisa desta
-            // chave pra logar o ciclo mesmo quando o placar for 0 (caso
-            // mais comum no dado real: 25 das 31 supressoes medidas).
+          // ─── Auditabilidade da supressao do classe_viaria ────────────────
+          // A supressao em si ja aconteceu na DETECCAO (classeViariaSuprimidaPorEntrega,
+          // calculado acima antes de montarCandidatosCore -- ver
+          // CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO). Este bloco so
+          // REGISTRA, nunca decide: licao do incidente real de 31/07 (um
+          // mecanismo automatico que esconde alerta sem deixar rastro ja
+          // causou incidente neste projeto -- auto-resolve fechou 2 desvios
+          // reais em silencio).
+          //
+          // classeViariaSeriaCandidata (calculado acima, mesmo campo que
+          // alimenta classeViariaRumoSombra) confirma que classe_viaria
+          // REALMENTE seria candidato neste ciclo -- sem esse segundo
+          // check, marcariamos "suprimido" em qualquer veiculo com D1/D2/D3
+          // ativo mesmo sem quedaClasseViaria, um falso registro de
+          // auditoria (D1/D2/D3 sao comuns em qualquer parada/aproximacao
+          // normal de entrega, nao so quando ha classe_viaria pra suprimir).
+          if (classeViariaSeriaCandidata && classeViariaSuprimidaPorEntrega) {
+            // Muta o MESMO componentesPlacar (nao cria um novo) porque
+            // placarDesvioSombraContexto abaixo reusa esta referencia. Nota:
+            // o gate do log logo abaixo (`Object.keys(componentesPlacar).length
+            // > 0`) ja fica satisfeito de qualquer forma sempre que este
+            // bloco roda -- componentesDoCiclo (placar-desvio.ts) sempre
+            // adiciona uma chave pra cada D1/D2/D3 ativo (d1ParadaPertoDeEntrega/
+            // d2PadraoEntrega/d3DestinoAlinhadoAproximando), independente do
+            // placar final ter dado 0. As duas chaves abaixo sao contexto
+            // ADICIONAL pra auditoria (o que exatamente foi suprimido e
+            // por qual motivo), nao o que garante o log em si.
             componentesPlacar.classeViariaSuprimida = true;
+            const motivosSupressao: string[] = [];
+            if (d1ParadaPertoDeEntregaAtual) motivosSupressao.push("d1");
+            if (d2PadraoEntregaAtual) motivosSupressao.push("d2");
+            if (d3DestinoAlinhadoAproximandoAtual) motivosSupressao.push("d3");
+            componentesPlacar.classeViariaSuprimidaPor = motivosSupressao.join(",");
           }
 
           // Histerese do amarelo (só pro LOG na Fase 1 -- não afeta UI/alerta
@@ -3097,13 +3145,12 @@ export async function POST(request: Request) {
           // mais abaixo) -- nunca lido por nenhum detector, só auditoria.
           const placarDesvioSombraContexto = { placar: placarNovo, componentes: componentesPlacar };
 
-          // Determinar nivel da posicao atual. Roda DEPOIS do gate de
-          // classe_viaria acima -- se o alerta foi suprimido ali, `alerta`
-          // ja esta null aqui, e nivel/motivo abaixo refletem isso
-          // corretamente (sem o gate rodar antes, o pin amarelo/vermelho
-          // "fantasma" apareceria no mapa mesmo com o alerta nunca
-          // persistido em `alertas`, ver comentario do bloco do placar
-          // acima).
+          // Determinar nivel da posicao atual. `alerta` aqui ja reflete
+          // qualquer supressao de classe_viaria: essa decisao acontece la
+          // atras, na DETECCAO (classeViariaSuprimidaPorEntrega, antes de
+          // montarCandidatosCore) -- se suprimido, detectarDesvio ja caiu
+          // pro proximo branch ou retornou null, entao nivel/motivo abaixo
+          // refletem o resultado real da arbitragem, sem pin fantasma.
           let nivel: string;
           if (alertaJammer) {
             // Jammer: critico, vermelho, independente de fresco

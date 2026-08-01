@@ -601,6 +601,26 @@ export type CtxDesvio = {
   // proximos branches normalmente. undefined/false = comportamento de hoje
   // (flag desligada = nunca suprime).
   classeViariaSuprimidaPorRumo?: boolean;
+  // Achado real 01/08 (redesign pos-revisao-independente do gate de
+  // placar de desvio): supressao por PROVA POSITIVA de atividade de
+  // entrega no ciclo -- true quando qualquer DESCONTO do placar de
+  // desvio (D1 parada perto de entrega, D2 padrao de entrega, D3 destino
+  // alinhado aproximando -- ver lib/placar-desvio.ts) esta ativo neste
+  // ciclo. route.ts calcula e passa aqui, MESMA fonte que alimenta o
+  // placar (nao recalculado, nao duplicado). Mesmo padrao e mesmo motivo
+  // de classeViariaSuprimidaPorRumo logo acima: a decisao precisa chegar
+  // como INPUT, nunca como supressao pos-hoc em route.ts DEPOIS que esta
+  // funcao ja retornou -- classe_viaria e' o PRIMEIRO branch de disparo
+  // real (ver comentario 27/07 acima), entao suprimir tarde demais
+  // mascararia silenciosamente os branches seguintes (rumo_diverge,
+  // saida_parada, e sobretudo o critico "caminho nunca percorrido"
+  // abaixo). Substitui a tentativa anterior (limiar numerico de placar
+  // >=15, revertida por ser inalcancavel na pratica em ciclo de
+  // classe_viaria: S1/S3 sao estruturalmente impossiveis nesse branch, S2
+  // raramente dispara em rua estreita/baixa velocidade -- teto real
+  // medido em producao era ~12, nunca >=15). undefined/false =
+  // comportamento de hoje (nunca suprime).
+  classeViariaSuprimidaPorEntrega?: boolean;
   // Camada 3 (score de risco da área ATUAL, 0-100, ver calcularRiscoArea):
   // "via conhecida ou não" (tapete) não é a mesma coisa que "área perigosa
   // agora". Desvio numa rua nova mas tranquila não deveria ter a MESMA
@@ -1344,7 +1364,13 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // mesmo ciclo da saida). Guard adicional: dentro da janela de saida
   // recente, suprime SO este branch (o veiculo continua elegivel a
   // qualquer outro gatilho de desvio nesta mesma chamada).
-  if (!afastandoDeTudo && ctx.quedaClasseViaria && !ctx.saiuParadaConfirmadaRecentemente && !ctx.classeViariaSuprimidaPorRumo) {
+  if (
+    !afastandoDeTudo &&
+    ctx.quedaClasseViaria &&
+    !ctx.saiuParadaConfirmadaRecentemente &&
+    !ctx.classeViariaSuprimidaPorRumo &&
+    !ctx.classeViariaSuprimidaPorEntrega
+  ) {
     return {
       nivel: "atencao",
       tipo: "desvio",
@@ -1905,6 +1931,8 @@ export type CtxAvaliacao = {
   saiuParadaConfirmadaRecentemente?: boolean;
   // Achado real 31/07 (revisao final): ver CtxDesvio.classeViariaSuprimidaPorRumo.
   classeViariaSuprimidaPorRumo?: boolean;
+  // Achado real 01/08: ver CtxDesvio.classeViariaSuprimidaPorEntrega.
+  classeViariaSuprimidaPorEntrega?: boolean;
   riscoAreaAtual?: number;
   foraTapeteStreak?: number;
   // Achado real 25/07 (redesign do detector de desvio): ver CtxDesvio.
@@ -2022,6 +2050,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           quedaClasseViaria: ctx.quedaClasseViaria ?? false,
           saiuParadaConfirmadaRecentemente: ctx.saiuParadaConfirmadaRecentemente ?? false,
           classeViariaSuprimidaPorRumo: ctx.classeViariaSuprimidaPorRumo,
+          classeViariaSuprimidaPorEntrega: ctx.classeViariaSuprimidaPorEntrega,
         }), ctx.quedaClasseViaria ?? false)
       : null,
   ].filter((a): a is Alerta => a !== null);

@@ -31,25 +31,20 @@ export const PLACAR_VERMELHO = 70;
 // placar_desvio_log indefinidamente. Abaixo de 0.5 zera de vez (snap).
 export const PLACAR_PISO_ZERAR = 0.5;
 
-// Troca de regra 01/08 (ver CLASSE_VIARIA_EXIGE_PLACAR_ATIVO em
-// route.ts): classe_viaria ("Saiu de via principal recentemente e esta
-// em rua estreita") sozinho e a maior fonte de falso positivo do sistema
-// (~69% historico). Dado real que fundamenta o corte: das 53 alertas
-// classe_viaria das ultimas 4h de 31/07, 31 tinham placar medido no
-// instante do disparo -- 25 com placar EXATAMENTE 0, 6 entre 0 e 15,
-// ZERO acima de 15. Um desvio real acumula S1(+8)/S2(+6)/S3(+8) e cruza
-// 15 em ~2 ciclos (~1min), entao exigir esse piso como corroboracao do
-// placar antes de emitir classe_viaria sozinho corta o falso positivo
-// sem perder desvio real -- que ja teria placar suficiente por outros
-// sinais bem antes de precisar de classe_viaria pra disparar.
-export const CLASSE_VIARIA_PLACAR_MINIMO = 15;
-
-// Predicado puro do gate de emissao (usado em route.ts) -- extraido pra
-// dar cobertura de teste isolada, ja que o gate em si (route.ts) nao tem
-// harness de teste (padrao do arquivo).
-export function classeViariaDeveEmitir(placarNovo: number): boolean {
-  return placarNovo >= CLASSE_VIARIA_PLACAR_MINIMO;
-}
+// NOTA HISTORICA (removida 01/08, pos-revisao-independente): a 1a versao
+// da troca de regra do classe_viaria usava um limiar numerico fixo aqui
+// (CLASSE_VIARIA_PLACAR_MINIMO=15, aplicado DEPOIS da arbitragem em
+// route.ts). Reprovada com 3 findings Critical -- o mais grave: o limiar
+// era estruturalmente inalcancavel num ciclo de classe_viaria (S1/S3
+// nunca disparam nesse branch por construcao, S2 raramente em rua
+// estreita/baixa velocidade), entao na pratica era um "desligar
+// classe_viaria" disfarcado. O redesenho (ver
+// CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO em route.ts e
+// classeViariaSuprimidaPorEntrega em detectores.ts) suprime por PROVA
+// POSITIVA de entrega (D1/D2/D3 do placar) em vez de limiar de placar, e
+// entra como INPUT da deteccao (nao supressao pos-hoc) -- corrige tambem
+// os outros dois findings (mascaramento de branches seguintes e
+// descarte sem re-arbitragem).
 
 export const D1_RAIO_EXTRA_M = 300;
 export const D1_PARADA_MIN_SEG = 120;
@@ -117,11 +112,17 @@ function componentesDoCiclo(sinais: SinaisPlacar): { soma: number; componentes: 
 // suspensoPorChegada (chegou no destino) zera na hora, sem olhar os sinais
 // do ciclo -- achado real: veiculo que chegou nao deve carregar suspeita
 // residual pro proximo trecho da rota.
+// `componentes` aceita number|boolean|string: os pontos S1-S5/D1-D4 e
+// `zeradoPorChegada` sao number/boolean (calculados aqui), mas route.ts
+// tambem MUTA este objeto depois de retornado pra anotar auditoria de
+// supressao (classeViariaSuprimida: true, classeViariaSuprimidaPor:
+// "d3" etc, ver gate do classe_viaria em route.ts) -- string acomoda
+// esse campo extra sem forcar um segundo objeto/parametro.
 export function atualizarPlacar(
   placarAnterior: number,
   sinais: SinaisPlacar,
   suspensoPorChegada: boolean
-): { placar: number; componentes: Record<string, number | boolean> } {
+): { placar: number; componentes: Record<string, number | boolean | string> } {
   if (suspensoPorChegada) {
     return { placar: 0, componentes: { zeradoPorChegada: true } };
   }
