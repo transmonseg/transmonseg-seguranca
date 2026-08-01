@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoDispara, type AlvoUnitrac } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, type AlvoUnitrac } from "./unitrac";
 
 describe("distanciaAoSegmentoM", () => {
   const origem = { lat: -22.9000, lng: -43.2000 };
@@ -224,6 +224,46 @@ describe("divergenciaRumoGraus (achado 25/07: sinal de direcao, pega desvio mesm
   it("velocidade no piso ou acima: calcula normalmente", () => {
     const d = divergenciaRumoGraus(0, 0, 0, 0.01, 0, 1, 10);
     expect(d).not.toBeNull();
+  });
+});
+
+describe("divergenciaRumoMinima (achado real 31/07-01/08: compara contra TODOS os destinos, nao so o mais proximo)", () => {
+  it("rumo bate com um destino distante, mesmo divergindo do mais proximo: divergencia baixa (o menor valor vence)", () => {
+    // anterior (0,0) -> atual (0,0.01): rumo real ~leste (90).
+    // destino A (perto, mas ao SUL -- diverge muito): (-1, 0.01).
+    // destino B (longe, mas ao LESTE -- bate com o rumo real): (0, 1).
+    const d = divergenciaRumoMinima(0, 0, 0, 0.01, [{ lat: -1, lng: 0.01 }, { lat: 0, lng: 1 }], 999);
+    expect(d).toBeLessThan(10);
+  });
+
+  it("diverge de TODOS os destinos: divergencia alta", () => {
+    // anterior (1,0) -> atual (0,0): rumo real ~sul (180).
+    // dois destinos, ambos ao NORTE -- nenhum bate com o rumo real.
+    const d = divergenciaRumoMinima(1, 0, 0, 0, [{ lat: 2, lng: 0 }, { lat: 3, lng: 0.5 }], 999);
+    expect(d).toBeGreaterThan(170);
+  });
+
+  it("lista de destinos vazia: retorna null (sem sinal confiavel, mantem o alerta -- mesma diretriz de sempre)", () => {
+    expect(divergenciaRumoMinima(0, 0, 0, 0.01, [], 999)).toBeNull();
+  });
+
+  it("velocidade abaixo do piso: retorna null (mesmo piso de divergenciaRumoGraus)", () => {
+    expect(divergenciaRumoMinima(0, 0, 0, 0.001, [{ lat: 0, lng: 0.01 }], 5)).toBeNull();
+  });
+
+  it("caso real 31/07-01/08: veiculo voltando pra base bate com a base entre os destinos, mesmo com uma entrega pendente mais proxima em outra direcao", () => {
+    // Cenario baseado nos casos reais TTK-4D17/TTP-0H36/TTH-6H80: veiculo
+    // indo de leste pra oeste rumo a base, com uma entrega pendente ao
+    // NORTE (mais proxima em linha reta, mas na direcao errada).
+    const anterior = { lat: -22.85, lng: -43.20 };
+    const atual = { lat: -22.85, lng: -43.21 }; // moveu pra oeste
+    const entregaPendente = { lat: -22.84, lng: -43.205 }; // ao norte, mais proxima
+    const base = { lat: -22.85, lng: -43.30 }; // ao oeste, mais longe mas na direcao certa
+    const distEntrega = Math.hypot(entregaPendente.lat - atual.lat, entregaPendente.lng - atual.lng);
+    const distBase = Math.hypot(base.lat - atual.lat, base.lng - atual.lng);
+    expect(distEntrega).toBeLessThan(distBase); // confirma que a entrega e' "mais proxima" nesse instante
+    const d = divergenciaRumoMinima(anterior.lat, anterior.lng, atual.lat, atual.lng, [entregaPendente, base], 999);
+    expect(d).toBeLessThan(10); // bate com a base, mesmo ela nao sendo a mais proxima
   });
 });
 

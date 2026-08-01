@@ -305,6 +305,36 @@ export function divergenciaRumoAcimaDoLimiar(divergencia: number | null): boolea
   return divergencia !== null && divergencia > DIVERGENCIA_RUMO_LIMIAR_GRAUS;
 }
 
+// Achado real 31/07-01/08 (segunda revisao com dado real, 54 casos de
+// desvio abertos no dia -- ver memoria do projeto): comparar so contra o
+// destino MAIS PROXIMO faz rumo_diverge (e saida_parada e o filtro de
+// coerencia do classe_viaria, que reusam o mesmo campo) dispararem por
+// engano quando o veiculo converge pra um destino diferente do mais
+// proximo no instante -- 3 dos 16 casos reais do dia (TTK-4D17, TTP-0H36,
+// TTH-6H80) convergiam pra base (que E' um "destino" legitimo em
+// `destinos`, so nao era o mais proximo naquele ciclo) e foram
+// sinalizados so por isso. Compara contra TODOS os destinos, usa a MENOR
+// divergencia -- so considera "divergindo" quando NENHUM deles explica o
+// rumo. Mesmo espirito de afastouDeTudo (distancia a TODOS aumentando,
+// nao so a mais proxima), aplicado a direcao em vez de distancia.
+export function divergenciaRumoMinima(
+  anteriorLat: number,
+  anteriorLng: number,
+  atualLat: number,
+  atualLng: number,
+  destinos: { lat: number; lng: number }[],
+  velocidadeKmH: number = 999
+): number | null {
+  if (destinos.length === 0) return null;
+  let menor: number | null = null;
+  for (const d of destinos) {
+    const divergencia = divergenciaRumoGraus(anteriorLat, anteriorLng, atualLat, atualLng, d.lat, d.lng, velocidadeKmH);
+    if (divergencia === null) return null; // piso de velocidade -- mesmo resultado pra qualquer destino
+    if (menor === null || divergencia < menor) menor = divergencia;
+  }
+  return menor;
+}
+
 // Ponto de entrega (feito OU pendente) mais proximo da posicao informada.
 // Diferente de alvoPendenteMaisProximo, considera TODOS os pontos da rota,
 // inclusive os ja concluidos. Serve para saber se o caminhao esta dentro

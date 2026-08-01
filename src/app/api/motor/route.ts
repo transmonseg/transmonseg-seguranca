@@ -14,7 +14,7 @@ import {
   centroideGeo,
   distanciaAoSegmentoM,
   suspenderPorChegada,
-  divergenciaRumoGraus,
+  divergenciaRumoMinima,
   divergenciaRumoAcimaDoLimiar,
   divergenciaRumoDispara,
 } from "@/lib/unitrac";
@@ -1753,16 +1753,19 @@ export async function POST(request: Request) {
           // poder decidir com 1 leitura so -- reaproveita o MESMO calculo
           // (e os mesmos guards: fresco, saltoImplausivel, suspensoPorChegada,
           // podeAvancarStreaksDesvio) ja usado pro streak geral, sem duplicar
-          // a chamada de divergenciaRumoGraus.
+          // a chamada de divergenciaRumoMinima.
           let divergenciaGrausAtual: number | null = null;
           // alvosDestinosDisponiveis: mesmo achado da revisao 29/07 acima --
-          // sem isso, destinos[idxMaisProximo] pode ser so uma base (falha
-          // sustentada, cache expirado), fabricando divergencia de rumo
-          // contra um alvo que nao e o real.
-          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && alvosDestinosDisponiveis && idxMaisProximo >= 0 && destinos[idxMaisProximo]) {
-            const divergencia = divergenciaRumoGraus(
+          // sem isso, `destinos` pode ser so uma base (falha sustentada,
+          // cache expirado), fabricando divergencia de rumo contra um alvo
+          // que nao e o real.
+          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && alvosDestinosDisponiveis && destinos.length > 0) {
+            // Achado real 31/07-01/08: compara contra TODOS os destinos
+            // (nao so destinos[idxMaisProximo]) -- ver comentario de
+            // divergenciaRumoMinima em unitrac.ts.
+            const divergencia = divergenciaRumoMinima(
               anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
-              destinos[idxMaisProximo].lat, destinos[idxMaisProximo].lng,
+              destinos,
               pos.velocidade
             );
             divergenciaGrausAtual = divergencia;
