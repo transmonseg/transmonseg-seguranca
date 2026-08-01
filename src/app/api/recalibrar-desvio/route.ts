@@ -139,9 +139,16 @@ export async function POST(request: Request) {
     // (snapshot tirado ANTES do STRIP_PESADO, ver src/lib/casos-desvio-revisao.ts).
     // So tem status_final in ('resolvido','falso_positivo') por construcao --
     // nunca 'ativo', nao precisa filtrar de novo.
+    // Achado 01/08: "Resolver todos" (massa) alimentava esta tabela como se
+    // fosse veredito caso a caso -- 4.165 alertas de massa contra 457
+    // individuais no historico, ou seja a calibracao estava lendo
+    // majoritariamente clique-pra-desentupir-a-tela como "confirmado real".
+    // So origem individual conta. NULL = historico anterior a migration 027
+    // (mantido: o backfill so marcou o que dava pra inferir com seguranca).
     const { rows: rowsCasosRevisao } = await pool.query<RowCasosRevisao>(`
       select status_final as status, contexto_detector -> 'calibracao' ->> 'segmento' as segmento
       from casos_desvio_revisao
+      where origem_acao is null or origem_acao <> 'resolver_massa'
     `);
 
     const totalFalsoPositivo = rowsAlertas.filter((r) => r.status === "falso_positivo").length;

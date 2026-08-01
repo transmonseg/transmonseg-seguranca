@@ -38,7 +38,12 @@ const TIPOS_CASO_REVISAO = ["desvio", "parada_fora_tapete"];
 export async function registrarCasosDesvioRevisao(
   admin: SupabaseClient,
   ids: string[],
-  statusFinal: "resolvido" | "falso_positivo"
+  statusFinal: "resolvido" | "falso_positivo",
+  // Qual botao originou (achado 01/08): "Resolver todos" gravava igual ao
+  // "Resolver" individual, entao nao dava pra saber se um caso era veredito
+  // caso a caso ou clique pra desentupir a tela. Quem le pra medir/calibrar
+  // filtra pelas origens individuais.
+  origemAcao: "resolver_individual" | "falso_individual" | "resolver_massa"
 ): Promise<void> {
   if (ids.length === 0) return;
   try {
@@ -64,6 +69,7 @@ export async function registrarCasosDesvioRevisao(
         alerta_id: a.id,
         veiculo_id: a.veiculo_id,
         status_final: statusFinal,
+        origem_acao: origemAcao,
         contexto_detector: a.contexto ?? {},
         trilha: trilha ?? [],
       });
