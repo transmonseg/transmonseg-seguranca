@@ -14,6 +14,7 @@ import {
   centroideGeo,
   distanciaAoSegmentoM,
   suspenderPorChegada,
+  RAIO_CHEGADA_MIN_M,
   divergenciaRumoMinima,
   divergenciaRumoGraus,
   divergenciaRumoAcimaDoLimiar,
@@ -2494,18 +2495,31 @@ export async function POST(request: Request) {
           // acima, este vale pra QUALQUER ponto da Unitrac (com ou sem
           // romaneio) e alimenta a lista de pendentes do proximo ciclo.
           // Idempotente: ON CONFLICT DO NOTHING no flush.
-          if (
-            ENTREGA_PRESENCA_ATIVA &&
-            pos.fresco &&
-            alvoNoRaioAgora?.pontoCodigo != null &&
-            noRaioDwellSegundos >= ENTREGA_PRESENCA_MIN_SEG &&
-            !presencaEntregaCliente.has(`${veiculo_id}:${alvoNoRaioAgora.pontoCodigo}`)
-          ) {
-            presencaEntregaCiclo.push({
-              veiculo_id,
-              ponto_codigo: alvoNoRaioAgora.pontoCodigo,
-              parado_seg: noRaioDwellSegundos,
-            });
+          //
+          // Correcao 01/08 (medicao dos pontos de entrega): a versao inicial
+          // usava alvoNoRaioAgora, que casa pelo raio NOMINAL do ponto (50m
+          // da Unitrac). Medindo os 4.441 pontos geocodificados de 31/07 e
+          // 01/08 contra as paradas reais, so 46% tem parada dentro de 100m
+          // -- com 50m, a presenca quase nunca dispararia justamente nos
+          // casos que ela existe pra resolver (ponto no lugar errado).
+          // Agora usa o mesmo piso de RAIO_CHEGADA_MIN_M (300m) da chegada,
+          // e o tempo parado vem de paradoMin (relogio geral do veiculo,
+          // ja persistido), nao do dwell preso ao raio nominal.
+          // alvoNoRaioAgora continua intocado -- bypass_entrega e o dwell
+          // dele nao mudam.
+          if (ENTREGA_PRESENCA_ATIVA && pos.fresco && pos.velocidade === 0 && paradoMin * 60 >= ENTREGA_PRESENCA_MIN_SEG) {
+            for (const pt of pendentes) {
+              if (pt.pontoCodigo == null) continue;
+              if (presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)) continue;
+              const distM = haversineM(pos.lat, pos.lng, pt.lat, pt.lng);
+              if (distM <= Math.max(pt.raio, RAIO_CHEGADA_MIN_M)) {
+                presencaEntregaCiclo.push({
+                  veiculo_id,
+                  ponto_codigo: pt.pontoCodigo,
+                  parado_seg: paradoMin * 60,
+                });
+              }
+            }
           }
 
           const saiuDoRaioAgora = codigoAnteriorNoRaio !== null && alvoNoRaioAgora === null;

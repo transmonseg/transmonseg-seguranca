@@ -361,13 +361,34 @@ export function alvoMaisProximoQualquer(
 // qualquer destino legitimo (mesmo piso de 150m ja usado em
 // alvoMaisProximoQualquer) OU dentro de um ponto_seguro (posto de
 // gasolina) -- nos dois casos, a checagem de desvio e suspensa neste ciclo.
+// Piso do raio de chegada. Medido em 01/08 cruzando os 4.441 pontos de
+// entrega geocodificados de 31/07+01/08 contra as paradas reais dos
+// caminhoes (posicoes_historico, velocidade 0 por 2min+):
+//
+//   ate 100m do ponto ...... 46%
+//   100-300m ............... 19%   <- perdido com o piso antigo de 150m
+//   300m-1km ............... 12%
+//   1-2km ...................  5%
+//
+// Ou seja: com piso de 150m, METADE das entregas nunca registrava chegada,
+// porque o endereco geocodificado (ou o ponto da Unitrac, raio nominal de
+// 50m) cai longe de onde o caminhao realmente encosta. Entrega que nao
+// registra chegada fica "pendente" pra sempre, e o caminhao saindo dali
+// vira "afastando-se de um destino" -- a cadeia que produziu os desvios
+// falsos de 01/08 (ver TUL-1H29, 9 pendentes fantasma).
+//
+// 300m captura ~65%. Nao sobe mais que isso de proposito: o efeito deste
+// piso e suspender TODA checagem de desvio dentro da bolha, entao alargar
+// demais cria area cega em bairro com muitos clientes.
+export const RAIO_CHEGADA_MIN_M = 300;
+
 export function suspenderPorChegada(
   distDestinoMaisPertoM: number,
   raioDestinoMaisPerto: number,
   emPontoSeguro: boolean
 ): boolean {
   if (emPontoSeguro) return true;
-  const raio = Math.max(raioDestinoMaisPerto, 150);
+  const raio = Math.max(raioDestinoMaisPerto, RAIO_CHEGADA_MIN_M);
   return distDestinoMaisPertoM <= raio;
 }
 

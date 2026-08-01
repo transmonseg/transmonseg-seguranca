@@ -187,9 +187,10 @@ describe("suspenderPorChegada (achado 25/07: geofence de chegada substitui dista
     expect(suspenderPorChegada(150, 150, false)).toBe(true);
   });
 
-  it("fora do raio do destino, raio da Unitrac menor que o piso de 150m: usa o piso", () => {
-    // raio vindo da Unitrac = 50m, mas o piso e 150m -- 120m de distancia
-    // fica DENTRO do piso, mesmo estando fora do raio bruto de 50m.
+  it("fora do raio do destino, raio da Unitrac menor que o piso: usa o piso", () => {
+    // raio vindo da Unitrac = 50m, mas o piso vale (RAIO_CHEGADA_MIN_M,
+    // 300m desde 01/08 -- era 150m) -- 120m de distancia fica DENTRO do
+    // piso, mesmo estando fora do raio bruto de 50m.
     expect(suspenderPorChegada(120, 50, false)).toBe(true);
   });
 
@@ -278,5 +279,27 @@ describe("divergenciaRumoDispara (limiar, SEM amortecimento por familiaridade --
 
   it("streak acima do piso (5): dispara", () => {
     expect(divergenciaRumoDispara(5)).toBe(true);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Piso do raio de chegada -- medicao 01/08 dos pontos de entrega reais.
+// ───────────────────────────────────────────────────────────────────────
+describe("suspenderPorChegada: piso de 300m (RAIO_CHEGADA_MIN_M)", () => {
+  it("200m do ponto conta como chegada -- com o piso antigo de 150m NAO contava, e era metade das entregas", () => {
+    expect(suspenderPorChegada(200, 50, false)).toBe(true);
+  });
+
+  it("299m conta, 301m nao conta (fronteira exata do piso)", () => {
+    expect(suspenderPorChegada(299, 50, false)).toBe(true);
+    expect(suspenderPorChegada(301, 50, false)).toBe(false);
+  });
+
+  it("raio proprio do ponto maior que o piso manda (nao rebaixa pra 300)", () => {
+    expect(suspenderPorChegada(450, 500, false)).toBe(true);
+  });
+
+  it("ponto seguro (posto) suspende independente da distancia", () => {
+    expect(suspenderPorChegada(99999, 50, true)).toBe(true);
   });
 });
