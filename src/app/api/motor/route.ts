@@ -15,6 +15,7 @@ import {
   distanciaAoSegmentoM,
   suspenderPorChegada,
   divergenciaRumoMinima,
+  divergenciaRumoGraus,
   divergenciaRumoAcimaDoLimiar,
   divergenciaRumoDispara,
 } from "@/lib/unitrac";
@@ -67,6 +68,42 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
+import {
+  atualizarPlacar,
+  paradaRecentePertoDeEntrega,
+  padraoEntrega,
+  destinoAlinhadoAproximando,
+  PLACAR_AMARELO,
+  PLACAR_AMARELO_DESLIGA,
+  PLACAR_VERMELHO,
+  S5_ESTAGNADO_MIN,
+  type SinaisPlacar,
+  type PontoJanela as PontoJanelaPlacar,
+  type DestinoPlacar,
+} from "@/lib/placar-desvio";
+
+// Estado persistido do placar de desvio (Fase 1, sombra) -- jsonb em
+// posicoes_atuais.placar_desvio_estado (migration 024). Ver Task 3 de
+// docs/superpowers/plans/2026-08-01-placar-desvio-fase1-plano.md.
+// distPorCodigo: dist_m por destino (codigo estavel) do ciclo anterior,
+// pra D3 (destinoAlinhadoAproximando) saber se a distancia esta caindo.
+// entregasFeitasRef/entregasFeitasDesde: ancora de S5 (dia estagnado).
+// amareloAtivo: histerese do limiar amarelo (liga >=40, desliga <25).
+type EstadoPlacarDesvio = {
+  distPorCodigo: Record<string, number>;
+  entregasFeitasRef: number;
+  entregasFeitasDesde: string;
+  amareloAtivo: boolean;
+};
+
+// Código estável do destino pro placar de desvio (chave de
+// distPorCodigo/rumoDivergenciaPorDestino, precisa ser consistente entre
+// ciclos) -- alvocodigo quando existe, fallback pra coordenada. Mesmo
+// padrão já usado pela cerca virtual (ver "codigo estavel p/ a cerca
+// virtual" em destinosCerca, mais abaixo no arquivo).
+function codigoDestinoPlacar(pt: PontoEntrega): string {
+  return String(pt.codigo ?? `${pt.lat},${pt.lng}`);
+}
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -701,7 +738,7 @@ export async function POST(request: Request) {
     // ciclo, degradacao aceitavel e temporaria; nao persistente).
     const { data: posatuaisRows, error: erroLeituraPosAtuais } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos, divergencia_rumo_caminho_m");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos, divergencia_rumo_caminho_m, placar_desvio, placar_desvio_estado");
     if (erroLeituraPosAtuais) {
       const msg = `CRITICO: falha ao ler posicoes_atuais (estado por veiculo perdido neste ciclo, UPSERT sera pulado pra nao gravar cold-start por engano): ${erroLeituraPosAtuais.message}`;
       console.error(msg);
@@ -735,6 +772,10 @@ export async function POST(request: Request) {
         // (migration 016), mesmo padrao de no_raio_alvo_codigo/no_raio_dwell_segundos.
         perto_sem_marcacao_codigo: number | null;
         perto_sem_marcacao_segundos: number;
+        // Placar de desvio (Fase 1, sombra) -- mesmo padrao dos streaks
+        // acima, ver EstadoPlacarDesvio.
+        placar_desvio: number;
+        placar_desvio_estado: EstadoPlacarDesvio | null;
       }
     >();
 
@@ -760,6 +801,8 @@ export async function POST(request: Request) {
         saiu_parada_confirmada_em: row.saiu_parada_confirmada_em ?? null,
         perto_sem_marcacao_codigo: row.perto_sem_marcacao_codigo ?? null,
         perto_sem_marcacao_segundos: row.perto_sem_marcacao_segundos ?? 0,
+        placar_desvio: row.placar_desvio ?? 0,
+        placar_desvio_estado: (row.placar_desvio_estado as EstadoPlacarDesvio | null) ?? null,
       });
     }
 
@@ -1005,6 +1048,17 @@ export async function POST(request: Request) {
       dist_min_destino_m: number; veredito_suprimiria: boolean;
     }[] = [];
 
+    // Placar de desvio (Fase 1, SOMBRA) -- ver
+    // docs/superpowers/specs/2026-08-01-placar-desvio-design.md e
+    // src/lib/placar-desvio.ts. Mesmo padrao nao-destrutivo de
+    // cercaSombraCiclo/rumoDivergeSombraCiclo acima: so grava quando
+    // placar > 0 (pra nao inflar a tabela com frota parada, decisao
+    // explicita da spec), nunca muda nenhum alerta.
+    const placarDesvioLogCiclo: {
+      veiculo_id: string; placar: number; componentes: Record<string, number | boolean>;
+      teria_amarelo: boolean; teria_vermelho: boolean;
+    }[] = [];
+
     // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
     // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
     // pool.connect()+query POR VEICULO dentro do loop. Achado 07/07/2026
@@ -1033,6 +1087,11 @@ export async function POST(request: Request) {
       // detectarParadaSemMarcacao em lib/detectores.ts.
       perto_sem_marcacao_codigo: number | null;
       perto_sem_marcacao_segundos: number;
+      // Placar de desvio (Fase 1, sombra) -- ver EstadoPlacarDesvio acima.
+      // placar_desvio_estado serializado (mesmo padrao de desvio_inicio,
+      // JSON.stringify -> coluna jsonb via ::jsonb no INSERT).
+      placar_desvio: number;
+      placar_desvio_estado: string;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -1161,6 +1220,40 @@ export async function POST(request: Request) {
         return new Set();
       } finally {
         pgFamiliaridade.release();
+      }
+    }
+
+    // Janela de 10min de posicoes_historico pro placar de desvio (D1/D2 --
+    // paradaRecentePertoDeEntrega/padraoEntrega, ver placar-desvio.ts) --
+    // UMA query batched por CLIENTE (mesmo padrao das funcoes acima:
+    // veiculoIdsCliente inteiro, nao filtrado por veiculo individual), nunca
+    // uma por veiculo. Sem cache/TTL: a janela desliza a cada ciclo (mesmo
+    // motivo de buscarCelulasTapeteCandidatas nao ter TTL).
+    async function buscarJanelaHistoricoCliente(
+      veiculoIds: string[]
+    ): Promise<Map<string, PontoJanelaPlacar[]>> {
+      if (veiculoIds.length === 0) return new Map();
+      const pgJanela = await pool.connect();
+      try {
+        const { rows } = await pgJanela.query<{
+          veiculo_id: string; lat: number; lng: number; velocidade: number; criado_em: Date;
+        }>(
+          `SELECT veiculo_id, lat, lng, velocidade, criado_em FROM posicoes_historico
+           WHERE veiculo_id = ANY($1::uuid[]) AND criado_em > now() - interval '10 minutes'
+           ORDER BY veiculo_id, criado_em ASC`,
+          [veiculoIds]
+        );
+        const porVeiculo = new Map<string, PontoJanelaPlacar[]>();
+        for (const r of rows) {
+          const lista = porVeiculo.get(r.veiculo_id) ?? [];
+          lista.push({ lat: r.lat, lng: r.lng, velocidade: r.velocidade, criadoEm: r.criado_em.toISOString() });
+          porVeiculo.set(r.veiculo_id, lista);
+        }
+        return porVeiculo;
+      } catch {
+        return new Map();
+      } finally {
+        pgJanela.release();
       }
     }
 
@@ -1335,6 +1428,9 @@ export async function POST(request: Request) {
       const contagensFamiliaridadeCliente = await getContagensFamiliaridadeCliente(cliente.id, veiculoIdsCliente);
       const celulasFamiliaridadeVeiculo = await buscarCelulasVeiculoCandidatas(celulasCandidatasVeiculo);
       const classesViariasCliente = await buscarClassesViariasCandidatas([...celulasCandidatasTapete]);
+      // Placar de desvio (D1/D2): janela de 10min de TODOS os veiculos do
+      // cliente, 1 query batched (ver buscarJanelaHistoricoCliente acima).
+      const janelaHistoricoCliente = await buscarJanelaHistoricoCliente(veiculoIdsCliente);
       // Geocode restrito deste ciclo (ver comentario acima de preencherGeocodeCacheCandidatos).
       await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
@@ -1534,6 +1630,15 @@ export async function POST(request: Request) {
           const saltoImplausivel =
             temAnterior && haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng) > 2500;
 
+          // Extraído pra variável (achado Task 3 do placar de desvio,
+          // 01/08): função pura, mesmos argumentos nos 3 pontos que já a
+          // chamavam (streak de afastamento logo abaixo, streak de
+          // fora-do-tapete, e a checagem de classe_viaria mais abaixo) — só
+          // reaproveita o mesmo cálculo, não muda nenhum deles. Também
+          // alimenta S1 do placar (ver bloco "Placar de desvio" mais
+          // abaixo), sem recalcular de novo.
+          const afastandoDeTudoAtual = afastouDeTudo(distDestinosM, distDestinosAnteriorM);
+
           let desvioStreak: number = anterior?.desvio_streak ?? 0;
           let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
           // aproximandoStreak: ciclos consecutivos aproximando (sem afastar
@@ -1563,7 +1668,7 @@ export async function POST(request: Request) {
           // fallback de cache), mesmo espirito de leituraAlvosConfiavel.
           if (podeAvancarStreaksDesvio && alvosDestinosDisponiveis) {
             const r = avancarStreaksDesvio(
-              afastouDeTudo(distDestinosM, distDestinosAnteriorM),
+              afastandoDeTudoAtual,
               { desvioStreak, aproximandoStreak }
             );
             if (r.desvioStreak === 1 && desvioStreak === 0) {
@@ -1657,7 +1762,7 @@ export async function POST(request: Request) {
           // (desvioStreak) -- sem isso, falha sustentada de alvos degrada
           // distDestinosM pra bases-only e polui esta streak tambem.
           if (pos.fresco && !saltoImplausivel && alvosDestinosDisponiveis && contagemTapeteCliente >= TAPETE_MIN_CELULAS) {
-            if (!afastouDeTudo(distDestinosM, distDestinosAnteriorM) && dentroTapete === false) {
+            if (!afastandoDeTudoAtual && dentroTapete === false) {
               foraTapeteStreak += 1;
             } else {
               foraTapeteStreak = 0;
@@ -1800,6 +1905,43 @@ export async function POST(request: Request) {
             divergenciaRumoStreak = 0;
             divergenciaRumoInicio = null;
             divergenciaRumoCaminhoM = 0;
+          }
+
+          // ─── Placar de desvio (Fase 1, SOMBRA) -- sinais que somam ──────
+          // Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md.
+          // S1/S2/S4/S5 (contribuições positivas) só somam sob os MESMOS
+          // guards que os streaks de desvio já usam -- guard duplicado de
+          // propósito (idêntico ao `if` de divergenciaGrausAtual logo acima)
+          // em vez de reescrever aquele `if`, pra não arriscar a lógica do
+          // streak já existente. Descontos (D1-D4) NÃO usam este guard --
+          // aplicam sempre que computáveis, ver bloco final mais abaixo.
+          const podeSomarSinaisPlacar =
+            pos.fresco && !saltoImplausivel && !suspensoPorChegada &&
+            podeAvancarStreaksDesvio && alvosDestinosDisponiveis && destinos.length > 0;
+
+          // D3 (placar): divergência de rumo POR DESTINO PENDENTE -- não só
+          // o mínimo agregado que divergenciaGrausAtual acima já calcula.
+          // destinoAlinhadoAproximando (lib) precisa da divergência e
+          // distância de CADA entrega individualmente. distDestinosM[i]
+          // alinha 1:1 com pendentes[i] (mesma ordem de construção de
+          // `destinos` acima: pendentes primeiro, bases depois) -- reusa a
+          // distância já calculada, não recalcula. Bases ficam de fora (D3 é
+          // sobre destino alinhado com uma ENTREGA, não retorno à base).
+          const rumoDivergenciaPorDestinoPlacar: { codigo: string; divergenciaGraus: number; distM: number }[] = [];
+          if (podeSomarSinaisPlacar) {
+            for (let i = 0; i < pendentes.length; i++) {
+              const pt = pendentes[i];
+              const divergenciaPt = divergenciaRumoGraus(
+                anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
+                pt.lat, pt.lng, pos.velocidade
+              );
+              if (divergenciaPt === null) continue;
+              rumoDivergenciaPorDestinoPlacar.push({
+                codigo: codigoDestinoPlacar(pt),
+                divergenciaGraus: divergenciaPt,
+                distM: distDestinosM[i],
+              });
+            }
           }
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
@@ -2386,7 +2528,7 @@ export async function POST(request: Request) {
           // que detectarDesvio ja tinha retornado esse alerta mascarava esse critico sem
           // deixar ele aparecer). Ver docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
           let classeViariaRumoSombra: { divergenciaGraus: number | null; limiar: number; suprimiria: boolean } | null = null;
-          const classeViariaSeriaCandidata = !afastouDeTudo(distDestinosM, distDestinosAnteriorM) && quedaClasseViaria && !saiuParadaConfirmadaRecentemente;
+          const classeViariaSeriaCandidata = !afastandoDeTudoAtual && quedaClasseViaria && !saiuParadaConfirmadaRecentemente;
           if (classeViariaSeriaCandidata) {
             const suprimiria = rumoCoerenteComDestino(divergenciaGrausAtual, RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS);
             classeViariaRumoSombra = { divergenciaGraus: divergenciaGrausAtual, limiar: RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS, suprimiria };
@@ -2611,6 +2753,18 @@ export async function POST(request: Request) {
             }
           }
 
+          // S3/D4 (placar de desvio, Fase 1 sombra): reaproveita o MESMO
+          // veredito da Camada 1 do corredor calculado logo acima
+          // (corredorInfo) -- nunca chama dentroDoCorredor/verificarCorredor
+          // de novo. "dentro" desconta D4 (false), "fora" soma S3 (true),
+          // sem verificação neste ciclo ("indisponivel"/"orcamento_estourado")
+          // ou corredorInfo ainda null vira null (nem soma nem desconta, ver
+          // SinaisPlacar em placar-desvio.ts).
+          const s3ForaDoCorredorPlacar: boolean | null =
+            corredorInfo === null || corredorInfo.veredito === "indisponivel" || corredorInfo.veredito === "orcamento_estourado"
+              ? null
+              : corredorInfo.veredito === "fora";
+
           // Achado real 30/07: veredito de sombra do filtro comportamental --
           // so calcula quando rumo-diverge foi a regra vencedora E o corredor
           // confirmou "fora" (as duas condicoes que a spec exige pra sequer
@@ -2794,6 +2948,118 @@ export async function POST(request: Request) {
               ? `Sem comunicacao ha ${pos.atraso}min`
               : (alerta?.motivo ?? null);
 
+          // ─── Placar de desvio (Fase 1, SOMBRA) -- cálculo final ─────────
+          // Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md e
+          // src/lib/placar-desvio.ts. Só calcula, persiste (junto dos
+          // streaks, mesmo UPSERT) e loga -- NUNCA muda alerta/nível/UI.
+          const placarAnterior = anterior?.placar_desvio ?? 0;
+          const estadoPlacarAnterior = anterior?.placar_desvio_estado ?? null;
+
+          // distPorCodigo do ciclo ATUAL (pra D3 do PRÓXIMO ciclo comparar
+          // "distância caindo") -- construído sempre que há pendente,
+          // independente dos guards de soma (é só um registro de estado).
+          const distPorCodigoPlacar: Record<string, number> = {};
+          for (let i = 0; i < pendentes.length; i++) {
+            distPorCodigoPlacar[codigoDestinoPlacar(pendentes[i])] = distDestinosM[i];
+          }
+
+          let sinaisPlacar: SinaisPlacar;
+          let entregasFeitasRefPlacar: number;
+          let entregasFeitasDesdePlacar: string;
+
+          if (!pos.fresco || !temPendentes) {
+            // Guard 7 (Task 3 do plano): sem posição fresca OU sem destino
+            // pendente -- placar só decai (nenhum sinal soma nem desconta
+            // neste ciclo, sem novo cálculo de D1/D2/D3 pra este veículo).
+            // entregasFeitasRef/Desde carregam do ciclo anterior sem
+            // alteração (nada confiável pra comparar agora).
+            sinaisPlacar = {
+              s1AfastandoDeTudo: false, s2RumoDivergente: false, s3ForaDoCorredor: null,
+              s4CelulaDesconhecida: false, s5DiaEstagnado: false,
+              d1ParadaPertoDeEntrega: false, d2PadraoEntrega: false, d3DestinoAlinhadoAproximando: false,
+            };
+            entregasFeitasRefPlacar = estadoPlacarAnterior?.entregasFeitasRef ?? entregas_feitas;
+            entregasFeitasDesdePlacar = estadoPlacarAnterior?.entregasFeitasDesde ?? agora.toISOString();
+          } else {
+            // S5: entregas_feitas mudou desde o ciclo anterior? Se sim,
+            // reancora a referência (nova contagem, novo relógio). Se não,
+            // mantém a referência/timestamp antigos -- é essa persistência
+            // que mede "estagnado há quanto tempo".
+            const refAnteriorPlacar = estadoPlacarAnterior?.entregasFeitasRef;
+            const mudouEntregasFeitasPlacar = refAnteriorPlacar === undefined || refAnteriorPlacar !== entregas_feitas;
+            entregasFeitasRefPlacar = mudouEntregasFeitasPlacar ? entregas_feitas : (refAnteriorPlacar ?? entregas_feitas);
+            entregasFeitasDesdePlacar = mudouEntregasFeitasPlacar
+              ? agora.toISOString()
+              : (estadoPlacarAnterior?.entregasFeitasDesde ?? agora.toISOString());
+            const minutosEstagnadoPlacar = (agora.getTime() - new Date(entregasFeitasDesdePlacar).getTime()) / 60000;
+
+            const celulaAtualPlacar = celulaDe(pos.lat, pos.lng);
+            const destinosPlacarD1: DestinoPlacar[] = pendentes.map((pt) => ({
+              lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: codigoDestinoPlacar(pt),
+            }));
+            const janelaVeiculoPlacar = janelaHistoricoCliente.get(veiculo_id) ?? [];
+
+            sinaisPlacar = {
+              s1AfastandoDeTudo: podeSomarSinaisPlacar && afastandoDeTudoAtual,
+              s2RumoDivergente: divergenciaGrausAtual !== null && divergenciaGrausAtual > 100,
+              s3ForaDoCorredor: s3ForaDoCorredorPlacar,
+              // S4: célula atual não visitada por ESTE veículo antes --
+              // celulasFamiliaridadeVeiculo já é a MESMA query batched por
+              // cliente que alimenta familiarVeiculo acima (vizinhança 3x3
+              // inclui a célula exata, ver celulas.ts), zero query nova.
+              s4CelulaDesconhecida:
+                podeSomarSinaisPlacar && !celulasFamiliaridadeVeiculo.has(`${veiculo_id}:${celulaAtualPlacar}`),
+              s5DiaEstagnado:
+                podeSomarSinaisPlacar && pendentes.length >= 2 && pos.velocidade > 0 &&
+                minutosEstagnadoPlacar >= S5_ESTAGNADO_MIN,
+              d1ParadaPertoDeEntrega: paradaRecentePertoDeEntrega(janelaVeiculoPlacar, destinosPlacarD1),
+              d2PadraoEntrega: padraoEntrega(janelaVeiculoPlacar),
+              d3DestinoAlinhadoAproximando: destinoAlinhadoAproximando(
+                { lat: pos.lat, lng: pos.lng },
+                rumoDivergenciaPorDestinoPlacar,
+                estadoPlacarAnterior?.distPorCodigo ?? {}
+              ),
+            };
+          }
+
+          const { placar: placarNovo, componentes: componentesPlacar } = atualizarPlacar(
+            placarAnterior,
+            sinaisPlacar,
+            suspensoPorChegada
+          );
+
+          // Histerese do amarelo (só pro LOG na Fase 1 -- não afeta UI/alerta
+          // nenhum): liga a partir de PLACAR_AMARELO, só desliga abaixo de
+          // PLACAR_AMARELO_DESLIGA. Vermelho não tem histerese (Fase 1).
+          const amareloAtivoAnteriorPlacar = estadoPlacarAnterior?.amareloAtivo ?? false;
+          const amareloAtivoPlacar =
+            placarNovo >= PLACAR_AMARELO ? true : placarNovo < PLACAR_AMARELO_DESLIGA ? false : amareloAtivoAnteriorPlacar;
+          const teriaVermelhoPlacar = placarNovo >= PLACAR_VERMELHO;
+
+          const estadoPlacarNovo: EstadoPlacarDesvio = {
+            distPorCodigo: distPorCodigoPlacar,
+            entregasFeitasRef: entregasFeitasRefPlacar,
+            entregasFeitasDesde: entregasFeitasDesdePlacar,
+            amareloAtivo: amareloAtivoPlacar,
+          };
+
+          // Log sombra: só grava quando placar > 0 (não inflar a tabela com
+          // frota parada, decisão explícita da spec).
+          if (placarNovo > 0) {
+            placarDesvioLogCiclo.push({
+              veiculo_id,
+              placar: placarNovo,
+              componentes: componentesPlacar,
+              teria_amarelo: amareloAtivoPlacar,
+              teria_vermelho: teriaVermelhoPlacar,
+            });
+          }
+
+          // Sombra no contexto dos alertas de desvio emitidos pelos 3
+          // detectores atuais (mesmo padrão de rumo_coerente_sombra, ver uso
+          // mais abaixo) -- nunca lido por nenhum detector, só auditoria.
+          const placarDesvioSombraContexto = { placar: placarNovo, componentes: componentesPlacar };
+
           // 5. Posicao acumulada pro batch de fim de ciclo (ver posicoesCiclo
           // acima) — nao escreve no banco aqui, so guarda em memoria.
           posicoesCiclo.push({
@@ -2830,6 +3096,8 @@ export async function POST(request: Request) {
             saiu_parada_confirmada_em: saiuParadaConfirmadaEm,
             perto_sem_marcacao_codigo: pertoSemMarcacaoCodigo,
             perto_sem_marcacao_segundos: pertoSemMarcacaoSegundos,
+            placar_desvio: placarNovo,
+            placar_desvio_estado: JSON.stringify(estadoPlacarNovo),
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -3056,6 +3324,10 @@ export async function POST(request: Request) {
                 ...(segmentoEspecifico !== null || taxaFp !== undefined
                   ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
                   : {}),
+                // Placar de desvio (Fase 1, SOMBRA) -- mesmo padrao de
+                // rumo_coerente_sombra acima, nunca lido por nenhum
+                // detector.
+                placar_desvio_sombra: placarDesvioSombraContexto,
               };
               const contextoSaidaParada = {
                 divergencia_graus_atual: divergenciaGrausAtual,
@@ -3064,6 +3336,7 @@ export async function POST(request: Request) {
                 ...(segmentoEspecifico !== null || taxaFp !== undefined
                   ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
                   : {}),
+                placar_desvio_sombra: placarDesvioSombraContexto,
               };
               if (!jaExiste) {
                 await supabase.from("alertas").insert({
@@ -3083,23 +3356,29 @@ export async function POST(request: Request) {
                   lat: ehDesvio ? desvioInicioParaContexto!.lat : pos.lat,
                   lng: ehDesvio ? desvioInicioParaContexto!.lng : pos.lng,
                   contexto: ehDesvio
-                    ? montarContextoDesvio({
-                        desvioInicio: desvioInicioParaContexto!,
-                        dentroTapete,
-                        corredorInfo,
-                        distDestinosM,
-                        distDestinosAnteriorM,
-                        desvioStreak,
-                        foraTapeteStreak,
-                        divergenciaRumoStreak,
-                        riscoAreaAtual,
-                        familiarVeiculo,
-                        classeViaAtual,
-                        quedaClasseViaria,
-                        segmentoEspecifico,
-                        taxaFp,
-                        retidaoRumoSombra,
-                      })
+                    ? {
+                        ...montarContextoDesvio({
+                          desvioInicio: desvioInicioParaContexto!,
+                          dentroTapete,
+                          corredorInfo,
+                          distDestinosM,
+                          distDestinosAnteriorM,
+                          desvioStreak,
+                          foraTapeteStreak,
+                          divergenciaRumoStreak,
+                          riscoAreaAtual,
+                          familiarVeiculo,
+                          classeViaAtual,
+                          quedaClasseViaria,
+                          segmentoEspecifico,
+                          taxaFp,
+                          retidaoRumoSombra,
+                        }),
+                        // Placar de desvio (Fase 1, SOMBRA) -- mesmo padrao
+                        // de rumo_coerente_sombra, ver contextoClasseViaria
+                        // acima. Nunca lido por nenhum detector.
+                        placar_desvio_sombra: placarDesvioSombraContexto,
+                      }
                     : ehParadaForaTapete
                       ? contextoParadaForaTapete
                       : origemClasseViaria
@@ -3145,23 +3424,26 @@ export async function POST(request: Request) {
                           // usado por consistencia/seguranca de tipos, mesmo
                           // padrao do bloco de insert acima.
                           desde: desvioInicioParaContexto!.ts,
-                          contexto: montarContextoDesvio({
-                            desvioInicio: desvioInicioParaContexto!,
-                            dentroTapete,
-                            corredorInfo,
-                            distDestinosM,
-                            distDestinosAnteriorM,
-                            desvioStreak,
-                            foraTapeteStreak,
-                            divergenciaRumoStreak,
-                            riscoAreaAtual,
-                            familiarVeiculo,
-                            classeViaAtual,
-                            quedaClasseViaria,
-                            segmentoEspecifico,
-                            taxaFp,
-                            retidaoRumoSombra,
-                          }),
+                          contexto: {
+                            ...montarContextoDesvio({
+                              desvioInicio: desvioInicioParaContexto!,
+                              dentroTapete,
+                              corredorInfo,
+                              distDestinosM,
+                              distDestinosAnteriorM,
+                              desvioStreak,
+                              foraTapeteStreak,
+                              divergenciaRumoStreak,
+                              riscoAreaAtual,
+                              familiarVeiculo,
+                              classeViaAtual,
+                              quedaClasseViaria,
+                              segmentoEspecifico,
+                              taxaFp,
+                              retidaoRumoSombra,
+                            }),
+                            placar_desvio_sombra: placarDesvioSombraContexto,
+                          },
                         }
                       : ehParadaForaTapete
                         ? { contexto: contextoParadaForaTapete }
@@ -3245,7 +3527,7 @@ export async function POST(request: Request) {
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
               ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em,
               perto_sem_marcacao_codigo, perto_sem_marcacao_segundos,
-              divergencia_rumo_caminho_m)
+              divergencia_rumo_caminho_m, placar_desvio, placar_desvio_estado)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
@@ -3259,7 +3541,7 @@ export async function POST(request: Request) {
              c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb,
              c.saiu_parada_confirmada_em::timestamptz,
              c.perto_sem_marcacao_codigo, c.perto_sem_marcacao_segundos,
-             c.divergencia_rumo_caminho_m
+             c.divergencia_rumo_caminho_m, c.placar_desvio, c.placar_desvio_estado::jsonb
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
@@ -3267,7 +3549,7 @@ export async function POST(request: Request) {
              $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
              $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
              $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[],
-             $31::integer[], $32::integer[], $33::float8[]
+             $31::integer[], $32::integer[], $33::float8[], $34::numeric[], $35::text[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
                   entregas_feitas, entregas_total, local, desvio_streak, rumo,
@@ -3275,7 +3557,8 @@ export async function POST(request: Request) {
                   aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
                   no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio,
                   saiu_parada_confirmada_em, perto_sem_marcacao_codigo,
-                  perto_sem_marcacao_segundos, divergencia_rumo_caminho_m)
+                  perto_sem_marcacao_segundos, divergencia_rumo_caminho_m,
+                  placar_desvio, placar_desvio_estado)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -3311,7 +3594,9 @@ export async function POST(request: Request) {
              saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
              perto_sem_marcacao_codigo = EXCLUDED.perto_sem_marcacao_codigo,
              perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos,
-             divergencia_rumo_caminho_m = EXCLUDED.divergencia_rumo_caminho_m`,
+             divergencia_rumo_caminho_m = EXCLUDED.divergencia_rumo_caminho_m,
+             placar_desvio = EXCLUDED.placar_desvio,
+             placar_desvio_estado = EXCLUDED.placar_desvio_estado`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -3346,6 +3631,8 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.perto_sem_marcacao_codigo),
             posicoesCiclo.map((p) => p.perto_sem_marcacao_segundos),
             posicoesCiclo.map((p) => p.divergencia_rumo_caminho_m),
+            posicoesCiclo.map((p) => p.placar_desvio),
+            posicoesCiclo.map((p) => p.placar_desvio_estado),
           ]
         );
       } catch (errPosicoes) {
@@ -3398,6 +3685,14 @@ export async function POST(request: Request) {
     if (rumoDivergeSombraCiclo.length > 0) {
       const { error: erroRumoDivergeSombra } = await supabase.from("rumo_diverge_sombra").insert(rumoDivergeSombraCiclo);
       if (erroRumoDivergeSombra) console.warn(`Aviso: erro ao gravar rumo_diverge_sombra: ${erroRumoDivergeSombra.message}`);
+    }
+
+    // Placar de desvio (Fase 1, SOMBRA, log): mesmo padrao nao-critico de
+    // cercaSombraCiclo/rumoDivergeSombraCiclo -- falha aqui nunca derruba o
+    // motor. Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md.
+    if (placarDesvioLogCiclo.length > 0) {
+      const { error: erroPlacarDesvioLog } = await supabase.from("placar_desvio_log").insert(placarDesvioLogCiclo);
+      if (erroPlacarDesvioLog) console.warn(`Aviso: erro ao gravar placar_desvio_log: ${erroPlacarDesvioLog.message}`);
     }
 
     // Atualiza baseline_veiculo e baseline_frota incrementalmente (Welford)
