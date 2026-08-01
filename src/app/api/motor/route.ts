@@ -1293,11 +1293,17 @@ export async function POST(request: Request) {
       if (veiculoIds.length === 0) return new Set();
       const pgPresenca = await pool.connect();
       try {
+        // dataHojeSP, NAO current_date: o servidor roda em +02 e Sao Paulo
+        // e -03, entao das 19h as 23h59 (horario de SP) o current_date do
+        // Postgres JA e o dia seguinte. Com current_date, a presenca gravava
+        // e procurava em dias diferentes justamente no fim do turno --
+        // feature morria em silencio toda tarde. Mesmo cuidado que o resto
+        // do motor ja tinha com romaneio_data.
         const { rows } = await pgPresenca.query<{ veiculo_id: string; ponto_codigo: string }>(
           `SELECT veiculo_id, ponto_codigo
              FROM entregas_presenca
-            WHERE dia = current_date AND veiculo_id = ANY($1::uuid[])`,
-          [veiculoIds]
+            WHERE dia = $2::date AND veiculo_id = ANY($1::uuid[])`,
+          [veiculoIds, dataHojeSP]
         );
         return new Set(rows.map((r) => `${r.veiculo_id}:${r.ponto_codigo}`));
       } catch {
@@ -4104,14 +4110,17 @@ export async function POST(request: Request) {
       ];
       try {
         await pool.query(
+          // $4 = dataHojeSP (ver comentario em buscarPresencaEntregaCliente):
+          // current_date do servidor (+02) vira o dia seguinte as 19h de SP.
           `INSERT INTO entregas_presenca (veiculo_id, ponto_codigo, dia, parado_seg)
-           SELECT v, p, current_date, s
+           SELECT v, p, $4::date, s
              FROM unnest($1::uuid[], $2::bigint[], $3::int[]) AS t(v, p, s)
            ON CONFLICT DO NOTHING`,
           [
             presencaUnica.map((p) => p.veiculo_id),
             presencaUnica.map((p) => p.ponto_codigo),
             presencaUnica.map((p) => p.parado_seg),
+            dataHojeSP,
           ]
         );
       } catch (e) {
