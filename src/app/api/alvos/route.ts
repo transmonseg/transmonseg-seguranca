@@ -40,16 +40,19 @@ type LinhaRomaneio = {
 // Agora: os pontos da Unitrac continuam sendo a base (o motor segue usando
 // so a Unitrac pra detectar desvio -- isso NAO muda), e o romaneio do dia
 // entra por cima, casado por NF, para:
-//   1. corrigir a COORDENADA quando o romaneio tem o endereco geocodificado
-//      (medicao 01/08: o ponto da Unitrac erra mais de 300m em ~35% dos
-//      casos; o endereco do romaneio e a fonte mais fiel que existe);
-//   2. trazer o nome real do cliente e o endereco (a Unitrac manda so
-//      identificador);
-//   3. marcar como FEITO o que a Unitrac nao marcou mas o caminhao ja
+//   1. trazer o nome real do cliente e o endereco legivel (a Unitrac manda
+//      so um identificador cru);
+//   2. marcar como FEITO o que a Unitrac nao marcou mas o caminhao ja
 //      entregou (entregas_presenca -- "parada no local conta como
-//      entregue").
-// NF do romaneio sem alvo correspondente na Unitrac entra como ponto
-// proprio, senao entrega que so existe no romaneio ficaria invisivel.
+//      entregue");
+//   3. mostrar NF que so existe no romaneio, sem alvo correspondente na
+//      Unitrac -- senao entrega real ficaria invisivel no mapa.
+//
+// A COORDENADA continua sendo a da Unitrac. A primeira versao desta rota
+// preferia a do romaneio, por suposicao minha de que o endereco
+// geocodificado seria mais fiel. MEDIDO e REFUTADO no mesmo dia (ver o
+// comentario no merge abaixo): a coordenada da Unitrac erra menos
+// (mediana 43m x 152m). O romaneio agrega TEXTO, nao precisao geografica.
 async function buscarRomaneioPorPlaca(placas: string[]): Promise<Map<string, LinhaRomaneio[]>> {
   const mapa = new Map<string, LinhaRomaneio[]>();
   if (placas.length === 0) return mapa;
@@ -140,13 +143,22 @@ export async function GET(request: Request) {
           continue;
         }
         nfsUsadas.add(normalizarNf(r.nf));
-        const temCoordRomaneio = r.lat != null && r.lng != null;
         todos.push({
           ...pt,
-          // Coordenada do romaneio manda quando existe (endereco real
-          // geocodificado); sem ela, mantem a da Unitrac.
-          lat: temCoordRomaneio ? r.lat! : pt.lat,
-          lng: temCoordRomaneio ? r.lng! : pt.lng,
+          // COORDENADA: fica a da Unitrac, sempre. A primeira versao desta
+          // rota preferia a do romaneio -- MEDIDO e refutado no mesmo dia,
+          // comparando 1.253 NFs (romaneio x alvo da Unitrac, mesma NF)
+          // contra as paradas reais dos caminhoes em 01/08:
+          //
+          //            mediana do erro   <=100m   <=300m
+          //   Unitrac        43m           65%      80%
+          //   Romaneio      152m           43%      63%
+          //   (romaneio so fica mais perto em 30% dos casos)
+          //
+          // O endereco do romaneio passa por geocodificacao (CNEFE/OSM/
+          // Nominatim), que erra mais que a coordenada que a Unitrac ja tem
+          // cadastrada do ponto. O romaneio agrega TEXTO (nome do cliente,
+          // endereco legivel), nao precisao geografica.
           nome: r.cliente_nome || pt.nome,
           observacoes: r.endereco_bruto || pt.observacoes,
           feito: pt.feito || entreguePorParada,
