@@ -916,7 +916,10 @@ export async function POST(request: Request) {
     const presencaConfirmadaCiclo: { veiculo_id: string; nf: string }[] = [];
     // Parada no local conta como entregue (usuario, 01/08) -- coletado por
     // veiculo, gravado em UM insert no fim do ciclo (ver ENTREGA_PRESENCA_ATIVA).
-    const presencaEntregaCiclo: { veiculo_id: string; ponto_codigo: number; parado_seg: number }[] = [];
+    const presencaEntregaCiclo: {
+      veiculo_id: string; ponto_codigo: number; parado_seg: number;
+      lat: number; lng: number; cliente_id: string;
+    }[] = [];
     // Anotacao de proximidade em alertas de desvio ATIVOS -- achado real
     // 18/07 (analise pedida pelo usuario, ver
     // docs/superpowers/specs/2026-07-18-anotacao-proximidade-desvio-design.md):
@@ -2523,6 +2526,12 @@ export async function POST(request: Request) {
                   veiculo_id,
                   ponto_codigo: pt.pontoCodigo,
                   parado_seg: paradoMin * 60,
+                  // lat/lng/cliente_id (01/08): alimenta o aprendizado do
+                  // local real de entrega por acumulo de visitas (migration
+                  // 028, pontos_aprendidos) -- SO coleta, nao afeta alerta.
+                  lat: pos.lat,
+                  lng: pos.lng,
+                  cliente_id: cliente.id,
                 });
               }
             }
@@ -4112,15 +4121,22 @@ export async function POST(request: Request) {
         await pool.query(
           // $4 = dataHojeSP (ver comentario em buscarPresencaEntregaCliente):
           // current_date do servidor (+02) vira o dia seguinte as 19h de SP.
-          `INSERT INTO entregas_presenca (veiculo_id, ponto_codigo, dia, parado_seg)
-           SELECT v, p, $4::date, s
-             FROM unnest($1::uuid[], $2::bigint[], $3::int[]) AS t(v, p, s)
+          // lat/lng/cliente_id (01/08): alimenta pontos_aprendidos (migration
+          // 028) -- SO coleta, recalculo noturno via pg_cron, nao afeta
+          // alerta nenhum ainda.
+          `INSERT INTO entregas_presenca (veiculo_id, ponto_codigo, dia, parado_seg, lat, lng, cliente_id)
+           SELECT v, p, $4::date, s, la, ln, c
+             FROM unnest($1::uuid[], $2::bigint[], $3::int[], $5::double precision[], $6::double precision[], $7::uuid[])
+                  AS t(v, p, s, la, ln, c)
            ON CONFLICT DO NOTHING`,
           [
             presencaUnica.map((p) => p.veiculo_id),
             presencaUnica.map((p) => p.ponto_codigo),
             presencaUnica.map((p) => p.parado_seg),
             dataHojeSP,
+            presencaUnica.map((p) => p.lat),
+            presencaUnica.map((p) => p.lng),
+            presencaUnica.map((p) => p.cliente_id),
           ]
         );
       } catch (e) {
