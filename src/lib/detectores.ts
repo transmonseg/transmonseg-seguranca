@@ -1453,12 +1453,25 @@ export function detectarDesvio(p: PosicaoNormalizada, ctx: CtxDesvio): Alerta | 
   // recente, suprime SO este branch (o veiculo continua elegivel a
   // qualquer outro gatilho de desvio nesta mesma chamada).
   //
-  // DESLIGADA em 01/08 por DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE (ver a
-  // constante no topo do arquivo): o veiculo aqui esta indo EM DIRECAO a
-  // um cliente (e' o proprio !afastandoDeTudo) -- pela regra do usuario
-  // isso nao e' desvio. 201 alertas em 3 dias, 130 marcados falso.
+  // RELIGADA em 03/08 (pedido explicito do usuario: "antes dava muito e
+  // muitos reais, desde sabado piorou"). Historico completo de um mes de
+  // clique INDIVIDUAL (nao em massa): rua estreita sozinha pegou 16 casos
+  // REAIS confirmados manualmente, incluindo RQV-6C22 e TUC-1D15 -- os
+  // mesmos que o cliente confirmou por telefone em 31/07. Tinha sido
+  // desligada em 01/08 (DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE, ver a
+  // constante no topo do arquivo) junto com rumo_diverge (so 1 real no
+  // mes inteiro) e saida_parada (0 reais no mes inteiro) -- religar as 3
+  // juntas voltaria tambem o ruido das outras duas sem trazer nenhum caso
+  // real a mais. So classe_viaria volta aqui; rumo_diverge e saida_parada
+  // CONTINUAM desligadas (guard `!desvioSoAfastandoOuForaDoTapete` mantido
+  // nos irmaos, mais abaixo).
+  //
+  // Continua filtrada pelo D1/D3 do placar (classeViariaSuprimidaPorEntrega,
+  // gate ja implementado e revisado em 01/08 -- so dispara quando NAO ha
+  // prova de atividade de entrega no ciclo): medicao daquele dia mostrou
+  // esse filtro sozinho ja suprimindo 73% dos falso-positivo confirmados
+  // sem esconder nenhum dos casos reais medidos.
   if (
-    !desvioSoAfastandoOuForaDoTapete &&
     !afastandoDeTudo &&
     ctx.quedaClasseViaria &&
     !ctx.saiuParadaConfirmadaRecentemente &&

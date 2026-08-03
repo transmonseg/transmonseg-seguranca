@@ -2415,8 +2415,23 @@ describe("politica de producao 01/08: so afastando-de-todos ou lugar-sem-sentido
   };
   const emMov = posicaoBase({ velocidade: 40 });
 
-  it("rua estreita indo em direcao ao cliente: NAO e desvio (era a regra de 201 alertas/3 dias, 130 marcados falso)", () => {
-    expect(detectarDesvio(emMov, { ...aproximando, quedaClasseViaria: true })).toBeNull();
+  it("rua estreita RELIGADA em 03/08: sem prova de entrega (D1/D3) no ciclo, dispara normal", () => {
+    // Achado 03/08: no mes inteiro de clique individual, rua estreita
+    // sozinha pegou 16 casos REAIS confirmados (incluindo RQV-6C22 e
+    // TUC-1D15, os que o cliente confirmou por telefone) -- desligar ela
+    // junto com rumo_diverge/saida_parada (so 1 e 0 reais) jogou fora sinal
+    // de verdade sem necessidade. Volta a disparar, mas continua filtrada
+    // pelo D1/D3 (proximo teste).
+    const a = detectarDesvio(emMov, { ...aproximando, quedaClasseViaria: true });
+    expect(a).not.toBeNull();
+    expect(a?.tipo).toBe("desvio");
+    expect(a?.origemDesvio).toBe("classe_viaria");
+  });
+
+  it("rua estreita COM prova de entrega (classeViariaSuprimidaPorEntrega=true): continua suprimida", () => {
+    expect(
+      detectarDesvio(emMov, { ...aproximando, quedaClasseViaria: true, classeViariaSuprimidaPorEntrega: true })
+    ).toBeNull();
   });
 
   it("direcao divergente indo em direcao ao cliente: NAO e desvio (era 37 alertas/3 dias, ZERO marcado real)", () => {
@@ -2449,12 +2464,16 @@ describe("politica de producao 01/08: so afastando-de-todos ou lugar-sem-sentido
     expect(a?.motivo).toContain("caminho que a frota nunca percorreu");
   });
 
-  it("reversibilidade: com desvioSoAfastandoOuForaDoTapete=false, rua estreita volta a disparar", () => {
+  it("reversibilidade: desvioSoAfastandoOuForaDoTapete continua controlando rumo_diverge (classe_viaria religada 03/08 nao depende mais desta flag)", () => {
+    // rumo_diverge so teve 1 caso real no mes inteiro (97% falso) --
+    // CONTINUA desligada por padrao. false restaura o comportamento antigo
+    // pra quem precisar comparar/depurar.
+    expect(detectarDesvio(emMov, { ...aproximando, divergenciaRumoStreak: 5 })).toBeNull();
     const a = detectarDesvio(emMov, {
       ...aproximando,
-      quedaClasseViaria: true,
+      divergenciaRumoStreak: 5,
       desvioSoAfastandoOuForaDoTapete: false,
     });
-    expect(a?.origemDesvio).toBe("classe_viaria");
+    expect(a?.origemDesvio).toBe("rumo_diverge");
   });
 });
