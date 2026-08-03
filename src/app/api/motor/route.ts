@@ -3522,17 +3522,23 @@ export async function POST(request: Request) {
           // raciocinio completo. Ao contrario do bloco irmao acima, este NAO
           // exige rota concluida nem baseOcupada: fecha assim que o veiculo
           // chega de verdade em QUALQUER destino/base conhecido (pendente ou
-          // base, ja resolvido por suspensoPorChegada com o piso de 300m,
-          // ~linha 1939) e para la por tempo real. Motivado por achado real
+          // base, ja resolvido por chegouEmDestinoConhecido com o piso de
+          // 300m, ~linha 1967 -- NAO suspensoPorChegada cru, ver comentario
+          // la em cima) e para la por tempo real. Motivado por achado real
           // KYK-8G07: 7 disparos do mesmo alerta num unico dia, cada um um
           // blip de navegacao normal entre paradas de ultima milha -- sem
           // este mecanismo o alerta nunca fecha sozinho (TIPOS_NAO_GERENCIADOS)
-          // e a fila de ativos reenchia de 0 pra 84-85 em <24h.
+          // e a fila de ativos reenchia de 0 pra 84-85 em <24h. Verificado
+          // depois com dado real (revisao 03/08): o proprio KYK-8G07 estava
+          // parado num posto de gasolina a 2,5km do destino real quando um
+          // dos 7 disparos aconteceu -- e exatamente esse caso que a
+          // exclusao de ponto_seguro em chegouEmDestinoConhecido bloqueia.
           //
-          // Mesmos guards de seguranca do bloco irmao (pos.fresco,
-          // !alertaJammer, pos.velocidade===0) -- protegem contra o mesmo
-          // cenario de perigo: um veiculo sequestrado passando raspando
-          // perto (dentro do raio) de um cliente/base durante a fuga, SEM
+          // Guards de seguranca do bloco irmao (pos.fresco, !alertaJammer,
+          // pos.velocidade===0) + pos.atraso<=10 (guard extra deste bloco,
+          // ver comentario abaixo) -- protegem contra o mesmo cenario de
+          // perigo: um veiculo sequestrado passando raspando perto (dentro
+          // do raio) de um cliente/base durante a fuga, SEM
           // parar, nao pode fechar o alerta. Isso exige pos.velocidade===0 E
           // paradoMin>=2 (dois minutos parado no MESMO ponto, nao so uma
           // leitura passageira) -- so "passar perto" nao satisfaz nenhum dos
