@@ -1070,17 +1070,26 @@ export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo:
 // por acao manual) SO pra este caso especifico, exatamente como o mecanismo
 // irmao acima ja faz pra rota-concluida.
 //
-// Reusa suspensoPorChegada (route.ts, calculado todo ciclo por veiculo --
-// geofence de 300m minimo contra o destino/base mais proximo, ver
-// suspenderPorChegada em lib/unitrac.ts) em vez de recalcular chegada aqui:
-// mesma definicao de "chegou de verdade" ja usada pra suspender streaks de
-// desvio, sem duplicar logica de raio/geometria. Diferente do irmao
-// rota-concluida, este bloco NAO exige baseOcupada nem entregas_total/
-// entregas_feitas -- suspensoPorChegada por si so ja cobre tanto pendente
-// quanto base (ver comentario onde e' calculado em route.ts). O gate de
-// seguranca contra "sequestro passando raspando perto de um destino" nao
-// vem de exigir base pequena (nao ha base aqui) e sim do MESMO par de guards
-// que ja protege o irmao: pos.fresco && !alertaJammer && pos.velocidade===0
+// Reusa a MESMA geofence de suspensoPorChegada (route.ts, 300m minimo
+// contra o destino/base mais proximo, ver suspenderPorChegada em
+// lib/unitrac.ts) -- mas SEM o curto-circuito de ponto_seguro (posto de
+// gasolina). Achado CRITICO da revisao independente 03/08 (mesma classe
+// do CEASA-RJ em 27/07, achado com dado real): suspensoPorChegada cru da
+// true tambem parado em QUALQUER um dos ~1.115 postos de gasolina do RJ
+// (scripts/ingerir-pontos-seguros.mjs), sem nenhuma relacao com a rota do
+// veiculo -- confirmado com o caso real SRQ-9F05 (52km de afastamento
+// acumulado, teria fechado por parar 3min num posto a 124km da base).
+// chegouEmDestinoConhecido (route.ts, calculado ao lado de
+// suspensoPorChegada com emPontoSeguro forcado false) e' o parametro
+// correto aqui -- o campo do ctx chama-se assim de proposito (nao
+// "suspensoPorChegada") pra nunca mais confundir os dois.
+//
+// Diferente do irmao rota-concluida, este bloco NAO exige baseOcupada nem
+// entregas_total/entregas_feitas -- chegouEmDestinoConhecido por si so ja
+// cobre tanto pendente quanto base. O gate de seguranca contra "sequestro
+// passando raspando perto de um destino" nao vem de exigir base pequena
+// (nao ha base aqui) e sim do MESMO par de guards que ja protege o irmao:
+// pos.fresco && pos.atraso<=10 && !alertaJammer && pos.velocidade===0
 // (aplicados no caller, route.ts) + paradoMin >= minimo abaixo. Um veiculo
 // so PASSANDO perto de um destino durante uma fuga nao fica com
 // velocidade===0 por 2 minutos seguidos no mesmo ponto -- precisa ter
@@ -1088,10 +1097,10 @@ export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo:
 export const AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN = 2;
 
 export function deveAutoResolverAfastandoChegadaReal(ctx: {
-  suspensoPorChegada: boolean;
+  chegouEmDestino: boolean;
   paradoMin: number;
 }): boolean {
-  return ctx.suspensoPorChegada && ctx.paradoMin >= AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN;
+  return ctx.chegouEmDestino && ctx.paradoMin >= AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN;
 }
 
 // BLOCKER 1 (revisao independente 27/07): mapaTiposSilenciados (route.ts)

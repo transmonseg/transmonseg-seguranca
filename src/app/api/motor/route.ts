@@ -1950,6 +1950,24 @@ export async function POST(request: Request) {
             ? suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, emPontoSeguro)
             : emPontoSeguro;
 
+          // Achado CRITICO da revisao independente 03/08 (mesma classe do
+          // achado do CEASA-RJ em 27/07): suspensoPorChegada da true tambem
+          // quando emPontoSeguro=true (curto-circuito em suspenderPorChegada,
+          // unitrac.ts), e emPontoSeguro cobre TODO posto de gasolina do
+          // estado do RJ (scripts/ingerir-pontos-seguros.mjs, ~1.115
+          // geofences, ~22km2 total) -- nada a ver com destino/base da rota.
+          // Verificado com dado real: veiculo SRQ-9F05 se afastou 52km de
+          // todos os destinos e teria fechado o alerta sozinho por parar
+          // 3min num posto a 124km da base. chegouEmDestinoConhecido e' a
+          // MESMA geofence de chegada, mas SEM o curto-circuito de ponto
+          // seguro -- so usada pelo auto-resolve por chegada parcial
+          // (deveAutoResolverAfastandoChegadaReal), abaixo. suspensoPorChegada
+          // (com ponto seguro) continua exatamente como era em todo resto do
+          // arquivo -- nao mexe em nenhum outro consumidor.
+          const chegouEmDestinoConhecido =
+            idxMaisProximo >= 0 &&
+            suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, false);
+
           // Divergencia de rumo (achado 25/07): compara rumoMovimento (ja
           // calculado acima) contra o rumo esperado ate o destino mais
           // proximo. Streak persistido igual foraTapeteStreak.
@@ -3519,9 +3537,25 @@ export async function POST(request: Request) {
           // paradoMin>=2 (dois minutos parado no MESMO ponto, nao so uma
           // leitura passageira) -- so "passar perto" nao satisfaz nenhum dos
           // dois.
-          if (pos.fresco && !alertaJammer && pos.velocidade === 0 && suspensoPorChegada) {
+          //
+          // pos.atraso<=10 (achado IMPORTANT da revisao 03/08): !alertaJammer
+          // exige ignicao ligada (detectarJammer retorna null com ignicao
+          // desligada, ver detectores.ts) -- posicao CONGELADA com ignicao
+          // desligada passa por pos.fresco (que aceita ate 60min de atraso)
+          // sem nunca disparar jammer, e paradoMin cresce so pelo relogio de
+          // parede. No bloco irmao (rota concluida) a area elegivel e meia
+          // duzia de bases pequenas; aqui, com o raio de 300m + chegouEmDestinoConhecido,
+          // a area e ordens de magnitude maior -- vale a checagem extra, e e
+          // barata (paradoMin>=2 ja exige leituras frescas mesmo).
+          if (
+            pos.fresco &&
+            pos.atraso <= 10 &&
+            !alertaJammer &&
+            pos.velocidade === 0 &&
+            chegouEmDestinoConhecido
+          ) {
             for (const a of alertasAbertos.filter(elegivelParaAutoResolveAfastando)) {
-              if (deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada, paradoMin })) {
+              if (deveAutoResolverAfastandoChegadaReal({ chegouEmDestino: chegouEmDestinoConhecido, paradoMin })) {
                 afastandoChegadaRealAutoResolveCiclo.push({ alerta_id: a.id });
               }
             }

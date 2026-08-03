@@ -2190,24 +2190,32 @@ describe("deveAutoResolverAfastandoRotaConcluida", () => {
 // auto-resolucao de "afastando-se de todos", chegada real PARCIAL/mid-route
 // (nao precisa esperar a rota inteira terminar, diferente do irmao acima).
 describe("deveAutoResolverAfastandoChegadaReal", () => {
-  it("NAO resolve se nao chegou de verdade (suspensoPorChegada=false)", () => {
+  // Achado CRITICO da revisao independente 03/08: o campo chama-se
+  // "chegouEmDestino" (nao "suspensoPorChegada") de proposito -- o caller
+  // (route.ts) tem que passar o calculo SEM o curto-circuito de
+  // ponto_seguro (posto de gasolina), senao qualquer parada de 2min num dos
+  // ~1.115 postos do RJ fecha um desvio confirmado sem nenhuma relacao com
+  // a rota (caso real SRQ-9F05: 52km de afastamento, parou 3min num posto a
+  // 124km da base). Este teste so cobre a aritmetica do predicado; a
+  // exclusao de ponto_seguro em si vive em route.ts (chegouEmDestinoConhecido).
+  it("NAO resolve se nao chegou de verdade (chegouEmDestino=false)", () => {
     expect(
-      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: false, paradoMin: 10 })
+      deveAutoResolverAfastandoChegadaReal({ chegouEmDestino: false, paradoMin: 10 })
     ).toBe(false);
   });
   it("NAO resolve se chegou mas ainda nao parou o suficiente (paradoMin=1)", () => {
     expect(
-      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: true, paradoMin: 1 })
+      deveAutoResolverAfastandoChegadaReal({ chegouEmDestino: true, paradoMin: 1 })
     ).toBe(false);
   });
   it("resolve no limiar exato (paradoMin=2)", () => {
     expect(
-      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: true, paradoMin: AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN })
+      deveAutoResolverAfastandoChegadaReal({ chegouEmDestino: true, paradoMin: AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN })
     ).toBe(true);
   });
   it("resolve com parada bem acima do minimo (paradoMin=10)", () => {
     expect(
-      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: true, paradoMin: 10 })
+      deveAutoResolverAfastandoChegadaReal({ chegouEmDestino: true, paradoMin: 10 })
     ).toBe(true);
   });
 });
