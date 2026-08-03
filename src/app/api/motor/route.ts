@@ -1724,6 +1724,22 @@ export async function POST(request: Request) {
               )
           );
           const temPendentes = pendentes.length > 0;
+          // Corroboração D1/D3 do placar (classeViariaSuprimidaPorEntrega):
+          // usa TODOS os pontos válidos do dia deste veículo, não só
+          // `pendentes`. Achado real 03/08 (caso UBO-5E01, "SENDAS BARRA
+          // I"): entregas_presenca marca o ponto como feito ~2min depois do
+          // veículo parar (ver acima), tirando-o de `pendentes` -- e D1/D3
+          // usavam SO pendentes, então um caminhão que fica 3h+ parado no
+          // MESMO local de entrega perde toda corroboração assim que a
+          // entrega é marcada feita, mesmo continuando fisicamente no mesmo
+          // lugar. Estar parado em cima de um ponto JÁ entregue é prova
+          // AINDA MAIS forte de atividade de entrega, não mais fraca --
+          // então aqui NÃO filtra feito/presença, só coordenada válida.
+          const pontosVeiculoParaCorroboracao = (pontosVeiculo ?? []).filter(temCoordenadaValida);
+          const temPontosParaCorroboracao = pontosVeiculoParaCorroboracao.length > 0;
+          const distDestinosCorroboracaoM = pontosVeiculoParaCorroboracao.map((pt) =>
+            haversineM(pos.lat, pos.lng, pt.lat, pt.lng)
+          );
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))
             .filter((c): c is { lat: number; lng: number } => c !== null);
@@ -2079,9 +2095,9 @@ export async function POST(request: Request) {
           // !temPendentes)` mais abaixo): descontos aplicam sempre que
           // computáveis.
           const rumoDivergenciaPorDestinoPlacar: { codigo: string; divergenciaGraus: number; distM: number }[] = [];
-          if (pos.fresco && temPendentes) {
-            for (let i = 0; i < pendentes.length; i++) {
-              const pt = pendentes[i];
+          if (pos.fresco && temPontosParaCorroboracao) {
+            for (let i = 0; i < pontosVeiculoParaCorroboracao.length; i++) {
+              const pt = pontosVeiculoParaCorroboracao[i];
               const divergenciaPt = divergenciaRumoGraus(
                 anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
                 pt.lat, pt.lng,
@@ -2100,7 +2116,7 @@ export async function POST(request: Request) {
               rumoDivergenciaPorDestinoPlacar.push({
                 codigo: codigoDestinoPlacar(pt),
                 divergenciaGraus: divergenciaPt,
-                distM: distDestinosM[i],
+                distM: distDestinosCorroboracaoM[i],
               });
             }
           }
@@ -2748,8 +2764,8 @@ export async function POST(request: Request) {
           let d1ParadaPertoDeEntregaAtual = false;
           let d2PadraoEntregaAtual = false;
           let d3DestinoAlinhadoAproximandoAtual = false;
-          if (pos.fresco && temPendentes) {
-            const destinosPlacarD1: DestinoPlacar[] = pendentes.map((pt) => ({
+          if (pos.fresco && temPontosParaCorroboracao) {
+            const destinosPlacarD1: DestinoPlacar[] = pontosVeiculoParaCorroboracao.map((pt) => ({
               lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: codigoDestinoPlacar(pt),
             }));
             const janelaVeiculoPlacar = janelaHistoricoCliente.get(veiculo_id) ?? [];
@@ -3160,11 +3176,16 @@ export async function POST(request: Request) {
           const estadoPlacarAnterior = anterior?.placar_desvio_estado ?? null;
 
           // distPorCodigo do ciclo ATUAL (pra D3 do PRÓXIMO ciclo comparar
-          // "distância caindo") -- construído sempre que há pendente,
-          // independente dos guards de soma (é só um registro de estado).
+          // "distância caindo") -- construído a partir de TODOS os pontos
+          // válidos do dia (pontosVeiculoParaCorroboracao, não só
+          // `pendentes` -- mesmo motivo do achado 03/08 acima: um ponto já
+          // marcado feito precisa continuar tendo "distância anterior"
+          // registrada, senão D3 nunca consegue comparar aproximação pra
+          // ele), independente dos guards de soma (é só um registro de
+          // estado).
           const distPorCodigoPlacar: Record<string, number> = {};
-          for (let i = 0; i < pendentes.length; i++) {
-            distPorCodigoPlacar[codigoDestinoPlacar(pendentes[i])] = distDestinosM[i];
+          for (let i = 0; i < pontosVeiculoParaCorroboracao.length; i++) {
+            distPorCodigoPlacar[codigoDestinoPlacar(pontosVeiculoParaCorroboracao[i])] = distDestinosCorroboracaoM[i];
           }
 
           let sinaisPlacar: SinaisPlacar;
