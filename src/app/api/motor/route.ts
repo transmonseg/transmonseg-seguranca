@@ -54,6 +54,7 @@ import {
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
+  deveAutoResolverAfastandoChegadaReal,
   saiuParadaConfirmadaHaMenosDe,
   deveMarcarSaidaParadaConfirmada,
   type Alerta,
@@ -949,6 +950,15 @@ export async function POST(request: Request) {
     // acumulador por ciclo + flush em lote ja usado por rotaConcluidaCiclo
     // acima.
     const afastandoRotaConcluidaAutoResolveCiclo: { alerta_id: string }[] = [];
+
+    // SEGUNDO caso de auto-resolucao de "afastando-se de todos os destinos"
+    // (achado real 03/08, ver deveAutoResolverAfastandoChegadaReal em
+    // detectores.ts pro raciocinio completo): fecha o alerta quando o
+    // veiculo chega de verdade em QUALQUER destino/base conhecido e para la
+    // por tempo real, sem esperar a rota inteira terminar (diferente do
+    // acumulador acima, que so cobre rota 100% concluida). Mesmo padrao de
+    // acumulador por ciclo + flush em lote.
+    const afastandoChegadaRealAutoResolveCiclo: { alerta_id: string }[] = [];
 
     // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
     // mesmo padrao de mapaBaselineVeiculo/Frota acima. So aplica o fator
@@ -3488,6 +3498,35 @@ export async function POST(request: Request) {
             }
           }
 
+          // SEGUNDO caso de auto-resolucao de "afastando-se de todos os
+          // destinos" (achado real 03/08) -- ver
+          // deveAutoResolverAfastandoChegadaReal em detectores.ts pro
+          // raciocinio completo. Ao contrario do bloco irmao acima, este NAO
+          // exige rota concluida nem baseOcupada: fecha assim que o veiculo
+          // chega de verdade em QUALQUER destino/base conhecido (pendente ou
+          // base, ja resolvido por suspensoPorChegada com o piso de 300m,
+          // ~linha 1939) e para la por tempo real. Motivado por achado real
+          // KYK-8G07: 7 disparos do mesmo alerta num unico dia, cada um um
+          // blip de navegacao normal entre paradas de ultima milha -- sem
+          // este mecanismo o alerta nunca fecha sozinho (TIPOS_NAO_GERENCIADOS)
+          // e a fila de ativos reenchia de 0 pra 84-85 em <24h.
+          //
+          // Mesmos guards de seguranca do bloco irmao (pos.fresco,
+          // !alertaJammer, pos.velocidade===0) -- protegem contra o mesmo
+          // cenario de perigo: um veiculo sequestrado passando raspando
+          // perto (dentro do raio) de um cliente/base durante a fuga, SEM
+          // parar, nao pode fechar o alerta. Isso exige pos.velocidade===0 E
+          // paradoMin>=2 (dois minutos parado no MESMO ponto, nao so uma
+          // leitura passageira) -- so "passar perto" nao satisfaz nenhum dos
+          // dois.
+          if (pos.fresco && !alertaJammer && pos.velocidade === 0 && suspensoPorChegada) {
+            for (const a of alertasAbertos.filter(elegivelParaAutoResolveAfastando)) {
+              if (deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada, paradoMin })) {
+                afastandoChegadaRealAutoResolveCiclo.push({ alerta_id: a.id });
+              }
+            }
+          }
+
           // Resolucao automatica generica: todos os tipos EXCETO os listados
           // em TIPOS_NAO_GERENCIADOS (favela, desvio, bypass_entrega).
           // Achado real 11/07 (usuario pediu remocao explicita do
@@ -4250,6 +4289,48 @@ export async function POST(request: Request) {
         );
       } catch (erroAutoResolveAfastando) {
         console.warn(`Aviso: erro ao auto-resolver afastando-de-destinos (rota concluida): ${String(erroAutoResolveAfastando)}`);
+      }
+    }
+
+    // Flush do SEGUNDO caso de auto-resolucao de "afastando-se de todos os
+    // destinos" (achado real 03/08, KYK-8G07: 7 disparos/dia do mesmo
+    // alerta, fila de ativos reenchendo de 0 pra 84-85 em <24h) -- chegada
+    // real num destino/base conhecido, sem esperar a rota inteira terminar.
+    // Mesmo padrao EXATO do flush acima: dedupe por alerta_id, SQL cru com
+    // merge aditivo de contexto (coalesce+||, nunca overwrite -- preserva
+    // lat/lng/geom/rastro forense do insert original, licao do incidente de
+    // 31/07), status='ativo' como guarda de corrida (nao pisa em cima de
+    // acao do operador no meio do ciclo), try/catch isolado, mesmo status
+    // final 'falso_positivo' do mecanismo irmao. `motivo` no contexto e'
+    // DIFERENTE e especifico ("chegada real confirmada em destino/base
+    // conhecido") pra distinguir no banco depois qual dos dois mecanismos
+    // fechou cada linha. SEM chamar registrarCasosDesvioRevisao (mesma razao
+    // do mecanismo irmao: nao e' veredito humano); contaComoRotuloHumano e
+    // contaComoEventoDeSilenciamento (detectores.ts) ja excluem essas linhas
+    // so pelo marcador auto_resolvido, de forma generica -- sem amarrar ao
+    // motivo especifico.
+    if (afastandoChegadaRealAutoResolveCiclo.length > 0) {
+      const porAlertaChegadaReal = new Map(afastandoChegadaRealAutoResolveCiclo.map((r) => [r.alerta_id, r]));
+      const idsChegadaReal = [...porAlertaChegadaReal.keys()];
+      try {
+        await pool.query(
+          `UPDATE alertas
+           SET status = 'falso_positivo',
+               resolvido_em = $3,
+               contexto = coalesce(contexto, '{}'::jsonb) || $2::jsonb
+           WHERE id = ANY($1::uuid[])
+             AND status = 'ativo'`,
+          [
+            idsChegadaReal,
+            JSON.stringify({
+              auto_resolvido: true,
+              motivo: "chegada real confirmada em destino/base conhecido",
+            }),
+            agora.toISOString(),
+          ]
+        );
+      } catch (erroAutoResolveChegadaReal) {
+        console.warn(`Aviso: erro ao auto-resolver afastando-de-destinos (chegada real): ${String(erroAutoResolveChegadaReal)}`);
       }
     }
 

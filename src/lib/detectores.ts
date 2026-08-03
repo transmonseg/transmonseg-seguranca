@@ -1053,6 +1053,47 @@ export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo:
   return alerta.status === "ativo" && alerta.tipo === "desvio" && alerta.motivo.startsWith(MOTIVO_AFASTANDO_PREFIXO);
 }
 
+// SEGUNDO caso de auto-resolucao de "afastando-se de todos os destinos"
+// (achado real 03/08): o mecanismo acima (deveAutoResolverAfastandoRotaConcluida)
+// so fecha quando a rota do dia inteira ja terminou. Isso deixa destampado o
+// caso muito mais comum de ultima milha -- o veiculo chega de verdade num
+// destino/base NO MEIO da rota (rota ainda tem entregas pendentes), o
+// detector de "afastando-se" dispara enquanto ele navega ate a parada
+// seguinte (2 leituras bastam pro streak), e como desvio nunca fecha sozinho
+// (TIPOS_NAO_GERENCIADOS) esse alerta ficava preso ativo pra sempre --
+// exigindo acao manual do operador pra um blip de navegacao normal. Rastro
+// real que motivou a mudanca: o veiculo KYK-8G07 sozinho disparou esse MESMO
+// alerta 7 vezes num unico dia, cada disparo um blip de chegada-e-saida
+// legitimo; a fila de alertas ativos reencheu de 0 pra 84-85 em menos de 24h,
+// enterrando os alertas reais no meio do volume. Decisao explicita do
+// usuario em 03/08: reabrir a trava de 11/07 (alertas tipo=desvio so fecham
+// por acao manual) SO pra este caso especifico, exatamente como o mecanismo
+// irmao acima ja faz pra rota-concluida.
+//
+// Reusa suspensoPorChegada (route.ts, calculado todo ciclo por veiculo --
+// geofence de 300m minimo contra o destino/base mais proximo, ver
+// suspenderPorChegada em lib/unitrac.ts) em vez de recalcular chegada aqui:
+// mesma definicao de "chegou de verdade" ja usada pra suspender streaks de
+// desvio, sem duplicar logica de raio/geometria. Diferente do irmao
+// rota-concluida, este bloco NAO exige baseOcupada nem entregas_total/
+// entregas_feitas -- suspensoPorChegada por si so ja cobre tanto pendente
+// quanto base (ver comentario onde e' calculado em route.ts). O gate de
+// seguranca contra "sequestro passando raspando perto de um destino" nao
+// vem de exigir base pequena (nao ha base aqui) e sim do MESMO par de guards
+// que ja protege o irmao: pos.fresco && !alertaJammer && pos.velocidade===0
+// (aplicados no caller, route.ts) + paradoMin >= minimo abaixo. Um veiculo
+// so PASSANDO perto de um destino durante uma fuga nao fica com
+// velocidade===0 por 2 minutos seguidos no mesmo ponto -- precisa ter
+// parado de verdade.
+export const AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN = 2;
+
+export function deveAutoResolverAfastandoChegadaReal(ctx: {
+  suspensoPorChegada: boolean;
+  paradoMin: number;
+}): boolean {
+  return ctx.suspensoPorChegada && ctx.paradoMin >= AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN;
+}
+
 // BLOCKER 1 (revisao independente 27/07): mapaTiposSilenciados (route.ts)
 // contava QUALQUER linha status='falso_positivo' recente como "operador
 // ensinando o sistema" e silenciava o tipo pro veiculo por 2h -- inclusive

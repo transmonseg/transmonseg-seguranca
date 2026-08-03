@@ -44,6 +44,8 @@ import {
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
   AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN,
+  deveAutoResolverAfastandoChegadaReal,
+  AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN,
   saiuParadaConfirmadaHaMenosDe,
   JANELA_SAIDA_PARADA_MIN,
   deveMarcarSaidaParadaConfirmada,
@@ -2180,6 +2182,33 @@ describe("deveAutoResolverAfastandoRotaConcluida", () => {
   });
   it("NAO resolve com paradoMin=0 (veiculo em movimento)", () => {
     expect(deveAutoResolverAfastandoRotaConcluida({ ...tudoOk, paradoMin: 0 })).toBe(false);
+  });
+});
+
+// Achado real 03/08 (KYK-8G07: 7 disparos do mesmo alerta num unico dia,
+// fila de ativos reenchendo de 0 pra 84-85 em <24h) -- SEGUNDO caso de
+// auto-resolucao de "afastando-se de todos", chegada real PARCIAL/mid-route
+// (nao precisa esperar a rota inteira terminar, diferente do irmao acima).
+describe("deveAutoResolverAfastandoChegadaReal", () => {
+  it("NAO resolve se nao chegou de verdade (suspensoPorChegada=false)", () => {
+    expect(
+      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: false, paradoMin: 10 })
+    ).toBe(false);
+  });
+  it("NAO resolve se chegou mas ainda nao parou o suficiente (paradoMin=1)", () => {
+    expect(
+      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: true, paradoMin: 1 })
+    ).toBe(false);
+  });
+  it("resolve no limiar exato (paradoMin=2)", () => {
+    expect(
+      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: true, paradoMin: AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN })
+    ).toBe(true);
+  });
+  it("resolve com parada bem acima do minimo (paradoMin=10)", () => {
+    expect(
+      deveAutoResolverAfastandoChegadaReal({ suspensoPorChegada: true, paradoMin: 10 })
+    ).toBe(true);
   });
 });
 
