@@ -4,6 +4,7 @@ import {
   paradaRecentePertoDeEntrega,
   padraoEntrega,
   destinoAlinhadoAproximando,
+  PLACAR_DECAIMENTO,
   type SinaisPlacar,
   type PontoJanela,
   type DestinoPlacar,
@@ -17,6 +18,7 @@ const SINAIS_NENHUM: SinaisPlacar = {
   s3ForaDoCorredor: null,
   s4CelulaDesconhecida: false,
   s5DiaEstagnado: false,
+  s6ParadoLongeDeTudo: false,
   d1ParadaPertoDeEntrega: false,
   d2PadraoEntrega: false,
   d3DestinoAlinhadoAproximando: false,
@@ -149,6 +151,29 @@ describe("atualizarPlacar", () => {
     expect(historico[4]).toBeCloseTo(90.0922, 6);
     expect(historico[2]).toBeGreaterThanOrEqual(40); // 3o ciclo
     expect(historico[4]).toBeGreaterThanOrEqual(70); // 5o ciclo
+  });
+
+  it("s6ParadoLongeDeTudo sozinho acumula igual s1 (achado auditoria 04/08: veiculo parado longe de tudo nao pode ficar invisivel pro placar)", () => {
+    const sinais: SinaisPlacar = { ...SINAIS_NENHUM, s6ParadoLongeDeTudo: true };
+    // Mesmo peso de s1AfastandoDeTudo (+8) -- equivalente parado do sinal
+    // de movimento. c1: 0*0.9+8=8. c2: 8*0.9+8=15.2.
+    let placar = 0;
+    placar = atualizarPlacar(placar, sinais, false).placar;
+    expect(placar).toBeCloseTo(8, 6);
+    placar = atualizarPlacar(placar, sinais, false).placar;
+    expect(placar).toBeCloseTo(15.2, 6);
+  });
+
+  it("veiculo desvia (s1, em movimento) e depois PARA longe de tudo (s6): placar continua subindo, nao decai so porque parou", () => {
+    const sinaisMovimento: SinaisPlacar = { ...SINAIS_NENHUM, s1AfastandoDeTudo: true };
+    const sinaisParado: SinaisPlacar = { ...SINAIS_NENHUM, s6ParadoLongeDeTudo: true };
+    let placar = 0;
+    placar = atualizarPlacar(placar, sinaisMovimento, false).placar; // c1: +8 (movendo)
+    placar = atualizarPlacar(placar, sinaisMovimento, false).placar; // c2: +8 (movendo)
+    const placarAntesDeParar = placar;
+    // Veiculo para -- s1 nao dispara mais (exige movimento), mas s6 assume.
+    placar = atualizarPlacar(placar, sinaisParado, false).placar; // c3: parado, s6 soma
+    expect(placar).toBeGreaterThan(placarAntesDeParar * PLACAR_DECAIMENTO); // subiu, nao so decaiu
   });
 });
 

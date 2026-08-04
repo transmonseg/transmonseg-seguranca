@@ -80,6 +80,8 @@ import {
   PLACAR_VERMELHO,
   S5_ESTAGNADO_MIN,
   S2_RUMO_LIMIAR_GRAUS,
+  S6_PARADO_MIN_SEG,
+  S6_DIST_MIN_M,
   type SinaisPlacar,
   type PontoJanela as PontoJanelaPlacar,
   type DestinoPlacar,
@@ -1328,12 +1330,22 @@ export async function POST(request: Request) {
       }
     }
 
-    // Janela de 10min de posicoes_historico pro placar de desvio (D1/D2 --
+    // Janela de 20min de posicoes_historico pro placar de desvio (D1/D2 --
     // paradaRecentePertoDeEntrega/padraoEntrega, ver placar-desvio.ts) --
     // UMA query batched por CLIENTE (mesmo padrao das funcoes acima:
     // veiculoIdsCliente inteiro, nao filtrado por veiculo individual), nunca
     // uma por veiculo. Sem cache/TTL: a janela desliza a cada ciclo (mesmo
     // motivo de buscarCelulasTapeteCandidatas nao ter TTL).
+    //
+    // Alargada de 10 pra 20min (achado auditoria 04/08, caso TOS-0H81):
+    // entrega real confirmada (entregas_presenca) 15min antes de um alerta
+    // de classe_viaria disparar -- fora da janela antiga de 10min, D1
+    // (paradaRecentePertoDeEntrega) nao tinha como ver essa parada como
+    // corroboracao, mesmo o veiculo estando em zigue-zague normal de
+    // ultima milha entre duas entregas reais do mesmo dia. D1/D3
+    // continuam exigindo prova POSITIVA (raio+distancia+direcao) dentro da
+    // janela -- alargar so aumenta quanto tempo pra tras essa prova pode
+    // ter acontecido, nao afrouxa nenhum outro criterio.
     async function buscarJanelaHistoricoCliente(
       veiculoIds: string[]
     ): Promise<Map<string, PontoJanelaPlacar[]>> {
@@ -1344,7 +1356,7 @@ export async function POST(request: Request) {
           veiculo_id: string; lat: number; lng: number; velocidade: number; criado_em: Date;
         }>(
           `SELECT veiculo_id, lat, lng, velocidade, criado_em FROM posicoes_historico
-           WHERE veiculo_id = ANY($1::uuid[]) AND criado_em > now() - interval '10 minutes'
+           WHERE veiculo_id = ANY($1::uuid[]) AND criado_em > now() - interval '20 minutes'
            ORDER BY veiculo_id, criado_em ASC`,
           [veiculoIds]
         );
@@ -1533,7 +1545,7 @@ export async function POST(request: Request) {
       const contagensFamiliaridadeCliente = await getContagensFamiliaridadeCliente(cliente.id, veiculoIdsCliente);
       const celulasFamiliaridadeVeiculo = await buscarCelulasVeiculoCandidatas(celulasCandidatasVeiculo);
       const classesViariasCliente = await buscarClassesViariasCandidatas([...celulasCandidatasTapete]);
-      // Placar de desvio (D1/D2): janela de 10min de TODOS os veiculos do
+      // Placar de desvio (D1/D2): janela de 20min de TODOS os veiculos do
       // cliente, 1 query batched (ver buscarJanelaHistoricoCliente acima).
       const janelaHistoricoCliente = await buscarJanelaHistoricoCliente(veiculoIdsCliente);
       // Presenca de entrega (decisao do usuario 01/08): pontos onde o
@@ -2189,6 +2201,23 @@ export async function POST(request: Request) {
             dentroTapete === false &&
             foraDaBase && !noCliente && emOperacao;
 
+          // Candidato ao S6 do placar (achado auditoria 04/08, ver
+          // PLACAR_PESOS.s6ParadoLongeDeTudo em placar-desvio.ts): mesmo
+          // espirito de candidatoParadaForaTapete (gatilho rapido,
+          // independente do guard de movimento que S1/S2/S4/S5 usam), mas
+          // define "longe de tudo" por DISTANCIA (menorDistDestinoM, mesmo
+          // dado que S1 usa) em vez de familiaridade de rota (dentroTapete)
+          // -- nao exige dentroTapete===false de proposito, pra cobrir
+          // tambem o caso de parar numa rua CONHECIDA da frota mas longe de
+          // qualquer destino/base real (situacao que candidatoParadaForaTapete
+          // nao cobre). So placar (Fase 1, sombra) -- nao cria alerta.
+          const candidatoS6ParadoLongeDeTudo =
+            pos.fresco &&
+            pos.velocidade === 0 &&
+            paradoMin * 60 >= S6_PARADO_MIN_SEG &&
+            menorDistDestinoM !== null && menorDistDestinoM >= S6_DIST_MIN_M &&
+            foraDaBase && !noCliente && emOperacao;
+
           // Candidato a SAIDA NAO AUTORIZADA parado: tambem precisa de temPOI para
           // suprimir abastecimento/parada de apoio (so faz sentido fora ~2km da base).
           const candidatoSaidaParado =
@@ -2218,9 +2247,9 @@ export async function POST(request: Request) {
             estavEmMovimento = anterior != null && (anterior.velocidade ?? 0) >= 30;
             esMadrugada = horaSP >= 0 && horaSP < 5;
           }
-          // POI consultado para parada anomala, saida nao autorizada parada
-          // E parada fora do tapete (mesma supressao anti-FP das outras).
-          if (candidatoParadaAnomala || candidatoSaidaParado || candidatoParadaForaTapete) {
+          // POI consultado para parada anomala, saida nao autorizada parada,
+          // parada fora do tapete E S6 do placar (mesma supressao anti-FP).
+          if (candidatoParadaAnomala || candidatoSaidaParado || candidatoParadaForaTapete || candidatoS6ParadoLongeDeTudo) {
             try {
               temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
             } catch {
@@ -2235,16 +2264,21 @@ export async function POST(request: Request) {
           }
 
           // Congestionamento: quantos OUTROS veiculos da frota estao parados num
-          // raio curto. >= 2 => transito/fila, suprime a parada anomala E a
-          // parada fora do tapete (mesmo sinal, mesma supressao, anti-FP).
+          // raio curto. >= 2 => transito/fila, suprime a parada anomala, a
+          // parada fora do tapete E o S6 do placar (mesmo sinal, mesma supressao, anti-FP).
           let vizinhosParados = 0;
-          if (candidatoParadaAnomala || candidatoParadaForaTapete) {
+          if (candidatoParadaAnomala || candidatoParadaForaTapete || candidatoS6ParadoLongeDeTudo) {
             let dentro = 0;
             for (const q of posicoesFrescasComVelocidade) {
               if (q.velocidade === 0 && haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentro++;
             }
             vizinhosParados = Math.max(0, dentro - 1); // exclui o proprio veiculo
           }
+          // S6 do placar: candidato + mesma supressao anti-FP de
+          // detectarParadaAnomala/ForaTapete (POI legitimo por perto, ou
+          // 2+ vizinhos parados = transito/fila, nao desvio).
+          const s6ParadoLongeDeTudoAtual =
+            candidatoS6ParadoLongeDeTudo && !temPOI && vizinhosParados < 2;
           // Transito inferido pela propria frota (12/07): quantos OUTROS
           // veiculos estao LENTOS (nao parados) por perto -- corrobora
           // congestionamento real em vez de desvio suspeito.
@@ -2500,8 +2534,14 @@ export async function POST(request: Request) {
           // (exigiria dois clientes de entrega a poucos metros um do
           // outro), resolver exigiria checar todos os pontos simultaneamente,
           // complexidade desproporcional pro caso.
+          // temCoordenadaValida (achado auditoria 04/08): sem isto, um ponto
+          // com lat/lng null vira, por coercao do JS em haversineM, um
+          // "destino" a ~5.300km de distancia -- nunca bate <= pt.raio na
+          // pratica (nao explorável hoje), mas o filtro estava faltando aqui
+          // por inconsistencia com pendentes/pontosVeiculoParaCorroboracao
+          // (que ja filtram), nao por decisao consciente.
           const alvoNoRaioAgora = (pontosVeiculo ?? []).find(
-            (pt) => haversineM(pos.lat, pos.lng, pt.lat, pt.lng) <= pt.raio
+            (pt) => temCoordenadaValida(pt) && haversineM(pos.lat, pos.lng, pt.lat, pt.lng) <= pt.raio
           ) ?? null;
           const codigoAnteriorNoRaio = anterior?.no_raio_alvo_codigo ?? null;
           const desdeAnterior = anterior?.no_raio_desde ?? null;
@@ -2785,10 +2825,12 @@ export async function POST(request: Request) {
           // D2 (padraoEntrega) foi DELIBERADAMENTE deixado de fora, por
           // recomendacao da revisao independente 01/08: e' o unico dos tres
           // sem NENHUMA restricao de proximidade ou de direcao (so olha
-          // "media <=25km/h + 2 paradas nos ultimos 10min"), entao um
-          // caminhao sequestrado em area urbana continua satisfazendo D2 por
-          // ate 10min depois do sequestro, faca o que fizer -- a mesma
-          // janela grudenta que reprovou o desenho anterior. Custo medido de
+          // "media <=25km/h + 2 paradas nos ultimos 20min" -- janela
+          // alargada de 10 na auditoria 04/08, ver buscarJanelaHistoricoCliente),
+          // entao um caminhao sequestrado em area urbana continua
+          // satisfazendo D2 por ate 20min depois do sequestro, faca o que
+          // fizer -- a mesma janela grudenta que reprovou o desenho
+          // anterior, agora ainda mais longa. Custo medido de
           // tirar: D2 sozinho responde por 3 das 29 supressoes (10%), e
           // D1||D3 ja cobre 26 das 29. D1 exige parada perto de um destino;
           // D3 exige rumo alinhado E distancia CAINDO neste ciclo, entao os
@@ -3198,9 +3240,18 @@ export async function POST(request: Request) {
             // neste ciclo, sem novo cálculo de D1/D2/D3 pra este veículo).
             // entregasFeitasRef/Desde carregam do ciclo anterior sem
             // alteração (nada confiável pra comparar agora).
+            //
+            // s6ParadoLongeDeTudo (achado auditoria 04/08) e' excecao
+            // deliberada a este guard, mesmo espirito de D1/D2/D3 logo
+            // abaixo: sem destino PENDENTE nao significa "nada a temer" --
+            // um veiculo parado longe de QUALQUER destino/base (pendente ou
+            // nao) continua sendo sinal valido. candidatoS6ParadoLongeDeTudo
+            // ja exige pos.fresco por conta propria, entao fica false
+            // corretamente quando a posicao nao e fresca.
             sinaisPlacar = {
               s1AfastandoDeTudo: false, s2RumoDivergente: false, s3ForaDoCorredor: null,
               s4CelulaDesconhecida: false, s5DiaEstagnado: false,
+              s6ParadoLongeDeTudo: s6ParadoLongeDeTudoAtual,
               d1ParadaPertoDeEntrega: false, d2PadraoEntrega: false, d3DestinoAlinhadoAproximando: false,
             };
             entregasFeitasRefPlacar = estadoPlacarAnterior?.entregasFeitasRef ?? entregas_feitas;
@@ -3233,6 +3284,12 @@ export async function POST(request: Request) {
               s5DiaEstagnado:
                 podeSomarSinaisPlacar && pendentes.length >= 2 && pos.velocidade > 0 &&
                 minutosEstagnadoPlacar >= S5_ESTAGNADO_MIN,
+              // S6 (achado auditoria 04/08): NAO usa podeSomarSinaisPlacar
+              // de proposito -- mesmo motivo de D1/D2/D3 abaixo, e' o sinal
+              // que cobre exatamente o caso que aquele guard (exige
+              // movimento) deixa cego. Fonte unica: s6ParadoLongeDeTudoAtual
+              // computado mais acima, mesmo padrao dos outros *Atual.
+              s6ParadoLongeDeTudo: s6ParadoLongeDeTudoAtual,
               // D1/D2/D3: reusa os MESMOS valores calculados mais acima
               // (antes de montarCandidatosCore, ver
               // classeViariaSuprimidaPorEntrega) -- fonte unica, nao

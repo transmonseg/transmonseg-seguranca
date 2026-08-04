@@ -13,6 +13,16 @@ export const PLACAR_PESOS = {
   s3ForaDoCorredor: 8,
   s4CelulaDesconhecida: 3,
   s5DiaEstagnado: 2,
+  // S6 (achado auditoria 04/08): S1/S2/S4/S5 so somam sob o mesmo guard dos
+  // streaks de desvio (podeAvancarStreaksDesvio, exige velocidade>0) -- um
+  // veiculo que desvia e PARA fica invisivel pro placar, so resta o
+  // decaimento. Mesmo buraco ja corrigido pro sistema antigo em 27/07
+  // (detectarParadaForaTapete, caso TTK-4D14), nunca replicado pro placar.
+  // Peso igual ao S1 (equivalente parado do "afastando de tudo" em
+  // movimento) -- ver S6_DIST_MIN_M abaixo pro "longe" e wiring em
+  // route.ts (candidatoS6ParadoLongeDeTudo) pro "parado", independente de
+  // podeSomarSinaisPlacar.
+  s6ParadoLongeDeTudo: 8,
   d1ParadaPertoDeEntrega: -15,
   d2PadraoEntrega: -6,
   d3DestinoAlinhadoAproximando: -10,
@@ -55,6 +65,15 @@ export const D3_DIST_MAX_M = 1500;
 export const D3_RUMO_MAX_GRAUS = 100;
 export const S5_ESTAGNADO_MIN = 45;
 
+// S6: piso de tempo parado (mesmo valor de PARADA_FORA_TAPETE_MIN em
+// detectores.ts -- gatilho rapido, mesma justificativa: parada curta ja
+// fora de tudo e corroboracao espacial forte o bastante pra confirmar
+// rapido) e piso de distancia minima de QUALQUER destino/base pra contar
+// como "longe de tudo" (ordem de grandeza de D1_RAIO_EXTRA_M(300) + raio
+// tipico de entrega, ~500m cobre "nao esta nem perto de nada conhecido").
+export const S6_PARADO_MIN_SEG = 180;
+export const S6_DIST_MIN_M = 500;
+
 // S2 (soma): rumo diverge de TODOS os destinos acima deste limiar. Mesmo
 // valor numerico do limiar de rumo_diverge em unitrac.ts
 // (DIVERGENCIA_RUMO_LIMIAR_GRAUS) e de D3_RUMO_MAX_GRAUS acima, mas SAO
@@ -78,6 +97,7 @@ export type SinaisPlacar = {
   s3ForaDoCorredor: boolean | null;
   s4CelulaDesconhecida: boolean;
   s5DiaEstagnado: boolean;
+  s6ParadoLongeDeTudo: boolean;
   d1ParadaPertoDeEntrega: boolean;
   d2PadraoEntrega: boolean;
   d3DestinoAlinhadoAproximando: boolean;
@@ -101,6 +121,7 @@ function componentesDoCiclo(sinais: SinaisPlacar): { soma: number; componentes: 
   else if (sinais.s3ForaDoCorredor === false) soma1("d4DentroDoCorredor", true);
   soma1("s4CelulaDesconhecida", sinais.s4CelulaDesconhecida);
   soma1("s5DiaEstagnado", sinais.s5DiaEstagnado);
+  soma1("s6ParadoLongeDeTudo", sinais.s6ParadoLongeDeTudo);
   soma1("d1ParadaPertoDeEntrega", sinais.d1ParadaPertoDeEntrega);
   soma1("d2PadraoEntrega", sinais.d2PadraoEntrega);
   soma1("d3DestinoAlinhadoAproximando", sinais.d3DestinoAlinhadoAproximando);
@@ -139,8 +160,9 @@ export function atualizarPlacar(
   return { placar, componentes };
 }
 
-// Janela = posicoes dos ultimos 10min (ordem cronologica), mesma shape do
-// que o motor ja tem em memoria.
+// Janela = posicoes dos ultimos 20min (ordem cronologica, alargada de
+// 10min na auditoria 04/08 -- ver buscarJanelaHistoricoCliente em
+// route.ts), mesma shape do que o motor ja tem em memoria.
 export type PontoJanela = { lat: number; lng: number; velocidade: number; criadoEm: string };
 export type DestinoPlacar = { lat: number; lng: number; raio: number; codigo: string };
 
@@ -187,7 +209,7 @@ function runsParada(janela: PontoJanela[]): RunParada[] {
 }
 
 // D1: parou >=2min (D1_PARADA_MIN_SEG) a <= raio+300m (D1_RAIO_EXTRA_M) de
-// alguma entrega, nos ultimos 10min (janela ja vem cortada pelo chamador).
+// alguma entrega, nos ultimos 20min (janela ja vem cortada pelo chamador).
 export function paradaRecentePertoDeEntrega(janela: PontoJanela[], destinos: DestinoPlacar[]): boolean {
   for (const run of runsParada(janela)) {
     if (run.duracaoSeg < D1_PARADA_MIN_SEG) continue;
@@ -202,7 +224,7 @@ export function paradaRecentePertoDeEntrega(janela: PontoJanela[], destinos: Des
 
 // D2: padrao de entrega -- media de velocidade <=25km/h E >=2 paradas
 // (velocidade <=5km/h por >=60s cada, ver PARADA_VELOCIDADE_MAX_KMH) nos
-// ultimos 10min.
+// ultimos 20min.
 export function padraoEntrega(janela: PontoJanela[]): boolean {
   if (janela.length === 0) return false;
 
