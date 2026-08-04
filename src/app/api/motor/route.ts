@@ -2835,9 +2835,30 @@ export async function POST(request: Request) {
           // D1||D3 ja cobre 26 das 29. D1 exige parada perto de um destino;
           // D3 exige rumo alinhado E distancia CAINDO neste ciclo, entao os
           // dois morrem sozinhos quando o comportamento deixa de ser entrega.
+          // Achado real 04/08 (usuario, revisando os falso-positivo do dia:
+          // "tem um monte de desvio EM CIMA DO CLIENTE"): quedaClasseViaria
+          // (acima) e' PURAMENTE classificacao viaria -- "estava em via
+          // principal ha <=10min, agora esta em rua estreita" -- nunca
+          // checa proximidade de destino. O motivo do alerta ("fora do
+          // raio de qualquer destino conhecido") e' uma afirmacao que o
+          // gatilho nunca verifica de fato; quem deveria pegar isso e' esta
+          // supressao (D1/D3), mas os dois tem buraco pro caso "acabou de
+          // chegar": D1 exige um RUN de parada >=120s ja completo (nao
+          // cobre os primeiros 2min apos a chegada), D3 exige rumo
+          // alinhado E distancia caindo NESTE ciclo (nao cobre virar
+          // perpendicular pra entrar na rua do cliente). Confirmado com
+          // dado real do dia: 13 dos 19 falso-positivo individuais de hoje
+          // tinham `alvoNoRaioAgora` != null (nome de estabelecimento real
+          // batendo, ex. "M P S MINIMERCADO LTDA") no exato ciclo do
+          // disparo -- o veiculo estava FISICAMENTE dentro do raio
+          // cadastrado do cliente, nao so "perto". alvoNoRaioAgora (acima,
+          // ja calculado todo ciclo pro bypass_entrega, custo zero aqui)
+          // e' o sinal mais direto e menos ambiguo dos tres: nao depende
+          // de tempo parado nem de direcao, so "esta dentro do raio agora,
+          // sim ou nao".
           const classeViariaSuprimidaPorEntrega =
             CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO &&
-            (d1ParadaPertoDeEntregaAtual || d3DestinoAlinhadoAproximandoAtual);
+            (d1ParadaPertoDeEntregaAtual || d3DestinoAlinhadoAproximandoAtual || alvoNoRaioAgora !== null);
 
           // Achado real 12/07: avaliar() JA incluia detectarJammer(p) como um
           // dos seus proprios candidatos (arbitrados junto com desvio pela
@@ -3335,7 +3356,7 @@ export async function POST(request: Request) {
             // ADICIONAL pra auditoria (o que exatamente foi suprimido e
             // por qual motivo), nao o que garante o log em si.
             componentesPlacar.classeViariaSuprimida = true;
-            // So D1/D3 -- D2 nao entra no criterio (ver comentario na
+            // So D1/D3/raio -- D2 nao entra no criterio (ver comentario na
             // composicao de classeViariaSuprimidaPorEntrega). Se D2 estava
             // ativo no ciclo, isso ja aparece no proprio componentesPlacar
             // via componentesDoCiclo; aqui o campo registra a CAUSA da
@@ -3343,6 +3364,7 @@ export async function POST(request: Request) {
             const motivosSupressao: string[] = [];
             if (d1ParadaPertoDeEntregaAtual) motivosSupressao.push("d1");
             if (d3DestinoAlinhadoAproximandoAtual) motivosSupressao.push("d3");
+            if (alvoNoRaioAgora !== null) motivosSupressao.push("raio");
             componentesPlacar.classeViariaSuprimidaPor = motivosSupressao.join(",");
           }
 
