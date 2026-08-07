@@ -53,6 +53,7 @@ import {
   limiarRazaoRetidaoRumo,
   RETIDAO_RUMO_LIQUIDO_MINIMO_M,
   rumoCoerenteComDestino,
+  formatarProgressoDestino,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -2475,5 +2476,35 @@ describe("politica de producao 01/08: so afastando-de-todos ou lugar-sem-sentido
       desvioSoAfastandoOuForaDoTapete: false,
     });
     expect(a?.origemDesvio).toBe("rumo_diverge");
+  });
+});
+
+describe("formatarProgressoDestino", () => {
+  it("delta negativo = aproximando", () => {
+    expect(formatarProgressoDestino(-120)).toEqual({
+      texto: "aproximando de um destino (120m)",
+      aproximando: true,
+    });
+  });
+
+  it("delta positivo = ainda se afastando", () => {
+    expect(formatarProgressoDestino(340)).toEqual({
+      texto: "ainda se afastando (+340m)",
+      aproximando: false,
+    });
+  });
+
+  it("delta zero conta como ainda se afastando (nao aproximou)", () => {
+    expect(formatarProgressoDestino(0)).toEqual({
+      texto: "ainda se afastando (+0m)",
+      aproximando: false,
+    });
+  });
+
+  it("arredonda pra metro inteiro", () => {
+    expect(formatarProgressoDestino(-119.6)).toEqual({
+      texto: "aproximando de um destino (120m)",
+      aproximando: true,
+    });
   });
 });

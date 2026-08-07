@@ -88,6 +88,19 @@ export function formataDuracao(minutos: number): string {
   return `${minutos}min`;
 }
 
+// Formata o progresso de um alerta "afastando de tudo" em relação ao
+// destino conhecido mais próximo, pro card do operador -- ver
+// docs/superpowers/specs/2026-08-06-progresso-destino-desvio-design.md.
+// Puramente informativo: o texto nunca sugere "resolvido"/"seguro" (achado
+// de segurança do spec -- este sinal nao reduz urgencia automaticamente).
+export function formatarProgressoDestino(deltaM: number): { texto: string; aproximando: boolean } {
+  const arredondado = Math.round(Math.abs(deltaM));
+  if (deltaM < 0) {
+    return { texto: `aproximando de um destino (${arredondado}m)`, aproximando: true };
+  }
+  return { texto: `ainda se afastando (+${arredondado}m)`, aproximando: false };
+}
+
 export function detectarPanico(p: PosicaoNormalizada): Alerta | null {
   if (!p.panico) return null;
   return { nivel: "critico", tipo: "panico", motivo: "PANICO acionado", score: 100 };

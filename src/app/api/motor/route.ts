@@ -942,6 +942,13 @@ export async function POST(request: Request) {
     // contexto -- nunca muda nivel/status, nunca fecha o alerta.
     const rotaConcluidaCiclo: { alerta_id: string; entregasFeitas: number; entregasTotal: number }[] = [];
 
+    // Anotação de progresso ao destino em alertas "afastando de tudo" ativos --
+    // ver docs/superpowers/specs/2026-08-06-progresso-destino-desvio-design.md.
+    // Mesmo padrão de proximidadeDesvioCiclo/rotaConcluidaCiclo: acumula por
+    // ciclo, flush em lote no final, so ADICIONA campo no contexto (jsonb ||),
+    // nunca muda nivel/status, nunca fecha o alerta.
+    const progressoDestinoCiclo: { alerta_id: string; deltaM: number }[] = [];
+
     // Auto-resolucao retroativa de "afastando-se de todos os destinos"
     // quando a rota foi 100% concluida E o veiculo chegou fisicamente
     // dentro do poligono de uma base cadastrada -- ver
@@ -3555,6 +3562,19 @@ export async function POST(request: Request) {
             }
           }
 
+          // Anota progresso ao destino num alerta "afastando de tudo" JA
+          // ATIVO -- ver docs/superpowers/specs/2026-08-06-progresso-destino-desvio-design.md.
+          // Reusa afastamentoAcumuladoM (ja calculado acima nesta mesma
+          // iteracao, ~linha 1836) e o mesmo predicado que o auto-resolve ja
+          // usa pra saber quais alertas sao "afastando de tudo" -- so
+          // anotacao, nunca gera/fecha/muda severidade de alerta.
+          for (const d of alertasAbertos.filter((a) => elegivelParaAutoResolveAfastando(a))) {
+            progressoDestinoCiclo.push({
+              alerta_id: d.id,
+              deltaM: afastamentoAcumuladoM,
+            });
+          }
+
           // Auto-resolucao retroativa de "afastando-se de todos os
           // destinos" quando a rota foi 100% concluida E o veiculo chegou
           // fisicamente dentro do poligono de uma base cadastrada -- ver
@@ -4379,6 +4399,33 @@ export async function POST(request: Request) {
       );
       const falhasRotaConcluida = resultadosRotaConcluida.filter((r) => r.status === "rejected").length;
       if (falhasRotaConcluida > 0) console.warn(`Aviso: ${falhasRotaConcluida} falha(s) ao anotar rota concluida neste ciclo`);
+    }
+
+    // Anotacao de progresso ao destino em alertas de desvio ativos -- ver
+    // docs/superpowers/specs/2026-08-06-progresso-destino-desvio-design.md.
+    // Mesmo padrao de flush em lote + dedupe por alerta_id. SO ADICIONA
+    // campo no contexto (jsonb ||) -- nunca muda nivel/status, nunca fecha
+    // o alerta.
+    if (progressoDestinoCiclo.length > 0) {
+      const porAlertaProgresso = new Map(progressoDestinoCiclo.map((p) => [p.alerta_id, p]));
+      const resultadosProgresso = await Promise.allSettled(
+        [...porAlertaProgresso.values()].map((p) =>
+          pool.query(
+            `update alertas set contexto = contexto || $2::jsonb where id = $1`,
+            [
+              p.alerta_id,
+              JSON.stringify({
+                progresso_destino: {
+                  delta_m: Math.round(p.deltaM),
+                  atualizado_em: new Date().toISOString(),
+                },
+              }),
+            ]
+          )
+        )
+      );
+      const falhasProgresso = resultadosProgresso.filter((r) => r.status === "rejected").length;
+      if (falhasProgresso > 0) console.warn(`Aviso: ${falhasProgresso} falha(s) ao anotar progresso ao destino neste ciclo`);
     }
 
     // REMOVIDO (achado real 31/07, cliente Nutry Max): o flush de

@@ -92,7 +92,7 @@ export async function GET(request: Request) {
       score: number | null;
       lat: number | null;
       lng: number | null;
-      contexto: { rota_concluida?: unknown } | null;
+      contexto: { rota_concluida?: unknown; progresso_destino?: { delta_m: number } } | null;
     }) => {
       const veiculo = veiculoMap.get(a.veiculo_id) as
         | { id: string; cv: string; placa: string }
@@ -129,6 +129,7 @@ export async function GET(request: Request) {
         atraso_min: pos?.atraso_min ?? null,
         local: pos?.local ?? null,
         rotaConcluida: a.contexto?.rota_concluida != null,
+        progressoDestinoM: a.contexto?.progresso_destino?.delta_m ?? null,
       };
     }
   );
