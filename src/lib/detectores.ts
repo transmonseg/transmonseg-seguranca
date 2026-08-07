@@ -1081,22 +1081,41 @@ export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo:
 // afastando (+0m)") justo quando o motivo do alerta ja acusava quilometros
 // de progresso.
 //
-// Fix: usa como origem um valor ESTAVEL, persistido no proprio alerta desde
-// que ele nasceu -- contexto.dist_destinos_m, gravado por
-// montarContextoDesvio no insert/escalacao (ver acima). O minimo desse
-// array equivale a desvioInicio.menor_dist_m no momento em que o alerta (ou
-// o episodio de streak que gerou a ultima escalacao) comecou, mas
-// persistido no banco em vez de volatil em memoria -- sobrevive ao streak
-// de aproximacao zerar. Retorna null quando o campo nao existe ou nao e
-// utilizavel (alerta antigo, tipo sem dist_destinos_m) -- o chamador deve
-// tratar null como "nao anota nada neste ciclo", nunca como 0 (mostrar
-// "+0m" errado e pior que a linha simplesmente nao aparecer).
+// FIX ROUND 2 (achado da re-review do fix round 1, 06/08): a 1a versao
+// deste fix usava Math.min(contexto.dist_destinos_m) como origem, achando
+// que equivalia a desvioInicio.menor_dist_m no momento em que o alerta
+// comecou -- FALSO. dist_destinos_m e gravado no momento em que o alerta e
+// CRIADO/ESCALADO (montarContextoDesvio), nao no momento em que o desvio
+// realmente COMECOU -- entre esses dois instantes o veiculo ja pode ter se
+// afastado bastante (e exatamente essa diferenca que o proprio campo
+// afastamento_acumulado_m persiste: Math.min(distDestinosM) -
+// desvioInicio.menor_dist_m, ver montarContextoDesvio acima). Confirmado em
+// producao: afastamento_acumulado_m nos alertas ativos tinha media de
+// 3.589m -- seria sempre 0 se os dois instantes coincidissem. Efeito real:
+// 16 dos 105 alertas ativos (15%) mostravam "aproximando de um destino"
+// quando o veiculo estava na verdade mais LONGE de todos os destinos que
+// quando o desvio comecou (ex: LRB-0G46, alerta CRITICO, motivo "+15,7km
+// acumulado" com a linha de progresso dizendo "aproximando (362m)").
+//
+// Fix: subtrai afastamento_acumulado_m do minimo de dist_destinos_m pra
+// recuperar a origem REAL (desvioInicio.menor_dist_m no instante em que o
+// alerta nasceu) -- os dois campos ja sao gravados juntos por
+// montarContextoDesvio, sem query nova. Continua persistido no proprio
+// alerta desde que ele nasceu (sobrevive ao streak de aproximacao zerar,
+// mesma razao do fix round 1). Retorna null quando dist_destinos_m ou
+// afastamento_acumulado_m nao existem/nao sao utilizaveis (alerta antigo
+// demais pra ter um dos dois campos) -- o chamador deve tratar null como
+// "nao anota nada neste ciclo", nunca como 0 (mostrar "+0m" errado e pior
+// que a linha simplesmente nao aparecer).
 export function origemMenorDistDestinoM(contexto: unknown): number | null {
   if (contexto === null || typeof contexto !== "object") return null;
-  const distDestinosM = (contexto as Record<string, unknown>).dist_destinos_m;
+  const c = contexto as Record<string, unknown>;
+  const distDestinosM = c.dist_destinos_m;
   if (!Array.isArray(distDestinosM) || distDestinosM.length === 0) return null;
   if (!distDestinosM.every((v) => typeof v === "number" && Number.isFinite(v))) return null;
-  return Math.min(...(distDestinosM as number[]));
+  const afastamentoAcumuladoM = c.afastamento_acumulado_m;
+  if (typeof afastamentoAcumuladoM !== "number" || !Number.isFinite(afastamentoAcumuladoM)) return null;
+  return Math.min(...(distDestinosM as number[])) - afastamentoAcumuladoM;
 }
 
 // SEGUNDO caso de auto-resolucao de "afastando-se de todos os destinos"

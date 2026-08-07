@@ -2232,13 +2232,21 @@ describe("elegivelParaAutoResolveAfastando (wiring)", () => {
   });
 });
 
-describe("origemMenorDistDestinoM (fix round 1, achado Important 1: origem estavel do progresso ao destino)", () => {
-  it("contexto com dist_destinos_m: retorna o minimo do array", () => {
-    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, 8300, 4100] })).toBe(4100);
+describe("origemMenorDistDestinoM (fix round 2, achado da re-review do fix round 1: origem REAL do desvio, nao o instante de criacao do alerta)", () => {
+  it("contexto com dist_destinos_m e afastamento_acumulado_m: retorna o minimo do array MENOS o acumulado", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, 8300, 4100], afastamento_acumulado_m: 1500 })).toBe(2600);
   });
 
-  it("array com 1 elemento: retorna esse elemento", () => {
-    expect(origemMenorDistDestinoM({ dist_destinos_m: [500] })).toBe(500);
+  it("afastamento_acumulado_m negativo (veiculo ja se aproximava antes do alerta nascer): soma em vez de subtrair", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [4100], afastamento_acumulado_m: -300 })).toBe(4400);
+  });
+
+  it("afastamento_acumulado_m zero (alerta nasceu no exato instante do desvio comecar): equivale ao minimo puro", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, 4100], afastamento_acumulado_m: 0 })).toBe(4100);
+  });
+
+  it("array com 1 elemento: retorna esse elemento menos o acumulado", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [500], afastamento_acumulado_m: 100 })).toBe(400);
   });
 
   it("contexto null: retorna null (nao 0)", () => {
@@ -2250,20 +2258,29 @@ describe("origemMenorDistDestinoM (fix round 1, achado Important 1: origem estav
   });
 
   it("dist_destinos_m array vazio: retorna null", () => {
-    expect(origemMenorDistDestinoM({ dist_destinos_m: [] })).toBeNull();
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [], afastamento_acumulado_m: 0 })).toBeNull();
   });
 
   it("dist_destinos_m nao e array (formato inesperado): retorna null", () => {
-    expect(origemMenorDistDestinoM({ dist_destinos_m: "6300" })).toBeNull();
+    expect(origemMenorDistDestinoM({ dist_destinos_m: "6300", afastamento_acumulado_m: 0 })).toBeNull();
   });
 
   it("dist_destinos_m com elemento nao-numerico: retorna null (nao explode nem mente)", () => {
-    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, null, 4100] })).toBeNull();
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, null, 4100], afastamento_acumulado_m: 0 })).toBeNull();
   });
 
   it("contexto nao e objeto (string/numero): retorna null", () => {
     expect(origemMenorDistDestinoM("nao-objeto")).toBeNull();
     expect(origemMenorDistDestinoM(42)).toBeNull();
+  });
+
+  it("dist_destinos_m valido mas afastamento_acumulado_m ausente (alerta anterior ao fix round 1): retorna null, nao 0", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, 4100] })).toBeNull();
+  });
+
+  it("afastamento_acumulado_m com tipo invalido (string, NaN): retorna null", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [4100], afastamento_acumulado_m: "1500" })).toBeNull();
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [4100], afastamento_acumulado_m: NaN })).toBeNull();
   });
 });
 
