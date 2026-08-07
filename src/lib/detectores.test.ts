@@ -43,6 +43,7 @@ import {
   contaComoRotuloHumano,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
+  origemMenorDistDestinoM,
   AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN,
   deveAutoResolverAfastandoChegadaReal,
   AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN,
@@ -2228,6 +2229,41 @@ describe("elegivelParaAutoResolveAfastando (wiring)", () => {
     expect(elegivelParaAutoResolveAfastando({ ...base, status: "reconhecido" })).toBe(false);
     expect(elegivelParaAutoResolveAfastando({ ...base, tipo: "parada_fora_tapete" })).toBe(false);
     expect(elegivelParaAutoResolveAfastando({ ...base, motivo: "Direção do movimento diverge da rota esperada" })).toBe(false);
+  });
+});
+
+describe("origemMenorDistDestinoM (fix round 1, achado Important 1: origem estavel do progresso ao destino)", () => {
+  it("contexto com dist_destinos_m: retorna o minimo do array", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, 8300, 4100] })).toBe(4100);
+  });
+
+  it("array com 1 elemento: retorna esse elemento", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [500] })).toBe(500);
+  });
+
+  it("contexto null: retorna null (nao 0)", () => {
+    expect(origemMenorDistDestinoM(null)).toBeNull();
+  });
+
+  it("contexto sem a chave dist_destinos_m (alerta antigo, ex: classe_viaria): retorna null", () => {
+    expect(origemMenorDistDestinoM({ classe_via_atual: "estreita" })).toBeNull();
+  });
+
+  it("dist_destinos_m array vazio: retorna null", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [] })).toBeNull();
+  });
+
+  it("dist_destinos_m nao e array (formato inesperado): retorna null", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: "6300" })).toBeNull();
+  });
+
+  it("dist_destinos_m com elemento nao-numerico: retorna null (nao explode nem mente)", () => {
+    expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, null, 4100] })).toBeNull();
+  });
+
+  it("contexto nao e objeto (string/numero): retorna null", () => {
+    expect(origemMenorDistDestinoM("nao-objeto")).toBeNull();
+    expect(origemMenorDistDestinoM(42)).toBeNull();
   });
 });
 

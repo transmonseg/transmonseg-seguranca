@@ -1066,6 +1066,39 @@ export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo:
   return alerta.status === "ativo" && alerta.tipo === "desvio" && alerta.motivo.startsWith(MOTIVO_AFASTANDO_PREFIXO);
 }
 
+// FIX ROUND 1 (achado Important 1, revisao independente do progresso ao
+// destino, 06/08): a anotacao original de progresso_destino (route.ts)
+// usava afastamentoAcumuladoM, calculado a partir de desvioInicio -- a
+// ancora VOLATIL em memoria do streak de "afastando de tudo". Essa ancora e
+// anulada (desvioInicio = null) assim que o veiculo passa a se aproximar de
+// forma sustentada (2 ciclos seguidos, ver avancarStreaksDesvio: `if
+// (r.zerou) desvioInicio = null`) -- exatamente o momento em que o veiculo
+// esta progredindo de verdade, o caso que esta feature existe pra revelar.
+// Verificado em producao: 82/105 alertas ativos de "afastando de tudo"
+// tinham delta_m=0 (o default quando desvioInicio e null), TODOS com
+// desvio_inicio IS NULL no banco e media de 19 ciclos consecutivos
+// aproximando (aproximando_streak) -- a linha exibida mentia ("ainda se
+// afastando (+0m)") justo quando o motivo do alerta ja acusava quilometros
+// de progresso.
+//
+// Fix: usa como origem um valor ESTAVEL, persistido no proprio alerta desde
+// que ele nasceu -- contexto.dist_destinos_m, gravado por
+// montarContextoDesvio no insert/escalacao (ver acima). O minimo desse
+// array equivale a desvioInicio.menor_dist_m no momento em que o alerta (ou
+// o episodio de streak que gerou a ultima escalacao) comecou, mas
+// persistido no banco em vez de volatil em memoria -- sobrevive ao streak
+// de aproximacao zerar. Retorna null quando o campo nao existe ou nao e
+// utilizavel (alerta antigo, tipo sem dist_destinos_m) -- o chamador deve
+// tratar null como "nao anota nada neste ciclo", nunca como 0 (mostrar
+// "+0m" errado e pior que a linha simplesmente nao aparecer).
+export function origemMenorDistDestinoM(contexto: unknown): number | null {
+  if (contexto === null || typeof contexto !== "object") return null;
+  const distDestinosM = (contexto as Record<string, unknown>).dist_destinos_m;
+  if (!Array.isArray(distDestinosM) || distDestinosM.length === 0) return null;
+  if (!distDestinosM.every((v) => typeof v === "number" && Number.isFinite(v))) return null;
+  return Math.min(...(distDestinosM as number[]));
+}
+
 // SEGUNDO caso de auto-resolucao de "afastando-se de todos os destinos"
 // (achado real 03/08): o mecanismo acima (deveAutoResolverAfastandoRotaConcluida)
 // so fecha quando a rota do dia inteira ja terminou. Isso deixa destampado o

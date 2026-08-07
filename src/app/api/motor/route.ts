@@ -53,6 +53,7 @@ import {
   contaComoEventoDeSilenciamento,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
+  origemMenorDistDestinoM,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
   deveAutoResolverAfastandoChegadaReal,
   saiuParadaConfirmadaHaMenosDe,
@@ -1563,16 +1564,22 @@ export async function POST(request: Request) {
       await preencherGeocodeCacheCandidatos(pool, cacheGeocode, chavesCandidatasGeocode);
 
       // Batch: carregar alertas do cliente de uma vez (2 queries por ciclo em vez de N por veículo).
+      // contexto incluido (achado Important 1, fix round 1 do progresso ao
+      // destino, 06/08): origemMenorDistDestinoM precisa ler
+      // contexto.dist_destinos_m do alerta especifico pra ter uma origem
+      // ESTAVEL do delta -- ver comentario completo no bloco de coleta de
+      // progressoDestinoCiclo mais abaixo, e em origemMenorDistDestinoM
+      // (detectores.ts).
       const { data: todosAlertasAbertos } = await supabase
         .from("alertas")
-        .select("id, tipo, veiculo_id, nivel, motivo, status")
+        .select("id, tipo, veiculo_id, nivel, motivo, status, contexto")
         .eq("cliente_id", cliente.id)
         .in("status", ["ativo", "reconhecido"]);
 
-      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; motivo: string; status: string }[]>();
+      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; motivo: string; status: string; contexto: unknown }[]>();
       for (const ab of todosAlertasAbertos ?? []) {
         const lista = mapaAlertasAbertos.get(ab.veiculo_id) ?? [];
-        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, motivo: ab.motivo, status: ab.status });
+        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, motivo: ab.motivo, status: ab.status, contexto: ab.contexto });
         mapaAlertasAbertos.set(ab.veiculo_id, lista);
       }
 
@@ -3564,15 +3571,41 @@ export async function POST(request: Request) {
 
           // Anota progresso ao destino num alerta "afastando de tudo" JA
           // ATIVO -- ver docs/superpowers/specs/2026-08-06-progresso-destino-desvio-design.md.
-          // Reusa afastamentoAcumuladoM (ja calculado acima nesta mesma
-          // iteracao, ~linha 1836) e o mesmo predicado que o auto-resolve ja
-          // usa pra saber quais alertas sao "afastando de tudo" -- so
-          // anotacao, nunca gera/fecha/muda severidade de alerta.
-          for (const d of alertasAbertos.filter((a) => elegivelParaAutoResolveAfastando(a))) {
-            progressoDestinoCiclo.push({
-              alerta_id: d.id,
-              deltaM: afastamentoAcumuladoM,
-            });
+          // Mesmo predicado que o auto-resolve ja usa pra saber quais
+          // alertas sao "afastando de tudo" -- so anotacao, nunca
+          // gera/fecha/muda severidade de alerta.
+          //
+          // FIX ROUND 1 (achado Important 1, revisao independente 06/08):
+          // NAO reusa mais afastamentoAcumuladoM (calculado a partir do
+          // desvioInicio volatil em memoria, que zera assim que o veiculo
+          // aproxima de forma sustentada -- mentia em 78% dos casos ativos
+          // verificados em producao, ver comentario em
+          // origemMenorDistDestinoM/detectores.ts). Cada alerta usa sua
+          // PROPRIA origem persistida (d.contexto.dist_destinos_m), nao a
+          // ancora em memoria do veiculo -- correto mesmo se o alerta for
+          // de um episodio de streak anterior ao atual. menorDistDestinoM
+          // (posicao ATUAL, ja calculado acima, ~linha 1783) e comum aos
+          // alertas deste veiculo neste ciclo.
+          //
+          // FIX ROUND 1 (achado Important 2, mesma revisao): so anota com
+          // posicao confiavel -- sem isso, um teleporte de GPS
+          // (saltoImplausivel) ou uma leitura obsoleta (!pos.fresco,
+          // alcancavel via jammer) rumo a um destino podia fazer o card
+          // mostrar "aproximando" bem na hora de uma anomalia de GPS, a
+          // mesma assinatura que o resto do sistema ja trata com
+          // desconfianca.
+          if (!saltoImplausivel && pos.fresco && alvosDestinosDisponiveis && menorDistDestinoM !== null) {
+            for (const d of alertasAbertos.filter((a) => elegivelParaAutoResolveAfastando(a))) {
+              const origemMenorDistM = origemMenorDistDestinoM(d.contexto);
+              // null = alerta sem dist_destinos_m utilizavel (ex: antigo
+              // demais) -- nao anota nada neste ciclo, a linha simplesmente
+              // nao aparece no card. Honesto: melhor que mostrar "+0m" errado.
+              if (origemMenorDistM === null) continue;
+              progressoDestinoCiclo.push({
+                alerta_id: d.id,
+                deltaM: menorDistDestinoM - origemMenorDistM,
+              });
+            }
           }
 
           // Auto-resolucao retroativa de "afastando-se de todos os
