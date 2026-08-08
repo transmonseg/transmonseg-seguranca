@@ -101,6 +101,34 @@ export function formatarProgressoDestino(deltaM: number): { texto: string; aprox
   return { texto: `ainda se afastando (+${arredondado}m)`, aproximando: false };
 }
 
+const LABEL_COMPONENTE_PLACAR: Record<string, string> = {
+  s1AfastandoDeTudo: "afastando de tudo",
+  s2RumoDivergente: "rumo divergente",
+  s3ForaDoCorredor: "fora do corredor",
+  s4CelulaDesconhecida: "célula desconhecida",
+  s5DiaEstagnado: "dia estagnado",
+  s6ParadoLongeDeTudo: "parado longe de tudo",
+  d1ParadaPertoDeEntrega: "parado perto de entrega",
+  d2PadraoEntrega: "padrão de entrega",
+  d3DestinoAlinhadoAproximando: "destino alinhado e aproximando",
+  d4DentroDoCorredor: "dentro do corredor",
+};
+
+// Texto do placar de desvio sombra pro card do alerta -- ver
+// docs/superpowers/specs/2026-08-07-placar-sombra-anotacao-design.md. So
+// informacao (nunca "resolvido"/"seguro", nunca cor verde no chamador) --
+// numero e sinais, quem decide e o operador. Chaves de auditoria que nao
+// sao pesos reais de score (classeViariaSuprimida, classeViariaSuprimidaPor,
+// zeradoPorChegada) ficam de fora por nao estarem em LABEL_COMPONENTE_PLACAR
+// -- sem precisar de lista de exclusao separada.
+export function formatarPlacarSombra(placar: number, componentes: Record<string, unknown>): string {
+  const ativos = Object.keys(componentes)
+    .filter((k) => LABEL_COMPONENTE_PLACAR[k] && componentes[k] !== false)
+    .map((k) => LABEL_COMPONENTE_PLACAR[k]);
+  const sufixo = ativos.length > 0 ? ` — sinais: ${ativos.join(", ")}` : "";
+  return `Placar sombra: ${Math.round(placar)}/100${sufixo}`;
+}
+
 export function detectarPanico(p: PosicaoNormalizada): Alerta | null {
   if (!p.panico) return null;
   return { nivel: "critico", tipo: "panico", motivo: "PANICO acionado", score: 100 };
@@ -1064,6 +1092,20 @@ export const MOTIVO_AFASTANDO_PREFIXO = "Afastando-se de todos";
 
 export function elegivelParaAutoResolveAfastando(alerta: { tipo: string; motivo: string; status: string }): boolean {
   return alerta.status === "ativo" && alerta.tipo === "desvio" && alerta.motivo.startsWith(MOTIVO_AFASTANDO_PREFIXO);
+}
+
+// Elegibilidade pra anotacao do placar de desvio sombra no contexto do
+// alerta (ver docs/superpowers/specs/2026-08-07-placar-sombra-anotacao-design.md).
+// So os 2 motivos hoje ativos que o placar cobre -- rumo_diverge (3o
+// detector que o placar tambem pontua) fica de fora: esta desligado hoje
+// (DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE) e nao tem constante de motivo
+// propria exportada pra identifica-lo com seguranca.
+export function elegivelParaAnotarPlacarSombra(alerta: { tipo: string; motivo: string; status: string }): boolean {
+  return (
+    alerta.status === "ativo" &&
+    alerta.tipo === "desvio" &&
+    (alerta.motivo.startsWith(MOTIVO_AFASTANDO_PREFIXO) || alerta.motivo === MOTIVO_RUA_ESTRANHA)
+  );
 }
 
 // FIX ROUND 1 (achado Important 1, revisao independente do progresso ao

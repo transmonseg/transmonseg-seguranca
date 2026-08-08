@@ -92,7 +92,7 @@ export async function GET(request: Request) {
       score: number | null;
       lat: number | null;
       lng: number | null;
-      contexto: { rota_concluida?: unknown; progresso_destino?: { delta_m: number } } | null;
+      contexto: { rota_concluida?: unknown; progresso_destino?: { delta_m: number }; placar_sombra?: { placar: number; componentes: Record<string, number | boolean | string> } } | null;
     }) => {
       const veiculo = veiculoMap.get(a.veiculo_id) as
         | { id: string; cv: string; placa: string }
@@ -130,6 +130,7 @@ export async function GET(request: Request) {
         local: pos?.local ?? null,
         rotaConcluida: a.contexto?.rota_concluida != null,
         progressoDestinoM: a.contexto?.progresso_destino?.delta_m ?? null,
+        placarSombra: a.contexto?.placar_sombra ?? null,
       };
     }
   );

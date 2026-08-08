@@ -53,6 +53,7 @@ import {
   contaComoEventoDeSilenciamento,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
+  elegivelParaAnotarPlacarSombra,
   origemMenorDistDestinoM,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
   deveAutoResolverAfastandoChegadaReal,
@@ -949,6 +950,14 @@ export async function POST(request: Request) {
     // ciclo, flush em lote no final, so ADICIONA campo no contexto (jsonb ||),
     // nunca muda nivel/status, nunca fecha o alerta.
     const progressoDestinoCiclo: { alerta_id: string; deltaM: number }[] = [];
+
+    // Anotação do placar de desvio sombra em alertas afastando_de_tudo/
+    // classe_viaria ativos -- ver
+    // docs/superpowers/specs/2026-08-07-placar-sombra-anotacao-design.md.
+    // Mesmo padrão de progressoDestinoCiclo/proximidadeDesvioCiclo: acumula
+    // por ciclo, flush em lote no final, so ADICIONA campo no contexto
+    // (jsonb ||), nunca muda nivel/status, nunca fecha o alerta.
+    const placarSombraCiclo: { alerta_id: string; placar: number; componentes: Record<string, number | boolean | string> }[] = [];
 
     // Auto-resolucao retroativa de "afastando-se de todos os destinos"
     // quando a rota foi 100% concluida E o veiculo chegou fisicamente
@@ -3608,6 +3617,16 @@ export async function POST(request: Request) {
             }
           }
 
+          // Anota o placar deste ciclo nos alertas abertos elegiveis deste
+          // veiculo -- mesmo padrao de progressoDestinoCiclo (ver linha
+          // ~3597 abaixo). Sem guard de saltoImplausivel/pos.fresco aqui: o
+          // placar ja tem seus proprios guards internos (Guard 7,
+          // podeSomarSinaisPlacar) -- reflete o valor real que o placar
+          // calculou pra este ciclo, sem duplicar logica de confiabilidade.
+          for (const d of alertasAbertos.filter((a) => elegivelParaAnotarPlacarSombra(a))) {
+            placarSombraCiclo.push({ alerta_id: d.id, placar: placarNovo, componentes: componentesPlacar });
+          }
+
           // Auto-resolucao retroativa de "afastando-se de todos os
           // destinos" quando a rota foi 100% concluida E o veiculo chegou
           // fisicamente dentro do poligono de uma base cadastrada -- ver
@@ -4459,6 +4478,32 @@ export async function POST(request: Request) {
       );
       const falhasProgresso = resultadosProgresso.filter((r) => r.status === "rejected").length;
       if (falhasProgresso > 0) console.warn(`Aviso: ${falhasProgresso} falha(s) ao anotar progresso ao destino neste ciclo`);
+    }
+
+    // Flush do placar sombra -- mesmo padrao de flush em lote + dedupe por
+    // alerta_id, mesmo padrao aditivo (contexto || jsonb, nunca muda
+    // nivel/status/fecha alerta) que progressoDestinoCiclo acima.
+    if (placarSombraCiclo.length > 0) {
+      const porAlertaPlacar = new Map(placarSombraCiclo.map((p) => [p.alerta_id, p]));
+      const resultadosPlacar = await Promise.allSettled(
+        [...porAlertaPlacar.values()].map((p) =>
+          pool.query(
+            `update alertas set contexto = contexto || $2::jsonb where id = $1`,
+            [
+              p.alerta_id,
+              JSON.stringify({
+                placar_sombra: {
+                  placar: Math.round(p.placar),
+                  componentes: p.componentes,
+                  atualizado_em: new Date().toISOString(),
+                },
+              }),
+            ]
+          )
+        )
+      );
+      const falhasPlacar = resultadosPlacar.filter((r) => r.status === "rejected").length;
+      if (falhasPlacar > 0) console.warn(`Aviso: ${falhasPlacar} falha(s) ao anotar placar sombra neste ciclo`);
     }
 
     // REMOVIDO (achado real 31/07, cliente Nutry Max): o flush de

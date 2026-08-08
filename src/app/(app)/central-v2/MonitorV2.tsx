@@ -6,7 +6,7 @@ import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
 import { resolverAlerta, marcarFalsoPositivo, resolverVarios, limparVarios } from "../acoes-alertas";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
-import { formatarProgressoDestino } from "@/lib/detectores";
+import { formatarProgressoDestino, formatarPlacarSombra } from "@/lib/detectores";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
@@ -37,6 +37,7 @@ interface AlertaEnriquecido {
   atraso_min: number | null;
   local: string | null;
   progressoDestinoM: number | null;
+  placarSombra: { placar: number; componentes: Record<string, number | boolean | string> } | null;
 }
 
 interface ClienteInfo { id: string; nome: string; cod: string; }
@@ -1315,6 +1316,13 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </p>
             );
           })()}
+          {a.placarSombra != null && (
+            <p style={{
+              margin: "0 0 2px", fontSize: 10, color: T.dim,
+            }}>
+              {formatarPlacarSombra(a.placarSombra.placar, a.placarSombra.componentes)}
+            </p>
+          )}
           {a.local && (
             <p style={{
               margin: "0 0 6px", fontSize: 10, color: T.dim, lineHeight: 1.3,

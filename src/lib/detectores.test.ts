@@ -43,9 +43,11 @@ import {
   contaComoRotuloHumano,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
+  elegivelParaAnotarPlacarSombra,
   origemMenorDistDestinoM,
   AFASTANDO_ROTA_CONCLUIDA_PARADO_MIN_MIN,
   deveAutoResolverAfastandoChegadaReal,
+  MOTIVO_RUA_ESTRANHA,
   AFASTANDO_CHEGADA_REAL_PARADO_MIN_MIN,
   saiuParadaConfirmadaHaMenosDe,
   JANELA_SAIDA_PARADA_MIN,
@@ -55,6 +57,7 @@ import {
   RETIDAO_RUMO_LIQUIDO_MINIMO_M,
   rumoCoerenteComDestino,
   formatarProgressoDestino,
+  formatarPlacarSombra,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -2232,6 +2235,30 @@ describe("elegivelParaAutoResolveAfastando (wiring)", () => {
   });
 });
 
+describe("elegivelParaAnotarPlacarSombra (anotação do placar sombra no card)", () => {
+  const base = { tipo: "desvio", motivo: "Afastando-se de todos os 3 destinos", status: "ativo" };
+
+  it("motivo afastando_de_tudo, ativo, tipo desvio: elegivel", () => {
+    expect(elegivelParaAnotarPlacarSombra(base)).toBe(true);
+  });
+
+  it("motivo rua estranha exato, ativo, tipo desvio: elegivel", () => {
+    expect(elegivelParaAnotarPlacarSombra({ ...base, motivo: MOTIVO_RUA_ESTRANHA })).toBe(true);
+  });
+
+  it("motivo de corredor (fora da rota esperada): nao elegivel", () => {
+    expect(elegivelParaAnotarPlacarSombra({ ...base, motivo: "Fora da rota esperada (500m da estrada real até o próximo ponto, buffer 120m)" })).toBe(false);
+  });
+
+  it("status resolvido: nao elegivel mesmo com motivo certo", () => {
+    expect(elegivelParaAnotarPlacarSombra({ ...base, status: "falso_positivo" })).toBe(false);
+  });
+
+  it("tipo diferente de desvio: nao elegivel mesmo com motivo certo", () => {
+    expect(elegivelParaAnotarPlacarSombra({ ...base, tipo: "parada_fora_tapete" })).toBe(false);
+  });
+});
+
 describe("origemMenorDistDestinoM (fix round 2, achado da re-review do fix round 1: origem REAL do desvio, nao o instante de criacao do alerta)", () => {
   it("contexto com dist_destinos_m e afastamento_acumulado_m: retorna o minimo do array MENOS o acumulado", () => {
     expect(origemMenorDistDestinoM({ dist_destinos_m: [6300, 8300, 4100], afastamento_acumulado_m: 1500 })).toBe(2600);
@@ -2559,5 +2586,32 @@ describe("formatarProgressoDestino", () => {
       texto: "aproximando de um destino (120m)",
       aproximando: true,
     });
+  });
+});
+
+describe("formatarPlacarSombra (texto do placar sombra no card)", () => {
+  it("nenhum componente ativo: so o numero, sem sufixo", () => {
+    expect(formatarPlacarSombra(0, {})).toBe("Placar sombra: 0/100");
+  });
+
+  it("1 componente ativo: numero + 1 sinal", () => {
+    expect(formatarPlacarSombra(8, { s1AfastandoDeTudo: 8 })).toBe("Placar sombra: 8/100 — sinais: afastando de tudo");
+  });
+
+  it("multiplos componentes ativos: todos listados na ordem das chaves", () => {
+    expect(formatarPlacarSombra(2, { s5DiaEstagnado: 2, s2RumoDivergente: 6, d1ParadaPertoDeEntrega: -15, d3DestinoAlinhadoAproximando: -10 }))
+      .toBe("Placar sombra: 2/100 — sinais: dia estagnado, rumo divergente, parado perto de entrega, destino alinhado e aproximando");
+  });
+
+  it("componente boolean false: excluido da lista", () => {
+    expect(formatarPlacarSombra(0, { classeViariaSuprimida: false })).toBe("Placar sombra: 0/100");
+  });
+
+  it("chave de auditoria desconhecida (zeradoPorChegada): excluida por nao estar no mapa de labels", () => {
+    expect(formatarPlacarSombra(0, { zeradoPorChegada: true })).toBe("Placar sombra: 0/100");
+  });
+
+  it("placar fracionario: arredondado no texto", () => {
+    expect(formatarPlacarSombra(17.4, {})).toBe("Placar sombra: 17/100");
   });
 });
