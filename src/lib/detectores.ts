@@ -129,6 +129,22 @@ export function formatarPlacarSombra(placar: number, componentes: Record<string,
   return `Placar sombra: ${Math.round(placar)}/100${sufixo}`;
 }
 
+// Texto de confiabilidade historica do card, a partir de
+// contexto.calibracao.taxa_falso_positivo -- ja gravado na criacao/
+// escalacao de todo alerta de desvio por montarContextoDesvio (route.ts),
+// nenhuma escrita nova. Ver
+// docs/superpowers/specs/2026-08-08-confiabilidade-detector-anotacao-design.md:
+// achado real que classe_viaria erra 66% das vezes (139+ amostras) sem
+// nenhum sinal nos dados ja coletados que discrimine certo de errado --
+// em vez de inventar supressao automatica sem sinal confiavel, expoe o
+// numero real e deixa a leitura com o operador. So informacao, nunca
+// "resolvido"/"seguro", nunca cor por valor.
+export function formatarConfiabilidadeDetector(taxaFalsoPositivo: number): string | null {
+  if (taxaFalsoPositivo < 0) return null;
+  const pct = Math.round(taxaFalsoPositivo * 100);
+  return `Histórico: ${pct}% de falso positivo neste tipo de alerta`;
+}
+
 export function detectarPanico(p: PosicaoNormalizada): Alerta | null {
   if (!p.panico) return null;
   return { nivel: "critico", tipo: "panico", motivo: "PANICO acionado", score: 100 };

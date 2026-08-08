@@ -58,6 +58,7 @@ import {
   rumoCoerenteComDestino,
   formatarProgressoDestino,
   formatarPlacarSombra,
+  formatarConfiabilidadeDetector,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -2613,5 +2614,27 @@ describe("formatarPlacarSombra (texto do placar sombra no card)", () => {
 
   it("placar fracionario: arredondado no texto", () => {
     expect(formatarPlacarSombra(17.4, {})).toBe("Placar sombra: 17/100");
+  });
+});
+
+describe("formatarConfiabilidadeDetector (texto de confiabilidade histórica no card)", () => {
+  it("taxa -1 (sem dado de calibracao): retorna null, nao mostra numero inventado", () => {
+    expect(formatarConfiabilidadeDetector(-1)).toBeNull();
+  });
+
+  it("taxa 0: retorna 0% de falso positivo", () => {
+    expect(formatarConfiabilidadeDetector(0)).toBe("Histórico: 0% de falso positivo neste tipo de alerta");
+  });
+
+  it("taxa 0.661 (caso real classe_viaria): arredonda pra 66%", () => {
+    expect(formatarConfiabilidadeDetector(0.661)).toBe("Histórico: 66% de falso positivo neste tipo de alerta");
+  });
+
+  it("taxa 0.092 (caso real afastando_de_tudo): arredonda pra 9%", () => {
+    expect(formatarConfiabilidadeDetector(0.092)).toBe("Histórico: 9% de falso positivo neste tipo de alerta");
+  });
+
+  it("taxa 1 (100% falso positivo): retorna 100%", () => {
+    expect(formatarConfiabilidadeDetector(1)).toBe("Histórico: 100% de falso positivo neste tipo de alerta");
   });
 });

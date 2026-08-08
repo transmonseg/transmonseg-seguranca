@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 interface Cliente { id: string; nome: string; cod_user_unitrac: string; }
 interface Veiculo { id: string; cliente_id: string; placa: string; cv: string; }
 interface PosicaoAtual { veiculo_id: string; lat: number | null; lng: number | null; velocidade: number; ignicao: boolean; atraso_min: number; local: string | null; }
-interface Alerta { id: string; cliente_id: string; veiculo_id: string; nivel: "critico" | "atencao"; tipo: string; motivo: string | null; desde: string; status: string; score: number | null; lat: number | null; lng: number | null; contexto: { rota_concluida?: unknown; progresso_destino?: { delta_m: number }; placar_sombra?: { placar: number; componentes: Record<string, number | boolean | string> } } | null; }
+interface Alerta { id: string; cliente_id: string; veiculo_id: string; nivel: "critico" | "atencao"; tipo: string; motivo: string | null; desde: string; status: string; score: number | null; lat: number | null; lng: number | null; contexto: { rota_concluida?: unknown; progresso_destino?: { delta_m: number }; placar_sombra?: { placar: number; componentes: Record<string, number | boolean | string> }; calibracao?: { segmento: string | null; taxa_falso_positivo: number } } | null; }
 
 function ordemSeveridade(tipo: string): number {
   const t = tipo?.toLowerCase() ?? "";
@@ -63,6 +63,7 @@ export default async function CentralPage({
       rotaConcluida: (a.contexto as { rota_concluida?: unknown } | null)?.rota_concluida != null,
       progressoDestinoM: (a.contexto as { progresso_destino?: { delta_m: number } } | null)?.progresso_destino?.delta_m ?? null,
       placarSombra: (a.contexto as { placar_sombra?: { placar: number; componentes: Record<string, number | boolean | string> } } | null)?.placar_sombra ?? null,
+      calibracao: (a.contexto as { calibracao?: { segmento: string | null; taxa_falso_positivo: number } } | null)?.calibracao ?? null,
       contexto: undefined,
     };
   };
