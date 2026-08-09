@@ -130,6 +130,26 @@ type OsrmRouteResponse = {
 };
 type ValhallaResponse = { trip?: { legs?: { shape?: string }[] } };
 
+// ─── Camada 0: OSRM self-hosted no Contabo (ver
+// docs/superpowers/specs/2026-08-09-osrm-self-hosted-design.md). Sem
+// throttle (é nosso, não é o serviço público com política de 1 req/s
+// global) -- testa TODOS os destinos pendentes, não só 3-5 como o fallback
+// público consegue dentro do orçamento. Mesmo formato de resposta HTTP do
+// OSRM público, só muda a URL base.
+const OSRM_LOCAL_URL = process.env.OSRM_LOCAL_URL ?? "http://127.0.0.1:5001";
+
+async function rotaOSRMLocal(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
+  const res = await fetch(
+    `${OSRM_LOCAL_URL}/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?geometries=geojson&overview=full`,
+    { signal: AbortSignal.timeout(1000) } // local: timeout curto, sem desculpa pra demorar
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as OsrmRouteResponse;
+  const coords = data.routes?.[0]?.geometry?.coordinates;
+  if (data.code !== "Ok" || !coords || coords.length < 2) return null;
+  return coords.map(([lng, lat]) => ({ lat, lng }));
+}
+
 async function rotaOSRM(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
   const res = await fetch(
     `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?geometries=geojson&overview=full`,
@@ -166,7 +186,19 @@ async function rotaValhalla(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
 // ponto de partida, então "estou perto da rota que sai de mim mesmo" dá
 // sempre verdadeiro, não importa o quão desviado o veículo esteja de
 // verdade). Achado ao vivo 10/07, ver docs/analise-deteccao.md secao 7.6.
-// destinos: até 3 mais próximos, o CHAMADOR corta.
+// destinos: lista completa (já ordenada por ordenarPendentesPorDistancia
+// pelo chamador) -- a Camada 0 (self-hosted) testa todos; a Camada 1
+// (fallback público, throttled) corta pra MAX_CANDIDATOS_FALLBACK_PUBLICO
+// internamente (ver spec 09/08 -- o corte deixou de ser responsabilidade
+// do chamador).
+//
+// So o fallback PUBLICO respeita esse teto -- e' o mesmo limite de sempre
+// (existia como o corte que o CHAMADOR fazia antes desta mudança), agora
+// aplicado DENTRO da função pra não depender do chamador ter cortado
+// certo. A Camada 0 (self-hosted) nunca usa essa constante -- testa
+// `destinos` inteiro, sem teto, porque não tem throttle pra respeitar.
+const MAX_CANDIDATOS_FALLBACK_PUBLICO = 3;
+
 export async function verificarCorredor(
   origem: Ponto,
   posAtual: Ponto & { velocidade: number },
@@ -174,10 +206,55 @@ export async function verificarCorredor(
 ): Promise<{ veredito: "dentro" | "fora" | "indisponivel"; corredor: Ponto[] | null }> {
   if (destinos.length === 0) return { veredito: "indisponivel", corredor: null };
   const buffer = bufferPorVelocidade(posAtual.velocidade);
-  const inicio = Date.now();
-  let alguma = false;
 
-  for (const destino of destinos) {
+  // Camada 0 (NOVA): self-hosted, sem throttle, testa TODOS os destinos
+  // recebidos -- é essa lista completa (não mais cortada em 3 pelo
+  // chamador) que resolve a causa raiz (destino real nunca testado). Tem
+  // o MESMO deadline que a Camada 1 (revisão 09/08: sem isso, servidor
+  // local vivo-mas-travado podia segurar o alerta por até ~12s antes
+  // sequer de chegar na Camada 1, violando o teto de hoje). Acumula em
+  // `naoRoteadosLocal` os destinos que o self-hosted NÃO conseguiu rotear
+  // (falha pontual, NoRoute, ou nem chegou a tentar por causa do deadline)
+  // -- revisão 09/08 achou que gatear em um booleano global ("algum
+  // destino roteou") escondia o destino REAL quando ele especificamente
+  // falhava local (erro pontual em 1 de 8), reintroduzindo a causa raiz
+  // que este projeto existe pra matar. Só os destinos não resolvidos
+  // localmente (não a lista inteira) vão pra Camada 1.
+  const naoRoteadosLocal: Ponto[] = [];
+  const inicioLocal = Date.now();
+  let algumaRotaSucesso = false;
+  for (let i = 0; i < destinos.length; i++) {
+    if (Date.now() - inicioLocal > DEADLINE_VERIFICACAO_MS) {
+      naoRoteadosLocal.push(...destinos.slice(i));
+      break;
+    }
+    const destino = destinos[i];
+    let rota: Ponto[] | null = null;
+    try { rota = await rotaOSRMLocal(origem, destino); } catch { /* cai pro fallback abaixo */ }
+    if (!rota) { naoRoteadosLocal.push(destino); continue; }
+    algumaRotaSucesso = true;
+    if (dentroDoCorredor(posAtual, rota, buffer)) {
+      return { veredito: "dentro", corredor: rota };
+    }
+  }
+  // Testou TODOS os destinos com sucesso local e nenhum bateu -- fora de
+  // verdade, decidido com informação completa. Não gasta orçamento
+  // público à toa.
+  if (naoRoteadosLocal.length === 0) return { veredito: "fora", corredor: null };
+
+  if (naoRoteadosLocal.length === destinos.length) {
+    console.warn("Aviso: OSRM self-hosted não resolveu nenhum destino, caindo pro fallback público");
+  }
+
+  // Camada 1 (EXISTENTE, comportamento preservado): cai pro público com
+  // throttle, testando só os primeiros MAX_CANDIDATOS_FALLBACK_PUBLICO
+  // dos destinos que o self-hosted NÃO conseguiu resolver (não a lista
+  // completa) -- dá ao público a chance de resolver especificamente o que
+  // o local não conseguiu, exatamente o mesmo orçamento de hoje, só que a
+  // decisão de cortar agora é DESTA função, não do chamador.
+  const candidatosFallback = naoRoteadosLocal.slice(0, MAX_CANDIDATOS_FALLBACK_PUBLICO);
+  const inicio = Date.now();
+  for (const destino of candidatosFallback) {
     if (Date.now() - inicio > DEADLINE_VERIFICACAO_MS) break;
     await esperarVaga();
     let rota: Ponto[] | null = null;
@@ -186,13 +263,14 @@ export async function verificarCorredor(
       try { rota = await rotaValhalla(origem, destino); } catch { /* segue */ }
     }
     if (!rota) continue;
-    alguma = true;
+    algumaRotaSucesso = true;
     if (dentroDoCorredor(posAtual, rota, buffer)) {
       return { veredito: "dentro", corredor: rota };
     }
   }
-  // Nenhuma rota calculada com sucesso = nao da pra afirmar nada (fail-open).
-  if (!alguma) return { veredito: "indisponivel", corredor: null };
+  // Nenhuma rota calculada com sucesso em NENHUMA das duas camadas = nao
+  // da pra afirmar nada (fail-open).
+  if (!algumaRotaSucesso) return { veredito: "indisponivel", corredor: null };
   return { veredito: "fora", corredor: null };
 }
 

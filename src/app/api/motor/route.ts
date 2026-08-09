@@ -2433,9 +2433,11 @@ export async function POST(request: Request) {
             // "3 mais proximos" presumia que o motorista ia pro mais perto,
             // o que gerava alerta em cima de gente indo legitimamente pra um
             // pendente mais distante. Agora verifica TODOS, ordenados por
-            // distancia so como heuristica de prioridade dentro do
-            // orcamento de chamadas (verificarCorredor ja tem deadline de
-            // 5s/req e o throttle global decide quantos realmente cabem).
+            // distancia so como heuristica de prioridade (achado 09/08: a
+            // Camada 0 do OSRM self-hosted, sem throttle, testa essa lista
+            // inteira; so a Camada 1 -- fallback publico -- corta em
+            // MAX_CANDIDATOS_FALLBACK_PUBLICO internamente, dentro de
+            // verificarCorredor, nao mais aqui).
             // Achado real 15/07: com orcamento apertado (~4-5 candidatos
             // testaveis) e clientes com mediana de 11 pendentes, prioriza
             // por alinhamento com o rumo de deslocamento (rumoMovimento, ja
@@ -3045,11 +3047,9 @@ export async function POST(request: Request) {
             } else if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
               chamadasCorredorNoCiclo++;
               const bufferAtual = bufferPorVelocidade(pos.velocidade);
-              const candidatos = [...destinos]
-                .map((d) => ({ d, dist: haversineM(pos.lat, pos.lng, d.lat, d.lng) }))
-                .sort((a, b) => a.dist - b.dist)
-                .slice(0, 3)
-                .map((x) => x.d);
+              const candidatos = [...destinos].sort(
+                (a, b) => haversineM(pos.lat, pos.lng, a.lat, a.lng) - haversineM(pos.lat, pos.lng, b.lat, b.lng)
+              );
               const r = await verificarCorredor(origem, { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);
               ultimaVerificacaoCorredorPorVeiculo.set(veiculo_id, Date.now());
               corredorInfo = { veredito: r.veredito, bufferM: bufferAtual };

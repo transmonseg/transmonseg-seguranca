@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { bufferPorVelocidade, dentroDoCorredor, decodePolyline6, verificarCorredor, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, parOrigemDestinoTemHistoricoSuficiente, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "./corredor-verificacao";
 
 describe("bufferPorVelocidade (adaptativo: cidade estreito, rodovia largo)", () => {
@@ -134,6 +134,173 @@ describe("verificarCorredor (fetch mockado, origem FIXA != posicao atual)", () =
   it("sem destinos: indisponivel (nada pra verificar)", async () => {
     const r = await verificarCorredor({ lat: -22.9, lng: -43.2 }, { lat: -22.9, lng: -43.2, velocidade: 40 }, []);
     expect(r.veredito).toBe("indisponivel");
+  });
+});
+
+describe("verificarCorredor (Camada 0 self-hosted + fallback público preservado)", () => {
+  const origem = { lat: -22.9, lng: -43.2 };
+  const posAtual = { lat: -22.9005, lng: -43.2005, velocidade: 30 };
+  const destinos = Array.from({ length: 8 }, (_, i) => ({ lat: -22.9 + i * 0.01, lng: -43.2 + i * 0.01 }));
+
+  const rotaGeoJSON = (coords: [number, number][]) => ({
+    code: "Ok",
+    routes: [{ geometry: { coordinates: coords }, distance: 1000 }],
+  });
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("self-hosted responde e posicao esta dentro do buffer: dentro, SEM chamar o fallback publico", async () => {
+    const rotaPertoDaPos = [[-43.2005, -22.9005], [-43.19, -22.89]] as [number, number][];
+    (fetch as any).mockImplementation((url: string) =>
+      Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaPertoDaPos) })
+    );
+    const r = await verificarCorredor(origem, posAtual, destinos);
+    expect(r.veredito).toBe("dentro");
+    // so o self-hosted deveria ter sido chamado (1 destino ate achar match) --
+    // nenhuma chamada pro dominio publico do osrm/valhalla. Asserção fora do
+    // mockImplementation (revisão 09/08: dentro do mock, um throw seria
+    // engolido pelo try/catch da implementação e mascararia o erro real).
+    const chamadas = (fetch as any).mock.calls.map((c: any[]) => c[0]);
+    expect(chamadas.every((u: string) => u.includes("127.0.0.1:5001"))).toBe(true);
+  });
+
+  it("self-hosted responde mas fora do buffer pra TODOS os destinos: fora, testa a lista inteira (nao so 3)", async () => {
+    const rotaLonge = [[10, 10], [11, 11]] as [number, number][];
+    (fetch as any).mockImplementation(() => Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaLonge) }));
+    const r = await verificarCorredor(origem, posAtual, destinos);
+    expect(r.veredito).toBe("fora");
+    expect((fetch as any).mock.calls.length).toBe(destinos.length); // todos os 8, nao 3
+  });
+
+  it("self-hosted indisponivel (fetch rejeita) pra todos, publico responde: cai pro fallback existente", async () => {
+    (fetch as any).mockImplementation((url: string) => {
+      if (url.includes("127.0.0.1:5001")) return Promise.reject(new Error("ECONNREFUSED"));
+      return Promise.resolve({ ok: true, json: async () => rotaGeoJSON([[-43.2005, -22.9005], [-43.19, -22.89]]) });
+    });
+    const r = await verificarCorredor(origem, posAtual, destinos);
+    expect(r.veredito).toBe("dentro");
+    // fallback publico so deveria ter sido chamado com ate 3 candidatos
+    const chamadasPublicas = (fetch as any).mock.calls.filter((c: any[]) => !c[0].includes("127.0.0.1:5001"));
+    expect(chamadasPublicas.length).toBeLessThanOrEqual(3);
+  });
+
+  // Revisão 09/08 (minor): o teste acima acerta "dentro" já no 1º candidato
+  // público -- se o teto de MAX_CANDIDATOS_FALLBACK_PUBLICO sumisse do
+  // código, esse teste continuaria passando sem detectar a regressão. Este
+  // aqui força o público a NUNCA bater, então o número exato de chamadas
+  // públicas só pode ser 3 se o teto estiver mesmo sendo respeitado (sem
+  // teto, tentaria os 8 que o self-hosted não conseguiu rotear).
+  it("self-hosted indisponivel pra todos, publico tambem nunca bate: respeita o teto de 3 candidatos (nao tenta os 8)", async () => {
+    const rotaLonge = [[10, 10], [11, 11]] as [number, number][];
+    (fetch as any).mockImplementation((url: string) => {
+      if (url.includes("127.0.0.1:5001")) return Promise.reject(new Error("ECONNREFUSED"));
+      return Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaLonge) });
+    });
+    const r = await verificarCorredor(origem, posAtual, destinos);
+    expect(r.veredito).toBe("fora");
+    const chamadasPublicas = (fetch as any).mock.calls.filter((c: any[]) => !c[0].includes("127.0.0.1:5001"));
+    expect(chamadasPublicas.length).toBe(3);
+  });
+
+  // Revisão 09/08 (Important 2): reproduz o achado do revisor -- o destino
+  // REAL (o único que bate no buffer) falha especificamente no self-hosted
+  // (NoRoute pontual), enquanto todos os outros roteiam local mas ficam
+  // fora do buffer. Antes do fix, o gate era um booleano global ("algum
+  // destino roteou local") e retornava "fora" direto sem nunca dar ao
+  // público a chance de resolver esse destino específico -- reintroduzindo
+  // a causa raiz que este projeto existe pra matar.
+  it("1 destino falha so no self-hosted (NoRoute pontual) e e' o destino real: publico resolve esse destino especifico, dentro", async () => {
+    const rotaLonge = [[10, 10], [11, 11]] as [number, number][];
+    const rotaPertoDaPos = [[-43.2005, -22.9005], [-43.19, -22.89]] as [number, number][];
+    const destinoReal = destinos[destinos.length - 1]; // o unico que o publico vai bater
+    (fetch as any).mockImplementation((url: string) => {
+      const destinoRealNaUrl = `${destinoReal.lng},${destinoReal.lat}`;
+      if (url.includes("127.0.0.1:5001")) {
+        if (url.includes(destinoRealNaUrl)) return Promise.reject(new Error("NoRoute"));
+        return Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaLonge) });
+      }
+      // publico: so bate pro destino real
+      if (url.includes(destinoRealNaUrl)) {
+        return Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaPertoDaPos) });
+      }
+      return Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaLonge) });
+    });
+    const r = await verificarCorredor(origem, posAtual, destinos);
+    expect(r.veredito).toBe("dentro");
+    // o self-hosted deveria ter tentado todos os 8 (7 rotearam fora do
+    // buffer, 1 -- o real -- deu NoRoute); so o destino real deveria ter
+    // ido pro fallback publico.
+    const chamadasLocais = (fetch as any).mock.calls.filter((c: any[]) => c[0].includes("127.0.0.1:5001"));
+    expect(chamadasLocais.length).toBe(destinos.length);
+    const chamadasPublicas = (fetch as any).mock.calls.filter((c: any[]) => !c[0].includes("127.0.0.1:5001"));
+    expect(chamadasPublicas.length).toBe(1);
+  });
+
+  it("self-hosted E publico indisponiveis: indisponivel (fail-open preservado)", async () => {
+    (fetch as any).mockImplementation(() => Promise.reject(new Error("network down")));
+    const r = await verificarCorredor(origem, posAtual, destinos);
+    expect(r.veredito).toBe("indisponivel");
+  });
+
+  it("destinos vazio: indisponivel, nenhuma chamada de rede", async () => {
+    const r = await verificarCorredor(origem, posAtual, []);
+    expect(r.veredito).toBe("indisponivel");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  // Revisão 09/08 (Important 1): a Camada 0 (self-hosted) não tinha
+  // deadline algum -- servidor local vivo-mas-travado (não caído, só
+  // lento) podia segurar a verificação inteira sem cortar, violando o
+  // teto documentado no topo do arquivo ("fail-open sempre -- nunca segura
+  // alerta"). Simula cada chamada local "gastando" 3s (via avanço manual
+  // do relógio falso dentro do mock) -- com o deadline de 5s, só dá pra
+  // tentar 2 antes de estourar e cair pra Camada 1, mesmo com 10 destinos.
+  //
+  // Usa vi.useFakeTimers() (Date.now + setTimeout juntos, não só um spy em
+  // Date.now) pra não esperar de verdade o throttle real de esperarVaga()
+  // da Camada 1. IMPORTANTE: fica por último no describe de propósito --
+  // avançar o relógio falso deixa `ultimaChamadaEm` (estado de módulo
+  // COMPARTILHADO entre testes, a fila de throttle de esperarVaga) num
+  // valor "no futuro" em relação ao relógio real; qualquer teste seguinte
+  // neste arquivo que dependesse de esperarVaga ficaria preso esperando
+  // essa "dívida" de tempo de verdade. Não há teste depois deste que passe
+  // pela Camada 1, então a poluição não afeta mais nada.
+  it("Camada 0 respeita o mesmo deadline da Camada 1 (self-hosted vivo mas lento nao trava o alerta)", async () => {
+    vi.useFakeTimers();
+    try {
+      const muitosDestinos = Array.from({ length: 10 }, (_, i) => ({ lat: -22.9 + i * 0.01, lng: -43.2 + i * 0.01 }));
+      const rotaLonge = [[10, 10], [11, 11]] as [number, number][];
+      const rotaPertoDaPos = [[-43.2005, -22.9005], [-43.19, -22.89]] as [number, number][];
+      (fetch as any).mockImplementation((url: string) => {
+        if (url.includes("127.0.0.1:5001")) {
+          vi.advanceTimersByTime(3000); // servidor local vivo, mas lento -- 3s por chamada
+          return Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaLonge) });
+        }
+        // publico resolve na hora e bate no buffer -- so pra dar um veredito
+        // determinístico depois que a Camada 0 estourar o deadline.
+        return Promise.resolve({ ok: true, json: async () => rotaGeoJSON(rotaPertoDaPos) });
+      });
+      const p = verificarCorredor(origem, posAtual, muitosDestinos);
+      let resolvida = false;
+      p.then(() => { resolvida = true; });
+      for (let i = 0; i < 10 && !resolvida; i++) {
+        await vi.advanceTimersByTimeAsync(1500); // drena o throttle (setTimeout) da Camada 1, sem esperar de verdade
+      }
+      const r = await p;
+      expect(r.veredito).toBe("dentro");
+      const chamadasLocais = (fetch as any).mock.calls.filter((c: any[]) => c[0].includes("127.0.0.1:5001"));
+      // com 3s "gastos" por chamada e deadline de 5s, no maximo 2 chamadas
+      // locais cabem -- sem o fix, teria tentado as 10.
+      expect(chamadasLocais.length).toBeLessThan(muitosDestinos.length);
+      expect(chamadasLocais.length).toBeLessThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
