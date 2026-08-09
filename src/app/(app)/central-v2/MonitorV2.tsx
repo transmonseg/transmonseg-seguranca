@@ -6,7 +6,7 @@ import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
 import { resolverAlerta, marcarFalsoPositivo, resolverVarios, limparVarios } from "../acoes-alertas";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
-import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeDetector } from "@/lib/detectores";
+import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeDetector, IDADE_MINIMA_ACAO_MASSA_MIN, elegivelParaAcaoMassa } from "@/lib/detectores";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
@@ -544,6 +544,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // proprio fluxo de confirmar/cancelar.
   const [confirmarLimpar, setConfirmarLimpar] = useState(false);
   const [limpandoTodos, startLimpar] = useTransition();
+  const [avisoRecentes, setAvisoRecentes] = useState<{ acao: "resolver" | "limpar"; quantidade: number } | null>(null);
 
   // Filtro por tipo de alerta (sidebar) — multi-select
   const [filtroTipos, setFiltroTipos] = useState<Set<string>>(new Set());
@@ -1087,9 +1088,29 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const handleResolverTodos = useCallback(() => {
     const alvos = alertasFiltrados;
     if (alvos.length === 0) return;
+    setAvisoRecentes(null);
+    // Guard de idade minima (achado real 08/08, caso TTH-3C94): alerta
+    // recem-nascido nunca some da tela por acao em massa -- ver
+    // docs/superpowers/specs/2026-08-09-idade-minima-acao-massa-design.md.
+    // Espelha o guard do servidor (acoes-alertas.ts) pra nunca nem piscar
+    // um alerta jovem como removido -- servidor continua sendo a
+    // autoridade final, isso e' so pra UX consistente.
+    // elegivelParaAcaoMassa (nao minutosDesde, que arredonda pra exibicao)
+    // -- reusa a MESMA funcao pura do servidor, evita o servidor rejeitar
+    // um id que o cliente achou elegivel por causa de arredondamento no
+    // limite exato dos 5min (minutosDesde arredonda: 4min36s vira "5min"
+    // no texto do card, mas o servidor compara sem arredondar).
+    const agora = new Date();
+    const elegiveis = alvos.filter(a => elegivelParaAcaoMassa(a.desde, agora));
+    const recentes = alvos.length - elegiveis.length;
+    if (elegiveis.length === 0) {
+      if (recentes > 0) setAvisoRecentes({ acao: "resolver", quantidade: recentes });
+      setConfirmarResolver(false);
+      return;
+    }
     startResolver(async () => {
-      const ids = new Set(alvos.map(a => a.id));
-      const cvsResolvidos = new Set(alvos.map(a => a.cv));
+      const ids = new Set(elegiveis.map(a => a.id));
+      const cvsResolvidos = new Set(elegiveis.map(a => a.cv));
       setAlertas(a => {
         const restante = a.filter(x => !ids.has(x.id));
         const cvsAindaComAlerta = new Set(restante.map(x => x.cv));
@@ -1098,7 +1119,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         ));
         return restante;
       });
-      await resolverVarios(alvos.map(a => a.id));
+      await resolverVarios(elegiveis.map(a => a.id));
+      if (recentes > 0) setAvisoRecentes({ acao: "resolver", quantidade: recentes });
       setConfirmarResolver(false);
     });
   }, [alertasFiltrados]);
@@ -1110,9 +1132,24 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const handleLimparTodos = useCallback(() => {
     const alvos = alertasFiltrados;
     if (alvos.length === 0) return;
+    setAvisoRecentes(null);
+    // Mesmo guard de idade minima de handleResolverTodos acima.
+    // elegivelParaAcaoMassa (nao minutosDesde, que arredonda pra exibicao)
+    // -- reusa a MESMA funcao pura do servidor, evita o servidor rejeitar
+    // um id que o cliente achou elegivel por causa de arredondamento no
+    // limite exato dos 5min (minutosDesde arredonda: 4min36s vira "5min"
+    // no texto do card, mas o servidor compara sem arredondar).
+    const agora = new Date();
+    const elegiveis = alvos.filter(a => elegivelParaAcaoMassa(a.desde, agora));
+    const recentes = alvos.length - elegiveis.length;
+    if (elegiveis.length === 0) {
+      if (recentes > 0) setAvisoRecentes({ acao: "limpar", quantidade: recentes });
+      setConfirmarLimpar(false);
+      return;
+    }
     startLimpar(async () => {
-      const ids = new Set(alvos.map(a => a.id));
-      const cvsLimpos = new Set(alvos.map(a => a.cv));
+      const ids = new Set(elegiveis.map(a => a.id));
+      const cvsLimpos = new Set(elegiveis.map(a => a.cv));
       setAlertas(a => {
         const restante = a.filter(x => !ids.has(x.id));
         const cvsAindaComAlerta = new Set(restante.map(x => x.cv));
@@ -1121,7 +1158,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         ));
         return restante;
       });
-      await limparVarios(alvos.map(a => a.id));
+      await limparVarios(elegiveis.map(a => a.id));
+      if (recentes > 0) setAvisoRecentes({ acao: "limpar", quantidade: recentes });
       setConfirmarLimpar(false);
     });
   }, [alertasFiltrados]);
@@ -2297,6 +2335,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   </button>
                 </div>
               )}
+            </div>
+          )}
+
+          {avisoRecentes && (
+            <div style={{ padding: "5px 8px", fontSize: 10, color: T.dim, borderBottom: `1px solid ${T.border}` }}>
+              {avisoRecentes.quantidade} alerta{avisoRecentes.quantidade > 1 ? "s" : ""} recente{avisoRecentes.quantidade > 1 ? "s" : ""} (menos de {IDADE_MINIMA_ACAO_MASSA_MIN}min) {avisoRecentes.quantidade > 1 ? "ficaram" : "ficou"} de fora d{avisoRecentes.acao === "resolver" ? "a resolução" : "a limpeza"} em massa — revise individualmente.
             </div>
           )}
 

@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { registrarCasosDesvioRevisao } from "@/lib/casos-desvio-revisao";
+import { IDADE_MINIMA_ACAO_MASSA_MIN } from "@/lib/detectores";
 
-export type ResultadoAcao = { ok?: boolean; erro?: string };
+export type ResultadoAcao = { ok?: boolean; erro?: string; ignoradosRecentes?: number };
 
 // Garante o registro do operador logado (espelho de auth.users em operadores)
 // e devolve o id. Defensivo para contas criadas antes do espelho existir.
@@ -72,16 +73,43 @@ export async function resolverVarios(
 ): Promise<ResultadoAcao & { resolvidos?: number }> {
   const opId = await operadorAtual();
   if (!opId) return { erro: "Sessao expirada." };
-  if (ids.length === 0) return { ok: true, resolvidos: 0 };
+  if (ids.length === 0) return { ok: true, resolvidos: 0, ignoradosRecentes: 0 };
   const admin = createAdminClient();
+  // Guard de idade minima (achado real 08/08, caso TTH-3C94): acao em
+  // massa nunca fecha alerta recem-nascido sem revisao individual -- ver
+  // docs/superpowers/specs/2026-08-09-idade-minima-acao-massa-design.md.
+  // Servidor e' a AUTORIDADE (nunca confia no cliente ja ter filtrado).
+  // `corte` e' computado UMA vez e reaplicado tanto no select quanto no
+  // update final -- protege contra TOCTOU real: o motor (route.ts, escalada
+  // atencao->critico) reescreve `desde` de um alerta existente preservando o
+  // id, entao um alerta elegivel no momento do select pode escalar e ficar
+  // jovem de novo antes do update rodar (registrarCasosDesvioRevisao faz
+  // round-trips sequenciais no meio do caminho). Se isso acontecer, o WHERE
+  // do update deixa de bater e o alerta simplesmente nao fecha -- o Postgres
+  // avalia a condicao no momento real do update, sem logica extra em JS.
+  const corte = new Date(Date.now() - IDADE_MINIMA_ACAO_MASSA_MIN * 60_000).toISOString();
+  const { data: linhas, error: erroSelect } = await admin
+    .from("alertas")
+    .select("id")
+    .in("id", ids)
+    .lte("desde", corte);
+  if (erroSelect) return { erro: "Não foi possível verificar a idade dos alertas." };
+  const elegiveis = (linhas ?? []).map((l) => l.id);
+  const ignoradosRecentes = ids.length - elegiveis.length;
+  if (elegiveis.length === 0) return { ok: true, resolvidos: 0, ignoradosRecentes };
   // Achado 01/08: este botao gravava exatamente igual ao "Resolver"
   // individual -- inclusive alimentando casos_desvio_revisao como se fosse
   // veredito caso a caso. Nao era possivel, olhando o dado, saber se um
   // 'resolvido' foi julgamento ou clique pra desentupir a tela. Agora
   // carrega origem_acao='resolver_massa' nos DOIS lugares, e quem le pra
   // medir/calibrar filtra por origem individual.
-  await registrarCasosDesvioRevisao(admin, ids, "resolvido", "resolver_massa");
-  const { error } = await admin
+  await registrarCasosDesvioRevisao(admin, elegiveis, "resolvido", "resolver_massa");
+  // Update final reaplica `.lte("desde", corte)` (mesmo corte, nao
+  // recalculado) e restringe a status ainda abertos -- e' a autoridade
+  // atomica: `elegiveis` acima e' so pra decidir o que tentar e alimentar
+  // registrarCasosDesvioRevisao, quem realmente fechou vem de `.select("id")`
+  // encadeado no proprio update.
+  const { data: atualizados, error } = await admin
     .from("alertas")
     .update({
       status: "resolvido",
@@ -90,10 +118,14 @@ export async function resolverVarios(
       origem_acao: "resolver_massa",
       ...STRIP_PESADO,
     })
-    .in("id", ids);
+    .in("id", elegiveis)
+    .lte("desde", corte)
+    .in("status", ["ativo", "reconhecido"])
+    .select("id");
   if (error) return { erro: "Não foi possível resolver os alertas." };
+  const resolvidos = atualizados?.length ?? 0;
   revalidatePath("/");
-  return { ok: true, resolvidos: ids.length };
+  return { ok: true, resolvidos, ignoradosRecentes: ids.length - resolvidos };
 }
 
 // Operador so quer tirar da tela, sem afirmar nada sobre o caso (nem real,
@@ -108,9 +140,17 @@ export async function limparVarios(
 ): Promise<ResultadoAcao & { limpos?: number }> {
   const opId = await operadorAtual();
   if (!opId) return { erro: "Sessao expirada." };
-  if (ids.length === 0) return { ok: true, limpos: 0 };
+  if (ids.length === 0) return { ok: true, limpos: 0, ignoradosRecentes: 0 };
   const admin = createAdminClient();
-  const { error } = await admin
+  // Mesmo guard de idade minima de resolverVarios acima -- ver
+  // docs/superpowers/specs/2026-08-09-idade-minima-acao-massa-design.md.
+  // Sem select previo (nao chama registrarCasosDesvioRevisao, nao precisa
+  // capturar contexto antes do STRIP_PESADO) -- uma UNICA query atomica:
+  // `.lte("desde", corte)` decide o que fecha no proprio momento do update
+  // (sem gap de tempo, sem risco de truncamento do select afetar a decisao),
+  // e `.select("id")` encadeado devolve quem realmente foi afetado.
+  const corte = new Date(Date.now() - IDADE_MINIMA_ACAO_MASSA_MIN * 60_000).toISOString();
+  const { data: atualizados, error } = await admin
     .from("alertas")
     .update({
       status: "limpo",
@@ -119,8 +159,12 @@ export async function limparVarios(
       origem_acao: "limpar_massa",
       ...STRIP_PESADO,
     })
-    .in("id", ids);
+    .in("id", ids)
+    .lte("desde", corte)
+    .in("status", ["ativo", "reconhecido"])
+    .select("id");
   if (error) return { erro: "Não foi possível limpar os alertas." };
+  const limpos = atualizados?.length ?? 0;
   revalidatePath("/");
-  return { ok: true, limpos: ids.length };
+  return { ok: true, limpos, ignoradosRecentes: ids.length - limpos };
 }

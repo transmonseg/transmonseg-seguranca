@@ -1124,6 +1124,23 @@ export function elegivelParaAnotarPlacarSombra(alerta: { tipo: string; motivo: s
   );
 }
 
+// Idade minima (minutos) pra um alerta virar elegivel pra acao em massa
+// (Resolver todos / Limpar avisos) -- ver
+// docs/superpowers/specs/2026-08-09-idade-minima-acao-massa-design.md.
+// Achado real 08/08 (caso TTH-3C94): alerta real fechado por "limpar em
+// massa" 80s depois de nascer, antes de qualquer revisao humana -- 22
+// casos assim nos ultimos 7 dias (todos < 2min), 0 casos assim em acao
+// INDIVIDUAL no mesmo periodo. So acoes em massa tem esse risco.
+export const IDADE_MINIMA_ACAO_MASSA_MIN = 5;
+
+// Limite INCLUSIVO (exatamente 5min conta como elegivel) -- evita ficar
+// preso por causa de arredondamento entre o momento gravado em `desde` e
+// o momento do clique real do operador.
+export function elegivelParaAcaoMassa(desde: string, agora: Date): boolean {
+  const idadeMin = (agora.getTime() - new Date(desde).getTime()) / 60000;
+  return idadeMin >= IDADE_MINIMA_ACAO_MASSA_MIN;
+}
+
 // FIX ROUND 1 (achado Important 1, revisao independente do progresso ao
 // destino, 06/08): a anotacao original de progresso_destino (route.ts)
 // usava afastamentoAcumuladoM, calculado a partir de desvioInicio -- a

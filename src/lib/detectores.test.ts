@@ -59,6 +59,7 @@ import {
   formatarProgressoDestino,
   formatarPlacarSombra,
   formatarConfiabilidadeDetector,
+  elegivelParaAcaoMassa,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -2257,6 +2258,36 @@ describe("elegivelParaAnotarPlacarSombra (anotação do placar sombra no card)",
 
   it("tipo diferente de desvio: nao elegivel mesmo com motivo certo", () => {
     expect(elegivelParaAnotarPlacarSombra({ ...base, tipo: "parada_fora_tapete" })).toBe(false);
+  });
+});
+
+describe("elegivelParaAcaoMassa (guard de idade minima pra acao em massa)", () => {
+  const AGORA = new Date("2026-08-09T12:00:00.000Z");
+
+  it("alerta com exatamente 5min de idade: elegivel (limite inclusivo)", () => {
+    expect(elegivelParaAcaoMassa("2026-08-09T11:55:00.000Z", AGORA)).toBe(true);
+  });
+
+  it("alerta com 4min59s de idade: NAO elegivel (1s antes do limite)", () => {
+    expect(elegivelParaAcaoMassa("2026-08-09T11:55:01.000Z", AGORA)).toBe(false);
+  });
+
+  it("alerta com 5min01s de idade: elegivel (1s depois do limite)", () => {
+    expect(elegivelParaAcaoMassa("2026-08-09T11:54:59.000Z", AGORA)).toBe(true);
+  });
+
+  it("alerta recem-criado (idade zero): NAO elegivel", () => {
+    expect(elegivelParaAcaoMassa("2026-08-09T12:00:00.000Z", AGORA)).toBe(false);
+  });
+
+  it("alerta antigo (varios dias): elegivel", () => {
+    expect(elegivelParaAcaoMassa("2026-08-01T12:00:00.000Z", AGORA)).toBe(true);
+  });
+
+  it("caso real TTH-3C94 (nasceu as 12:17, acao em massa as 12:18:20 -- 80s depois): NAO elegivel", () => {
+    const nascimento = "2026-08-08T15:17:00.000Z";
+    const tentativaDeAcao = new Date("2026-08-08T15:18:20.000Z");
+    expect(elegivelParaAcaoMassa(nascimento, tentativaDeAcao)).toBe(false);
   });
 });
 
