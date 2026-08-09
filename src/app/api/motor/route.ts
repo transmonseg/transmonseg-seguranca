@@ -4,6 +4,7 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { RAIO_ESCALA_M } from "@/lib/escala-geocode";
 import {
   agruparAlvosPorPlaca,
   agruparPontosPorPlaca,
@@ -146,6 +147,7 @@ const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
 type RomaneioCache = { pontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number; presencaConfirmadaEm: string | null }[]>; expiraEm: number };
 const CACHE_ROMANEIO_MS = 3 * 60_000;
 const cacheRomaneioPorCliente = new Map<string, RomaneioCache>();
+const cacheEscalaPorCliente = new Map<string, { pontosPorPlaca: Map<string, { lat: number; lng: number; raioM: number }[]>; expiraEm: number }>();
 
 // ─── Fallback de alvos pro detector de desvio quando a Unitrac falha ──────
 // (achado real 29/07): detectarDesvio() bloqueava TODA deteccao
@@ -1505,6 +1507,18 @@ export async function POST(request: Request) {
       // Cliente processou posicoes com sucesso — marcar para filtro de favela.
       clientesComSucesso.add(cliente.id);
 
+      // veiculo_id do cliente: mapaCv e global (todos os clientes), filtra
+      // pelo mesmo padrao ja usado acima nesse loop pra cvsCliente -- nao
+      // existe uma lista "veiculos" local nesse escopo (essa so existe no
+      // loop de cima, que so preenche cacheFrotaPorCliente/mapaCv). Hoisted
+      // pra fora dos blocos de cache abaixo (romaneio/escala) pra ficar no
+      // escopo dos dois -- calculado sempre (barato: so filter+map sobre um
+      // Map ja em memoria), mesmo quando os dois caches estao quentes e nao
+      // seria usado.
+      const veiculoIdsDoCliente = [...mapaCv.values()]
+        .filter((v) => v.cliente_id === cliente.id)
+        .map((v) => v.veiculo_id);
+
       // Pontos do romaneio de HOJE pro cliente -- ver
       // docs/superpowers/specs/2026-07-15-romaneio-pontos-entrega-design.md.
       // Cache de 3min (mesmo padrao de bases/frota); so consulta o banco de
@@ -1515,13 +1529,6 @@ export async function POST(request: Request) {
         romaneioPontosPorPlaca = cacheRomaneio.pontosPorPlaca;
       } else {
         romaneioPontosPorPlaca = new Map();
-        // veiculo_id do cliente: mapaCv e global (todos os clientes), filtra
-        // pelo mesmo padrao ja usado acima nesse loop pra cvsCliente -- nao
-        // existe uma lista "veiculos" local nesse escopo (essa so existe no
-        // loop de cima, que so preenche cacheFrotaPorCliente/mapaCv).
-        const veiculoIdsDoCliente = [...mapaCv.values()]
-          .filter((v) => v.cliente_id === cliente.id)
-          .map((v) => v.veiculo_id);
         const { data: linhasRomaneio } = await supabase
           .from("romaneio_pontos")
           .select("placa, nf, cliente_nome, lat, lng, presenca_confirmada_em")
@@ -1536,6 +1543,30 @@ export async function POST(request: Request) {
           romaneioPontosPorPlaca.set(l.placa, lista);
         }
         cacheRomaneioPorCliente.set(cliente.id, { pontosPorPlaca: romaneioPontosPorPlaca, expiraEm: Date.now() + CACHE_ROMANEIO_MS });
+      }
+
+      // Pontos de escala de HOJE pro cliente -- ver
+      // docs/superpowers/specs/2026-08-09-escala-rota-design.md. Mesmo
+      // padrao de cache 3min do romaneio acima.
+      const cacheEscala = cacheEscalaPorCliente.get(cliente.id);
+      let escalaPontosPorPlaca: Map<string, { lat: number; lng: number; raioM: number }[]>;
+      if (cacheEscala && cacheEscala.expiraEm > Date.now()) {
+        escalaPontosPorPlaca = cacheEscala.pontosPorPlaca;
+      } else {
+        escalaPontosPorPlaca = new Map();
+        const { data: linhasEscala } = await supabase
+          .from("escala_pontos")
+          .select("placa, lat, lng, raio_m")
+          .eq("escala_data", dataHojeSP)
+          .not("lat", "is", null)
+          .not("lng", "is", null)
+          .in("veiculo_id", veiculoIdsDoCliente);
+        for (const l of linhasEscala ?? []) {
+          const lista = escalaPontosPorPlaca.get(l.placa) ?? [];
+          lista.push({ lat: l.lat, lng: l.lng, raioM: l.raio_m ?? RAIO_ESCALA_M });
+          escalaPontosPorPlaca.set(l.placa, lista);
+        }
+        cacheEscalaPorCliente.set(cliente.id, { pontosPorPlaca: escalaPontosPorPlaca, expiraEm: Date.now() + CACHE_ROMANEIO_MS });
       }
 
       // Pre-passada: coleta os veiculos PARADOS e frescos do cliente. Usado para
@@ -1821,9 +1852,11 @@ export async function POST(request: Request) {
               return c ? { lat: c.lat, lng: c.lng, codigo: `base:${b.nome}` } : null;
             })
             .filter((x): x is { lat: number; lng: number; codigo: string } => x !== null);
+          const escalaDoVeiculo = escalaPontosPorPlaca.get(pos.placa) ?? [];
           const destinos = [
             ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
             ...centroidesBases,
+            ...escalaDoVeiculo.map((e) => ({ lat: e.lat, lng: e.lng })),
           ];
           const temAnterior = !!anterior && anterior.lat != null && anterior.lng != null;
           const distDestinosM = destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng));
@@ -2027,9 +2060,18 @@ export async function POST(request: Request) {
           const idxMaisProximo = distDestinosM.length > 0
             ? distDestinosM.indexOf(Math.min(...distDestinosM))
             : -1;
-          const raioDestinoMaisProximo = idxMaisProximo >= 0 && pendentes[idxMaisProximo]
-            ? pendentes[idxMaisProximo].raio
-            : 250; // base nao tem raio proprio -- usa o mesmo default de bases.raio_m
+          // 3 segmentos explicitos (pendentes / bases / escala) -- nao da
+          // pra so checar "esta em pendentes?" como antes, agora que
+          // existe um terceiro segmento depois de bases (ver
+          // docs/superpowers/specs/2026-08-09-escala-rota-design.md).
+          const raioDestinoMaisProximo =
+            idxMaisProximo < 0
+              ? 250
+              : idxMaisProximo < pendentes.length
+                ? pendentes[idxMaisProximo].raio
+                : idxMaisProximo < pendentes.length + centroidesBases.length
+                  ? 250
+                  : escalaDoVeiculo[idxMaisProximo - pendentes.length - centroidesBases.length].raioM;
           const emPontoSeguro = riscoPorVeiculo.get(veiculo_id)?.emPontoSeguro ?? false;
           const suspensoPorChegada = idxMaisProximo >= 0
             ? suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, emPontoSeguro)
