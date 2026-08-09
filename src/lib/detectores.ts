@@ -1154,6 +1154,34 @@ export function elegivelParaAcaoMassa(desde: string, agora: Date): boolean {
   return idadeMin >= IDADE_MINIMA_ACAO_MASSA_MIN;
 }
 
+// Idade minima (minutos) pro MOTOR fechar sozinho um alerta de "afastando
+// de tudo" (deveAutoResolverAfastandoRotaConcluida /
+// deveAutoResolverAfastandoChegadaReal, ambos em route.ts). Motivado por
+// relato no grupo WhatsApp de desvios reais somem sozinhos sem revisao do
+// operador -- a suspeita inicial (caso TUC-1D15, 31/07) acabou sendo OUTRO
+// mecanismo ja removido nesse mesmo dia (auto-resolve de "rua estranha",
+// commit db054d1), entao NAO serve de prova pra este fix. A prova real
+// veio de consultar o banco de producao direto: 4 fechamentos reais do
+// motivo "chegada real confirmada em destino/base conhecido" entre 05/08 e
+// 08/08, com idade minima de 9,0min no momento do fechamento -- bem abaixo
+// dos 20min pedidos, confirmando que os dois mecanismos so checavam
+// COMPORTAMENTO do veiculo (chegou + parou >=2min), sem nenhum piso de
+// idade do alerta, e um desvio real podia nascer e ser auto-marcado
+// 'falso_positivo' minutos depois, antes de qualquer chance de revisao
+// humana. Risco maior que o de elegivelParaAcaoMassa acima (5min): aquele
+// guard protege uma acao MANUAL do operador (ele ainda decide clicar);
+// este protege um fechamento 100% AUTOMATICO, sem nenhum humano no loop
+// -- por isso o
+// limiar e maior (20min, valor pedido explicitamente pelo usuario) e
+// definido como constante PROPRIA, nao reusa IDADE_MINIMA_ACAO_MASSA_MIN.
+export const IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN = 20;
+
+// Limite INCLUSIVO, mesmo raciocinio de elegivelParaAcaoMassa acima.
+export function elegivelParaAutoResolveAfastandoPorIdade(desde: string, agora: Date): boolean {
+  const idadeMin = (agora.getTime() - new Date(desde).getTime()) / 60000;
+  return idadeMin >= IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN;
+}
+
 // FIX ROUND 1 (achado Important 1, revisao independente do progresso ao
 // destino, 06/08): a anotacao original de progresso_destino (route.ts)
 // usava afastamentoAcumuladoM, calculado a partir de desvioInicio -- a

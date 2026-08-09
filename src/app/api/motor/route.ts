@@ -54,6 +54,8 @@ import {
   contaComoEventoDeSilenciamento,
   deveAutoResolverAfastandoRotaConcluida,
   elegivelParaAutoResolveAfastando,
+  elegivelParaAutoResolveAfastandoPorIdade,
+  IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN,
   elegivelParaAnotarPlacarSombra,
   origemMenorDistDestinoM,
   BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
@@ -1633,14 +1635,14 @@ export async function POST(request: Request) {
       // (detectores.ts).
       const { data: todosAlertasAbertos } = await supabase
         .from("alertas")
-        .select("id, tipo, veiculo_id, nivel, motivo, status, contexto")
+        .select("id, tipo, veiculo_id, nivel, motivo, status, contexto, desde")
         .eq("cliente_id", cliente.id)
         .in("status", ["ativo", "reconhecido"]);
 
-      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; motivo: string; status: string; contexto: unknown }[]>();
+      const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; motivo: string; status: string; contexto: unknown; desde: string }[]>();
       for (const ab of todosAlertasAbertos ?? []) {
         const lista = mapaAlertasAbertos.get(ab.veiculo_id) ?? [];
-        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, motivo: ab.motivo, status: ab.status, contexto: ab.contexto });
+        lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, motivo: ab.motivo, status: ab.status, contexto: ab.contexto, desde: ab.desde });
         mapaAlertasAbertos.set(ab.veiculo_id, lista);
       }
 
@@ -3758,7 +3760,16 @@ export async function POST(request: Request) {
           ) {
             const baseElegivelAutoResolve =
               baseOcupada.areaM2 != null && baseOcupada.areaM2 < BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO;
-            for (const a of alertasAbertos.filter(elegivelParaAutoResolveAfastando)) {
+            // Confirmado com dado real de producao (nao so relato do zap):
+            // fechamento 100% automatico sem nenhum piso de idade deixava
+            // um desvio real virar falso_positivo minutos depois de
+            // nascer, antes de qualquer chance de revisao humana -- ver
+            // elegivelParaAutoResolveAfastandoPorIdade em detectores.ts pro
+            // raciocinio completo e a evidencia real que motivou o piso de
+            // 20min.
+            for (const a of alertasAbertos
+              .filter(elegivelParaAutoResolveAfastando)
+              .filter((a) => elegivelParaAutoResolveAfastandoPorIdade(a.desde, agora))) {
               if (
                 deveAutoResolverAfastandoRotaConcluida({
                   rotaConcluida: true,
@@ -3816,7 +3827,13 @@ export async function POST(request: Request) {
             pos.velocidade === 0 &&
             chegouEmDestinoConhecido
           ) {
-            for (const a of alertasAbertos.filter(elegivelParaAutoResolveAfastando)) {
+            // Mesmo guard de idade minima do bloco irmao acima (ver
+            // elegivelParaAutoResolveAfastandoPorIdade em detectores.ts) --
+            // este bloco e o outro mecanismo relatado no zap fechando
+            // desvio real cedo demais.
+            for (const a of alertasAbertos
+              .filter(elegivelParaAutoResolveAfastando)
+              .filter((a) => elegivelParaAutoResolveAfastandoPorIdade(a.desde, agora))) {
               if (deveAutoResolverAfastandoChegadaReal({ chegouEmDestino: chegouEmDestinoConhecido, paradoMin })) {
                 afastandoChegadaRealAutoResolveCiclo.push({ alerta_id: a.id });
               }
@@ -4631,6 +4648,22 @@ export async function POST(request: Request) {
     // mudanca la. Tambem nao precisa de mudanca em mapaTiposSilenciados:
     // contaComoEventoDeSilenciamento (detectores.ts) ja checa
     // contexto.auto_resolvido===true de forma generica.
+    // Corte pro guard de idade minima (ver
+    // elegivelParaAutoResolveAfastandoPorIdade em detectores.ts) reaplicado
+    // no proprio UPDATE dos dois flushes abaixo -- achado da revisao
+    // independente deste fix: o guard e' checado no loop por veiculo, MAS
+    // o UPDATE roda bem depois, no fim do ciclo. No meio do caminho, uma
+    // escalacao atencao->critico do MESMO alerta pode reescrever `desde`
+    // pra frente (ver acoes-alertas.ts, mesmo TOCTOU ja resolvido la pra
+    // acao em massa) -- sem reaplicar o corte aqui, um alerta que passou no
+    // guard com o `desde` ANTIGO podia ser gravado como falso_positivo com
+    // o `desde` NOVO (idade real < 20min) ja persistido, quebrando a
+    // garantia visivel pro operador (a tela mostra idade a partir de
+    // `desde`).
+    const corteAutoResolveAfastando = new Date(
+      agora.getTime() - IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN * 60_000
+    ).toISOString();
+
     if (afastandoRotaConcluidaAutoResolveCiclo.length > 0) {
       const porAlertaAfastando = new Map(afastandoRotaConcluidaAutoResolveCiclo.map((r) => [r.alerta_id, r]));
       const idsAfastando = [...porAlertaAfastando.keys()];
@@ -4641,7 +4674,8 @@ export async function POST(request: Request) {
                resolvido_em = $3,
                contexto = coalesce(contexto, '{}'::jsonb) || $2::jsonb
            WHERE id = ANY($1::uuid[])
-             AND status = 'ativo'`,
+             AND status = 'ativo'
+             AND desde <= $4`,
           [
             idsAfastando,
             JSON.stringify({
@@ -4649,6 +4683,7 @@ export async function POST(request: Request) {
               motivo: "rota concluida e chegou na base",
             }),
             agora.toISOString(),
+            corteAutoResolveAfastando,
           ]
         );
       } catch (erroAutoResolveAfastando) {
@@ -4683,7 +4718,8 @@ export async function POST(request: Request) {
                resolvido_em = $3,
                contexto = coalesce(contexto, '{}'::jsonb) || $2::jsonb
            WHERE id = ANY($1::uuid[])
-             AND status = 'ativo'`,
+             AND status = 'ativo'
+             AND desde <= $4`,
           [
             idsChegadaReal,
             JSON.stringify({
@@ -4691,6 +4727,7 @@ export async function POST(request: Request) {
               motivo: "chegada real confirmada em destino/base conhecido",
             }),
             agora.toISOString(),
+            corteAutoResolveAfastando,
           ]
         );
       } catch (erroAutoResolveChegadaReal) {

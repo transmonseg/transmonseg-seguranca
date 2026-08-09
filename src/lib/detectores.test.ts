@@ -60,6 +60,8 @@ import {
   formatarPlacarSombra,
   formatarConfiabilidadeDetector,
   elegivelParaAcaoMassa,
+  elegivelParaAutoResolveAfastandoPorIdade,
+  IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN,
   type Alerta,
 } from "./detectores";
 import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
@@ -2300,6 +2302,46 @@ describe("elegivelParaAcaoMassa (guard de idade minima pra acao em massa)", () =
     const nascimento = "2026-08-08T15:17:00.000Z";
     const tentativaDeAcao = new Date("2026-08-08T15:18:20.000Z");
     expect(elegivelParaAcaoMassa(nascimento, tentativaDeAcao)).toBe(false);
+  });
+});
+
+describe("elegivelParaAutoResolveAfastandoPorIdade (guard de idade minima pro motor fechar sozinho)", () => {
+  const AGORA = new Date("2026-08-09T12:00:00.000Z");
+
+  it("alerta com exatamente 20min de idade: elegivel (limite inclusivo)", () => {
+    expect(elegivelParaAutoResolveAfastandoPorIdade("2026-08-09T11:40:00.000Z", AGORA)).toBe(true);
+  });
+
+  it("alerta com 19min59s de idade: NAO elegivel (1s antes do limite)", () => {
+    expect(elegivelParaAutoResolveAfastandoPorIdade("2026-08-09T11:40:01.000Z", AGORA)).toBe(false);
+  });
+
+  it("alerta com 20min01s de idade: elegivel (1s depois do limite)", () => {
+    expect(elegivelParaAutoResolveAfastandoPorIdade("2026-08-09T11:39:59.000Z", AGORA)).toBe(true);
+  });
+
+  it("alerta recem-criado (idade zero): NAO elegivel", () => {
+    expect(elegivelParaAutoResolveAfastandoPorIdade("2026-08-09T12:00:00.000Z", AGORA)).toBe(false);
+  });
+
+  it("alerta antigo (varios dias): elegivel", () => {
+    expect(elegivelParaAutoResolveAfastandoPorIdade("2026-08-01T12:00:00.000Z", AGORA)).toBe(true);
+  });
+
+  it("caso real de producao (veiculo 86a24b07, 08/08): auto-resolve 'chegada real confirmada' fechou o alerta com 9min de idade -- NAO elegivel com o guard novo", () => {
+    // Confirmado via consulta direta no banco de producao (nao so relato do
+    // zap -- ver comentario de IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN
+    // acima): alertas.desde/resolvido_em reais, offset +02 exatamente como
+    // gravado (mesmo offset nos dois, entao o delta bate independente de
+    // fuso), contexto motivo="chegada real confirmada em destino/base
+    // conhecido".
+    const nascimento = "2026-08-08T19:12:00.098+02:00";
+    const tentativaDeAutoResolve = new Date("2026-08-08T19:21:00.124+02:00");
+    expect(elegivelParaAutoResolveAfastandoPorIdade(nascimento, tentativaDeAutoResolve)).toBe(false);
+  });
+
+  it("constante e 20 (nao reusa o limiar de 5min da acao em massa -- guard distinto, risco distinto: fechamento AUTOMATICO sem nenhuma revisao humana)", () => {
+    expect(IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN).toBe(20);
   });
 });
 
