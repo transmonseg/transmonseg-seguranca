@@ -45,4 +45,22 @@ describe("resolverDestinoEscala", () => {
     const r = await resolverDestinoEscala("APELIDO QUEBRADO", deps);
     expect(r).toEqual({ via: "nao_resolvido" });
   });
+
+  it("Google devolve coordenada fora do RJ (match ambiguo de mesmo nome em outro estado): rejeita e tenta Nominatim", async () => {
+    const deps = mockDeps({
+      geocodificarGoogleDep: async () => ({ lat: -10.2, lng: -48.3 }), // Tocantins, fora do RJ
+      geocodificarNominatimDep: async () => ({ lat: -21.75, lng: -41.3 }), // RJ de verdade
+    });
+    const r = await resolverDestinoEscala("NATIVIDADE", deps);
+    expect(r).toEqual({ via: "cidade", lat: -21.75, lng: -41.3, raioM: RAIO_ESCALA_M });
+  });
+
+  it("nem Google nem Nominatim caem dentro do RJ: nao_resolvido, nao aceita match de outro estado", async () => {
+    const deps = mockDeps({
+      geocodificarGoogleDep: async () => ({ lat: -10.2, lng: -48.3 }),
+      geocodificarNominatimDep: async () => ({ lat: -10.3, lng: -48.4 }),
+    });
+    const r = await resolverDestinoEscala("NATIVIDADE", deps);
+    expect(r).toEqual({ via: "nao_resolvido" });
+  });
 });

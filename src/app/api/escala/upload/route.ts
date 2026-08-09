@@ -5,7 +5,21 @@ import { normalizarPlaca } from "@/lib/romaneio";
 import { resolverDestinoEscala } from "@/lib/escala-geocode";
 import { geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
 
-export const maxDuration = 60;
+export const maxDuration = 120; // era 60 -- com o throttle abaixo, um dia frio (~50+ destinos unicos sem cache) pode passar de 60s
+
+// Mesma politica de 1 req/s do publico Nominatim que processar-geocode/route.ts
+// (romaneio) ja respeita -- achado da revisao final: o loop de geocode da
+// escala disparava sem nenhum delay, arriscando rate-limit/block do IP do
+// servidor no Nominatim publico, o que quebraria o romaneio tambem (mesmo
+// servidor, mesmo IP).
+const ESPERA_NOMINATIM_MS = 1100;
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function geocodificarNominatimThrottled(endereco: string): Promise<{ lat: number; lng: number } | null> {
+  await esperar(ESPERA_NOMINATIM_MS);
+  return geocodificarNominatim(endereco);
+}
 
 export async function POST(request: Request) {
   // Rotas de API nao passam pelo proxy.ts (so protege paginas) -- validar
@@ -48,7 +62,7 @@ export async function POST(request: Request) {
 
   const deps = {
     geocodificarGoogleDep: geocodificarGoogle,
-    geocodificarNominatimDep: geocodificarNominatim,
+    geocodificarNominatimDep: geocodificarNominatimThrottled,
     buscarApelidoDep: async (texto: string) => mapaApelidos.get(texto) ?? null,
   };
 
@@ -84,7 +98,7 @@ export async function POST(request: Request) {
   // Reenvio do mesmo dia substitui as linhas anteriores -- volume baixo
   // (uma escala por dia) nao justifica um endpoint de reverter separado
   // como o romaneio tem.
-  const { error: erroDelete } = await admin.from("escala_pontos").delete().eq("escala_data", escalaData);
+  const { error: erroDelete } = await admin.from("escala_pontos").delete().eq("escala_data", escalaData).in("placa", placasUnicas);
   if (erroDelete) {
     return Response.json({ ok: false, erro: `Erro ao substituir escala anterior: ${erroDelete.message}` }, { status: 500 });
   }

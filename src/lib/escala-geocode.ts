@@ -5,6 +5,22 @@
 // endereco, entao o destino resultante tambem nao deveria fingir ter.
 export const RAIO_ESCALA_M = 10_000;
 
+// Bounding box aproximado do estado do RJ. Achado da revisao final de
+// branch: nome de cidade pode ser ambiguo no Brasil inteiro (ex.:
+// "Natividade" existe no RJ E no Tocantins, ~1500km de distancia --
+// mesmo problema que romaneio-geocode.ts ja documenta e resolve via
+// escolherCandidatoMaisProximo/DISTANCIA_MAX_MATCH_LOCAL_M, mas que o
+// caminho da escala nao reaproveitava). A escala e sempre RJ -- um
+// resultado fora da caixa e quase certamente o match errado.
+const RJ_LAT_MIN = -23.9;
+const RJ_LAT_MAX = -20.7;
+const RJ_LNG_MIN = -44.9;
+const RJ_LNG_MAX = -40.9;
+
+function dentroDoRJ(lat: number, lng: number): boolean {
+  return lat >= RJ_LAT_MIN && lat <= RJ_LAT_MAX && lng >= RJ_LNG_MIN && lng <= RJ_LNG_MAX;
+}
+
 export type ResolucaoEscala =
   | { via: "cidade" | "apelido"; lat: number; lng: number; raioM: number }
   | { via: "nao_resolvido" };
@@ -21,8 +37,10 @@ async function geocodificarCidade(
 ): Promise<{ lat: number; lng: number } | null> {
   const consulta = `${cidade}, RJ, Brasil`;
   const google = await deps.geocodificarGoogleDep(consulta);
-  if (google) return google;
-  return deps.geocodificarNominatimDep(consulta);
+  if (google && dentroDoRJ(google.lat, google.lng)) return google;
+  const nominatim = await deps.geocodificarNominatimDep(consulta);
+  if (nominatim && dentroDoRJ(nominatim.lat, nominatim.lng)) return nominatim;
+  return null;
 }
 
 export async function resolverDestinoEscala(

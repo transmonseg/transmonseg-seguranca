@@ -1858,6 +1858,19 @@ export async function POST(request: Request) {
             ...centroidesBases,
             ...escalaDoVeiculo.map((e) => ({ lat: e.lat, lng: e.lng })),
           ];
+          // Achado CRITICO da revisao final de branch (docs/superpowers/plans/2026-08-09-escala-rota.md):
+          // destinos de escala (raio ~10km, coordenada aproximada -- centro
+          // de cidade) NAO podem contar como "chegada" (chegouEmDestinoConhecido
+          // AUTO-RESOLVE alertas ja abertos), nem alimentar o corredor OSRM
+          // nem a divergencia de rumo -- so o calculo de afastamento v4
+          // (distDestinosM/afastouDeTudo, que continua usando `destinos`
+          // completo, incluindo escala) e' o unico consumidor pretendido
+          // pra escala, por design (ver Nao-objetivos em
+          // docs/superpowers/specs/2026-08-09-escala-rota-design.md).
+          // NAO_ESCALA_LEN e' o comprimento do prefixo de `destinos` que
+          // exclui escala -- usado em todo consumidor de "chegada"/corredor/
+          // rumo abaixo neste bloco.
+          const NAO_ESCALA_LEN = pendentes.length + centroidesBases.length;
           const temAnterior = !!anterior && anterior.lat != null && anterior.lng != null;
           const distDestinosM = destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng));
           const distDestinosAnteriorM = temAnterior
@@ -2057,21 +2070,16 @@ export async function POST(request: Request) {
           // Suspensao por chegada (achado 25/07): substitui a antiga
           // heuristica de "distancia cancela". Usa o destino mais proximo
           // (menor distDestinosM) + seu raio real.
-          const idxMaisProximo = distDestinosM.length > 0
-            ? distDestinosM.indexOf(Math.min(...distDestinosM))
+          // Restrito ao prefixo NAO_ESCALA_LEN de proposito -- ver comentario
+          // acima de onde NAO_ESCALA_LEN e' declarado. distDestinosM[idxMaisProximo]
+          // mais abaixo continua valido: e' so um slice do prefixo do mesmo array.
+          const distDestinosSemEscalaM = distDestinosM.slice(0, NAO_ESCALA_LEN);
+          const idxMaisProximo = distDestinosSemEscalaM.length > 0
+            ? distDestinosSemEscalaM.indexOf(Math.min(...distDestinosSemEscalaM))
             : -1;
-          // 3 segmentos explicitos (pendentes / bases / escala) -- nao da
-          // pra so checar "esta em pendentes?" como antes, agora que
-          // existe um terceiro segmento depois de bases (ver
-          // docs/superpowers/specs/2026-08-09-escala-rota-design.md).
-          const raioDestinoMaisProximo =
-            idxMaisProximo < 0
-              ? 250
-              : idxMaisProximo < pendentes.length
-                ? pendentes[idxMaisProximo].raio
-                : idxMaisProximo < pendentes.length + centroidesBases.length
-                  ? 250
-                  : escalaDoVeiculo[idxMaisProximo - pendentes.length - centroidesBases.length].raioM;
+          const raioDestinoMaisProximo = idxMaisProximo >= 0 && pendentes[idxMaisProximo]
+            ? pendentes[idxMaisProximo].raio
+            : 250; // base nao tem raio proprio -- usa o mesmo default de bases.raio_m
           const emPontoSeguro = riscoPorVeiculo.get(veiculo_id)?.emPontoSeguro ?? false;
           const suspensoPorChegada = idxMaisProximo >= 0
             ? suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, emPontoSeguro)
@@ -2137,7 +2145,7 @@ export async function POST(request: Request) {
             // divergenciaRumoMinima em unitrac.ts.
             const divergencia = divergenciaRumoMinima(
               anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
-              destinos,
+              destinos.slice(0, NAO_ESCALA_LEN),
               pos.velocidade
             );
             divergenciaGrausAtual = divergencia;
@@ -3123,7 +3131,7 @@ export async function POST(request: Request) {
             } else if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
               chamadasCorredorNoCiclo++;
               const bufferAtual = bufferPorVelocidade(pos.velocidade);
-              const candidatos = [...destinos].sort(
+              const candidatos = destinos.slice(0, NAO_ESCALA_LEN).sort(
                 (a, b) => haversineM(pos.lat, pos.lng, a.lat, a.lng) - haversineM(pos.lat, pos.lng, b.lat, b.lng)
               );
               const r = await verificarCorredor(origem, { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);

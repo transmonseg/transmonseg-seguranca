@@ -22,6 +22,7 @@ export default function EscalaPage() {
   const [novaCidade, setNovaCidade] = useState("");
   const [salvandoApelido, setSalvandoApelido] = useState(false);
   const [erroApelido, setErroApelido] = useState<string | null>(null);
+  const [mensagemApelido, setMensagemApelido] = useState<string | null>(null);
 
   const carregarApelidos = async () => {
     setApelidos(await listarApelidos());
@@ -51,11 +52,15 @@ export default function EscalaPage() {
   const salvarApelido = async () => {
     setSalvandoApelido(true);
     setErroApelido(null);
+    setMensagemApelido(null);
     try {
       const r = await adicionarApelido(novoApelido, novaCidade);
       if (!r.ok) {
         setErroApelido(r.erro ?? "Falha ao salvar.");
         return;
+      }
+      if (r.reResolvidas && r.reResolvidas > 0) {
+        setMensagemApelido(`${r.reResolvidas} linha(s) da escala ja gravadas foram atualizadas com esse destino.`);
       }
       setNovoApelido("");
       setNovaCidade("");
@@ -162,6 +167,7 @@ export default function EscalaPage() {
           </button>
         </div>
         {erroApelido && <p className="text-sm mb-3" style={{ color: "var(--danger, #e55)" }}>{erroApelido}</p>}
+        {mensagemApelido && <p className="text-sm mb-3" style={{ color: "var(--text-dim)" }}>{mensagemApelido}</p>}
 
         <ul className="space-y-1">
           {apelidos.map((a) => (
