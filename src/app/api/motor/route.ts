@@ -353,6 +353,17 @@ const cacheCercaPorVeiculo = new Map<string, CercaCache>();
 // competem pelo mesmo throttle global de 1 req/s).
 const ultimaVerificacaoCorredorPorVeiculo = new Map<string, number>();
 
+// Log de snapshot de pendentes por ciclo -- ver
+// docs/superpowers/specs/2026-08-09-snapshot-pendentes-log-design.md.
+// Achado real 09/08: investigacao de 3 misses reportados no grupo bateu
+// num limite estrutural -- a lista de pendentes da Unitrac e efemera,
+// nunca persistida, entao nao da pra provar retroativamente se havia
+// destino perto da posicao real no momento de um miss. Throttle de 5min
+// por veiculo (nao grava todo ciclo de 30s) -- granularidade de minutos
+// ja basta pra investigacao, sem custo de escrita desnecessario.
+const ultimoSnapshotPendentesPorVeiculo = new Map<string, number>();
+const SNAPSHOT_PENDENTES_INTERVALO_MS = 5 * 60 * 1000;
+
 // ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
 function parseDatagps(raw: string | undefined | null): string | null {
   if (!raw) return null;
@@ -958,6 +969,16 @@ export async function POST(request: Request) {
     // por ciclo, flush em lote no final, so ADICIONA campo no contexto
     // (jsonb ||), nunca muda nivel/status, nunca fecha o alerta.
     const placarSombraCiclo: { alerta_id: string; placar: number; componentes: Record<string, number | boolean | string> }[] = [];
+
+    // Snapshot de pendentes por ciclo (throttled) -- ver
+    // docs/superpowers/specs/2026-08-09-snapshot-pendentes-log-design.md.
+    // Puramente auditoria, nunca lido por nenhum detector.
+    const pendentesSnapshotCiclo: {
+      veiculo_id: string;
+      temPendentes: boolean;
+      alvosApiOk: boolean;
+      pendentes: { lat: number; lng: number; raio: number; codigo: number | null; nome: string }[];
+    }[] = [];
 
     // Auto-resolucao retroativa de "afastando-se de todos os destinos"
     // quando a rota foi 100% concluida E o veiculo chegou fisicamente
@@ -1759,6 +1780,19 @@ export async function POST(request: Request) {
               )
           );
           const temPendentes = pendentes.length > 0;
+          // Snapshot throttled de pendentes -- ver declaração do Map acima.
+          const ultimoSnapshot = ultimoSnapshotPendentesPorVeiculo.get(veiculo_id) ?? 0;
+          if (Date.now() - ultimoSnapshot >= SNAPSHOT_PENDENTES_INTERVALO_MS) {
+            ultimoSnapshotPendentesPorVeiculo.set(veiculo_id, Date.now());
+            pendentesSnapshotCiclo.push({
+              veiculo_id,
+              temPendentes,
+              alvosApiOk: alvosDestinosDisponiveis,
+              pendentes: pendentes.map((pt) => ({
+                lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: pt.pontoCodigo, nome: pt.nome,
+              })),
+            });
+          }
           // Corroboração D1/D3 do placar (classeViariaSuprimidaPorEntrega):
           // usa TODOS os pontos válidos do dia deste veículo, não só
           // `pendentes`. Achado real 03/08 (caso UBO-5E01, "SENDAS BARRA
@@ -4504,6 +4538,21 @@ export async function POST(request: Request) {
       );
       const falhasPlacar = resultadosPlacar.filter((r) => r.status === "rejected").length;
       if (falhasPlacar > 0) console.warn(`Aviso: ${falhasPlacar} falha(s) ao anotar placar sombra neste ciclo`);
+    }
+
+    // Flush do snapshot de pendentes -- mesmo padrao de flush em lote,
+    // tolerante a falha parcial, dos outros logs de sombra.
+    if (pendentesSnapshotCiclo.length > 0) {
+      const resultadosSnapshot = await Promise.allSettled(
+        pendentesSnapshotCiclo.map((p) =>
+          pool.query(
+            `insert into pendentes_snapshot_log (veiculo_id, tem_pendentes, alvos_api_ok, pendentes) values ($1, $2, $3, $4::jsonb)`,
+            [p.veiculo_id, p.temPendentes, p.alvosApiOk, JSON.stringify(p.pendentes)]
+          )
+        )
+      );
+      const falhasSnapshot = resultadosSnapshot.filter((r) => r.status === "rejected").length;
+      if (falhasSnapshot > 0) console.warn(`Aviso: ${falhasSnapshot} falha(s) ao gravar snapshot de pendentes neste ciclo`);
     }
 
     // REMOVIDO (achado real 31/07, cliente Nutry Max): o flush de
