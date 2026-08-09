@@ -1568,10 +1568,14 @@ describe("detectarParadaAnomala - limiares baixados 12/07 (menos conservador)", 
 });
 
 describe("detectarSaidaNaoAutorizada", () => {
+  // Achado real 09/08: detector desligado em producao (SAIDA_NAO_AUTORIZADA_ATIVO
+  // = false, ver comentario em detectores.ts) -- `ativo: true` nos testes
+  // abaixo usa o override pra continuar exercitando a logica real, mesmo
+  // padrao ja usado por DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE.
   it("fora da base, sem rota, ignicao ligada e EM MOVIMENTO retorna critico", () => {
     const a = detectarSaidaNaoAutorizada(
       posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
-      { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0, ativo: true }
     );
     expect(a).not.toBeNull();
     expect(a?.nivel).toBe("critico");
@@ -1581,7 +1585,7 @@ describe("detectarSaidaNaoAutorizada", () => {
   it("fora da base, sem rota, ignicao ligada e PARADO retorna critico", () => {
     const a = detectarSaidaNaoAutorizada(
       posicaoBase({ ignicao: true, fresco: true, velocidade: 0 }),
-      { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
+      { foraDaBase: true, temPendentes: false, entregasTotal: 0, ativo: true }
     );
     expect(a).not.toBeNull();
     expect(a?.nivel).toBe("critico");
@@ -1592,7 +1596,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
-        { foraDaBase: true, temPendentes: true, entregasTotal: 5 }
+        { foraDaBase: true, temPendentes: true, entregasTotal: 5, ativo: true }
       )
     ).toBeNull();
   });
@@ -1600,7 +1604,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
-        { foraDaBase: true, temPendentes: false }
+        { foraDaBase: true, temPendentes: false, ativo: true }
       )
     ).toBeNull();
   });
@@ -1608,7 +1612,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
-        { foraDaBase: true, temPendentes: false, entregasTotal: 3 }
+        { foraDaBase: true, temPendentes: false, entregasTotal: 3, ativo: true }
       )
     ).toBeNull();
   });
@@ -1616,7 +1620,7 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
-        { foraDaBase: false, temPendentes: false, entregasTotal: 0 }
+        { foraDaBase: false, temPendentes: false, entregasTotal: 0, ativo: true }
       )
     ).toBeNull();
   });
@@ -1624,6 +1628,14 @@ describe("detectarSaidaNaoAutorizada", () => {
     expect(
       detectarSaidaNaoAutorizada(
         posicaoBase({ ignicao: false, fresco: true, velocidade: 35 }),
+        { foraDaBase: true, temPendentes: false, entregasTotal: 0, ativo: true }
+      )
+    ).toBeNull();
+  });
+  it("flag desligada (producao, sem override): nunca aciona mesmo em condicao que dispararia", () => {
+    expect(
+      detectarSaidaNaoAutorizada(
+        posicaoBase({ ignicao: true, fresco: true, velocidade: 35 }),
         { foraDaBase: true, temPendentes: false, entregasTotal: 0 }
       )
     ).toBeNull();

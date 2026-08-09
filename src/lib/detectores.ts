@@ -208,6 +208,17 @@ export function detectarJammer(p: PosicaoNormalizada): Alerta | null {
   };
 }
 
+// Achado real 09/08: usuario pediu pra desligar este detector inteiro --
+// falso positivo recorrente reportado no grupo (veiculo que saiu
+// legitimamente da base horas atras continuava sinalizado a cada ciclo,
+// nao so no instante da saida). Mesmo padrao ja usado neste arquivo pra
+// desligar regra sem apagar a logica (ver DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE
+// acima): flag desliga em producao, `ctx.ativo` override mantem os testes
+// existentes exercitando a logica real, caso o detector precise voltar
+// (ex: redesenhado como disparo por BORDA -- so no momento da transicao
+// base->fora -- em vez de reavaliar o estado a cada ciclo).
+const SAIDA_NAO_AUTORIZADA_ATIVO = false;
+
 // Veiculo fora da base, motor ligado e SEM rota/entrega programada no dia.
 // Roda 24h: o que define a suspeita NAO e o horario (existe entrega de madrugada),
 // e sim nao ter rota. Motor ligado parado pode ser recarga/descanso (atencao);
@@ -223,8 +234,10 @@ export function detectarSaidaNaoAutorizada(
     rumoBase?: number | null;
     distBaseM?: number | null;
     temPOIProximo?: boolean;
+    ativo?: boolean;
   }
 ): Alerta | null {
+  if (!(ctx.ativo ?? SAIDA_NAO_AUTORIZADA_ATIVO)) return null;
   if (!p.fresco || !p.ignicao) return null;
   if (!ctx.foraDaBase || ctx.temPendentes) return null;
   // undefined = API de rota indisponivel; sem saber se ha entregas, nao dispara.
