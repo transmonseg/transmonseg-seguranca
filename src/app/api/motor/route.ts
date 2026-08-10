@@ -2810,7 +2810,25 @@ export async function POST(request: Request) {
             for (const pt of pendentes) {
               if (pt.pontoCodigo == null) continue;
               if (presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)) continue;
-              const distM = haversineM(pos.lat, pos.lng, pt.lat, pt.lng);
+              // Achado real 10/08 (revisao final de branch, Finding 4): este
+              // gate decide se uma parada vira uma OBSERVACAO NOVA gravada em
+              // entregas_presenca -- a mesma tabela que alimenta o cron de
+              // aprendizado (aprender_pontos_entrega) que escreve
+              // pontos_aprendidos. Comparar contra `pt` (ja corrigido pelo
+              // proprio pontos_aprendidos) criaria um loop fechado: se o
+              // endereco real do cliente mudar um dia, o caminhao para no
+              // lugar novo, mas o gate fica centrado no aprendido antigo (que
+              // nao muda sozinho) -- a parada nova nunca vira observacao,
+              // pontos_aprendidos nunca aprende o endereco novo, e o sistema
+              // fica preso pra sempre corrigindo pro lugar errado. Usando a
+              // posicao BRUTA da Unitrac (pontosVeiculoBruto) so nesta
+              // checagem, o caminho de autocorrecao de antes desta feature
+              // (alguem atualiza o cadastro na Unitrac -> o gate acompanha)
+              // continua funcionando -- o resto da logica de entrega
+              // (bypass_entrega, D1/D3, a lista de pendentes em si) continua
+              // usando o ponto corrigido normalmente, so este gate muda.
+              const ptBruto = pontosVeiculoBruto?.find((b) => b.pontoCodigo === pt.pontoCodigo) ?? pt;
+              const distM = haversineM(pos.lat, pos.lng, ptBruto.lat, ptBruto.lng);
               if (distM <= Math.max(pt.raio, RAIO_CHEGADA_MIN_M)) {
                 presencaEntregaCiclo.push({
                   veiculo_id,
