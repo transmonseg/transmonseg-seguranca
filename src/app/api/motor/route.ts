@@ -20,6 +20,7 @@ import {
   divergenciaRumoGraus,
   divergenciaRumoAcimaDoLimiar,
   divergenciaRumoDispara,
+  corrigirComPontoAprendido,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
@@ -788,6 +789,36 @@ export async function POST(request: Request) {
         erros.push(msg);
       } finally {
         pgBases.release();
+      }
+    }
+
+    // 3a-bis. Carregar pontos_aprendidos (correcao de posicao aprendida por
+    // ponto de entrega, ver corrigirComPontoAprendido em src/lib/unitrac.ts).
+    // Carregado 1x por ciclo aqui, mesmo padrao de mapaBasesCliente acima --
+    // ainda nao aplicado neste task (so carregamento; aplicacao e' o Task 3
+    // do plano "ativar pontos_aprendidos").
+    const mapaPontosAprendidos = new Map<string, Map<number, { lat: number; lng: number }>>();
+
+    {
+      const pgAprendidos = await pool.connect();
+      try {
+        const { rows: pontosAprendidosRows } = await pgAprendidos.query<{
+          cliente_id: string;
+          ponto_codigo: number;
+          lat: number;
+          lng: number;
+        }>(`SELECT cliente_id, ponto_codigo, lat, lng FROM pontos_aprendidos`);
+        for (const r of pontosAprendidosRows) {
+          const porCliente = mapaPontosAprendidos.get(r.cliente_id) ?? new Map();
+          porCliente.set(r.ponto_codigo, { lat: r.lat, lng: r.lng });
+          mapaPontosAprendidos.set(r.cliente_id, porCliente);
+        }
+      } catch (errAprendidos) {
+        const msg = `Aviso: erro ao carregar pontos_aprendidos (${String(errAprendidos)})`;
+        console.warn(msg);
+        erros.push(msg);
+      } finally {
+        pgAprendidos.release();
       }
     }
 
