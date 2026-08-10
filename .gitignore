@@ -53,3 +53,7 @@ shot-*.png
 
 # Claude Code worktrees
 .claude/
+
+# Estado local da verificacao independente de desvio
+scripts/.state/
+scripts/backtest-desvio/corpus.json
