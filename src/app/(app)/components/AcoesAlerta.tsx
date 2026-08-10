@@ -1,7 +1,7 @@
 "use client";
 
 import { useTransition, useState } from "react";
-import { reconhecerAlerta, resolverAlerta, marcarFalsoPositivo } from "../acoes-alertas";
+import { reconhecerAlerta, resolverAlerta, marcarFalsoPositivo, marcarFalsoPositivoDadoErrado } from "../acoes-alertas";
 import CronometroSLA from "./CronometroSLA";
 
 type Acao = (id: string) => Promise<{ ok?: boolean; erro?: string }>;
@@ -78,6 +78,14 @@ export default function AcoesAlerta({
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
           Falso positivo
+        </Btn>
+        <Btn onClick={() => exec(marcarFalsoPositivoDadoErrado, true)} pending={pending} cor="var(--text-muted)" titulo="O carro pode até ter se afastado, mas a marcação/endereço de entrada tava errada -- não conta contra o detector">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+            <rect x="9" y="3" width="6" height="4" rx="1" />
+            <line x1="9" y1="12" x2="15" y2="12" />
+          </svg>
+          Marcação errada
         </Btn>
         {pending && <span className="text-xs" style={{ color: "var(--text-dim)" }}>salvando...</span>}
       </div>

@@ -43,7 +43,8 @@ export async function registrarCasosDesvioRevisao(
   // "Resolver" individual, entao nao dava pra saber se um caso era veredito
   // caso a caso ou clique pra desentupir a tela. Quem le pra medir/calibrar
   // filtra pelas origens individuais.
-  origemAcao: "resolver_individual" | "falso_individual" | "resolver_massa"
+  origemAcao: "resolver_individual" | "falso_individual" | "resolver_massa",
+  motivoFalsoPositivo?: "detector_errado" | "dado_entrada_errado"
 ): Promise<void> {
   if (ids.length === 0) return;
   try {
@@ -72,6 +73,7 @@ export async function registrarCasosDesvioRevisao(
         origem_acao: origemAcao,
         contexto_detector: a.contexto ?? {},
         trilha: trilha ?? [],
+        motivo_falso_positivo: motivoFalsoPositivo ?? null,
       });
     }
   } catch (err) {

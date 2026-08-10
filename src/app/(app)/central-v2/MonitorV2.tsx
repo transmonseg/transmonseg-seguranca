@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
-import { resolverAlerta, marcarFalsoPositivo, resolverVarios, limparVarios } from "../acoes-alertas";
+import { resolverAlerta, marcarFalsoPositivo, marcarFalsoPositivoDadoErrado, resolverVarios, limparVarios } from "../acoes-alertas";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeDetector, IDADE_MINIMA_ACAO_MASSA_MIN, elegivelParaAcaoMassa } from "@/lib/detectores";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
@@ -969,6 +969,18 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     await marcarFalsoPositivo(id);
   }, []);
 
+  const handleFalsoDado = useCallback(async (id: string) => {
+    setAlertas(a => {
+      const alvo = a.find(x => x.id === id);
+      const restante = a.filter(x => x.id !== id);
+      if (alvo && !restante.some(x => x.cv === alvo.cv)) {
+        setVeiculosMapa(vs => vs.map(v => v.cv === alvo.cv ? { ...v, nivel: null, tipo: null } : v));
+      }
+      return restante;
+    });
+    await marcarFalsoPositivoDadoErrado(id);
+  }, []);
+
   // ── Map controls ─────────────────────────────────────────────────────
   const cmdZoom = useCallback((z: number) => {
     gatilhoRef.current += 1;
@@ -1415,6 +1427,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               onMouseDown={e => { e.stopPropagation(); handleFalso(a.id); }}
               className="v2-btn-tiny" style={tinyBtn(T.muted)}>
               Falso
+            </motion.button>
+            <motion.button whileTap={{ scale: 0.92 }}
+              onMouseDown={e => { e.stopPropagation(); handleFalsoDado(a.id); }}
+              className="v2-btn-tiny" style={tinyBtn(T.muted)}>
+              Dado
             </motion.button>
           </div>
         </div>

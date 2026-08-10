@@ -17,8 +17,8 @@ export const maxDuration = 30;
 
 const MIN_AMOSTRAS = 20;
 
-type RowAlertas = { tipo: string; status: string; contexto: unknown };
-type RowCasosRevisao = { status: string; segmento: string | null };
+type RowAlertas = { tipo: string; status: string; contexto: unknown; motivo_falso_positivo: string | null };
+type RowCasosRevisao = { status: string; segmento: string | null; motivo_falso_positivo: string | null };
 
 // Copia intencional de src/lib/calibracao-desvio.ts, mesmo padrao do script
 // standalone: rota nao importa .ts de lib sem passar pelo bundler do Next,
@@ -36,15 +36,36 @@ function taxaFalsoPositivoCalibrada(
   return (alphaPrior + nFalsoPositivo) / (alphaPrior + betaPrior + nAmostras);
 }
 
+// Achado real via audio do WhatsApp (25/07, ver
+// docs/superpowers/specs/2026-08-09-motivo-falso-positivo-design.md):
+// falso_positivo com motivo='dado_entrada_errado' significa que a
+// marcacao/endereco de entrada enganou o detector, nao que o detector
+// errou -- fica de fora do total E do numerador (nao e diluicao
+// artificial da taxa, e "sem sinal pra este caso"). NULL (historico
+// anterior a esta feature) continua contando igual a 'detector_errado'
+// -- comportamento identico ao de antes desta mudanca pros dados velhos.
+// Extraido como predicado compartilhado (revisao independente, achado
+// Important 1): precisa ser aplicado tanto em segmentar() (segmentos
+// finos/grosseiros) quanto no calculo de taxaGlobal (prior Bayesiano
+// COMPARTILHADO por todo segmento em taxaFalsoPositivoCalibrada) -- sem
+// isso, um caso "sem sinal" segue contaminando a taxa calibrada de TODOS
+// os detectores atraves do prior global, mesmo com os segmentos individuais
+// ja corrigidos. Mesmo raciocinio do comentario "BLOCKER" mais abaixo,
+// sobre outro tipo de contaminacao desse mesmo prior.
+function contaComoSinalDeDetector(r: { status: string; motivo_falso_positivo: string | null }): boolean {
+  return !(r.status === "falso_positivo" && r.motivo_falso_positivo === "dado_entrada_errado");
+}
+
 // Generico desde 26/07: precisa rodar sobre 2 formatos de linha diferentes
 // (`alertas`: {tipo, status}; `casos_desvio_revisao`: {status, segmento}) --
 // ver achado no comentario da query principal, abaixo.
-function segmentar<T extends { status: string }>(
+function segmentar<T extends { status: string; motivo_falso_positivo: string | null }>(
   rows: T[],
   chave: (r: T) => string | null
 ): Map<string, { total: number; falsoPositivo: number }> {
   const grupos = new Map<string, { total: number; falsoPositivo: number }>();
   for (const r of rows) {
+    if (!contaComoSinalDeDetector(r)) continue;
     const k = chave(r);
     if (k == null) continue;
     const g = grupos.get(k) ?? { total: 0, falsoPositivo: 0 };
@@ -96,7 +117,7 @@ export async function POST(request: Request) {
     // nunca foi pensado como sinal de calibracao desde a origem, entao o
     // filtro grosseiro de status (igual ao 'ativo' logo ao lado) já resolve.
     const { rows: rowsAlertasBrutos } = await pool.query<RowAlertas>(`
-      select tipo, status, contexto
+      select tipo, status, contexto, motivo_falso_positivo
       from alertas
       where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete', 'parada_sem_marcacao') and status != 'ativo' and status != 'limpo'
     `);
@@ -146,13 +167,19 @@ export async function POST(request: Request) {
     // So origem individual conta. NULL = historico anterior a migration 027
     // (mantido: o backfill so marcou o que dava pra inferir com seguranca).
     const { rows: rowsCasosRevisao } = await pool.query<RowCasosRevisao>(`
-      select status_final as status, contexto_detector -> 'calibracao' ->> 'segmento' as segmento
+      select status_final as status, contexto_detector -> 'calibracao' ->> 'segmento' as segmento, motivo_falso_positivo
       from casos_desvio_revisao
       where origem_acao is null or origem_acao <> 'resolver_massa'
     `);
 
-    const totalFalsoPositivo = rowsAlertas.filter((r) => r.status === "falso_positivo").length;
-    const taxaGlobal = rowsAlertas.length > 0 ? totalFalsoPositivo / rowsAlertas.length : 0.3;
+    // rowsCalibraveis exclui dado_entrada_errado do PRIOR global (mesmo
+    // predicado de segmentar(), ver contaComoSinalDeDetector acima) --
+    // sem isso, taxaGlobal (alphaPrior/betaPrior em
+    // taxaFalsoPositivoCalibrada) continuaria contaminado mesmo com os
+    // segmentos individuais ja corretos.
+    const rowsCalibraveis = rowsAlertas.filter(contaComoSinalDeDetector);
+    const totalFalsoPositivo = rowsCalibraveis.filter((r) => r.status === "falso_positivo").length;
+    const taxaGlobal = rowsCalibraveis.length > 0 ? totalFalsoPositivo / rowsCalibraveis.length : 0.3;
 
     const segmentos = new Map([
       ...segmentar(rowsAlertas, (r) => `tipo:${r.tipo}`),
