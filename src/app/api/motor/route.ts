@@ -21,6 +21,7 @@ import {
   divergenciaRumoAcimaDoLimiar,
   divergenciaRumoDispara,
   corrigirComPontoAprendido,
+  PONTO_APRENDIDO_ATIVO,
 } from "@/lib/unitrac";
 import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
@@ -1833,16 +1834,23 @@ export async function POST(request: Request) {
           // pt.feito da Unitrac, tira da lista de pendentes todo ponto onde
           // este veiculo ja ficou parado o tempo minimo HOJE (ver
           // buscarPresencaEntregaCliente + a gravacao mais abaixo).
-          const pendentes = (pontosVeiculo ?? []).filter(
-            (pt) =>
-              !pt.feito &&
-              temCoordenadaValida(pt) &&
-              !(
-                ENTREGA_PRESENCA_ATIVA &&
-                pt.pontoCodigo != null &&
-                presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)
-              )
-          );
+          const pontosAprendidosCliente = mapaPontosAprendidos.get(cliente_id);
+          const pendentes = (pontosVeiculo ?? [])
+            .filter(
+              (pt) =>
+                !pt.feito &&
+                temCoordenadaValida(pt) &&
+                !(
+                  ENTREGA_PRESENCA_ATIVA &&
+                  pt.pontoCodigo != null &&
+                  presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)
+                )
+            )
+            .map((pt) =>
+              PONTO_APRENDIDO_ATIVO && pt.pontoCodigo != null
+                ? corrigirComPontoAprendido(pt, pontosAprendidosCliente?.get(pt.pontoCodigo))
+                : pt
+            );
           const temPendentes = pendentes.length > 0;
           // Snapshot throttled de pendentes -- ver declaração do Map acima.
           const ultimoSnapshot = ultimoSnapshotPendentesPorVeiculo.get(veiculo_id) ?? 0;
