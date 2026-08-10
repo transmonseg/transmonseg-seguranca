@@ -9,14 +9,28 @@
 -- desatualizado que JA TEM pontocodigo na Unitrac -- nao precisam esperar
 -- 5+ observacoes se acumularem, o endereco certo ja foi confirmado por
 -- fonte externa confiavel.
+--
+-- IMPORTANTE: esta migration precisa rodar como superuser/dono da tabela
+-- (ex: `sudo -u postgres psql -d transmonseg -f <arquivo>` no Contabo),
+-- NAO com a DATABASE_URL normal da aplicacao (role app_service). O ALTER
+-- TABLE e o CREATE FUNCTION abaixo exigem privilegio que app_service nao
+-- tem (USAGE mas nao CREATE no schema public, e app_service nao e dono
+-- da tabela) -- roda com app_service da erro "must be owner of table" /
+-- "permission denied for schema public".
 
 ALTER TABLE pontos_aprendidos
   ADD COLUMN IF NOT EXISTS fonte text NOT NULL DEFAULT 'aprendido'
   CHECK (fonte IN ('aprendido', 'manual'));
 
--- app_service so tinha SELECT (migration 028) -- o script de gravacao
--- manual (scripts/corrigir-pontos-manual.mjs) roda com esse mesmo role,
--- precisa escrever.
+-- Defensivo: em producao, app_service ja tem todos os privilegios
+-- (SELECT/INSERT/UPDATE/DELETE/...) nesta tabela via um ALTER DEFAULT
+-- PRIVILEGES que o role postgres aplica a toda tabela nova -- isso e
+-- externo as migrations versionadas neste repo, entao este GRANT
+-- explicito e um no-op na producao atual. Mantemos o GRANT mesmo assim
+-- porque e a defesa correta pra um ambiente novo/replicado do zero, onde
+-- esse default privilege pode nao existir -- sem ele, o script de
+-- gravacao manual (scripts/corrigir-pontos-manual.mjs), que roda com o
+-- role app_service, falharia por falta de permissao.
 GRANT INSERT, UPDATE ON pontos_aprendidos TO app_service;
 
 -- Cron noturno (aprender_pontos_entrega) nunca mais toca numa linha
