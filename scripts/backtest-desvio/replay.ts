@@ -3,12 +3,23 @@
 // Maquina de estado FIEL ao motor real (avancarStreaksDesvio,
 // devAvancarStreaksDesvio, ambas importadas de src/lib/detectores.ts, zero
 // reimplementacao) -- rodada sobre uma trilha real de posicoes_historico
-// (via casos_desvio_revisao.trilha, ver corpus.ts) com o delta de tempo
-// REAL entre pontos, nao cadencia fixa. Ver
+// (via casos_desvio_revisao.trilha, carregada por carregar-corpus.mjs) com
+// o delta de tempo REAL entre pontos, nao cadencia fixa. Ver
 // docs/superpowers/specs/2026-08-10-afastando-tudo-harness-design.md pro
 // porque disso (uma tentativa anterior em Python nao reproduziu 3 casos
 // reais conhecidos por assumir cadencia fixa e zerar o streak no primeiro
 // sinal contrario, em vez da histerese real).
+//
+// LIMITACAO CONHECIDA (achado real 10/08, revisao final de branch):
+// carregar-corpus.mjs NAO filtra por `fresco` na extracao -- toda leitura
+// da trilha chega aqui e e' tratada como fresca (`fresco: true` fixo
+// abaixo), diferente do motor real que trava o avanco do streak em
+// `pos.fresco=false` (route.ts:1911). Impacto esperado pequeno e
+// simetrico entre candidatos (nenhum candidato se beneficia mais que
+// outro de streaks levemente inflados por leituras nao-frescas), mas e'
+// uma divergencia real de fidelidade que nao foi corrigida nesta rodada --
+// implementar o filtro exigiria nova extracao do corpus + nova rodada do
+// harness.
 import { avancarStreaksDesvio, devAvancarStreaksDesvio, FORA_TAPETE_STREAK_MIN } from "../../src/lib/detectores";
 import type { CandidatoRegra } from "./candidatos";
 
@@ -49,7 +60,11 @@ export function replay(
       const distanciaAoAnteriorM = haversineM(anterior.lat, anterior.lng, p.lat, p.lng);
       const saltoImplausivel = distanciaAoAnteriorM > SALTO_IMPLAUSIVEL_M;
       const podeAvancar = devAvancarStreaksDesvio({
-        fresco: true, // trilha ja filtrada por fresco no carregamento (ver corpus.ts)
+        // NOTA: nao ha filtro de fresco no carregamento (carregar-corpus.mjs)
+        // -- toda leitura da trilha e' tratada como fresca aqui, diferente
+        // do motor real que trava em pos.fresco=false. Ver nota de
+        // limitacao no topo deste arquivo.
+        fresco: true,
         saltoImplausivel,
         distanciaAoAnteriorM,
         velocidade: p.velocidade,
