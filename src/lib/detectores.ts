@@ -1388,12 +1388,25 @@ export function temCoordenadaValida(pt: { lat: number | null; lng: number | null
 // docs/superpowers/specs/2026-08-10-afastando-tudo-harness-design.md) que
 // pct80 (>=80% dos destinos, arredondado pra cima, exige TODOS quando
 // N<=3) mantem o mesmo comportamento de ALL pra N pequeno (protege contra
-// o incidente original de 06/07 abaixo) mas passa a disparar pro padrao
-// de N grande e disperso.
+// o incidente original de 06/07, documentado acima no bloco de comentario
+// de CtxDesvio) mas passa a disparar pro padrao de N grande e disperso.
 //
-// O veículo se afastou de TODOS os destinos legítimos desde o ciclo
-// anterior? Aproximar de QUALQUER um cancela — é assim que uma entrega
-// normal (rumo a um pendente que não é o mais próximo) nunca dispara.
+// Ate 10/08 a regra era ALL: o veículo se afastou de TODOS os destinos
+// legítimos desde o ciclo anterior? Aproximar de QUALQUER um cancela —
+// é assim que uma entrega normal (rumo a um pendente que não é o mais
+// próximo) nunca dispara. A partir de 10/08 (pct80 abaixo) isso deixou de
+// valer ao pé da letra pra N>=5: aproximar de ATE 1 destino ainda pode
+// deixar o restante disparar, contanto que >=80% dos outros tenham se
+// afastado alem da margem. Pra N<=4 o comportamento CONTINUA identico ao
+// texto acima (exige TODOS) -- ver override de N pequeno e a coincidencia
+// aritmetica em N=4 no corpo da funcao.
+const AFASTAMENTO_PCT_MIN = 0.8;
+// Acima deste N, o piso de disparo passa a ser um percentual
+// (AFASTAMENTO_PCT_MIN) em vez de exigir TODOS. Em N=4,
+// Math.ceil(0.8*4)=4 ainda exige todos por coincidencia aritmetica (nao
+// por este override) -- so a partir de N=5 a regra diverge de verdade do
+// comportamento ALL.
+const AFASTAMENTO_N_PEQUENO_MAX = 3;
 export function afastouDeTudo(
   distDestinosM: number[],
   distDestinosAnteriorM: number[]
@@ -1404,7 +1417,8 @@ export function afastouDeTudo(
   const cresceram = distDestinosM.filter(
     (d, i) => d > distDestinosAnteriorM[i] + AFASTAMENTO_MARGEM_M
   ).length;
-  const minimoNecessario = n <= 3 ? n : Math.ceil(0.8 * n);
+  const minimoNecessario =
+    n <= AFASTAMENTO_N_PEQUENO_MAX ? n : Math.ceil(AFASTAMENTO_PCT_MIN * n);
   return cresceram >= minimoNecessario;
 }
 

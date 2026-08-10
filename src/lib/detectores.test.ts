@@ -1230,6 +1230,41 @@ describe("afastouDeTudo", () => {
     expect(afastouDeTudo(anterior, anterior)).toBe(false); // sanity: identico nao dispara
     expect(afastouDeTudo(atual, anterior)).toBe(true); // regra vencedora (pct80): dispara com 12/15 (80%) crescendo
   });
+
+  it("false quando so 11 de 15 crescem (abaixo do piso de 80%: fixa o limiar exato em 12/15)", () => {
+    // Mesmo `anterior` do teste acima, mas o indice 13 (que la crescia)
+    // agora tambem encolhe -- derruba a contagem de 12 (o piso exato,
+    // Math.ceil(0.8*15)) pra 11. Isso prova que o limiar e' 80% de
+    // verdade, e nao so "menos estrito que ALL": um candidato com pct
+    // menor (ex: 0.6, minimo=9) passaria neste teste incorretamente como
+    // true, entao este caso pega uma regressao de limiar que o teste
+    // "12/15 -> true" sozinho nao pegaria.
+    const anterior = [1000, 5000, 8000, 12000, 15000, 18000, 20000, 22000, 25000, 28000, 30000, 32000, 35000, 38000, 40000];
+    const atual11  = [1200, 4800, 8200, 12200, 15200, 17800, 20200, 22200, 25200, 27800, 30200, 32200, 35200, 37800, 40200];
+    expect(afastouDeTudo(atual11, anterior)).toBe(false);
+  });
+
+  it("N=3 (no limite literal do override de N pequeno): 1 de 3 encolhendo nao dispara -- exige TODOS", () => {
+    const anterior = [1000, 5000, 9000];
+    const atual = [1200, 5200, 8800]; // ultimo encolhe (9000 -> 8800)
+    expect(afastouDeTudo(atual, anterior)).toBe(false);
+  });
+
+  it("N=4 (coincidencia aritmetica Math.ceil(0.8*4)=4, NAO pelo override): 1 de 4 encolhendo nao dispara", () => {
+    const anterior = [1000, 5000, 9000, 13000];
+    const atual = [1200, 5200, 9200, 12800]; // ultimo encolhe (13000 -> 12800)
+    expect(afastouDeTudo(atual, anterior)).toBe(false);
+  });
+
+  it("N=5 (primeiro N onde pct80 diverge de ALL de verdade, min=4): 1 de 5 encolhendo AINDA dispara", () => {
+    // Caso mais proximo do incidente de 06/07 (motorista com varios
+    // pendentes indo pro nao-mais-proximo) -- aqui, diferente de ALL,
+    // um destino encolhendo (aproximando) nao cancela mais o alerta se
+    // os outros 4 (80%) se afastaram de verdade.
+    const anterior = [1000, 5000, 9000, 13000, 17000];
+    const atual = [1200, 5200, 9200, 13200, 16800]; // ultimo encolhe (17000 -> 16800)
+    expect(afastouDeTudo(atual, anterior)).toBe(true);
+  });
 });
 
 describe("detectarTiroteioProximo", () => {
