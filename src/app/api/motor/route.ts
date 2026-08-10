@@ -2082,7 +2082,21 @@ export async function POST(request: Request) {
           const raioDestinoMaisProximo = idxMaisProximo >= 0 && pendentes[idxMaisProximo]
             ? pendentes[idxMaisProximo].raio
             : 250; // base nao tem raio proprio -- usa o mesmo default de bases.raio_m
-          const emPontoSeguro = riscoPorVeiculo.get(veiculo_id)?.emPontoSeguro ?? false;
+          const emPontoSeguroBruto = riscoPorVeiculo.get(veiculo_id)?.emPontoSeguro ?? false;
+          // Achado real 10/08 (varredura completa de regras de desvio, motivada
+          // pelos relatos de TTM-7C13/TTH-0G95 no grupo "DESVIO DE ROTA"): sem o
+          // `pos.velocidade === 0`, um veiculo em desvio real que so PASSA (em
+          // movimento) perto de qualquer um dos ~1.115 postos de gasolina do RJ
+          // (geofence estatica, scripts/ingerir-pontos-seguros.mjs, sem relacao com
+          // a rota) tinha a checagem de desvio inteira suspensa naquele ciclo. A
+          // intencao original (achado 25/07, ver suspenderPorChegada em unitrac.ts)
+          // era so nao confundir motorista ABASTECENDO com desvio -- exigir parado
+          // preserva essa intencao sem a brecha. Mesmo criterio ja usado em
+          // `noCliente` poucas linhas acima. Achado critico da revisao independente
+          // 03/08 ja tinha corrigido isso so pro auto-resolve (chegouEmDestinoConhecido,
+          // abaixo) -- este e' o mesmo fix pro suspensoPorChegada bruto, que nunca
+          // tinha recebido.
+          const emPontoSeguro = emPontoSeguroBruto && pos.velocidade === 0;
           const suspensoPorChegada = idxMaisProximo >= 0
             ? suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, emPontoSeguro)
             : emPontoSeguro;
