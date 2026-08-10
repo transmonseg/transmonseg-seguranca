@@ -53,4 +53,16 @@ describe("candidatos de regra de afastamento", () => {
       expect(regra([5000], [])).toBe(false);
     }
   });
+
+  it("percentual com N=3 e 2 de 3 crescendo: retorna false (protege contra incidente de 06/07)", () => {
+    const pct60 = CANDIDATOS.get("pct60")!;
+    const pct80 = CANDIDATOS.get("pct80")!;
+    // 3 destinos: 1 encolhe (destino 0 de entrega normal), 2 crescem
+    // Com Math.ceil(0.6*3)=2, um percentual ingênuo dispararia falso positivo.
+    // Esperado: comportamento identico a ALL, que retorna false (1 encolheu).
+    const anterior = [4023.4, 6366.97, 8381.33];
+    const atual    = [3985.06, 6452.79, 8522.93];
+    expect(pct60(atual, anterior)).toBe(false);
+    expect(pct80(atual, anterior)).toBe(false);
+  });
 });

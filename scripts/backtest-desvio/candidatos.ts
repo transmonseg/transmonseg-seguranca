@@ -40,8 +40,9 @@ function topK(k: number): CandidatoRegra {
 function percentual(pct: number): CandidatoRegra {
   return (distAtualM, distAnteriorM) => {
     if (!validarEntrada(distAtualM, distAnteriorM)) return false;
+    const n = distAtualM.length;
     const cresceram = distAtualM.filter((d, i) => cresceuAlemDaMargem(d, distAnteriorM[i])).length;
-    const minimoNecessario = Math.ceil(pct * distAtualM.length);
+    const minimoNecessario = n <= 3 ? n : Math.ceil(pct * n);
     return cresceram >= minimoNecessario;
   };
 }
