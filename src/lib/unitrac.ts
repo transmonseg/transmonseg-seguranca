@@ -227,10 +227,18 @@ export function haversineM(aLat: number, aLng: number, bLat: number, bLng: numbe
 // 03/08 a posicao real aprendida por (cliente_id, ponto_codigo), a partir
 // do acumulado de paradas confirmadas -- mas estava 100% em modo sombra,
 // nunca consumido. Divergencia real medida hoje contra a Unitrac: mediana
-// 56m, maximo observado 232m, 91 pontos com correspondencia. Ativando
-// aqui como correcao de posicao na fonte comum (pendentes), propagando
-// pro motor de desvio E pra confirmacao de entrega ao mesmo tempo (ver
-// docs/superpowers/specs/2026-08-10-ativar-pontos-aprendidos-design.md).
+// 56m, maximo observado 232m, 91 pontos com correspondencia.
+//
+// Esta funcao e' so a logica pura da correcao (dado um ponto e um aprendido,
+// decide se e como corrigir) -- QUEM decide ONDE aplicar e' route.ts, nao
+// aqui. Integracao real (revisada 10/08, ver Finding do Task 3 na revisao
+// final de branch): aplicada em `pontosVeiculo`, a fonte comum de origem
+// (nao em `pendentes` diretamente) -- `pendentes` e' so um dos consumidores,
+// que herda a correcao por ser filtrado A PARTIR de `pontosVeiculo` ja
+// corrigido. Os 4 consumidores que acabam cobertos por corrigir na fonte
+// comum: o motor de desvio, `entregas_presenca`, `bypass_entrega`/
+// `alvoNoRaioAgora`, e a corroboracao D1/D3 do placar de desvio -- ver
+// docs/superpowers/specs/2026-08-10-ativar-pontos-aprendidos-design.md.
 export const PONTO_APRENDIDO_ATIVO = true;
 
 // Teto de divergencia: acima disso, a leitura atual da Unitrac diverge

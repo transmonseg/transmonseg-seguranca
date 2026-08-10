@@ -796,8 +796,10 @@ export async function POST(request: Request) {
     // 3a-bis. Carregar pontos_aprendidos (correcao de posicao aprendida por
     // ponto de entrega, ver corrigirComPontoAprendido em src/lib/unitrac.ts).
     // Carregado 1x por ciclo aqui, mesmo padrao de mapaBasesCliente acima --
-    // ainda nao aplicado neste task (so carregamento; aplicacao e' o Task 3
-    // do plano "ativar pontos_aprendidos").
+    // so o carregamento. A correcao e aplicada mais abaixo, em
+    // `pontosVeiculo` (procure `const pontosVeiculo = (pontosVeiculoBruto ?? []).map(`)
+    // logo depois do carregamento de pontosVeiculoBruto -- corrigirComPontoAprendido
+    // roda por veiculo/ponto la, nao aqui no carregamento em lote.
     const mapaPontosAprendidos = new Map<string, Map<number, { lat: number; lng: number }>>();
 
     {

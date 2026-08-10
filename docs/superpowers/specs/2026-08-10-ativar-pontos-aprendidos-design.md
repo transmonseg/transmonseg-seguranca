@@ -33,6 +33,13 @@ explicitamente fora de escopo desta spec (ver Não-objetivos).
 
 ## Onde aplicar a correção
 
+**ERRATA (10/08, revisão do Task 3):** a afirmação abaixo de que corrigir
+em `pendentes` "propaga a correção para todos os quatro consumidores
+automaticamente" estava errada — corrigir só em `pendentes` NÃO propagava
+pra `bypass_entrega`/`alvoNoRaioAgora` nem pra corroboração D1/D3, que leem
+`pontosVeiculo` direto. Isso motivou a mudança real: a implementação corrige
+em `pontosVeiculo`, a fonte comum de verdade — ver `route.ts:1839-1853`.
+
 `pendentes` (montado em `route.ts:1799-1814`, filtrado de `pontosVeiculo`
 vindo de `buscarAlvos()`/Unitrac) é a fonte comum consumida por:
 - `distDestinosM`/`afastouDeTudo` (motor de desvio, via `destinos` =
