@@ -40,12 +40,19 @@ for (const l of linhas) {
     console.warn(`Pulando linha incompleta: ${JSON.stringify(l)}`);
     continue;
   }
+  const pontoCodigoNum = Number(ponto_codigo);
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+  if (!Number.isFinite(pontoCodigoNum) || !Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+    console.warn(`Pulando linha com valor numérico inválido: ${JSON.stringify(l)}`);
+    continue;
+  }
   await client.query(
     `INSERT INTO pontos_aprendidos (cliente_id, ponto_codigo, lat, lng, raio_m, n_observacoes, primeira_observacao, ultima_observacao, fonte)
      VALUES ($1, $2, $3, $4, 30, 1, current_date, current_date, 'manual')
      ON CONFLICT (cliente_id, ponto_codigo) DO UPDATE SET
        lat = EXCLUDED.lat, lng = EXCLUDED.lng, fonte = 'manual', atualizado_em = now()`,
-    [cliente_id, Number(ponto_codigo), Number(lat), Number(lng)]
+    [cliente_id, pontoCodigoNum, latNum, lngNum]
   );
   gravados++;
   console.log(`Gravado: cliente=${cliente_id} ponto=${ponto_codigo} (${motivo ?? "sem motivo"})`);
