@@ -319,7 +319,7 @@ describe("corrigirComPontoAprendido", () => {
 
   it("correção dentro do teto de 500m, aplica lat/lng do aprendido e mantém o resto", () => {
     // ~111m ao norte da posição original (0.001 grau de lat ~ 111m)
-    const aprendido = { lat: -22.899, lng: -43.2 };
+    const aprendido = { lat: -22.899, lng: -43.2, fonte: "aprendido" as const };
     const r = corrigirComPontoAprendido(pontoBase, aprendido);
     expect(r.lat).toBe(aprendido.lat);
     expect(r.lng).toBe(aprendido.lng);
@@ -328,9 +328,9 @@ describe("corrigirComPontoAprendido", () => {
     expect(r.pontoCodigo).toBe(pontoBase.pontoCodigo);
   });
 
-  it("correção fora do teto de 500m, retorna o ponto inalterado", () => {
+  it("correção fora do teto de 500m, retorna o ponto inalterado (fonte aprendido)", () => {
     // ~1110m ao norte (0.01 grau de lat ~ 1110m, bem acima do teto de 500m)
-    const aprendidoLonge = { lat: -22.89, lng: -43.2 };
+    const aprendidoLonge = { lat: -22.89, lng: -43.2, fonte: "aprendido" as const };
     const r = corrigirComPontoAprendido(pontoBase, aprendidoLonge);
     expect(r).toEqual(pontoBase);
   });
@@ -338,17 +338,35 @@ describe("corrigirComPontoAprendido", () => {
   it("correção exatamente no teto (500m) ainda aplica", () => {
     // Calculado via haversineM real: 0.0044966078939030745 graus de latitude
     // produz exatamente ~500m de divergência (verificado com binary search)
-    const aprendidoNoLimite = { lat: -22.9 + 0.0044966078939030745, lng: -43.2 };
+    const aprendidoNoLimite = {
+      lat: -22.9 + 0.0044966078939030745,
+      lng: -43.2,
+      fonte: "aprendido" as const,
+    };
     const r = corrigirComPontoAprendido(pontoBase, aprendidoNoLimite);
     expect(r.lat).toBe(aprendidoNoLimite.lat);
     expect(r.lng).toBe(aprendidoNoLimite.lng);
   });
 
-  it("correção acima do teto (>500m) retorna o ponto inalterado", () => {
+  it("correção acima do teto (>500m) retorna o ponto inalterado (fonte aprendido)", () => {
     // Calculado via haversineM real: 0.004506607893903074 graus de latitude
     // produz ~501.11m de divergência (ligeiramente acima do teto de 500m)
-    const aprendidoAcimaDolimite = { lat: -22.9 + 0.004506607893903074, lng: -43.2 };
+    const aprendidoAcimaDolimite = {
+      lat: -22.9 + 0.004506607893903074,
+      lng: -43.2,
+      fonte: "aprendido" as const,
+    };
     const r = corrigirComPontoAprendido(pontoBase, aprendidoAcimaDolimite);
     expect(r).toEqual(pontoBase);
+  });
+
+  it("fonte manual ignora o teto de 500m -- aplica mesmo com divergência de vários km", () => {
+    // ~17.3km ao norte, mesma ordem de grandeza do pior caso real de 10/08
+    // (Embaúba Boutique Hotel, cadastro Unitrac x endereço confirmado).
+    const aprendidoManualLonge = { lat: -22.9 + 0.156, lng: -43.2, fonte: "manual" as const };
+    const r = corrigirComPontoAprendido(pontoBase, aprendidoManualLonge);
+    expect(r.lat).toBe(aprendidoManualLonge.lat);
+    expect(r.lng).toBe(aprendidoManualLonge.lng);
+    expect(r.raio).toBe(pontoBase.raio);
   });
 });

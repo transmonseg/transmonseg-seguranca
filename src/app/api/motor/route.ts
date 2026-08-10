@@ -800,7 +800,10 @@ export async function POST(request: Request) {
     // `pontosVeiculo` (procure `const pontosVeiculo = (pontosVeiculoBruto ?? []).map(`)
     // logo depois do carregamento de pontosVeiculoBruto -- corrigirComPontoAprendido
     // roda por veiculo/ponto la, nao aqui no carregamento em lote.
-    const mapaPontosAprendidos = new Map<string, Map<number, { lat: number; lng: number }>>();
+    const mapaPontosAprendidos = new Map<
+      string,
+      Map<number, { lat: number; lng: number; fonte: "aprendido" | "manual" }>
+    >();
 
     {
       const pgAprendidos = await pool.connect();
@@ -817,10 +820,11 @@ export async function POST(request: Request) {
           ponto_codigo: string;
           lat: number;
           lng: number;
-        }>(`SELECT cliente_id, ponto_codigo, lat, lng FROM pontos_aprendidos`);
+          fonte: "aprendido" | "manual";
+        }>(`SELECT cliente_id, ponto_codigo, lat, lng, fonte FROM pontos_aprendidos`);
         for (const r of pontosAprendidosRows) {
           const porCliente = mapaPontosAprendidos.get(r.cliente_id) ?? new Map();
-          porCliente.set(Number(r.ponto_codigo), { lat: r.lat, lng: r.lng });
+          porCliente.set(Number(r.ponto_codigo), { lat: r.lat, lng: r.lng, fonte: r.fonte });
           mapaPontosAprendidos.set(r.cliente_id, porCliente);
         }
       } catch (errAprendidos) {

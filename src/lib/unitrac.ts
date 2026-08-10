@@ -247,6 +247,15 @@ export const PONTO_APRENDIDO_ATIVO = true;
 // real do cliente mudar no futuro. Com o dado real de hoje (mediana 56m,
 // max 232m) este teto nunca bloqueia uma correcao real -- e protecao pro
 // futuro, nao limitador atual.
+//
+// So se aplica a fonte='aprendido' (padrao acumulado de paradas GPS, sujeito
+// a ruido). Correcao fonte='manual' (10/08, ver
+// docs/superpowers/specs/2026-08-10-correcao-manual-pontos-design.md) e'
+// verificada por endereco real (planilha do cliente + Google Maps) antes de
+// gravar -- nao e' um padrao estatistico que possa ter deriva de GPS, entao
+// esse teto nao se aplica: 34 das 44 correcoes manuais reais de 10/08
+// excedem 500m (ate 17km, hotel/pousada em zona rural onde o cadastro da
+// Unitrac erra o ponto por km de estrada), e sao verificadas, nao ruido.
 export const CORRECAO_APRENDIDA_DIVERGENCIA_MAX_M = 500;
 
 // So corrige lat/lng -- raio (raio de chegada nominal) NAO muda, porque
@@ -256,11 +265,13 @@ export const CORRECAO_APRENDIDA_DIVERGENCIA_MAX_M = 500;
 // problema que resolve.
 export function corrigirComPontoAprendido(
   pt: PontoEntrega,
-  aprendido: { lat: number; lng: number } | undefined
+  aprendido: { lat: number; lng: number; fonte: "aprendido" | "manual" } | undefined
 ): PontoEntrega {
   if (!aprendido) return pt;
-  const divergenciaM = haversineM(pt.lat, pt.lng, aprendido.lat, aprendido.lng);
-  if (divergenciaM > CORRECAO_APRENDIDA_DIVERGENCIA_MAX_M) return pt;
+  if (aprendido.fonte === "aprendido") {
+    const divergenciaM = haversineM(pt.lat, pt.lng, aprendido.lat, aprendido.lng);
+    if (divergenciaM > CORRECAO_APRENDIDA_DIVERGENCIA_MAX_M) return pt;
+  }
   return { ...pt, lat: aprendido.lat, lng: aprendido.lng };
 }
 
