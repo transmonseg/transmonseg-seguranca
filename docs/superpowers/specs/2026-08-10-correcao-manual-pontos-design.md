@@ -32,6 +32,10 @@ ALTER TABLE pontos_aprendidos
   ADD COLUMN IF NOT EXISTS fonte text NOT NULL DEFAULT 'aprendido'
   CHECK (fonte IN ('aprendido', 'manual'));
 
+-- app_service so tinha SELECT (migration 028) -- o script de gravacao
+-- manual roda com esse mesmo role, precisa escrever.
+GRANT INSERT, UPDATE ON pontos_aprendidos TO app_service;
+
 -- Cron noturno (aprender_pontos_entrega, migration 028) nunca mais toca
 -- numa linha marcada manual -- so atualiza linhas 'aprendido', e so cria
 -- linha nova se nao existir nenhuma pra aquele (cliente_id, ponto_codigo).
