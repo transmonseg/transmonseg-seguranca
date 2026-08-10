@@ -335,10 +335,20 @@ describe("corrigirComPontoAprendido", () => {
     expect(r).toEqual(pontoBase);
   });
 
-  it("correção exatamente no teto (500m) ainda aplica (limite inclusivo)", () => {
-    // ~499m ao norte -- dentro do teto por pouco
-    const aprendidoNoLimite = { lat: -22.9 + 499 / 111320, lng: -43.2 };
+  it("correção exatamente no teto (500m) ainda aplica", () => {
+    // Calculado via haversineM real: 0.0044966078939030745 graus de latitude
+    // produz exatamente ~500m de divergência (verificado com binary search)
+    const aprendidoNoLimite = { lat: -22.9 + 0.0044966078939030745, lng: -43.2 };
     const r = corrigirComPontoAprendido(pontoBase, aprendidoNoLimite);
     expect(r.lat).toBe(aprendidoNoLimite.lat);
+    expect(r.lng).toBe(aprendidoNoLimite.lng);
+  });
+
+  it("correção acima do teto (>500m) retorna o ponto inalterado", () => {
+    // Calculado via haversineM real: 0.004506607893903074 graus de latitude
+    // produz ~501.11m de divergência (ligeiramente acima do teto de 500m)
+    const aprendidoAcimaDolimite = { lat: -22.9 + 0.004506607893903074, lng: -43.2 };
+    const r = corrigirComPontoAprendido(pontoBase, aprendidoAcimaDolimite);
+    expect(r).toEqual(pontoBase);
   });
 });
