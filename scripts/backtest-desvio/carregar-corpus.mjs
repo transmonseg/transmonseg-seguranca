@@ -18,20 +18,28 @@ const DATABASE_URL =
 const client = new pg.Client({ connectionString: DATABASE_URL });
 await client.connect();
 
-// Casos rotulados de casos_desvio_revisao, filtrados aos que tiveram
-// desvio_streak/fora_tapete relevantes (exclui casos puros de
-// classe_viaria, que nao usam afastouDeTudo) -- origem_acao exclui acoes
-// em massa (mesmo filtro ja usado em recalibrar-desvio/route.ts).
+// Casos rotulados de casos_desvio_revisao -- origem_acao exclui acoes em
+// massa (mesmo filtro ja usado em recalibrar-desvio/route.ts).
+//
+// REMOVIDO (10/08, achado do coordenador): filtro adicional de
+// `desvio_streak>0 or fora_tapete=true` que existia aqui antes descartava
+// 387 dos 421 casos elegiveis -- nao porque o caso fosse irrelevante pro
+// afastando-de-tudo, mas porque esses dois campos so passaram a existir em
+// `contexto_detector` a partir do commit b5c5a25 (26/07,
+// montarContextoDesvio). Qualquer alerta CRIADO antes disso nunca teve
+// esses campos escritos, mesmo revisado/resolvido depois dentro da janela
+// de 30 dias -- lacuna de schema, nao ausencia de relevancia. Isso nao
+// importa pro corpus: o motor de replay (Task 3, replay.ts) recalcula
+// desvio_streak do ZERO a partir da trilha real de posicoes + destinos via
+// pendentes_snapshot_log -- nunca dependeu do
+// contexto_detector->>'desvio_streak' pra nada, esse campo so era usado
+// aqui como filtro de montagem do corpus. Sem o filtro, o corpus volta a
+// cobrir os ~421 casos elegiveis (resolvido + falso_positivo
+// detector_errado/null) previstos na spec original.
 const { rows: casos } = await client.query(`
-  select id, veiculo_id, status_final, motivo_falso_positivo, trilha,
-         contexto_detector->>'desvio_streak' as desvio_streak,
-         contexto_detector->>'fora_tapete' as fora_tapete
+  select id, veiculo_id, status_final, motivo_falso_positivo, trilha
   from casos_desvio_revisao
   where (origem_acao is null or origem_acao <> 'resolver_massa')
-    and (
-      (contexto_detector->>'desvio_streak')::int > 0
-      or (contexto_detector->>'fora_tapete')::boolean = true
-    )
 `);
 
 function rotulo(c) {
