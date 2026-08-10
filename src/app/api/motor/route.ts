@@ -805,13 +805,20 @@ export async function POST(request: Request) {
       try {
         const { rows: pontosAprendidosRows } = await pgAprendidos.query<{
           cliente_id: string;
-          ponto_codigo: number;
+          // Achado real 10/08 (revisao independente do Task 3): ponto_codigo
+          // e' bigint no Postgres, e o driver `pg` retorna bigint/int8 como
+          // string por padrao (sem setTypeParser custom neste projeto) --
+          // tipar como number aqui era uma asserção não verificada que o
+          // tsc não pegava, e fazia o Map usar chave string ("563321") nunca
+          // batendo com o number de verdade em pt.pontoCodigo (unitrac.ts).
+          // Convertendo explicitamente com Number() abaixo.
+          ponto_codigo: string;
           lat: number;
           lng: number;
         }>(`SELECT cliente_id, ponto_codigo, lat, lng FROM pontos_aprendidos`);
         for (const r of pontosAprendidosRows) {
           const porCliente = mapaPontosAprendidos.get(r.cliente_id) ?? new Map();
-          porCliente.set(r.ponto_codigo, { lat: r.lat, lng: r.lng });
+          porCliente.set(Number(r.ponto_codigo), { lat: r.lat, lng: r.lng });
           mapaPontosAprendidos.set(r.cliente_id, porCliente);
         }
       } catch (errAprendidos) {
@@ -1828,29 +1835,37 @@ export async function POST(request: Request) {
           // parada_sem_marcacao, e o entregaConfirmada de bypass_entrega,
           // que ate aqui SEMPRE lia false numa falha de fetch -- ver
           // alvoQueSaiu abaixo -- em vez do ultimo status real conhecido).
-          const pontosVeiculo = pontosPorPlacaFallback.get(pos.placa);
+          const pontosVeiculoBruto = pontosPorPlacaFallback.get(pos.placa);
+          // Achado real 10/08 (revisao independente do Task 3, "ativar
+          // pontos_aprendidos"): a correcao de posicao aprendida precisa
+          // entrar aqui, na origem de pontosVeiculo, e nao so depois no
+          // filtro de pendentes -- senao bypass_entrega/alvoNoRaioAgora e a
+          // corroboracao D1/D3 do placar (pontosVeiculoParaCorroboracao),
+          // que leem pontosVeiculo direto, ficariam com a geometria crua
+          // enquanto pendentes usa a corrigida (assimetria "chegou" vs "nao
+          // esta no raio" pro mesmo ponto). Corrigindo aqui, tudo que le
+          // pontosVeiculo dai pra frente (pendentes incluso) ja herda.
+          const pontosAprendidosCliente = mapaPontosAprendidos.get(cliente_id);
+          const pontosVeiculo = (pontosVeiculoBruto ?? []).map((pt) =>
+            PONTO_APRENDIDO_ATIVO && pt.pontoCodigo != null
+              ? corrigirComPontoAprendido(pt, pontosAprendidosCliente?.get(pt.pontoCodigo))
+              : pt
+          );
           veiculoIdToAlvos.set(veiculo_id, pontosVeiculo ?? []);
           // "Parada no local conta como entregue" (usuario, 01/08): alem do
           // pt.feito da Unitrac, tira da lista de pendentes todo ponto onde
           // este veiculo ja ficou parado o tempo minimo HOJE (ver
           // buscarPresencaEntregaCliente + a gravacao mais abaixo).
-          const pontosAprendidosCliente = mapaPontosAprendidos.get(cliente_id);
-          const pendentes = (pontosVeiculo ?? [])
-            .filter(
-              (pt) =>
-                !pt.feito &&
-                temCoordenadaValida(pt) &&
-                !(
-                  ENTREGA_PRESENCA_ATIVA &&
-                  pt.pontoCodigo != null &&
-                  presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)
-                )
-            )
-            .map((pt) =>
-              PONTO_APRENDIDO_ATIVO && pt.pontoCodigo != null
-                ? corrigirComPontoAprendido(pt, pontosAprendidosCliente?.get(pt.pontoCodigo))
-                : pt
-            );
+          const pendentes = (pontosVeiculo ?? []).filter(
+            (pt) =>
+              !pt.feito &&
+              temCoordenadaValida(pt) &&
+              !(
+                ENTREGA_PRESENCA_ATIVA &&
+                pt.pontoCodigo != null &&
+                presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)
+              )
+          );
           const temPendentes = pendentes.length > 0;
           // Snapshot throttled de pendentes -- ver declaração do Map acima.
           const ultimoSnapshot = ultimoSnapshotPendentesPorVeiculo.get(veiculo_id) ?? 0;
