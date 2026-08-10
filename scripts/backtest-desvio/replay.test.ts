@@ -60,4 +60,26 @@ describe("replay", () => {
     expect(r.streakMaximo).toBe(1);
     expect(r.disparou).toBe(false);
   });
+
+  it("uma leitura isolada de aproximacao NAO zera o streak (histerese real, so 2 seguidas zeram)", () => {
+    const destino = { lat: -22.9, lng: -43.2 };
+    const pontos = [
+      { lat: -22.9, lng: -43.21, velocidade: 40, criado_em: ts(0) },
+      { lat: -22.9, lng: -43.22, velocidade: 40, criado_em: ts(1) },  // afasta, streak=1
+      { lat: -22.9, lng: -43.23, velocidade: 40, criado_em: ts(2) },  // afasta, streak=2 -> dispara
+      { lat: -22.9, lng: -43.225, velocidade: 40, criado_em: ts(3) }, // aproxima ISOLADA (sinal genuino de aproximacao, sem congelar por velocidade/salto) -- streak deve CONGELAR em 2, nao zerar
+      { lat: -22.9, lng: -43.235, velocidade: 40, criado_em: ts(4) }, // afasta de novo: se o streak tivesse zerado, iria 0->1; como so congelou, continua 2->3
+      { lat: -22.9, lng: -43.245, velocidade: 40, criado_em: ts(5) }, // afasta: se zerado, 1->2 (max continuaria 2); como congelou, 3->4
+    ];
+    const destinosPorPonto = pontos.map(() => [destino]);
+    const r = replay(all, pontos, destinosPorPonto);
+    // Se a leitura isolada de aproximacao tivesse zerado o streak (o bug
+    // exato que a tentativa anterior em Python cometeu), o streak maximo
+    // apos as duas leituras finais de afastamento seria no maximo 2
+    // (0->1->2). A histerese real so zera com 2 leituras SEGUIDAS de
+    // aproximacao -- aqui so ha 1 -- entao o streak sobrevive congelado em
+    // 2 e continua dali: 2->3->4.
+    expect(r.streakMaximo).toBe(4);
+    expect(r.cicloDoDisparo).toBe(2);
+  });
 });

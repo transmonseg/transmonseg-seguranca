@@ -9,11 +9,10 @@
 // porque disso (uma tentativa anterior em Python nao reproduziu 3 casos
 // reais conhecidos por assumir cadencia fixa e zerar o streak no primeiro
 // sinal contrario, em vez da histerese real).
-import { avancarStreaksDesvio, devAvancarStreaksDesvio } from "../../src/lib/detectores";
+import { avancarStreaksDesvio, devAvancarStreaksDesvio, FORA_TAPETE_STREAK_MIN } from "../../src/lib/detectores";
 import type { CandidatoRegra } from "./candidatos";
 
 const SALTO_IMPLAUSIVEL_M = 2500;
-const FORA_TAPETE_STREAK_MIN = 2; // detectores.ts:542, limiar real de disparo
 
 export type PontoTrilha = { lat: number; lng: number; velocidade: number; criado_em: string };
 export type Destino = { lat: number; lng: number };
