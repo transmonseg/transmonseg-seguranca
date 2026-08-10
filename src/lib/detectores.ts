@@ -599,6 +599,10 @@ const DESVIO_SO_AFASTANDO_OU_FORA_DO_TAPETE = true;
 // legítimos (cada entrega pendente + cada base) em vez de progredir rumo a
 // pelo menos um deles.
 //
+// Até 10/08 a regra era literalmente TODOS (ver afastouDeTudo abaixo, que
+// hoje usa pct80 pra N>=5 -- pra N<=4 o texto deste bloco continua valendo
+// ao pé da letra, ver override de N pequeno em afastouDeTudo).
+//
 // Por que TODOS e não só o mais próximo (corrigido ao vivo em produção —
 // achado real, não teórico: 06/07/2026, 22 alertas em 20min): usar só o
 // destino mais próximo dispara em entrega NORMAL sempre que o motorista tem
@@ -731,6 +735,12 @@ export type CtxDesvio = {
   // ativar junto com o gatilho normal de streak; só faz o "fora do tapete"
   // (ou equivalente) disparar mais rápido, nunca suprime nem atrasa alerta.
   riscoAreaAtual: number;
+  // Até 10/08 a regra era ALL: o gatilho principal cancela a suspeita
+  // assim que o veículo se aproxima de QUALQUER destino. A partir de 10/08
+  // (pct80) isso só continua valendo ao pé da letra pra N<=4 -- pra N>=5,
+  // aproximar de até ~20% dos destinos ainda pode deixar o restante
+  // disparar (ver afastouDeTudo).
+  //
   // Ponto cego identificado (comparação com iBOAT, pesquisa 07/07): o
   // gatilho principal cancela a suspeita assim que o veículo se aproxima de
   // QUALQUER destino — um trajeto raro que ainda assim vai "na direção"
@@ -1406,6 +1416,17 @@ const AFASTAMENTO_PCT_MIN = 0.8;
 // Math.ceil(0.8*4)=4 ainda exige todos por coincidencia aritmetica (nao
 // por este override) -- so a partir de N=5 a regra diverge de verdade do
 // comportamento ALL.
+//
+// Nota (achado real 10/08, revisao final de branch): com
+// AFASTAMENTO_PCT_MIN=0.8, este override e' matematicamente INERTE pra
+// TODO N<=4, nao so N=4 -- Math.ceil(0.8*N)=N de qualquer forma pra
+// N=1,2,3,4 (o `n <= AFASTAMENTO_N_PEQUENO_MAX ? n : ...` abaixo nunca
+// muda o resultado que o Math.ceil ja daria sozinho nesse intervalo). Quem
+// protege contra o incidente de 06/07 pra N pequeno hoje e' o teto natural
+// do Math.ceil com pct=0.8, nao este override. Ele existe como PISO DE
+// SEGURANCA pra se AFASTAMENTO_PCT_MIN for reduzido no futuro (ex: pra
+// 0.5, onde N=3 passaria a exigir so 2 sem o override) -- nao como o
+// mecanismo ativo de protecao hoje.
 const AFASTAMENTO_N_PEQUENO_MAX = 3;
 export function afastouDeTudo(
   distDestinosM: number[],
