@@ -1018,11 +1018,26 @@ export async function POST(request: Request) {
     // Snapshot de pendentes por ciclo (throttled) -- ver
     // docs/superpowers/specs/2026-08-09-snapshot-pendentes-log-design.md.
     // Puramente auditoria, nunca lido por nenhum detector.
+    // latBruta/lngBruta (achado real 10/08, revisao final de branch,
+    // Finding 3): guarda a posicao CRUA da Unitrac (pre-correcao de
+    // pontos_aprendidos) lado a lado com lat/lng (ja corrigidos, que
+    // continuam sendo os campos "principais" deste log). Antes da correcao
+    // de pontos_aprendidos entrar em producao, este log gravava so a
+    // posicao crua -- a spec desta feature usou justamente esse historico
+    // pra medir a divergencia real Unitrac-vs-aprendido (mediana 56m, max
+    // 232m). Sem o campo bruto, o log vira tautologico (corrigido comparado
+    // com ele mesmo) e essa medicao fica impossivel de refazer; tambem
+    // usado pelo harness de backtest de desvio (scripts/backtest-desvio/
+    // carregar-corpus.mjs), que precisa saber qual geometria e' qual numa
+    // janela de dias que atravessa o deploy desta feature.
     const pendentesSnapshotCiclo: {
       veiculo_id: string;
       temPendentes: boolean;
       alvosApiOk: boolean;
-      pendentes: { lat: number; lng: number; raio: number; codigo: number | null; nome: string }[];
+      pendentes: {
+        lat: number; lng: number; raio: number; codigo: number | null; nome: string;
+        latBruta: number | null; lngBruta: number | null;
+      }[];
     }[] = [];
 
     // Auto-resolucao retroativa de "afastando-se de todos os destinos"
@@ -1877,9 +1892,19 @@ export async function POST(request: Request) {
               veiculo_id,
               temPendentes,
               alvosApiOk: alvosDestinosDisponiveis,
-              pendentes: pendentes.map((pt) => ({
-                lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: pt.pontoCodigo, nome: pt.nome,
-              })),
+              pendentes: pendentes.map((pt) => {
+                // latBruta/lngBruta (achado real 10/08, Finding 3): busca o
+                // ponto correspondente em pontosVeiculoBruto (pre-correcao)
+                // por pontoCodigo, pra gravar a posicao crua da Unitrac lado
+                // a lado com a ja corrigida -- ver comentario na declaracao
+                // de pendentesSnapshotCiclo acima.
+                const ptBruto = pontosVeiculoBruto?.find((b) => b.pontoCodigo === pt.pontoCodigo);
+                return {
+                  lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: pt.pontoCodigo, nome: pt.nome,
+                  latBruta: ptBruto?.lat ?? null,
+                  lngBruta: ptBruto?.lng ?? null,
+                };
+              }),
             });
           }
           // Corroboração D1/D3 do placar (classeViariaSuprimidaPorEntrega):
