@@ -1412,7 +1412,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </div>
             );
           })()}
-          <div style={{ display: "flex", gap: 4 }}>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             <motion.button whileTap={{ scale: 0.92 }}
               onMouseDown={e => { e.stopPropagation(); focar(); }}
               className="v2-btn-tiny" style={tinyBtn(T.accent)}>
@@ -1430,7 +1430,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </motion.button>
             <motion.button whileTap={{ scale: 0.92 }}
               onMouseDown={e => { e.stopPropagation(); handleFalsoDado(a.id); }}
-              className="v2-btn-tiny" style={tinyBtn(T.muted)}>
+              className="v2-btn-tiny" style={tinyBtn(T.muted)}
+              title="Marcação/endereço errado: silencia o tipo por 2h e NÃO conta contra o detector">
               Dado
             </motion.button>
           </div>

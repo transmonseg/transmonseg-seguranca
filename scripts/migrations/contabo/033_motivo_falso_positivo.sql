@@ -10,3 +10,5 @@ ALTER TABLE alertas
 ALTER TABLE casos_desvio_revisao
   ADD COLUMN IF NOT EXISTS motivo_falso_positivo text
   CHECK (motivo_falso_positivo IN ('detector_errado', 'dado_entrada_errado'));
+
+NOTIFY pgrst, 'reload schema';
