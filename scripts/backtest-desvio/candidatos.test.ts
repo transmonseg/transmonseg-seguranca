@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { CANDIDATOS } from "./candidatos";
+import { afastouDeTudo } from "../../src/lib/detectores";
 
 describe("candidatos de regra de afastamento", () => {
   it("all: precisa que TODOS cresçam (comportamento identico ao afastouDeTudo atual)", () => {
@@ -64,5 +65,32 @@ describe("candidatos de regra de afastamento", () => {
     const atual    = [3985.06, 6452.79, 8522.93];
     expect(pct60(atual, anterior)).toBe(false);
     expect(pct80(atual, anterior)).toBe(false);
+  });
+
+  it("pct80 daqui e' semanticamente identico ao afastouDeTudo real de src/lib/detectores.ts (grade N=1..20 x quantidade que encolhe)", () => {
+    // afastouDeTudo (producao) e CANDIDATOS.get("pct80") (harness) sao
+    // implementacoes SEPARADAS e duplicadas de proposito (ver comentario
+    // no topo deste arquivo -- o harness roda fora do build do Next.js).
+    // Nada mais garante que elas nao divergem se uma for editada sem a
+    // outra -- este teste faz esse papel: qualquer edicao futura que
+    // desalinhe as duas (ex: mudar AFASTAMENTO_PCT_MIN ou
+    // AFASTAMENTO_N_PEQUENO_MAX so num dos dois arquivos) devia quebrar
+    // este teste.
+    const pct80 = CANDIDATOS.get("pct80")!;
+    for (let n = 1; n <= 20; n++) {
+      for (let qtdEncolhe = 0; qtdEncolhe <= n; qtdEncolhe++) {
+        const anterior: number[] = [];
+        const atual: number[] = [];
+        for (let i = 0; i < n; i++) {
+          const base = (i + 1) * 1000;
+          anterior.push(base);
+          // Os primeiros `qtdEncolhe` destinos encolhem (aproximam), o
+          // resto cresce bem alem da margem de 50m -- a ordem nao importa
+          // pra uma regra percentual, so a contagem.
+          atual.push(i < qtdEncolhe ? base - 200 : base + 200);
+        }
+        expect(pct80(atual, anterior)).toBe(afastouDeTudo(atual, anterior));
+      }
+    }
   });
 });
