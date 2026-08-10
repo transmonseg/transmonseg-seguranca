@@ -179,6 +179,49 @@ função — confirmar durante o plano com um grep antes de assumir fechado).
   (tabela candidato × recall × taxa de FP) É a evidência de aceite,
   documentada no relatório da task correspondente do plano.
 
+## Limitação conhecida do corpus (achado real 10/08, revisão final de branch)
+
+O corpus inteiro vem de `casos_desvio_revisao`, que por construção só
+contém alertas que **já dispararam** sob a regra ALL (é assim que a linha
+chega a existir na tabela — sem alerta, sem revisão de operador, sem
+linha). Isso significa que "taxa de disparo espúrio igual entre `all` e
+`pct80`" (ver tabela agregada e segmento baixoN em `relatorio.md`) não
+prova que `pct80` não cria NENHUM falso positivo novo em relação a `all`
+— só prova que `pct80` não reacende alertas antigos já conhecidos como
+ruins (falsos positivos que ALL já disparava e o operador já revisou como
+`falso_positivo`/`detector_errado`). Um cenário onde `pct80` dispara um
+alerta genuinamente NOVO — uma entrega normal que ALL nunca teria
+sinalizado, porque tinha <100% de destinos afastando mas ≥80% — não tem
+como aparecer neste corpus por construção, já que essa situação nunca
+gerou uma linha em `casos_desvio_revisao` sob o regime antigo.
+
+O que de fato limita o raio de dano dessa lacuna, e é o argumento de
+segurança REAL por trás da escolha de `pct80` — não a taxa de FP agregada
+sozinha, que é insensível a esse tipo de caso por construção:
+
+1. **Identidade matemática para N≤4**: com `AFASTAMENTO_PCT_MIN=0.8`,
+   `Math.ceil(0.8*N)=N` para N=1,2,3,4 (ver comentário em
+   `AFASTAMENTO_N_PEQUENO_MAX`, `src/lib/detectores.ts`) — ou seja, para
+   N≤4 `pct80` é **literalmente idêntico** a `all`, não uma aproximação
+   estatística validada por corpus. Não há espaço para um FP novo aqui:
+   qualquer entrada que não dispara em `all` também não dispara em
+   `pct80`, garantido pela álgebra, não pela amostra.
+2. **Raridade observada de N>5**: no corpus real de 423 casos (30 dias de
+   produção), N>5 é só 9 casos (4 tem_que_disparar + 5 nao_pode_disparar)
+   — cerca de 1,8% do total de casos "tem que disparar" (4 de 222). É
+   exatamente no segmento N>5 que `pct80` pode divergir de `all` de
+   verdade (e diverge — ver tabela segmentada altoN em `relatorio.md`),
+   mas esse segmento é raro o suficiente, na distribuição real observada
+   de destinos por veículo, que o raio de exposição a um FP novo
+   hipotético é pequeno mesmo sem prova formal de que ele nunca acontece.
+
+Ou seja: a decisão de `pct80` não se apoia em "testamos e não achamos FP
+novo" (o corpus não consegue testar isso por construção) — apoia-se em
+"para a grande maioria dos casos reais (N≤4) é matematicamente impossível
+haver FP novo, e para a minoria onde seria possível (N>5) a base é
+pequena o bastante para o risco agregado ser aceitável dado o ganho de
+recall no exato padrão (TTM-7C13/TTH-0G95) que motivou a mudança".
+
 ## Não-objetivos
 
 - Não mexe em classe_viaria, rumo_diverge, saida_parada, corredor OSRM,
