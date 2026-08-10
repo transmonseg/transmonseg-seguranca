@@ -221,6 +221,41 @@ export function haversineM(aLat: number, aLng: number, bLat: number, bLng: numbe
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+// Achado real 10/08 (conversa com operador no WhatsApp, motivada pela
+// investigacao de marcacao errada / dado_entrada_errado): pontos_aprendidos
+// (scripts/migrations/contabo/028_pontos_aprendidos.sql) ja coleta desde
+// 03/08 a posicao real aprendida por (cliente_id, ponto_codigo), a partir
+// do acumulado de paradas confirmadas -- mas estava 100% em modo sombra,
+// nunca consumido. Divergencia real medida hoje contra a Unitrac: mediana
+// 56m, maximo observado 232m, 91 pontos com correspondencia. Ativando
+// aqui como correcao de posicao na fonte comum (pendentes), propagando
+// pro motor de desvio E pra confirmacao de entrega ao mesmo tempo (ver
+// docs/superpowers/specs/2026-08-10-ativar-pontos-aprendidos-design.md).
+export const PONTO_APRENDIDO_ATIVO = true;
+
+// Teto de divergencia: acima disso, a leitura atual da Unitrac diverge
+// demais do aprendido pra tratar como "mesmo lugar, correcao de ruido" --
+// protege contra confiar num ponto aprendido desatualizado se o endereco
+// real do cliente mudar no futuro. Com o dado real de hoje (mediana 56m,
+// max 232m) este teto nunca bloqueia uma correcao real -- e protecao pro
+// futuro, nao limitador atual.
+export const CORRECAO_APRENDIDA_DIVERGENCIA_MAX_M = 500;
+
+// So corrige lat/lng -- raio (raio de chegada nominal) NAO muda, porque
+// pontos_aprendidos.raio_m tem semantica diferente ("maior distancia da
+// mediana entre as observacoes", nao "raio de tolerancia de chegada").
+// Misturar os dois faria o raio de chegada oscilar sem relacao com o
+// problema que resolve.
+export function corrigirComPontoAprendido(
+  pt: PontoEntrega,
+  aprendido: { lat: number; lng: number } | undefined
+): PontoEntrega {
+  if (!aprendido) return pt;
+  const divergenciaM = haversineM(pt.lat, pt.lng, aprendido.lat, aprendido.lng);
+  if (divergenciaM > CORRECAO_APRENDIDA_DIVERGENCIA_MAX_M) return pt;
+  return { ...pt, lat: aprendido.lat, lng: aprendido.lng };
+}
+
 // Menor distância (m) de uma posição aos pontos de entrega PENDENTES.
 // Retorna null se não houver pendentes (nada pra onde ir).
 export function distAlvoPendenteMaisProximoM(

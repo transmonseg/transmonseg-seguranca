@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, type AlvoUnitrac } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
 
 describe("distanciaAoSegmentoM", () => {
   const origem = { lat: -22.9000, lng: -43.2000 };
@@ -301,5 +301,44 @@ describe("suspenderPorChegada: piso de 300m (RAIO_CHEGADA_MIN_M)", () => {
 
   it("ponto seguro (posto) suspende independente da distancia", () => {
     expect(suspenderPorChegada(99999, 50, true)).toBe(true);
+  });
+});
+
+describe("corrigirComPontoAprendido", () => {
+  const pontoBase: PontoEntrega = {
+    lat: -22.9, lng: -43.2, raio: 150, ordem: 1, nome: "Cliente Teste",
+    feito: false, situacao: 0, codigo: 111, pontoCodigo: 222,
+    documento: "NF1", identificador: null, dataInicio: null,
+    dataRealizado: null, observacoes: null, rota: null,
+  };
+
+  it("sem correção disponível, retorna o ponto inalterado", () => {
+    const r = corrigirComPontoAprendido(pontoBase, undefined);
+    expect(r).toEqual(pontoBase);
+  });
+
+  it("correção dentro do teto de 500m, aplica lat/lng do aprendido e mantém o resto", () => {
+    // ~111m ao norte da posição original (0.001 grau de lat ~ 111m)
+    const aprendido = { lat: -22.899, lng: -43.2 };
+    const r = corrigirComPontoAprendido(pontoBase, aprendido);
+    expect(r.lat).toBe(aprendido.lat);
+    expect(r.lng).toBe(aprendido.lng);
+    expect(r.raio).toBe(pontoBase.raio);
+    expect(r.nome).toBe(pontoBase.nome);
+    expect(r.pontoCodigo).toBe(pontoBase.pontoCodigo);
+  });
+
+  it("correção fora do teto de 500m, retorna o ponto inalterado", () => {
+    // ~1110m ao norte (0.01 grau de lat ~ 1110m, bem acima do teto de 500m)
+    const aprendidoLonge = { lat: -22.89, lng: -43.2 };
+    const r = corrigirComPontoAprendido(pontoBase, aprendidoLonge);
+    expect(r).toEqual(pontoBase);
+  });
+
+  it("correção exatamente no teto (500m) ainda aplica (limite inclusivo)", () => {
+    // ~499m ao norte -- dentro do teto por pouco
+    const aprendidoNoLimite = { lat: -22.9 + 499 / 111320, lng: -43.2 };
+    const r = corrigirComPontoAprendido(pontoBase, aprendidoNoLimite);
+    expect(r.lat).toBe(aprendidoNoLimite.lat);
   });
 });
