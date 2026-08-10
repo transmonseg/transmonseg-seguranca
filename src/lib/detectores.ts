@@ -1377,6 +1377,20 @@ export function temCoordenadaValida(pt: { lat: number | null; lng: number | null
   return pt.lat != null && pt.lng != null && !(pt.lat === 0 && pt.lng === 0);
 }
 
+// Achado real 10/08 (varredura completa de regras de desvio, motivada
+// pelos relatos de TTM-7C13/TTH-0G95 no grupo "DESVIO DE ROTA"): com
+// muitos destinos dispersos (13-15), a regra ALL abaixo nunca disparava --
+// streak maximo medido = 0 em ~100 leituras reais consecutivas pros 2
+// veiculos, confirmado por replay fiel ao motor real (ver
+// scripts/backtest-desvio/, harness que reusa avancarStreaksDesvio e
+// devAvancarStreaksDesvio de verdade, nao uma reimplementacao). Validado
+// contra um corpus real de ~30 dias de casos_desvio_revisao (ver
+// docs/superpowers/specs/2026-08-10-afastando-tudo-harness-design.md) que
+// pct80 (>=80% dos destinos, arredondado pra cima, exige TODOS quando
+// N<=3) mantem o mesmo comportamento de ALL pra N pequeno (protege contra
+// o incidente original de 06/07 abaixo) mas passa a disparar pro padrao
+// de N grande e disperso.
+//
 // O veículo se afastou de TODOS os destinos legítimos desde o ciclo
 // anterior? Aproximar de QUALQUER um cancela — é assim que uma entrega
 // normal (rumo a um pendente que não é o mais próximo) nunca dispara.
@@ -1386,9 +1400,12 @@ export function afastouDeTudo(
 ): boolean {
   if (distDestinosM.length === 0) return false;
   if (distDestinosM.length !== distDestinosAnteriorM.length) return false;
-  return distDestinosM.every(
+  const n = distDestinosM.length;
+  const cresceram = distDestinosM.filter(
     (d, i) => d > distDestinosAnteriorM[i] + AFASTAMENTO_MARGEM_M
-  );
+  ).length;
+  const minimoNecessario = n <= 3 ? n : Math.ceil(0.8 * n);
+  return cresceram >= minimoNecessario;
 }
 
 // Piso de streak de divergencia de rumo pra disparar. Duplicado de unitrac

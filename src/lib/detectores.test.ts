@@ -1214,6 +1214,22 @@ describe("afastouDeTudo", () => {
     expect(afastouDeTudo([], [])).toBe(false);
     expect(afastouDeTudo([5000], [])).toBe(false);
   });
+
+  it("N grande e disperso (achado real 10/08, TTM-7C13/TTH-0G95): dispara mesmo sem TODOS crescerem", () => {
+    // 15 destinos espalhados -- 12 dos 15 (80%, exatamente o piso de
+    // pct80 pra N=15: Math.ceil(0.8*15)=12) crescem alem da margem de
+    // 50m, mas 3 (indices 1, 5 e 9 -- destinos intermediarios/distantes)
+    // encolhem por acaso da geometria (padrao real confirmado nesta
+    // sessao: com N=13-15 dispersos, e' quase impossivel TODOS
+    // crescerem ao mesmo tempo -- streak maximo medido foi 0 em ~100
+    // leituras reais pros 2 veiculos que motivaram esta mudanca).
+    const anterior = [1000, 5000, 8000, 12000, 15000, 18000, 20000, 22000, 25000, 28000, 30000, 32000, 35000, 38000, 40000];
+    const atual    = [1200, 4800, 8200, 12200, 15200, 17800, 20200, 22200, 25200, 27800, 30200, 32200, 35200, 38200, 40200];
+    // ALL seria false aqui (3 encolheram, ex indice 1: 5000->4800; indice
+    // 5: 18000->17800; indice 9: 28000->27800).
+    expect(afastouDeTudo(anterior, anterior)).toBe(false); // sanity: identico nao dispara
+    expect(afastouDeTudo(atual, anterior)).toBe(true); // regra vencedora (pct80): dispara com 12/15 (80%) crescendo
+  });
 });
 
 describe("detectarTiroteioProximo", () => {
