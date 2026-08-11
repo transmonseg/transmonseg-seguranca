@@ -28,6 +28,7 @@ type LinhaRomaneio = {
   endereco_bruto: string;
   lat: number | null;
   lng: number | null;
+  presenca_confirmada_em: string | null;
 };
 
 // Achado real 01/08 (reclamacao do usuario: "ta ficando a mesma coisa do
@@ -59,7 +60,7 @@ async function buscarRomaneioPorPlaca(placas: string[]): Promise<Map<string, Lin
   const cliente = await pool.connect();
   try {
     const { rows } = await cliente.query<LinhaRomaneio>(
-      `SELECT rp.placa, rp.nf, rp.cliente_nome, rp.endereco_bruto, rp.lat, rp.lng
+      `SELECT rp.placa, rp.nf, rp.cliente_nome, rp.endereco_bruto, rp.lat, rp.lng, rp.presenca_confirmada_em
          FROM romaneio_pontos rp
         WHERE rp.romaneio_data = $2::date
           AND rp.modo_teste = false
@@ -167,8 +168,13 @@ export async function GET(request: Request) {
 
       // NFs que so existem no romaneio (a Unitrac nao trouxe alvo pra elas)
       // -- sem isto, entrega real ficaria invisivel no mapa. Sem alvo da
-      // Unitrac nao ha pontoCodigo, entao nao da pra cruzar com presenca:
-      // entra como pendente.
+      // Unitrac nao ha pontoCodigo, entao nao da pra cruzar com
+      // entregas_presenca -- mas romaneio_pontos.presenca_confirmada_em
+      // (achado real 11/08, ver scripts/confirmar-presenca-romaneio.mjs)
+      // confirma por GPS direto contra a coordenada do proprio romaneio,
+      // sem depender de cadastro na Unitrac. Antes disso, feito ficava
+      // sempre false pra esses casos -- bolinha aparecia, mas nunca virava
+      // "entregue" mesmo com o caminhao parando la de verdade.
       for (const r of doRomaneio) {
         const nf = normalizarNf(r.nf);
         if (nfsUsadas.has(nf) || r.lat == null || r.lng == null) continue;
@@ -178,7 +184,7 @@ export async function GET(request: Request) {
           raio: 50,
           ordem: 999,
           nome: r.cliente_nome,
-          feito: false,
+          feito: r.presenca_confirmada_em != null,
           situacao: 0,
           codigo: null,
           pontoCodigo: null,
