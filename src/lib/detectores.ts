@@ -758,7 +758,18 @@ export type CtxDesvio = {
 // desvio_inicio (jsonb), ver route.ts. Definido aqui (nao mais duplicado
 // localmente em route.ts, que agora importa este tipo -- task 3 da Fase 2)
 // pra montarContextoDesvio poder referenciar sem duplicar o literal.
-export type DesvioInicio = { lat: number; lng: number; ts: string; menor_dist_m: number };
+// pontoCodigoReferencia (achado real 11/08): identifica QUAL destino era o
+// mais proximo no momento em que menor_dist_m foi congelado -- permite
+// rastrear o MESMO destino ciclo a ciclo pra calcular afastamento
+// acumulado (route.ts). Sem isso, se o destino mais proximo for entregue
+// no meio do streak e sair de `pendentes`, o "mais proximo atual"
+// recalculado troca de destino silenciosamente e o acumulado passa a
+// comparar distancia-ate-destino-A (congelada) com distancia-ate-destino-B
+// (atual) -- numero inflado sem relacao com o quanto o veiculo se moveu.
+// Opcional (`?`) por compatibilidade com linhas antigas em
+// posicoes_atuais.desvio_inicio (jsonb sem validacao de schema) que nao
+// tem esse campo.
+export type DesvioInicio = { lat: number; lng: number; ts: string; menor_dist_m: number; pontoCodigoReferencia?: string | null };
 
 // Achado real 26/07: o `contexto` jsonb gravado no alerta hoje so tem
 // inicio_ts/fora_tapete/corredor -- todo o resto que o detector calculou

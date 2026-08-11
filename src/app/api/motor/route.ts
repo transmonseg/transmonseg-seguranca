@@ -1940,10 +1940,20 @@ export async function POST(request: Request) {
             })
             .filter((x): x is { lat: number; lng: number; codigo: string } => x !== null);
           const escalaDoVeiculo = escalaPontosPorPlaca.get(pos.placa) ?? [];
-          const destinos = [
-            ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
-            ...centroidesBases,
-            ...escalaDoVeiculo.map((e) => ({ lat: e.lat, lng: e.lng })),
+          // codigo (achado real 11/08): identificador estavel por destino,
+          // so pra pendentes (unico caso onde o destino pode sumir do
+          // conjunto no meio de um streak, por entrega confirmada) -- usado
+          // em afastamentoAcumuladoM abaixo pra rastrear o MESMO destino
+          // ciclo a ciclo. Bases/escala ficam com codigo null (nao mudam de
+          // conjunto no meio de um streak, nao e' o bug que motivou isso).
+          const destinos: { lat: number; lng: number; codigo: string | null }[] = [
+            ...pendentes.map((pt) => ({
+              lat: pt.lat,
+              lng: pt.lng,
+              codigo: pt.pontoCodigo != null ? `pt:${pt.pontoCodigo}` : null,
+            })),
+            ...centroidesBases.map((b) => ({ ...b, codigo: null })),
+            ...escalaDoVeiculo.map((e) => ({ lat: e.lat, lng: e.lng, codigo: null })),
           ];
           // Achado CRITICO da revisao final de branch (docs/superpowers/plans/2026-08-09-escala-rota.md):
           // destinos de escala (raio ~10km, coordenada aproximada -- centro
@@ -2025,21 +2035,51 @@ export async function POST(request: Request) {
               { desvioStreak, aproximandoStreak }
             );
             if (r.desvioStreak === 1 && desvioStreak === 0) {
+              // indiceReferencia: qual destino era o mais proximo neste
+              // instante -- guardado pra rastrear o MESMO destino depois
+              // (ver afastamentoAcumuladoM abaixo, achado real 11/08).
+              let indiceReferencia = -1;
+              for (let i = 0; i < distDestinosAnteriorM.length; i++) {
+                if (indiceReferencia === -1 || distDestinosAnteriorM[i] < distDestinosAnteriorM[indiceReferencia]) {
+                  indiceReferencia = i;
+                }
+              }
               desvioInicio = {
                 lat: anterior!.lat!,
                 lng: anterior!.lng!,
                 ts: agora.toISOString(),
-                menor_dist_m: distDestinosAnteriorM.length > 0 ? Math.min(...distDestinosAnteriorM) : 0,
+                menor_dist_m: indiceReferencia >= 0 ? distDestinosAnteriorM[indiceReferencia] : 0,
+                pontoCodigoReferencia: indiceReferencia >= 0 ? destinos[indiceReferencia].codigo : null,
               };
             }
             if (r.zerou) desvioInicio = null;
             desvioStreak = r.desvioStreak;
             aproximandoStreak = r.aproximandoStreak;
           }
+          // Fix real 11/08 (bug de dado, so texto do alerta -- confirmado
+          // que nao afeta score/branch, so o "+Xkm acumulado" do motivo):
+          // se o destino de referencia (o mais proximo quando o streak
+          // comecou) tem codigo rastreavel, usa a distancia ATE ELE MESMO
+          // neste ciclo -- nao o minimo entre QUALQUER destino atual, que
+          // pode ter trocado de identidade se o de referencia foi entregue
+          // e saiu de `pendentes` no meio do streak. Se sumiu, nao inflar
+          // o acumulado comparando distancia-ate-destino-diferente -- so
+          // congela a contribuicao deste ciclo em 0. Sem referencia
+          // rastreavel (base/escala, codigo null), mantem o comportamento
+          // antigo -- esses destinos nao saem do conjunto no meio do
+          // streak, entao nao sao o bug que motivou isso.
+          const indiceReferenciaAtual =
+            desvioInicio?.pontoCodigoReferencia != null
+              ? destinos.findIndex((d) => d.codigo === desvioInicio!.pontoCodigoReferencia)
+              : -1;
           const afastamentoAcumuladoM =
-            desvioInicio && menorDistDestinoM !== null
-              ? menorDistDestinoM - desvioInicio.menor_dist_m
-              : 0;
+            !desvioInicio || menorDistDestinoM === null
+              ? 0
+              : desvioInicio.pontoCodigoReferencia != null
+                ? indiceReferenciaAtual >= 0
+                  ? distDestinosM[indiceReferenciaAtual] - desvioInicio.menor_dist_m
+                  : 0
+                : menorDistDestinoM - desvioInicio.menor_dist_m;
 
           // Camada 2 (tapete): sinal PRIMÁRIO, calculado TODO ciclo (não só
           // quando já suspeito) — precisa estar pronto desde o 1º ciclo pra
