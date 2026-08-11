@@ -65,15 +65,33 @@ async function main() {
   );
   console.log(`${pendentes.length} pontos de romaneio sem presenca confirmada, na janela de ${JANELA_DIAS} dias.`);
 
-  let confirmados = 0;
-  for (const p of pendentes) {
-    const { rows: trilha } = await pool.query(
+  // Agrupa por (veiculo_id, dia) e busca a trilha UMA VEZ por par --
+  // muitos pontos do mesmo romaneio compartilham veiculo+dia. Achado real
+  // 11/08: versao original buscava a trilha por PONTO (uma query por NF),
+  // com milhares de pontos pendentes isso nao terminava em tempo
+  // razoavel -- mesma trilha sendo buscada dezenas de vezes.
+  const trilhaPorChave = new Map();
+  async function trilhaDoDia(veiculoId, dia) {
+    const chave = `${veiculoId}:${dia}`;
+    if (trilhaPorChave.has(chave)) return trilhaPorChave.get(chave);
+    const { rows } = await pool.query(
       `SELECT lat, lng, velocidade FROM posicoes_historico
         WHERE veiculo_id = $1
           AND (criado_em AT TIME ZONE 'America/Sao_Paulo')::date = $2::date
         ORDER BY criado_em ASC`,
-      [p.veiculo_id, p.romaneio_data]
+      [veiculoId, dia]
     );
+    trilhaPorChave.set(chave, rows);
+    return rows;
+  }
+
+  let confirmados = 0;
+  let processados = 0;
+  for (const p of pendentes) {
+    processados++;
+    if (processados % 500 === 0) console.log(`  ${processados}/${pendentes.length}... (${trilhaPorChave.size} trilhas em cache)`);
+
+    const trilha = await trilhaDoDia(p.veiculo_id, p.romaneio_data);
     if (trilha.length === 0) continue;
 
     // Dwell: maior sequencia CONSECUTIVA de leituras dentro do raio E com
