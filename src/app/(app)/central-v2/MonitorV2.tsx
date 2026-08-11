@@ -1971,7 +1971,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           </button>
 
           {/* Settings gear */}
-          <div style={{ position: "relative" }}>
+          <div style={{ position: "relative" }} onMouseLeave={() => setSettingsAberto(false)}>
             <button
               onClick={() => setSettingsAberto(v => !v)}
               title="Configuracoes"
@@ -1994,8 +1994,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 background: T.card, border: `1px solid ${T.border}`,
                 borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
                 overflow: "hidden",
-              }}
-                onMouseLeave={() => setSettingsAberto(false)}>
+              }}>
                 <div style={{ padding: "10px 14px 6px", fontSize: 9, color: T.dim, letterSpacing: ".1em", fontWeight: 700 }}>
                   CONFIGURACOES
                 </div>
