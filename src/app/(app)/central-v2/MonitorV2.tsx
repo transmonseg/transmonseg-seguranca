@@ -583,6 +583,21 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [tema, setTema] = useState<"dark" | "light">("dark");
   const [satelite, setSatelite] = useState(true);
   const [settingsAberto, setSettingsAberto] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+  // Fecha só ao clicar fora (não mais em onMouseLeave -- achado real: o
+  // gap de 6px entre o botão e o dropdown fazia o menu fechar sozinho se
+  // o mouse passasse por ali ao descer, mesmo com o handler no wrapper
+  // externo).
+  useEffect(() => {
+    if (!settingsAberto) return;
+    function aoClicarFora(e: MouseEvent) {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsAberto(false);
+      }
+    }
+    document.addEventListener("mousedown", aoClicarFora);
+    return () => document.removeEventListener("mousedown", aoClicarFora);
+  }, [settingsAberto]);
   // Modo teste: liga/desliga por cliente (persistido em clientes.modo_teste_ativo,
   // ja consumido pelo motor). Inicializado via fetch no useEffect abaixo, junto
   // com as bases do cliente ativo -- comeca em false ate a resposta chegar.
@@ -1971,7 +1986,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           </button>
 
           {/* Settings gear */}
-          <div style={{ position: "relative" }} onMouseLeave={() => setSettingsAberto(false)}>
+          <div ref={settingsRef} style={{ position: "relative" }}>
             <button
               onClick={() => setSettingsAberto(v => !v)}
               title="Configuracoes"
