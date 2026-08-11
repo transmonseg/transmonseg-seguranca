@@ -1973,30 +1973,24 @@ export async function POST(request: Request) {
           // Achado real 11/08 (TOS-2B69, falso positivo ao vivo minutos
           // depois do deploy do pct80): veiculo se deslocou 80m dentro do
           // proprio cliente (raio de entrega), e isso bastou pra "afastar"
-          // 22 de 26 destinos (>= pct80) so por geometria -- com N grande e
-          // destinos espalhados, qualquer deslocamento pequeno cresce a
-          // distancia da maioria dos destinos NAO relacionados por acaso.
-          // Reconstruido com dado real (pendentes_snapshot_log + GPS): a
-          // mesma leitura NAO bateria a regra ALL antiga (26/26 exigidos).
-          // Fix: se o veiculo esta AGORA dentro do raio de entrega de
-          // QUALQUER destino pendente real, ele nao pode estar "se afastando
-          // de tudo" -- esta literalmente em cima de um destino. Barato
-          // (reusa pendentes, ja tem .raio) e nao depende de romaneio/
-          // bypass_entrega (que so confirmam com dwell de 120s -- este
-          // checa a leitura atual, mais rapido que o desvio dispara).
-          const dentroRaioDeAlgumDestino = pendentes.some(
-            (pt) => temCoordenadaValida(pt) && haversineM(pos.lat, pos.lng, pt.lat, pt.lng) <= pt.raio
-          );
-
-          // Extraído pra variável (achado Task 3 do placar de desvio,
-          // 01/08): função pura, mesmos argumentos nos 3 pontos que já a
-          // chamavam (streak de afastamento logo abaixo, streak de
-          // fora-do-tapete, e a checagem de classe_viaria mais abaixo) — só
-          // reaproveita o mesmo cálculo, não muda nenhum deles. Também
-          // alimenta S1 do placar (ver bloco "Placar de desvio" mais
-          // abaixo), sem recalcular de novo.
-          const afastandoDeTudoAtual =
-            !dentroRaioDeAlgumDestino && afastouDeTudo(distDestinosM, distDestinosAnteriorM);
+          // 22 de 26 destinos (>= pct80) so por geometria. TENTATIVA de fix:
+          // suprimir afastouDeTudo quando o veiculo esta dentro do raio de
+          // QUALQUER destino pendente -- REVERTIDA no mesmo dia (achado
+          // real, reclamacao direta do usuario as ~10h30: "identificava bem
+          // mais e hoje piorou"). Causa raiz do efeito colateral: a mesma
+          // sessao corrigiu 2.187 posicoes de pontos (fonte='manual', ver
+          // scripts/corrigir-pontos-manual.mjs) ao longo do dia -- quanto
+          // mais pontos ficam com coordenada certa, mais vezes o veiculo
+          // passa DENTRO do raio de ALGUM dos 15-30 destinos pendentes da
+          // rota (mesmo sem estar entregando ali, so passando perto),
+          // suprimindo leituras de desvio real com mais e mais frequencia
+          // ao longo do dia -- o oposto do que deveria acontecer quando o
+          // cadastro melhora. TOS-2B69 em si nem foi resolvido por este
+          // fix (o ponto real dele ja tinha saido de "pendentes", ver
+          // investigacao completa no commit anterior) -- so causou dano,
+          // sem beneficio no caso que motivou. Removido, pct80 volta a
+          // rodar sem nenhuma supressao extra.
+          const afastandoDeTudoAtual = afastouDeTudo(distDestinosM, distDestinosAnteriorM);
 
           let desvioStreak: number = anterior?.desvio_streak ?? 0;
           let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
