@@ -1430,26 +1430,21 @@ const AFASTAMENTO_PCT_MIN = 0.8;
 const AFASTAMENTO_N_PEQUENO_MAX = 3;
 
 // Achado real 11/08 (TOS-2B69, falso positivo ao vivo minutos depois do
-// deploy do pct80 -- ver docs/superpowers/specs/2026-08-11-afastando-tudo-piso-magnitude-design.md
-// se existir, ou o achado direto no commit): deslocamento real de 80m
-// (reposicionamento perto de onde o veiculo tinha acabado de entregar)
-// gerou crescimento de 76-80m em 22 dos 26 destinos -- os deltas ficaram
-// clusterizados quase identicos ao proprio deslocamento (projecao
-// vetorial: destino muito mais longe que o deslocamento, delta de
-// distancia tende ao proprio deslocamento independente da direcao).
-// pct80 sozinho avalia so a AMPLITUDE (quantos destinos cresceram), nunca
-// a MAGNITUDE de cada crescimento -- um deslocamento pequeno perto de UM
-// destino real pode trivialmente satisfazer o piso de 80% em N grande.
-// Validado contra o harness real (scripts/backtest-desvio/, caso
-// `real:TOS-2B69:2026-08-11` incluido no corpus como nao_pode_disparar):
-// piso de 100m na MEDIANA dos deltas que cresceram suprime este caso
-// (pct80 sozinho: 3/6 falso-positivo no segmento altoN: com o piso, 2/6)
-// ao custo de 1 deteccao real a menos numa amostra de so 4 casos
-// altoN "tem_que_disparar" -- amostra pequena demais pra ter certeza que
-// nao e' ruido, decisao consciente do usuario preferir menos falso
-// positivo (2 relatos reais em 2 dias no grupo do WhatsApp) a esse risco.
-const AFASTAMENTO_PISO_MEDIANA_M = 100;
-
+// deploy do pct80): deslocamento real de 80m (reposicionamento perto de
+// onde o veiculo tinha acabado de entregar) gerou crescimento de 76-80m em
+// 22 dos 26 destinos -- pct80 avalia so AMPLITUDE, nunca MAGNITUDE. Um
+// piso de mediana (100m) resolvia esse caso especifico (validado no
+// harness), mas CUSTAVA RECALL real: mesmo dia, TTT-1E20 fez entrega real
+// num cliente sem cadastro, desceu a rua toda (~2km percorridos), e o
+// piso bloqueou -- a segunda leitura do streak (2 exigidas) cresceu so
+// 83m de mediana, abaixo do piso de 100m, e o alerta que deveria disparar
+// nao disparou. Revertido no mesmo dia: usuario confirmou ao vivo que
+// falha em detectar desvio real e' pior que falso positivo (que o
+// operador so descarta em segundos). Piso de magnitude removido -- pct80
+// puro de volta, so amplitude importa. Fica documentado aqui pra quem
+// tentar essa mesma ideia de novo: funciona pro caso isolado, mas reduz
+// recall em streaks que crescem de forma irregular (nem toda leitura de
+// um desvio real e' um salto grande).
 export function afastouDeTudo(
   distDestinosM: number[],
   distDestinosAnteriorM: number[]
@@ -1457,18 +1452,12 @@ export function afastouDeTudo(
   if (distDestinosM.length === 0) return false;
   if (distDestinosM.length !== distDestinosAnteriorM.length) return false;
   const n = distDestinosM.length;
-  const deltasCresceram = distDestinosM
-    .map((d, i) => d - distDestinosAnteriorM[i])
-    .filter((delta) => delta > AFASTAMENTO_MARGEM_M);
+  const cresceram = distDestinosM.filter(
+    (d, i) => d > distDestinosAnteriorM[i] + AFASTAMENTO_MARGEM_M
+  ).length;
   const minimoNecessario =
     n <= AFASTAMENTO_N_PEQUENO_MAX ? n : Math.ceil(AFASTAMENTO_PCT_MIN * n);
-  if (deltasCresceram.length < minimoNecessario) return false;
-  // N pequeno: identico a ALL, sem piso de magnitude (preserva a
-  // protecao do incidente de 06/07 ao pe da letra).
-  if (n <= AFASTAMENTO_N_PEQUENO_MAX) return true;
-  const ordenado = [...deltasCresceram].sort((a, b) => a - b);
-  const mediana = ordenado[Math.floor(ordenado.length / 2)];
-  return mediana >= AFASTAMENTO_PISO_MEDIANA_M;
+  return cresceram >= minimoNecessario;
 }
 
 // Piso de streak de divergencia de rumo pra disparar. Duplicado de unitrac

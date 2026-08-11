@@ -1266,27 +1266,21 @@ describe("afastouDeTudo", () => {
     expect(afastouDeTudo(atual, anterior)).toBe(true);
   });
 
-  it("achado real 11/08 (TOS-2B69): N grande com deslocamento pequeno (~80m) nao dispara mais, mesmo passando do piso de amplitude", () => {
-    // Reproduz o mecanismo real: destinos MUITO mais longe (2,5km+) que o
-    // deslocamento do veiculo (80m) -- por projecao vetorial, o delta de
-    // distancia de cada destino tende ao proprio deslocamento (76-80m)
-    // independente da direcao. 22 de 26 (>80%) cresceram, mas a mediana
-    // dos deltas (78m) fica abaixo do piso de magnitude (100m) -- ANTES
-    // desta correcao, isso disparava um alerta critico real em producao
-    // (veiculo fazendo manobra dentro do proprio cliente).
-    const anterior = Array.from({ length: 26 }, (_, i) => 2500 + i * 300); // 2500m a 10000m, bem espalhados
-    // 22 crescem ~78m (mediana abaixo do piso), 4 encolhem um pouco
-    const atual = anterior.map((d, i) => (i < 22 ? d + 78 : d - 40));
-    expect(afastouDeTudo(atual, anterior)).toBe(false);
-  });
-
-  it("achado real 11/08: mesmo padrao de N grande, mas com deslocamento GRANDE (mediana >=100m) continua disparando", () => {
-    // Contraste direto com o teste acima -- prova que o piso nao
-    // desativa a deteccao de N grande em si (o proposito original de
-    // pct80, achado 10/08), so exige que a magnitude seja real.
-    const anterior = Array.from({ length: 26 }, (_, i) => 2500 + i * 300);
-    const atual = anterior.map((d, i) => (i < 22 ? d + 300 : d - 40));
-    expect(afastouDeTudo(atual, anterior)).toBe(true);
+  it("achado real 11/08 (TOS-2B69 e depois TTT-1E20): amplitude sozinha decide, magnitude nao importa (piso testado e revertido no mesmo dia)", () => {
+    // TOS-2B69: deslocamento pequeno (~80m) perto de destino ja entregue
+    // fez 22/26 destinos crescerem so por projecao vetorial -- um piso de
+    // magnitude (100m na mediana) suprimia esse caso. MAS TTT-1E20 (mesmo
+    // dia, poucas horas depois): entrega real num cliente sem cadastro,
+    // desceu a rua toda -- streak de 2 leituras, a segunda cresceu so 83m
+    // de mediana, o piso bloqueou um desvio REAL. Revertido: falha em
+    // detectar e' pior que falso positivo (operador so descarta em
+    // segundos). Este teste fixa o comportamento atual (amplitude pura) --
+    // 22/26 crescendo dispara, com deslocamento pequeno OU grande.
+    const anterior = Array.from({ length: 26 }, (_, i) => 2500 + i * 300); // bem espalhados
+    const atualPequeno = anterior.map((d, i) => (i < 22 ? d + 78 : d - 40));
+    const atualGrande = anterior.map((d, i) => (i < 22 ? d + 300 : d - 40));
+    expect(afastouDeTudo(atualPequeno, anterior)).toBe(true);
+    expect(afastouDeTudo(atualGrande, anterior)).toBe(true);
   });
 });
 
