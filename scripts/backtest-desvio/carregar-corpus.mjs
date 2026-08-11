@@ -122,6 +122,39 @@ for (const { placa, veiculoId } of CASOS_EXTRAS) {
   corpus.push({ id: `extra:${placa}`, rotulo: "tem_que_disparar", pontos, destinosPorPonto });
 }
 
+// Caso extra: TOS-2B69, achado real 11/08 (falso positivo ao vivo minutos
+// depois do deploy do pct80 -- ver comentario de AFASTAMENTO_PISO_MEDIANA_M
+// em src/lib/detectores.ts). Janela de horario FIXA (nao relativa a agora,
+// diferente de CASOS_EXTRAS acima) -- e' um incidente historico especifico
+// (08:25-08:56 SP em 11/08), nao um caso "ainda em aberto" que precisa da
+// janela recente.
+const { rows: posTos2b69 } = await client.query(
+  `select ph.lat, ph.lng, ph.velocidade, ph.criado_em from posicoes_historico ph
+   join veiculos v on v.id = ph.veiculo_id
+   where v.placa = 'TOS-2B69'
+     and ph.criado_em at time zone 'America/Sao_Paulo'
+       between '2026-08-11 08:25:00' and '2026-08-11 08:56:00'
+   order by ph.criado_em asc`
+);
+if (posTos2b69.length > 0) {
+  const veiculoIdTos2b69 = (
+    await client.query(`select id from veiculos where placa = 'TOS-2B69'`)
+  ).rows[0].id;
+  const pontosTos2b69 = posTos2b69.map((p) => ({
+    lat: p.lat, lng: p.lng, velocidade: p.velocidade, criado_em: p.criado_em,
+  }));
+  const destinosPorPontoTos2b69 = [];
+  for (const p of pontosTos2b69) {
+    destinosPorPontoTos2b69.push(await destinosParaVeiculo(veiculoIdTos2b69, p.criado_em));
+  }
+  corpus.push({
+    id: "real:TOS-2B69:2026-08-11",
+    rotulo: "nao_pode_disparar",
+    pontos: pontosTos2b69,
+    destinosPorPonto: destinosPorPontoTos2b69,
+  });
+}
+
 await client.end();
 
 writeFileSync(new URL("./corpus.json", import.meta.url), JSON.stringify(corpus, null, 2));

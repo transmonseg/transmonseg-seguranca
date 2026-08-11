@@ -1970,6 +1970,24 @@ export async function POST(request: Request) {
           const saltoImplausivel =
             temAnterior && haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng) > 2500;
 
+          // Achado real 11/08 (TOS-2B69, falso positivo ao vivo minutos
+          // depois do deploy do pct80): veiculo se deslocou 80m dentro do
+          // proprio cliente (raio de entrega), e isso bastou pra "afastar"
+          // 22 de 26 destinos (>= pct80) so por geometria -- com N grande e
+          // destinos espalhados, qualquer deslocamento pequeno cresce a
+          // distancia da maioria dos destinos NAO relacionados por acaso.
+          // Reconstruido com dado real (pendentes_snapshot_log + GPS): a
+          // mesma leitura NAO bateria a regra ALL antiga (26/26 exigidos).
+          // Fix: se o veiculo esta AGORA dentro do raio de entrega de
+          // QUALQUER destino pendente real, ele nao pode estar "se afastando
+          // de tudo" -- esta literalmente em cima de um destino. Barato
+          // (reusa pendentes, ja tem .raio) e nao depende de romaneio/
+          // bypass_entrega (que so confirmam com dwell de 120s -- este
+          // checa a leitura atual, mais rapido que o desvio dispara).
+          const dentroRaioDeAlgumDestino = pendentes.some(
+            (pt) => temCoordenadaValida(pt) && haversineM(pos.lat, pos.lng, pt.lat, pt.lng) <= pt.raio
+          );
+
           // Extraído pra variável (achado Task 3 do placar de desvio,
           // 01/08): função pura, mesmos argumentos nos 3 pontos que já a
           // chamavam (streak de afastamento logo abaixo, streak de
@@ -1977,7 +1995,8 @@ export async function POST(request: Request) {
           // reaproveita o mesmo cálculo, não muda nenhum deles. Também
           // alimenta S1 do placar (ver bloco "Placar de desvio" mais
           // abaixo), sem recalcular de novo.
-          const afastandoDeTudoAtual = afastouDeTudo(distDestinosM, distDestinosAnteriorM);
+          const afastandoDeTudoAtual =
+            !dentroRaioDeAlgumDestino && afastouDeTudo(distDestinosM, distDestinosAnteriorM);
 
           let desvioStreak: number = anterior?.desvio_streak ?? 0;
           let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;

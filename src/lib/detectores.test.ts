@@ -1265,6 +1265,29 @@ describe("afastouDeTudo", () => {
     const atual = [1200, 5200, 9200, 13200, 16800]; // ultimo encolhe (17000 -> 16800)
     expect(afastouDeTudo(atual, anterior)).toBe(true);
   });
+
+  it("achado real 11/08 (TOS-2B69): N grande com deslocamento pequeno (~80m) nao dispara mais, mesmo passando do piso de amplitude", () => {
+    // Reproduz o mecanismo real: destinos MUITO mais longe (2,5km+) que o
+    // deslocamento do veiculo (80m) -- por projecao vetorial, o delta de
+    // distancia de cada destino tende ao proprio deslocamento (76-80m)
+    // independente da direcao. 22 de 26 (>80%) cresceram, mas a mediana
+    // dos deltas (78m) fica abaixo do piso de magnitude (100m) -- ANTES
+    // desta correcao, isso disparava um alerta critico real em producao
+    // (veiculo fazendo manobra dentro do proprio cliente).
+    const anterior = Array.from({ length: 26 }, (_, i) => 2500 + i * 300); // 2500m a 10000m, bem espalhados
+    // 22 crescem ~78m (mediana abaixo do piso), 4 encolhem um pouco
+    const atual = anterior.map((d, i) => (i < 22 ? d + 78 : d - 40));
+    expect(afastouDeTudo(atual, anterior)).toBe(false);
+  });
+
+  it("achado real 11/08: mesmo padrao de N grande, mas com deslocamento GRANDE (mediana >=100m) continua disparando", () => {
+    // Contraste direto com o teste acima -- prova que o piso nao
+    // desativa a deteccao de N grande em si (o proposito original de
+    // pct80, achado 10/08), so exige que a magnitude seja real.
+    const anterior = Array.from({ length: 26 }, (_, i) => 2500 + i * 300);
+    const atual = anterior.map((d, i) => (i < 22 ? d + 300 : d - 40));
+    expect(afastouDeTudo(atual, anterior)).toBe(true);
+  });
 });
 
 describe("detectarTiroteioProximo", () => {
