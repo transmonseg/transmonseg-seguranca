@@ -145,12 +145,14 @@ export default async function AnalisePage({
     admin
       .from("alertas")
       .select("id, nivel, tipo, status, desde, resolvido_em, motivo, veiculos(placa)")
+      .eq("modo_teste", false)
       .gte("desde", cutoff)
       .order("desde", { ascending: false })
       .limit(2000),
     admin
       .from("alertas")
       .select("nivel, tipo, status, desde")
+      .eq("modo_teste", false)
       .gte("desde", cutoffAnterior)
       .lt("desde", cutoff)
       .order("desde", { ascending: false })

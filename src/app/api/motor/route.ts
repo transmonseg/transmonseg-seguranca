@@ -93,6 +93,7 @@ import {
   type PontoJanela as PontoJanelaPlacar,
   type DestinoPlacar,
 } from "@/lib/placar-desvio";
+import { avaliarDesvioTeste, PARAMS_DESVIO_TESTE_PADRAO, type DestinoTeste, type EstadoDesvioTeste } from "@/lib/detectores-teste";
 
 // Estado persistido do placar de desvio (Fase 1, sombra) -- jsonb em
 // posicoes_atuais.placar_desvio_estado (migration 024). Ver Task 3 de
@@ -1476,6 +1477,51 @@ export async function POST(request: Request) {
       }
     }
 
+    // Modo teste (spec docs/superpowers/specs/2026-08-11-modo-teste-desvio-zero-design.md):
+    // prefetch de uma vez por ciclo -- clientes com o flag ligado, romaneio
+    // de hoje marcado modo_teste=true (posicao SEMPRE por endereco, nunca
+    // Unitrac), e o estado persistido do score de cada veiculo.
+    const clientesModoTesteAtivo = new Set<string>();
+    const romaneioTestePorPlaca = new Map<string, DestinoTeste[]>();
+    const estadoTestePorVeiculo = new Map<string, EstadoDesvioTeste>();
+    try {
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT id FROM clientes WHERE modo_teste_ativo = true`
+      );
+      for (const r of rows) clientesModoTesteAtivo.add(r.id);
+    } catch (errModoTeste) {
+      erros.push(`Aviso: modo teste indisponivel neste ciclo (clientes): ${String(errModoTeste)}`);
+    }
+    if (clientesModoTesteAtivo.size > 0) {
+      try {
+        const { rows } = await pool.query<{ placa: string; id: string; lat: number; lng: number }>(
+          `SELECT rp.placa, rp.id::text, rp.lat, rp.lng
+             FROM romaneio_pontos rp
+            WHERE rp.modo_teste = true
+              AND rp.presenca_confirmada_em IS NULL
+              AND rp.lat IS NOT NULL AND rp.lng IS NOT NULL
+              AND rp.romaneio_data = (now() AT TIME ZONE 'America/Sao_Paulo')::date`
+        );
+        for (const r of rows) {
+          const lista = romaneioTestePorPlaca.get(r.placa) ?? [];
+          lista.push({ id: r.id, lat: r.lat, lng: r.lng });
+          romaneioTestePorPlaca.set(r.placa, lista);
+        }
+      } catch (errRomaneioTeste) {
+        erros.push(`Aviso: modo teste indisponivel neste ciclo (romaneio): ${String(errRomaneioTeste)}`);
+      }
+      try {
+        const { rows } = await pool.query<{ veiculo_id: string; score: number; distancias_anteriores: Record<string, number> }>(
+          `SELECT veiculo_id, score, distancias_anteriores FROM desvio_teste_estado`
+        );
+        for (const r of rows) {
+          estadoTestePorVeiculo.set(r.veiculo_id, { score: Number(r.score), distanciasAnteriores: r.distancias_anteriores });
+        }
+      } catch (errEstadoTeste) {
+        erros.push(`Aviso: modo teste indisponivel neste ciclo (estado): ${String(errEstadoTeste)}`);
+      }
+    }
+
     for (const cliente of clientes) {
       // Obter CVs deste cliente
       const cvsCliente = [...mapaCv.entries()]
@@ -1697,6 +1743,7 @@ export async function POST(request: Request) {
         .from("alertas")
         .select("id, tipo, veiculo_id, nivel, motivo, status, contexto, desde")
         .eq("cliente_id", cliente.id)
+        .eq("modo_teste", false)
         .in("status", ["ativo", "reconhecido"]);
 
       const mapaAlertasAbertos = new Map<string, { id: string; tipo: string; nivel: string; motivo: string; status: string; contexto: unknown; desde: string }[]>();
@@ -1720,6 +1767,7 @@ export async function POST(request: Request) {
         .from("alertas")
         .select("tipo, veiculo_id, contexto")
         .eq("cliente_id", cliente.id)
+        .eq("modo_teste", false)
         .eq("status", "falso_positivo")
         .gte("resolvido_em", desde2h);
 
@@ -1955,6 +2003,56 @@ export async function POST(request: Request) {
             ...centroidesBases.map((b) => ({ ...b, codigo: null })),
             ...escalaDoVeiculo.map((e) => ({ lat: e.lat, lng: e.lng, codigo: null })),
           ];
+
+          // Modo teste: caminho totalmente paralelo, so roda se o cliente tiver o
+          // flag ligado. Nunca le nem escreve nada que o caminho de producao acima
+          // usa (destinos/pendentes/desvioStreak/alertas sem modo_teste=true).
+          if (clientesModoTesteAtivo.has(cliente_id)) {
+            const destinosTeste = (romaneioTestePorPlaca.get(pos.placa) ?? []).map((r) => ({
+              id: r.id,
+              lat: r.lat,
+              lng: r.lng,
+            }));
+            const estadoAnteriorTeste = estadoTestePorVeiculo.get(veiculo_id) ?? null;
+
+            try {
+              const resultadoTeste = avaliarDesvioTeste(
+                { lat: pos.lat, lng: pos.lng },
+                destinosTeste,
+                estadoAnteriorTeste,
+                PARAMS_DESVIO_TESTE_PADRAO
+              );
+
+              await pool.query(
+                `INSERT INTO desvio_teste_estado (veiculo_id, score, distancias_anteriores, atualizado_em)
+                 VALUES ($1, $2, $3::jsonb, now())
+                 ON CONFLICT (veiculo_id) DO UPDATE SET
+                   score = EXCLUDED.score,
+                   distancias_anteriores = EXCLUDED.distancias_anteriores,
+                   atualizado_em = now()`,
+                [veiculo_id, resultadoTeste.estado.score, JSON.stringify(resultadoTeste.estado.distanciasAnteriores)]
+              );
+
+              if (resultadoTeste.disparouAgora) {
+                await pool.query(
+                  `INSERT INTO alertas (cliente_id, veiculo_id, nivel, tipo, motivo, score, status, lat, lng, contexto, modo_teste)
+                   VALUES ($1, $2, 'atencao', 'desvio', $3, $4, 'ativo', $5, $6, $7::jsonb, true)`,
+                  [
+                    cliente_id,
+                    veiculo_id,
+                    `Modo teste: afastando do conjunto de clientes pendentes (score ${resultadoTeste.estado.score.toFixed(2)})`,
+                    Math.round(resultadoTeste.estado.score * 20),
+                    pos.lat,
+                    pos.lng,
+                    JSON.stringify({ modo_teste: true, score: resultadoTeste.estado.score }),
+                  ]
+                );
+              }
+            } catch (errModoTesteGravacao) {
+              erros.push(`Aviso: falha ao gravar modo teste pro veiculo ${veiculo_id}: ${String(errModoTesteGravacao)}`);
+            }
+          }
+
           // Achado CRITICO da revisao final de branch (docs/superpowers/plans/2026-08-09-escala-rota.md):
           // destinos de escala (raio ~10km, coordenada aproximada -- centro
           // de cidade) NAO podem contar como "chegada" (chegouEmDestinoConhecido
@@ -5190,7 +5288,8 @@ export async function POST(request: Request) {
     const { count: qtdAlertasAtivos } = await supabase
       .from("alertas")
       .select("id", { count: "exact", head: true })
-      .eq("status", "ativo");
+      .eq("status", "ativo")
+      .eq("modo_teste", false);
 
     totalAlertasAtivos = qtdAlertasAtivos ?? 0;
 

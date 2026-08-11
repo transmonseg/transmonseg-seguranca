@@ -289,7 +289,7 @@ async function main() {
     }
 
     const { rows: alertaMotor } = await pool.query(
-      `select 1 from alertas where tipo='desvio' and status in ('ativo','reconhecido') and veiculo_id = $1 limit 1`,
+      `select 1 from alertas where tipo='desvio' and status in ('ativo','reconhecido') and modo_teste = false and veiculo_id = $1 limit 1`,
       [veiculo.id]
     );
     const motorApontou = alertaMotor.length > 0;

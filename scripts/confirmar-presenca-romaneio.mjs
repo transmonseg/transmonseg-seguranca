@@ -58,7 +58,6 @@ async function main() {
        FROM romaneio_pontos
       WHERE presenca_confirmada_em IS NULL
         AND lat IS NOT NULL AND lng IS NOT NULL
-        AND modo_teste = false
         AND romaneio_data >= current_date - $1::int
         AND romaneio_data <= current_date + 1`,
     [JANELA_DIAS]

@@ -77,6 +77,7 @@ export async function GET(request: Request) {
              from alertas a
              where a.veiculo_id = v.id
                and a.status in ('ativo', 'reconhecido')
+               and a.modo_teste = false
              order by (a.nivel = 'critico') desc, a.tipo
              limit 1
            ) al on true

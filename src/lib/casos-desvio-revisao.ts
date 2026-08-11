@@ -52,6 +52,7 @@ export async function registrarCasosDesvioRevisao(
       .from("alertas")
       .select("id, veiculo_id, contexto, desde")
       .in("id", ids)
+      .eq("modo_teste", false)
       .in("tipo", TIPOS_CASO_REVISAO);
     if (errAlertas || !alertasDesvio || alertasDesvio.length === 0) return;
 

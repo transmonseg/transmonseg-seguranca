@@ -32,7 +32,7 @@ export default async function CentralPage({
       supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
       supabase.from("veiculos").select("id, cliente_id, placa, cv"),
       supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
-      supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").in("status", ["ativo", "reconhecido"]),
+      supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").eq("modo_teste", false).in("status", ["ativo", "reconhecido"]),
     ]);
 
   const clientes: Cliente[] = clientesRaw ?? [];

@@ -21,8 +21,10 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente");
   if (!cod) return Response.json({ alertas: [] });
+  const modoTeste = searchParams.get("modoTeste") === "true";
+  const chaveCache = `${cod}:${modoTeste ? "teste" : "producao"}`;
 
-  const cached = cachePorCliente.get(cod);
+  const cached = cachePorCliente.get(chaveCache);
   if (cached && cached.expiraEm > Date.now()) {
     return Response.json(cached.body);
   }
@@ -43,11 +45,15 @@ export async function GET(request: Request) {
   // painel; buscar todos os veículos (até centenas) e todas as posições a
   // cada poll, quando só alguns têm alerta, foi o que estourou a cota de
   // egress da Supabase em 11 dias (31GB). Mesmo dado, consulta muito menor.
-  const { data: alertasRaw } = await supabase
+  const { data: alertasRaw, error: erroAlertas } = await supabase
     .from("alertas")
     .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto")
     .eq("cliente_id", clienteId)
+    .eq("modo_teste", modoTeste)
     .in("status", ["ativo", "reconhecido"]);
+  if (erroAlertas) {
+    console.error(`Erro ao buscar alertas (cliente=${cod}, modoTeste=${modoTeste}):`, erroAlertas);
+  }
 
   const veiculoIds = [...new Set((alertasRaw ?? []).map((a: { veiculo_id: string }) => a.veiculo_id))];
 
@@ -137,6 +143,6 @@ export async function GET(request: Request) {
   );
 
   const body = { alertas };
-  cachePorCliente.set(cod, { body, expiraEm: Date.now() + CACHE_MS });
+  cachePorCliente.set(chaveCache, { body, expiraEm: Date.now() + CACHE_MS });
   return Response.json(body);
 }

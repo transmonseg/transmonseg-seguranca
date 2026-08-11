@@ -119,7 +119,7 @@ export async function POST(request: Request) {
     const { rows: rowsAlertasBrutos } = await pool.query<RowAlertas>(`
       select tipo, status, contexto, motivo_falso_positivo
       from alertas
-      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete', 'parada_sem_marcacao') and status != 'ativo' and status != 'limpo'
+      where tipo in ('desvio', 'bypass_entrega', 'baseline_veiculo', 'parada_fora_tapete', 'parada_sem_marcacao') and status != 'ativo' and status != 'limpo' and modo_teste = false
     `);
 
     // BLOCKER (revisao independente round 2, 27/07): a auto-resolucao de

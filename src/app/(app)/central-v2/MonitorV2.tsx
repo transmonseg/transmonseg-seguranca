@@ -583,6 +583,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [tema, setTema] = useState<"dark" | "light">("dark");
   const [satelite, setSatelite] = useState(true);
   const [settingsAberto, setSettingsAberto] = useState(false);
+  // Modo teste: liga/desliga por cliente (persistido em clientes.modo_teste_ativo,
+  // ja consumido pelo motor). Inicializado via fetch no useEffect abaixo, junto
+  // com as bases do cliente ativo -- comeca em false ate a resposta chegar.
+  const [modoTesteAtivo, setModoTesteAtivo] = useState(false);
 
   // Visibilidade das camadas de risco
   const [camFavelas, setCamFavelas] = useState(true);
@@ -888,6 +892,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     fetch(`/api/bases?clienteId=${encodeURIComponent(clienteAtivoId)}`)
       .then(r => r.ok ? r.json() : null)
       .then((d: GeoJsonCollection | null) => { if (d) setBases(d); })
+      .catch(() => {});
+  }, [clienteAtivoId]);
+
+  // Modo teste do cliente ativo — reflete o valor real salvo no banco
+  // (clientes.modo_teste_ativo) ao trocar de cliente/montar a tela.
+  useEffect(() => {
+    fetch(`/api/clientes/modo-teste?clienteId=${encodeURIComponent(clienteAtivoId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { ativo?: boolean } | null) => setModoTesteAtivo(d?.ativo ?? false))
       .catch(() => {});
   }, [clienteAtivoId]);
 
@@ -2078,6 +2091,50 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                       </span>
                     )}
                   </button>
+                </div>
+
+                {/* Modo teste — motor rodando em paralelo pra este cliente,
+                    sem afetar alertas de producao (ver /api/alertas?modoTeste=true) */}
+                <div style={{ borderTop: `1px solid ${T.border}`, padding: "6px 8px 8px" }}>
+                  <div style={{ fontSize: 10, color: T.muted, padding: "4px 6px 4px", fontWeight: 600, letterSpacing: ".05em" }}>
+                    MODO TESTE
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const novoValor = !modoTesteAtivo;
+                      setModoTesteAtivo(novoValor);
+                      try {
+                        await fetch("/api/clientes/modo-teste", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ clienteId: clienteAtivoId, ativo: novoValor }),
+                        });
+                      } catch { /* ignore — proximo fetch de sincronizacao corrige */ }
+                    }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 9,
+                      width: "100%", padding: "7px 10px", borderRadius: 7,
+                      background: modoTesteAtivo ? `${T.accent}12` : "transparent",
+                      border: `1px solid ${modoTesteAtivo ? T.accent + "44" : "transparent"}`,
+                      color: modoTesteAtivo ? T.accent : T.text,
+                      fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
+                      fontWeight: modoTesteAtivo ? 700 : 400,
+                    }}>
+                    <div style={{
+                      width: 12, height: 12, borderRadius: 3, flexShrink: 0,
+                      background: modoTesteAtivo ? T.accent : "transparent",
+                      border: `1.5px solid ${modoTesteAtivo ? T.accent : T.dim}`,
+                    }} />
+                    Ativar modo teste
+                  </button>
+                  {modoTesteAtivo && (
+                    <Link
+                      href={`/central-v2/modo-teste?cliente=${encodeURIComponent(cliente)}`}
+                      onClick={() => setSettingsAberto(false)}
+                      style={{ display: "block", padding: "7px 10px", fontSize: 11, color: T.accent, fontFamily: FONT_SANS }}>
+                      Ver comparação lado a lado →
+                    </Link>
+                  )}
                 </div>
               </div>
             )}
