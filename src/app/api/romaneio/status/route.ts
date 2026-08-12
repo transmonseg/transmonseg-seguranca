@@ -8,14 +8,19 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const data = searchParams.get("data");
+  const modoTeste = searchParams.get("modoTeste") === "true";
   if (!data) return Response.json({ ok: false, erro: "parametro data obrigatorio" }, { status: 400 });
 
   const admin = createAdminClient();
 
+  // Achado real 12/08: sem o filtro de modo_teste, o status misturava
+  // contagem de romaneio real e de teste do mesmo dia quando os dois
+  // existiam -- mesma classe de bug do /api/romaneio/reverter.
   const { data: pontosRaw } = await admin
     .from("romaneio_pontos")
     .select("nf, cliente_nome, endereco_bruto, lat, lng, geocode_status")
-    .eq("romaneio_data", data);
+    .eq("romaneio_data", data)
+    .eq("modo_teste", modoTeste);
 
   const linhas = pontosRaw ?? [];
   const contagens = { total: linhas.length, geocodadosOk: 0, falhou: 0, pendente: 0 };

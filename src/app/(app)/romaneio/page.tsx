@@ -62,9 +62,11 @@ export default function RomaneioPage() {
     }
   };
 
-  const buscarStatus = async (romaneioData: string) => {
+  const buscarStatus = async (romaneioData: string, modoTesteDoUpload: boolean) => {
     try {
-      const res = await fetch(`/api/romaneio/status?data=${encodeURIComponent(romaneioData)}`);
+      const res = await fetch(
+        `/api/romaneio/status?data=${encodeURIComponent(romaneioData)}&modoTeste=${modoTesteDoUpload ? "true" : "false"}`
+      );
       const data = (await res.json()) as StatusGeocode;
       if (!data.ok) return;
       setStatus(data);
@@ -88,8 +90,8 @@ export default function RomaneioPage() {
       const data = (await res.json()) as ResultadoUpload;
       setResultado(data);
       if (data.ok && data.romaneioData) {
-        await buscarStatus(data.romaneioData);
-        pollRef.current = setInterval(() => buscarStatus(data.romaneioData!), 4000);
+        await buscarStatus(data.romaneioData, modoTeste);
+        pollRef.current = setInterval(() => buscarStatus(data.romaneioData!, modoTeste), 4000);
       }
     } catch (e) {
       setResultado({ ok: false, erro: `Falha de rede: ${String(e)}` });
@@ -99,7 +101,8 @@ export default function RomaneioPage() {
   };
 
   const reverter = async (romaneioData: string) => {
-    if (!confirm(`Resetar o romaneio de ${romaneioData}? Isso apaga todos os pontos extraídos desse dia -- não afeta o motor (ele já não usa mais o romaneio, só a Unitrac). Você vai poder subir o arquivo de novo do zero.`)) {
+    const escopo = modoTeste ? "de MODO TESTE" : "real (produção)";
+    if (!confirm(`Resetar o romaneio ${escopo} de ${romaneioData}? Isso apaga só os pontos ${modoTeste ? "de modo teste" : "reais"} extraídos desse dia -- o romaneio ${modoTeste ? "real" : "de modo teste"}, se existir, não é afetado. Você vai poder subir o arquivo de novo do zero.`)) {
       return;
     }
     setRevertendo(true);
@@ -108,7 +111,7 @@ export default function RomaneioPage() {
       const res = await fetch("/api/romaneio/reverter", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ romaneioData }),
+        body: JSON.stringify({ romaneioData, modoTeste }),
       });
       const data = (await res.json()) as { ok: boolean; erro?: string; linhasRemovidas?: number };
       if (data.ok) {
@@ -153,7 +156,7 @@ export default function RomaneioPage() {
           checked={modoTeste}
           onChange={(e) => setModoTeste(e.target.checked)}
         />
-        Modo teste (não afeta o motor)
+        Modo teste (roda um motor de desvio isolado, não afeta os alertas reais)
       </label>
 
       <button
@@ -182,7 +185,7 @@ export default function RomaneioPage() {
                 </span>
                 {resultado.modoTeste && (
                   <span className="ml-2" style={{ color: "var(--accent)" }}>
-                    (MODO TESTE — não afeta a detecção)
+                    (MODO TESTE — alimenta só o motor de teste, não os alertas reais)
                   </span>
                 )}
               </p>
