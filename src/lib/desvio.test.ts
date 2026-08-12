@@ -32,6 +32,25 @@ describe("avaliarAfastandoDeTudo", () => {
     expect(r.streak).toBe(3);
     expect(r.disparou).toBe(true);
   });
+
+  it("não acumula streak em trânsito longo (destino mais próximo além do teto) -- ruído de rodovia/alça de acesso", () => {
+    // 16km e 20km de distância -- ambos além do teto de 15km, mesmo afastando dos dois.
+    const r = avaliarAfastandoDeTudo([16100, 20100], [16000, 20000], 2);
+    expect(r.streak).toBe(0);
+    expect(r.disparou).toBe(false);
+  });
+
+  it("volta a acumular streak assim que o destino mais próximo entra no teto de trânsito", () => {
+    const r = avaliarAfastandoDeTudo([14900, 20100], [14800, 20000], 2);
+    expect(r.streak).toBe(3);
+    expect(r.disparou).toBe(true);
+  });
+
+  it("aceita teto de trânsito customizado", () => {
+    const r = avaliarAfastandoDeTudo([6000], [5000], 2, { limiarTransitoLongoM: 5500 });
+    expect(r.streak).toBe(0);
+    expect(r.disparou).toBe(false);
+  });
 });
 
 describe("avaliarRuaRara", () => {

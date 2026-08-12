@@ -49,7 +49,7 @@ import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
 
@@ -2166,7 +2166,14 @@ export async function POST(request: Request) {
           let ruaRaraStreakNovo = 0;
           let alertaDesvioV2: Alerta | null = null;
 
-          if (pos.fresco && !suspensoPorChegada && destinos.length > 0) {
+          // Achado real 12/08 (simulação do dia inteiro): ~40% dos disparos
+          // de "afastando de tudo" acontecem a <1,2km de alguma base --
+          // manobra de manter/sair do pátio (virar, dar ré, fazer o contorno
+          // do quarteirão) produz 2-3 leituras seguidas se afastando de tudo
+          // sem ser desvio de verdade. distBaseM já vem calculado acima.
+          const emCarenciaDeBase = foraDaBase && distBaseM != null && distBaseM < LIMIAR_CARENCIA_BASE_M;
+
+          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && destinos.length > 0) {
             const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinos);
             const distAnterioresReais =
               anterior && anterior.lat != null && anterior.lng != null && distAtuaisReais
