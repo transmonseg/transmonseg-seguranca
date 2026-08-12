@@ -4,11 +4,34 @@ import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, type LinhaRomaneio
 import { extrairTextoPlanilha } from "@/lib/romaneio-planilha";
 import { extrairRomaneioViaLLM, chamarOllama, chamarMistral, type LinhaRomaneioExtraida } from "@/lib/romaneio-llm-extrator";
 
+// Ollama (ate 35s) + Mistral (ate 30s) rodam sequenciais e sincronos dentro
+// do POST no caminho generico/LLM -- pior caso ~65s. 120s da folga (mesmo
+// valor usado em escala/upload, outra rota com chamada de rede longa) sem
+// ficar justo contra proxy/gateway.
+export const maxDuration = 120;
+
 const EXTENSOES_PLANILHA = [".xlsx", ".xls", ".csv"];
 
 function ehPlanilha(nomeArquivo: string): boolean {
   const nome = nomeArquivo.toLowerCase();
   return EXTENSOES_PLANILHA.some((ext) => nome.endsWith(ext));
+}
+
+function hojeSP(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+}
+
+// Fallback de data pro caminho generico/LLM (planilha ou PDF fora do padrao
+// Nutry Max) -- documento nao segue o cabecalho "dd/mm/yyyy HH:MM" que
+// extrairDataRomaneio (romaneio.ts) exige, entao aceita formatos mais
+// soltos antes de desistir e cair pra data de hoje. NAO usado no caminho
+// regex (Nutry Max) -- esse continua estrito, ver POST abaixo.
+function extrairDataPermissiva(texto: string): string | null {
+  const iso = texto.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const br = texto.match(/\b(\d{2})\/(\d{2})\/(\d{4})\b/);
+  if (br) return `${br[3]}-${br[2]}-${br[1]}`;
+  return null;
 }
 
 // Normaliza os dois formatos de linha (parser regex Nutry Max e extrator
@@ -78,37 +101,60 @@ export async function POST(request: Request) {
   const isPlanilha = ehPlanilha(arquivo.name);
 
   let texto: string;
-  if (isPlanilha) {
-    texto = extrairTextoPlanilha(buffer);
-  } else {
-    // pdf-parse v2: classe PDFParse, nao funcao direta (API mudou da v1 --
-    // confirmado ao investigar o texto real na Task 2 do plano original de
-    // upload). Import dinamico mantido isolado aqui (nao vaza pro resto do
-    // codigo tipado).
-    const { PDFParse } = await import("pdf-parse");
-    const parser = new PDFParse({ data: buffer }); // buffer nunca escrito em disco
-    const { text } = await parser.getText();
-    texto = text;
-  }
-
-  const romaneioData = extrairDataRomaneio(texto);
-  if (!romaneioData) {
-    return Response.json({ ok: false, erro: "Não consegui achar a data no cabeçalho do arquivo. Confirma que é o romaneio certo." }, { status: 422 });
+  try {
+    if (isPlanilha) {
+      texto = extrairTextoPlanilha(buffer);
+    } else {
+      // pdf-parse v2: classe PDFParse, nao funcao direta (API mudou da v1 --
+      // confirmado ao investigar o texto real na Task 2 do plano original de
+      // upload). Import dinamico mantido isolado aqui (nao vaza pro resto do
+      // codigo tipado).
+      const { PDFParse } = await import("pdf-parse");
+      const parser = new PDFParse({ data: buffer }); // buffer nunca escrito em disco
+      const { text } = await parser.getText();
+      texto = text;
+    }
+  } catch {
+    // XLSX.read (arquivo corrompido/nao-planilha) e PDFParse.getText() (nao
+    // e' PDF de verdade) lancam exception -- essa rota agora aceita "o que
+    // o usuario mandar", entao arquivo invalido/mal-nomeado e' cenario
+    // esperado, nao caso extremo. 422 claro em vez de 500 opaco.
+    return Response.json({ ok: false, erro: "Não consegui ler esse arquivo. Confirma que é um PDF, Excel (.xlsx/.xls) ou CSV válido." }, { status: 422 });
   }
 
   // Planilha nunca tem regex dedicado (nao existe romaneio Excel da Nutry
   // Max hoje) -- so PDF tenta o regex primeiro. Regex que nao reconhece o
   // formato devolve 0 linhas, cai pro extrator via IA.
   const linhasRegex = isPlanilha ? [] : parseRomaneio(texto);
+
   let linhasNormalizadas: LinhaNormalizada[];
+  let romaneioData: string;
+  let fonteExtracao: "regex" | "ollama" | "mistral";
+
   if (linhasRegex.length > 0) {
+    // Nutry Max via regex -- caminho vivo/testado do unico cliente em
+    // producao hoje. Data tem que bater o padrao estrito "dd/mm/yyyy HH:MM"
+    // do cabecalho impresso, exatamente como antes -- NAO relaxar aqui.
+    const data = extrairDataRomaneio(texto);
+    if (!data) {
+      return Response.json({ ok: false, erro: "Não consegui achar a data no cabeçalho do arquivo. Confirma que é o romaneio certo." }, { status: 422 });
+    }
+    romaneioData = data;
     linhasNormalizadas = normalizarLinhasRegex(linhasRegex);
+    fonteExtracao = "regex";
   } else {
-    const linhasLLM = await extrairRomaneioViaLLM(texto, { chamarOllama, chamarMistral });
-    if (!linhasLLM) {
+    // Planilha OU PDF de formato desconhecido -- caminho generico via IA.
+    // So' 422 se as LINHAS DE ENTREGA nao saem (esse e' o unico bloqueio
+    // real). Data nunca bloqueia esse caminho: tenta o padrao estrito
+    // (pode bater por coincidencia), cai pra um padrao mais solto, e como
+    // ultimo recurso usa a data de hoje em vez de rejeitar o upload.
+    const resultado = await extrairRomaneioViaLLM(texto, { chamarOllama, chamarMistral });
+    if (!resultado) {
       return Response.json({ ok: false, erro: "Não consegui extrair as linhas de entrega desse arquivo. Confirma o formato ou tenta novamente." }, { status: 422 });
     }
-    linhasNormalizadas = normalizarLinhasLLM(linhasLLM);
+    linhasNormalizadas = normalizarLinhasLLM(resultado.linhas);
+    fonteExtracao = resultado.fonte;
+    romaneioData = extrairDataRomaneio(texto) ?? extrairDataPermissiva(texto) ?? hojeSP();
   }
 
   if (linhasNormalizadas.length === 0) {
@@ -162,5 +208,6 @@ export async function POST(request: Request) {
     totalLinhas: linhasNormalizadas.length,
     placasNaoEncontradas,
     modoTeste,
+    fonteExtracao,
   });
 }

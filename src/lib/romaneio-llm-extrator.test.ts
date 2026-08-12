@@ -12,9 +12,12 @@ describe("extrairRomaneioViaLLM", () => {
     const chamarOllama = vi.fn().mockResolvedValue(RESPOSTA_VALIDA);
     const chamarMistral = vi.fn();
     const resultado = await extrairRomaneioViaLLM("texto do romaneio", { chamarOllama, chamarMistral });
-    expect(resultado).toEqual([
-      { placaBruta: "ABC1D23", enderecoBruto: "Rua das Flores, 100", clienteNome: "Mercado Central", nf: "12345", clienteCodigo: "C001" },
-    ]);
+    expect(resultado).toEqual({
+      linhas: [
+        { placaBruta: "ABC1D23", enderecoBruto: "Rua das Flores, 100", clienteNome: "Mercado Central", nf: "12345", clienteCodigo: "C001" },
+      ],
+      fonte: "ollama",
+    });
     expect(chamarMistral).not.toHaveBeenCalled();
   });
 
@@ -22,9 +25,12 @@ describe("extrairRomaneioViaLLM", () => {
     const chamarOllama = vi.fn().mockRejectedValue(new Error("timeout"));
     const chamarMistral = vi.fn().mockResolvedValue(RESPOSTA_VALIDA);
     const resultado = await extrairRomaneioViaLLM("texto", { chamarOllama, chamarMistral });
-    expect(resultado).toEqual([
-      { placaBruta: "ABC1D23", enderecoBruto: "Rua das Flores, 100", clienteNome: "Mercado Central", nf: "12345", clienteCodigo: "C001" },
-    ]);
+    expect(resultado).toEqual({
+      linhas: [
+        { placaBruta: "ABC1D23", enderecoBruto: "Rua das Flores, 100", clienteNome: "Mercado Central", nf: "12345", clienteCodigo: "C001" },
+      ],
+      fonte: "mistral",
+    });
     expect(chamarMistral).toHaveBeenCalledTimes(1);
   });
 
@@ -32,9 +38,28 @@ describe("extrairRomaneioViaLLM", () => {
     const chamarOllama = vi.fn().mockResolvedValue("isso nao e json");
     const chamarMistral = vi.fn().mockResolvedValue(RESPOSTA_VALIDA);
     const resultado = await extrairRomaneioViaLLM("texto", { chamarOllama, chamarMistral });
-    expect(resultado).toEqual([
-      { placaBruta: "ABC1D23", enderecoBruto: "Rua das Flores, 100", clienteNome: "Mercado Central", nf: "12345", clienteCodigo: "C001" },
-    ]);
+    expect(resultado).toEqual({
+      linhas: [
+        { placaBruta: "ABC1D23", enderecoBruto: "Rua das Flores, 100", clienteNome: "Mercado Central", nf: "12345", clienteCodigo: "C001" },
+      ],
+      fonte: "mistral",
+    });
+  });
+
+  it("cai pro Mistral quando o Ollama local devolve um array 'linhas' VALIDO porem vazio", async () => {
+    // Bug real corrigido: [] e' truthy em JS -- "if (local) return local"
+    // travava aqui e nunca chamava o Mistral (o fallback que existe
+    // exatamente pra esse caso: modelo local nao reconheceu o documento).
+    const chamarOllama = vi.fn().mockResolvedValue(JSON.stringify({ linhas: [] }));
+    const chamarMistral = vi.fn().mockResolvedValue(RESPOSTA_VALIDA);
+    const resultado = await extrairRomaneioViaLLM("texto", { chamarOllama, chamarMistral });
+    expect(chamarMistral).toHaveBeenCalledTimes(1);
+    expect(resultado).toEqual({
+      linhas: [
+        { placaBruta: "ABC1D23", enderecoBruto: "Rua das Flores, 100", clienteNome: "Mercado Central", nf: "12345", clienteCodigo: "C001" },
+      ],
+      fonte: "mistral",
+    });
   });
 
   it("aceita linha sem nf/clienteCodigo (campos opcionais)", async () => {
@@ -43,7 +68,10 @@ describe("extrairRomaneioViaLLM", () => {
     );
     const chamarMistral = vi.fn();
     const resultado = await extrairRomaneioViaLLM("texto", { chamarOllama, chamarMistral });
-    expect(resultado).toEqual([{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X", nf: undefined, clienteCodigo: undefined }]);
+    expect(resultado).toEqual({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X", nf: undefined, clienteCodigo: undefined }],
+      fonte: "ollama",
+    });
   });
 
   it("aceita linha ambigua (sem endereco reconhecivel) em vez de descartar", async () => {
@@ -52,7 +80,10 @@ describe("extrairRomaneioViaLLM", () => {
     );
     const chamarMistral = vi.fn();
     const resultado = await extrairRomaneioViaLLM("texto", { chamarOllama, chamarMistral });
-    expect(resultado).toEqual([{ placaBruta: "ABC1D23", enderecoBruto: "", clienteNome: "Cliente Y", nf: undefined, clienteCodigo: undefined }]);
+    expect(resultado).toEqual({
+      linhas: [{ placaBruta: "ABC1D23", enderecoBruto: "", clienteNome: "Cliente Y", nf: undefined, clienteCodigo: undefined }],
+      fonte: "ollama",
+    });
   });
 
   it("devolve null quando NEM Ollama NEM Mistral funcionam", async () => {
@@ -75,6 +106,9 @@ describe("extrairRomaneioViaLLM", () => {
     );
     const chamarMistral = vi.fn();
     const resultado = await extrairRomaneioViaLLM("texto", { chamarOllama, chamarMistral });
-    expect(resultado).toEqual([{ placaBruta: "ABC1D23", enderecoBruto: "Rua X", clienteNome: "Y", nf: undefined, clienteCodigo: undefined }]);
+    expect(resultado).toEqual({
+      linhas: [{ placaBruta: "ABC1D23", enderecoBruto: "Rua X", clienteNome: "Y", nf: undefined, clienteCodigo: undefined }],
+      fonte: "ollama",
+    });
   });
 });

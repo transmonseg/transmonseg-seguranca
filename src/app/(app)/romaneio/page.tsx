@@ -134,14 +134,14 @@ export default function RomaneioPage() {
         Romaneio de entrega
       </h1>
       <p className="text-sm mb-4" style={{ color: "var(--text-dim)" }}>
-        Sobe o romaneio do dia (PDF) — os pontos de entrega (endereço, coordenada) de
-        cada veículo passam a vir daqui em vez da Unitrac. O arquivo não fica salvo,
-        só os pontos extraídos.
+        Sobe o romaneio do dia (PDF, Excel ou CSV) — os pontos de entrega (endereço,
+        coordenada) de cada veículo passam a vir daqui em vez da Unitrac. O arquivo
+        não fica salvo, só os pontos extraídos.
       </p>
 
       <input
         type="file"
-        accept="application/pdf"
+        accept=".pdf,.xlsx,.xls,.csv,application/pdf"
         onChange={(e) => setArquivo(e.target.files?.[0] ?? null)}
         className="block mb-3 text-sm"
         style={{ color: "var(--text)" }}

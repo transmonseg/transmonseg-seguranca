@@ -78,37 +78,46 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     expect(res.status).toBe(200);
     expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
     expect(mockInsert).toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.fonteExtracao).toBe("regex");
   });
 
   it("PDF que NAO bate o regex (0 linhas): cai pro extrator LLM", async () => {
     mockParseRomaneio.mockReturnValue([]);
-    mockExtrairRomaneioViaLLM.mockResolvedValue([
-      { placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" },
-    ]);
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "ollama",
+    });
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("romaneio-outro-formato.pdf"));
     expect(res.status).toBe(200);
     expect(mockExtrairRomaneioViaLLM).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.fonteExtracao).toBe("ollama");
   });
 
   it("Excel: nunca chama parseRomaneio, vai direto pro extrator LLM", async () => {
     mockExtrairTextoPlanilha.mockReturnValue("TEXTO DA PLANILHA");
-    mockExtrairRomaneioViaLLM.mockResolvedValue([
-      { placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" },
-    ]);
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "mistral",
+    });
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("romaneio.xlsx"));
     expect(res.status).toBe(200);
     expect(mockParseRomaneio).not.toHaveBeenCalled();
     expect(mockExtrairTextoPlanilha).toHaveBeenCalledTimes(1);
     expect(mockExtrairRomaneioViaLLM).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.fonteExtracao).toBe("mistral");
   });
 
   it("CSV: mesmo caminho do Excel (extensao .csv reconhecida)", async () => {
     mockExtrairTextoPlanilha.mockReturnValue("TEXTO DO CSV");
-    mockExtrairRomaneioViaLLM.mockResolvedValue([
-      { placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" },
-    ]);
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "ollama",
+    });
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("romaneio.csv"));
     expect(res.status).toBe(200);
@@ -126,9 +135,10 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
 
   it("linha extraida sem endereco (ambigua) e aceita, nao bloqueia o upload", async () => {
     mockParseRomaneio.mockReturnValue([]);
-    mockExtrairRomaneioViaLLM.mockResolvedValue([
-      { placaBruta: "ABC1D23", enderecoBruto: "", clienteNome: "Cliente sem endereco" },
-    ]);
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "ABC1D23", enderecoBruto: "", clienteNome: "Cliente sem endereco" }],
+      fonte: "ollama",
+    });
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("romaneio.pdf"));
     expect(res.status).toBe(200);
@@ -138,9 +148,10 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
 
   it("linhas do caminho LLM inserem carga_destino_codigo/nome como null e um nf sintetico nao-nulo quando o LLM nao extraiu NF", async () => {
     mockParseRomaneio.mockReturnValue([]);
-    mockExtrairRomaneioViaLLM.mockResolvedValue([
-      { placaBruta: "ABC1D23", enderecoBruto: "Rua X", clienteNome: "Cliente" },
-    ]);
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "ABC1D23", enderecoBruto: "Rua X", clienteNome: "Cliente" }],
+      fonte: "ollama",
+    });
     const { POST } = await import("./route");
     await POST(criarRequisicao("romaneio.pdf"));
     const linhasInseridas = mockInsert.mock.calls[0][0];
@@ -148,5 +159,64 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     expect(linhasInseridas[0].carga_destino_nome).toBeNull();
     // nf e' NOT NULL no banco -- nunca pode inserir null aqui.
     expect(linhasInseridas[0].nf).toEqual(expect.stringMatching(/^sem-nf:/));
+  });
+
+  // ─── Finding 1: gate de data nao pode bloquear o caminho generico/LLM
+  // antes do roteamento -- so o caminho regex (Nutry Max) e' estrito.
+
+  it("regex Nutry Max sem data no cabecalho: 422 exatamente como antes (regressao)", async () => {
+    mockParseRomaneio.mockReturnValue([
+      { placaBruta: "ABC1D23", motorista: "M", cargaDestinoCodigo: "1", cargaDestinoNome: "N", nf: "1", clienteCodigo: "C1", clienteNome: "Cliente", enderecoBruto: "Rua X" },
+    ]);
+    mockExtrairDataRomaneio.mockReturnValue(null);
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("romaneio.pdf"));
+    expect(res.status).toBe(422);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
+  });
+
+  it("Excel com data solta dd/mm/yyyy (sem hora, nao bate o padrao estrito): aceito, data extraida do texto", async () => {
+    mockExtrairDataRomaneio.mockReturnValue(null); // padrao estrito (com hora) nao bate
+    mockExtrairTextoPlanilha.mockReturnValue("Romaneio 20/08/2026\nXYZ9W88\tAv Brasil, 500\tLoja X");
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "ollama",
+    });
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("romaneio.xlsx"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.romaneioData).toBe("2026-08-20");
+  });
+
+  it("Excel sem NENHUMA data reconhecivel: nao 422, cai pra data de hoje", async () => {
+    mockExtrairDataRomaneio.mockReturnValue(null);
+    mockExtrairTextoPlanilha.mockReturnValue("XYZ9W88\tAv Brasil, 500\tLoja X (sem data em lugar nenhum)");
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "ollama",
+    });
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("romaneio.xlsx"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(typeof body.romaneioData).toBe("string");
+    expect(body.romaneioData).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  // ─── Finding 6: extracao de texto (planilha corrompida / PDF invalido)
+  // nao pode virar 500 opaco.
+
+  it("planilha corrompida (XLSX.read lanca exception): 422 claro, nao 500", async () => {
+    mockExtrairTextoPlanilha.mockImplementation(() => {
+      throw new Error("arquivo corrompido, nao e' uma planilha valida");
+    });
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("romaneio-corrompido.xlsx"));
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 });

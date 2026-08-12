@@ -63,32 +63,56 @@ function validarLinhas(parsed: unknown): LinhaRomaneioExtraida[] | null {
   return linhas;
 }
 
+type Provedor = "ollama" | "mistral";
+
+// Nunca loga a resposta bruta nem qualquer credencial (MISTRAL_API_KEY) --
+// so' o nome do provedor e a mensagem de erro, pra dar visibilidade de qual
+// caminho falhou/salvou sem vazar segredo em log.
 async function tentarExtrair(
   textoCompleto: string,
-  chamar: (prompt: string) => Promise<string>
+  chamar: (prompt: string) => Promise<string>,
+  provedor: Provedor
 ): Promise<LinhaRomaneioExtraida[] | null> {
   let resposta: string;
   try {
     resposta = await chamar(textoCompleto);
-  } catch {
+  } catch (e) {
+    console.error(`[romaneio-llm-extrator] ${provedor} falhou:`, e instanceof Error ? e.message : String(e));
     return null;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(resposta);
-  } catch {
+  } catch (e) {
+    console.error(`[romaneio-llm-extrator] ${provedor} devolveu JSON invalido:`, e instanceof Error ? e.message : String(e));
     return null;
   }
-  return validarLinhas(parsed);
+  const linhas = validarLinhas(parsed);
+  if (!linhas) {
+    console.error(`[romaneio-llm-extrator] ${provedor} devolveu formato inesperado (sem campo 'linhas' valido)`);
+  }
+  return linhas;
 }
+
+export type ResultadoExtracaoLLM = {
+  linhas: LinhaRomaneioExtraida[];
+  fonte: Provedor;
+};
 
 export async function extrairRomaneioViaLLM(
   textoCompleto: string,
   deps: Deps
-): Promise<LinhaRomaneioExtraida[] | null> {
-  const local = await tentarExtrair(textoCompleto, deps.chamarOllama);
-  if (local) return local;
-  return await tentarExtrair(textoCompleto, deps.chamarMistral);
+): Promise<ResultadoExtracaoLLM | null> {
+  const local = await tentarExtrair(textoCompleto, deps.chamarOllama, "ollama");
+  // local pode ser um array VALIDO porem vazio ([]) quando o modelo local
+  // nao reconhece o documento mas ainda devolve {"linhas": []} -- [] e'
+  // truthy em JS, entao "if (local)" sozinho travaria aqui e nunca cairia
+  // pro Mistral (o fallback existe exatamente pra esse caso). So aceita o
+  // resultado local se tiver pelo menos uma linha extraida de verdade.
+  if (local && local.length > 0) return { linhas: local, fonte: "ollama" };
+  const cloud = await tentarExtrair(textoCompleto, deps.chamarMistral, "mistral");
+  if (cloud) return { linhas: cloud, fonte: "mistral" };
+  return null;
 }
 
 // ─── Chamadas HTTP reais -- SEM cache/fallback (isso fica por conta de
@@ -99,7 +123,10 @@ const OLLAMA_URL = "http://127.0.0.1:11434/api/generate";
 const OLLAMA_MODEL = "qwen2.5:7b";
 // CPU-only no transmonseg-vps -- calibracao anterior desse mesmo modelo
 // (scripts/observador-ia-desvio.mjs, 27/07) mediu 10-40s por chamada.
-const OLLAMA_TIMEOUT_MS = 45000;
+// 35s (nao 45s) pra que o pior caso combinado com o timeout do Mistral
+// (30s) fique em 65s -- confortavel sob o maxDuration=120 da rota e sob
+// defaults comuns de proxy/gateway.
+const OLLAMA_TIMEOUT_MS = 35000;
 
 export async function chamarOllama(prompt: string): Promise<string> {
   const res = await fetch(OLLAMA_URL, {
