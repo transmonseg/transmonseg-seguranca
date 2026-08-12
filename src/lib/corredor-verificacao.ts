@@ -150,6 +150,51 @@ async function rotaOSRMLocal(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
   return coords.map(([lng, lat]) => ({ lat, lng }));
 }
 
+type OsrmTripResponse = {
+  code: string;
+  waypoints?: { waypoint_index: number; trips_index: number }[];
+};
+
+// Achado real 11/08 (docs/analise-desvio-raiz-2026-08-11.md, secao "auditoria
+// de tecnologias"): o modo teste rodando o corredor como regra PRIMARIA (nao
+// so' confirmacao) contra uma rota de MULTIPLAS paradas disparava em rotas de
+// entrega legitimas, porque verificarCorredor traca origem->CADA destino
+// individualmente a partir de um ponto congelado -- nao modela "ja visitei 2
+// paradas, agora vou pra proxima da sequencia real". OSRM /trip resolve o
+// TSP de verdade (heuristica farthest-insertion pra 10+ pontos, forca bruta
+// abaixo disso) e devolve a ORDEM eficiente de visita a partir da posicao
+// atual -- usado pelo chamador pra testar o corredor perna-a-perna (origem =
+// ultima parada REAL confirmada, destino = proximas paradas da sequencia),
+// reancorando a cada parada de verdade visitada, nao a cada corredor
+// generico. So' self-hosted (sem fallback publico -- e' uma otimizacao, nao
+// uma checagem de seguranca; falha aqui so' significa "nao recalcula a
+// sequencia agora", fail-open decidido por quem chama).
+export async function sequenciaOtimizadaOSRM(
+  origem: Ponto,
+  pendentes: { id: string; lat: number; lng: number }[]
+): Promise<string[] | null> {
+  if (pendentes.length === 0) return [];
+  const coords = [origem, ...pendentes].map((p) => `${p.lng},${p.lat}`).join(";");
+  try {
+    const res = await fetch(
+      `${OSRM_LOCAL_URL}/trip/v1/driving/${coords}?source=first&roundtrip=false&destination=any&overview=false`,
+      { signal: AbortSignal.timeout(3000) }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as OsrmTripResponse;
+    if (data.code !== "Ok" || !data.waypoints) return null;
+    // waypoints[0] e' a origem (indice 0 na chamada); waypoints[i+1]
+    // corresponde a pendentes[i], na MESMA ordem em que foram enviados --
+    // so' o campo waypoint_index diz a posicao de cada um na rota otimizada.
+    const comIndice = pendentes.map((p, i) => ({ id: p.id, indice: data.waypoints![i + 1]?.waypoint_index }));
+    if (comIndice.some((x) => x.indice === undefined)) return null;
+    comIndice.sort((a, b) => a.indice! - b.indice!);
+    return comIndice.map((x) => x.id);
+  } catch {
+    return null;
+  }
+}
+
 async function rotaOSRM(a: Ponto, b: Ponto): Promise<Ponto[] | null> {
   const res = await fetch(
     `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?geometries=geojson&overview=full`,

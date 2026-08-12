@@ -94,7 +94,8 @@ import {
   type DestinoPlacar,
 } from "@/lib/placar-desvio";
 import { avaliarDesvioTeste, PARAMS_DESVIO_TESTE_PADRAO, type EstadoDesvioTeste } from "@/lib/detectores-teste";
-import { distanciasReaisOSRM, type PontoComId } from "@/lib/distancias-osrm";
+
+type PontoComId = { id: string; lat: number; lng: number };
 
 // Estado persistido do placar de desvio (Fase 1, sombra) -- jsonb em
 // posicoes_atuais.placar_desvio_estado (migration 024). Ver Task 3 de
@@ -1514,15 +1515,20 @@ export async function POST(request: Request) {
       try {
         const { rows } = await pool.query<{
           veiculo_id: string;
-          score: number;
-          distancias_anteriores: Record<string, number>;
-          visitados: Record<string, true>;
-        }>(`SELECT veiculo_id, score, distancias_anteriores, visitados FROM desvio_teste_estado`);
+          ultima_parada_real_lat: number;
+          ultima_parada_real_lng: number;
+          fora_streak: number;
+          sequencia_ids: string[] | null;
+          sequencia_atualizada_em: string | null;
+        }>(
+          `SELECT veiculo_id, ultima_parada_real_lat, ultima_parada_real_lng, fora_streak, sequencia_ids, sequencia_atualizada_em FROM desvio_teste_estado`
+        );
         for (const r of rows) {
           estadoTestePorVeiculo.set(r.veiculo_id, {
-            score: Number(r.score),
-            distanciasAnteriores: r.distancias_anteriores,
-            visitados: r.visitados ?? {},
+            ultimaParadaReal: { lat: Number(r.ultima_parada_real_lat), lng: Number(r.ultima_parada_real_lng) },
+            foraStreak: Number(r.fora_streak),
+            sequenciaIds: r.sequencia_ids,
+            sequenciaAtualizadaEm: r.sequencia_atualizada_em,
           });
         }
       } catch (errEstadoTeste) {
@@ -2027,34 +2033,38 @@ export async function POST(request: Request) {
             const estadoAnteriorTeste = estadoTestePorVeiculo.get(veiculo_id) ?? null;
 
             try {
-              // Achado real 11/08 (docs/analise-desvio-raiz-2026-08-11.md):
-              // distancia em linha reta gerava "desvio" que sumia quando
-              // testado com rota real -- geografia do Rio (baias, morros,
-              // mao unica) faz a reta mentir. Usa distancia real de rua
-              // (OSRM self-hosted, 1 chamada em lote pra todos os destinos).
-              const distanciasAtuais = await distanciasReaisOSRM(
-                { lat: pos.lat, lng: pos.lng },
-                destinosTeste
-              );
-              const resultadoTeste = avaliarDesvioTeste(
-                distanciasAtuais,
+              // Achado 11/08 (docs/analise-desvio-raiz-2026-08-11.md): a
+              // pergunta certa continua "esta em cima de uma estrada real
+              // que leva a algum destino pendente?" (verificarCorredor),
+              // mas testada perna-a-perna contra a sequencia de visita
+              // otimizada (OSRM /trip) -- nao mais contra todos os
+              // destinos de uma vez a partir de um ponto congelado, que
+              // disparava em rotas de entrega legitimas de multiplas
+              // paradas.
+              const resultadoTeste = await avaliarDesvioTeste(
+                { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
+                destinosTeste,
                 estadoAnteriorTeste,
                 PARAMS_DESVIO_TESTE_PADRAO
               );
 
               await pool.query(
-                `INSERT INTO desvio_teste_estado (veiculo_id, score, distancias_anteriores, visitados, atualizado_em)
-                 VALUES ($1, $2, $3::jsonb, $4::jsonb, now())
+                `INSERT INTO desvio_teste_estado (veiculo_id, ultima_parada_real_lat, ultima_parada_real_lng, fora_streak, sequencia_ids, sequencia_atualizada_em, atualizado_em)
+                 VALUES ($1, $2, $3, $4, $5::jsonb, $6, now())
                  ON CONFLICT (veiculo_id) DO UPDATE SET
-                   score = EXCLUDED.score,
-                   distancias_anteriores = EXCLUDED.distancias_anteriores,
-                   visitados = EXCLUDED.visitados,
+                   ultima_parada_real_lat = EXCLUDED.ultima_parada_real_lat,
+                   ultima_parada_real_lng = EXCLUDED.ultima_parada_real_lng,
+                   fora_streak = EXCLUDED.fora_streak,
+                   sequencia_ids = EXCLUDED.sequencia_ids,
+                   sequencia_atualizada_em = EXCLUDED.sequencia_atualizada_em,
                    atualizado_em = now()`,
                 [
                   veiculo_id,
-                  resultadoTeste.estado.score,
-                  JSON.stringify(resultadoTeste.estado.distanciasAnteriores),
-                  JSON.stringify(resultadoTeste.estado.visitados),
+                  resultadoTeste.estado.ultimaParadaReal.lat,
+                  resultadoTeste.estado.ultimaParadaReal.lng,
+                  resultadoTeste.estado.foraStreak,
+                  JSON.stringify(resultadoTeste.estado.sequenciaIds),
+                  resultadoTeste.estado.sequenciaAtualizadaEm,
                 ]
               );
 
@@ -2065,11 +2075,11 @@ export async function POST(request: Request) {
                   [
                     cliente_id,
                     veiculo_id,
-                    `Modo teste: afastando do conjunto de clientes pendentes (score ${resultadoTeste.estado.score.toFixed(2)})`,
-                    Math.round(resultadoTeste.estado.score * 20),
+                    `Modo teste: fora do corredor de qualquer destino pendente ha ${resultadoTeste.estado.foraStreak} leituras`,
+                    resultadoTeste.estado.foraStreak,
                     pos.lat,
                     pos.lng,
-                    JSON.stringify({ modo_teste: true, score: resultadoTeste.estado.score }),
+                    JSON.stringify({ modo_teste: true, foraStreak: resultadoTeste.estado.foraStreak }),
                   ]
                 );
               }

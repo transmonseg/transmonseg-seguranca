@@ -1,98 +1,189 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { avaliarDesvioTeste, PARAMS_DESVIO_TESTE_PADRAO } from "./detectores-teste";
+import { verificarCorredor, sequenciaOtimizadaOSRM } from "./corredor-verificacao";
+
+vi.mock("./corredor-verificacao", () => ({
+  verificarCorredor: vi.fn(),
+  sequenciaOtimizadaOSRM: vi.fn(),
+}));
+
+const mockVerificarCorredor = vi.mocked(verificarCorredor);
+const mockSequenciaOtimizada = vi.mocked(sequenciaOtimizadaOSRM);
+
+const D1 = { id: "d1", lat: -22.91, lng: -43.21 };
+const D2 = { id: "d2", lat: -22.92, lng: -43.22 };
+const posAtual = { lat: -22.9, lng: -43.2, velocidade: 30 };
 
 describe("avaliarDesvioTeste", () => {
-  it("primeira leitura, sem estado anterior: nao dispara, so registra distancias", () => {
-    const r = avaliarDesvioTeste({ a: 1400 }, null);
-    expect(r.disparouAgora).toBe(false);
-    expect(r.estado.score).toBe(0);
-    expect(r.estado.distanciasAnteriores).toEqual({ a: 1400 });
+  beforeEach(() => {
+    mockVerificarCorredor.mockReset();
+    mockSequenciaOtimizada.mockReset();
   });
 
-  it("afastamento sustentado de um unico destino dispara", () => {
-    let estado = avaliarDesvioTeste({ a: 1400 }, null).estado;
+  it("sem nenhum destino carregado: nao dispara, nao acumula, nao calcula sequencia", async () => {
+    const r = await avaliarDesvioTeste(posAtual, [], { ultimaParadaReal: { lat: 1, lng: 1 }, foraStreak: 2, sequenciaIds: ["x"], sequenciaAtualizadaEm: new Date().toISOString() });
+    expect(r.disparouAgora).toBe(false);
+    expect(r.estado.foraStreak).toBe(0);
+    expect(r.estado.sequenciaIds).toBeNull();
+    expect(mockSequenciaOtimizada).not.toHaveBeenCalled();
+    expect(mockVerificarCorredor).not.toHaveBeenCalled();
+  });
+
+  it("primeira leitura: usa a propria posicao como origem, calcula sequencia, testa corredor contra as proximas paradas", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2"]);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "dentro", corredor: [] });
+    const r = await avaliarDesvioTeste(posAtual, [D1, D2], null);
+    expect(mockSequenciaOtimizada).toHaveBeenCalledWith({ lat: posAtual.lat, lng: posAtual.lng }, [D1, D2]);
+    expect(mockVerificarCorredor).toHaveBeenCalledWith(
+      { lat: posAtual.lat, lng: posAtual.lng },
+      posAtual,
+      [D1, D2].slice(0, PARAMS_DESVIO_TESTE_PADRAO.nProximasParadasTestadas)
+    );
+    expect(r.disparouAgora).toBe(false);
+    expect(r.estado.sequenciaIds).toEqual(["d1", "d2"]);
+  });
+
+  it("chegou de verdade na proxima parada (raioVisitaM): reancora origem, remove da sequencia, nao chama verificarCorredor", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2"]);
+    const destinoPerto = { id: "d1", lat: posAtual.lat, lng: posAtual.lng };
+    const r = await avaliarDesvioTeste(posAtual, [destinoPerto, D2], null);
+    expect(r.disparouAgora).toBe(false);
+    expect(r.estado.foraStreak).toBe(0);
+    expect(r.estado.ultimaParadaReal).toEqual({ lat: posAtual.lat, lng: posAtual.lng });
+    expect(r.estado.sequenciaIds).toEqual(["d2"]);
+    expect(mockVerificarCorredor).not.toHaveBeenCalled();
+  });
+
+  it("fora do corredor N ciclos seguidos dispara no limiar exato", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2"]);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "fora", corredor: null });
+    let estado: Awaited<ReturnType<typeof avaliarDesvioTeste>>["estado"] | null = null;
     let disparou = false;
-    let dist = 1400;
-    for (let i = 0; i < 12 && !disparou; i++) {
-      dist += 400;
-      const r = avaliarDesvioTeste({ a: dist }, estado);
+    for (let i = 0; i < PARAMS_DESVIO_TESTE_PADRAO.streakMinParaDisparar; i++) {
+      const r = await avaliarDesvioTeste(posAtual, [D1, D2], estado);
       estado = r.estado;
       disparou = r.disparouAgora;
     }
     expect(disparou).toBe(true);
+    expect(estado!.foraStreak).toBe(PARAMS_DESVIO_TESTE_PADRAO.streakMinParaDisparar);
   });
 
-  it("passar reto por um cliente A rumo a um cliente B nao dispara (reordenar livre)", () => {
-    // A cresce, B encolhe pela mesma projecao do movimento -- media
-    // ponderada por proximidade deve ficar perto de zero (os dois tem
-    // distancia parecida, pesos parecidos).
-    let estado = avaliarDesvioTeste({ a: 150, b: 7400 }, null).estado;
-    const passos = [
-      { a: 3020, b: 4530 },
-      { a: 4530, b: 3020 },
-      { a: 6050, b: 1510 },
-      { a: 7400, b: 150 },
-    ];
-    let disparouEmAlgumPonto = false;
-    for (const passo of passos) {
-      const r = avaliarDesvioTeste(passo, estado);
+  it("nao dispara antes de atingir o streak minimo", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2"]);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "fora", corredor: null });
+    let estado: Awaited<ReturnType<typeof avaliarDesvioTeste>>["estado"] | null = null;
+    let algumDisparo = false;
+    for (let i = 0; i < PARAMS_DESVIO_TESTE_PADRAO.streakMinParaDisparar - 1; i++) {
+      const r = await avaliarDesvioTeste(posAtual, [D1, D2], estado);
       estado = r.estado;
-      if (r.disparouAgora) disparouEmAlgumPonto = true;
+      if (r.disparouAgora) algumDisparo = true;
     }
-    expect(disparouEmAlgumPonto).toBe(false);
+    expect(algumDisparo).toBe(false);
   });
 
-  it("destino que sumiu da lista (entregue) nao conta como afastamento", () => {
-    const estadoComAmbos = avaliarDesvioTeste({ a: 150, b: 7400 }, null).estado;
-    // A foi entregue e some da lista -- so sobra B, com a mesma
-    // distancia de antes (sem delta real).
-    const r = avaliarDesvioTeste({ b: 7400 }, estadoComAmbos);
-    expect(r.estado.score).toBeLessThanOrEqual(estadoComAmbos.score);
-  });
-
-  it("destino visitado (dwell perto) para de contar mesmo sem sumir da lista", () => {
-    let estado = avaliarDesvioTeste({ a: 90 }, null).estado;
-    const r1 = avaliarDesvioTeste({ a: 80 }, estado);
-    expect(r1.estado.visitados["a"]).toBe(true);
-    // segue viagem, destino "visitado" fica pra tras -- nao pode contar
-    // como afastamento mesmo que a distancia cresca muito
-    let estado2 = r1.estado;
-    let disparou = false;
-    let dist = 80;
-    for (let i = 0; i < 10 && !disparou; i++) {
-      dist += 900;
-      const r = avaliarDesvioTeste({ a: dist }, estado2);
-      estado2 = r.estado;
-      disparou = r.disparouAgora;
-    }
-    expect(disparou).toBe(false);
-  });
-
-  it("destino distante pesa quase nada -- afastar de um cliente longe nao dispara sozinho perto de outro", () => {
-    // "perto" comeca a 600m (fora do raio de "visitado", 100m -- senao
-    // ele sai do calculo e so sobra "longe" sozinho, o oposto do que
-    // queremos testar) e vai encolhendo devagar (indo entregar), "longe"
-    // fica ainda mais longe (nao e' a prioridade agora).
-    let estado = avaliarDesvioTeste({ perto: 600, longe: 55000 }, null).estado;
-    let disparou = false;
-    let distPerto = 600, distLonge = 55000;
-    for (let i = 0; i < 10 && !disparou; i++) {
-      distPerto -= 20;
-      distLonge += 300;
-      const r = avaliarDesvioTeste({ perto: distPerto, longe: distLonge }, estado);
+  it("dispara so uma vez -- streak continua fora mas ja passou do limiar antes", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2"]);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "fora", corredor: null });
+    let estado: Awaited<ReturnType<typeof avaliarDesvioTeste>>["estado"] | null = null;
+    const disparos: boolean[] = [];
+    for (let i = 0; i < PARAMS_DESVIO_TESTE_PADRAO.streakMinParaDisparar + 3; i++) {
+      const r = await avaliarDesvioTeste(posAtual, [D1, D2], estado);
       estado = r.estado;
-      disparou = r.disparouAgora;
+      disparos.push(r.disparouAgora);
     }
-    expect(disparou).toBe(false);
+    expect(disparos.filter(Boolean).length).toBe(1);
   });
 
-  it("PARAMS_DESVIO_TESTE_PADRAO tem todos os campos exigidos por ParametrosDesvioTeste", () => {
-    expect(PARAMS_DESVIO_TESTE_PADRAO.margemRuidoM).toBeGreaterThan(0);
-    expect(PARAMS_DESVIO_TESTE_PADRAO.decay).toBeGreaterThan(0);
-    expect(PARAMS_DESVIO_TESTE_PADRAO.decay).toBeLessThan(1);
-    expect(PARAMS_DESVIO_TESTE_PADRAO.limiar).toBeGreaterThan(0);
-    expect(PARAMS_DESVIO_TESTE_PADRAO.escalaProximidadeM).toBeGreaterThan(0);
+  it("indisponivel (fail-open): nao dispara nem reseta o streak", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2"]);
+    mockVerificarCorredor
+      .mockResolvedValueOnce({ veredito: "fora", corredor: null })
+      .mockResolvedValueOnce({ veredito: "fora", corredor: null })
+      .mockResolvedValueOnce({ veredito: "indisponivel", corredor: null });
+    let estado: Awaited<ReturnType<typeof avaliarDesvioTeste>>["estado"] | null = null;
+    for (let i = 0; i < 3; i++) {
+      const r = await avaliarDesvioTeste(posAtual, [D1, D2], estado);
+      estado = r.estado;
+    }
+    expect(estado!.foraStreak).toBe(2);
+  });
+
+  it("sequencia cacheada e valida: nao recalcula (sequenciaOtimizadaOSRM nao e chamado de novo)", async () => {
+    mockVerificarCorredor.mockResolvedValue({ veredito: "dentro", corredor: [] });
+    const estadoAnterior = {
+      ultimaParadaReal: { lat: -22.905, lng: -43.205 },
+      foraStreak: 0,
+      sequenciaIds: ["d1", "d2"],
+      sequenciaAtualizadaEm: new Date().toISOString(),
+    };
+    await avaliarDesvioTeste(posAtual, [D1, D2], estadoAnterior);
+    expect(mockSequenciaOtimizada).not.toHaveBeenCalled();
+  });
+
+  it("conjunto de destinos mudou (pendente novo): recalcula a sequencia mesmo com cache recente", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2", "d3"]);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "dentro", corredor: [] });
+    const D3 = { id: "d3", lat: -22.93, lng: -43.23 };
+    const estadoAnterior = {
+      ultimaParadaReal: { lat: -22.905, lng: -43.205 },
+      foraStreak: 0,
+      sequenciaIds: ["d1", "d2"],
+      sequenciaAtualizadaEm: new Date().toISOString(),
+    };
+    await avaliarDesvioTeste(posAtual, [D1, D2, D3], estadoAnterior);
+    expect(mockSequenciaOtimizada).toHaveBeenCalledTimes(1);
+  });
+
+  it("cache velho demais (passou sequenciaValidadeMin): recalcula mesmo com o mesmo conjunto de destinos", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(["d1", "d2"]);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "dentro", corredor: [] });
+    const antigo = new Date(Date.now() - (PARAMS_DESVIO_TESTE_PADRAO.sequenciaValidadeMin + 5) * 60000).toISOString();
+    const estadoAnterior = {
+      ultimaParadaReal: { lat: -22.905, lng: -43.205 },
+      foraStreak: 0,
+      sequenciaIds: ["d1", "d2"],
+      sequenciaAtualizadaEm: antigo,
+    };
+    await avaliarDesvioTeste(posAtual, [D1, D2], estadoAnterior);
+    expect(mockSequenciaOtimizada).toHaveBeenCalledTimes(1);
+  });
+
+  it("recalculo falha mas ja tinha cache antigo: usa o cache antigo em vez de travar (fail-open parcial)", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(null);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "dentro", corredor: [] });
+    const D3 = { id: "d3", lat: -22.93, lng: -43.23 };
+    const estadoAnterior = {
+      ultimaParadaReal: { lat: -22.905, lng: -43.205 },
+      foraStreak: 1,
+      sequenciaIds: ["d1", "d2"],
+      sequenciaAtualizadaEm: new Date().toISOString(),
+    };
+    const r = await avaliarDesvioTeste(posAtual, [D1, D2, D3], estadoAnterior);
+    expect(r.estado.sequenciaIds).toEqual(["d1", "d2"]);
+    expect(mockVerificarCorredor).toHaveBeenCalled();
+  });
+
+  it("recalculo falha e nao ha cache nenhum: fail-open total, nao dispara nem acumula", async () => {
+    mockSequenciaOtimizada.mockResolvedValue(null);
+    const r = await avaliarDesvioTeste(posAtual, [D1, D2], { ultimaParadaReal: { lat: -22.905, lng: -43.205 }, foraStreak: 2, sequenciaIds: null, sequenciaAtualizadaEm: null });
+    expect(r.disparouAgora).toBe(false);
+    expect(r.estado.foraStreak).toBe(2);
+    expect(mockVerificarCorredor).not.toHaveBeenCalled();
+  });
+
+  it("testa so as N proximas paradas da sequencia (tolerancia a desvio de ordem), nao todos os destinos", async () => {
+    const D3 = { id: "d3", lat: -22.93, lng: -43.23 };
+    mockSequenciaOtimizada.mockResolvedValue(["d2", "d3", "d1"]);
+    mockVerificarCorredor.mockResolvedValue({ veredito: "dentro", corredor: [] });
+    await avaliarDesvioTeste(posAtual, [D1, D2, D3], null);
+    const chamada = mockVerificarCorredor.mock.calls[0];
+    expect(chamada[2]).toEqual([D2, D3]);
+  });
+
+  it("PARAMS_DESVIO_TESTE_PADRAO tem os campos exigidos", () => {
+    expect(PARAMS_DESVIO_TESTE_PADRAO.streakMinParaDisparar).toBeGreaterThan(0);
     expect(PARAMS_DESVIO_TESTE_PADRAO.raioVisitaM).toBeGreaterThan(0);
-    expect(PARAMS_DESVIO_TESTE_PADRAO.contribMaxM).toBeGreaterThan(0);
+    expect(PARAMS_DESVIO_TESTE_PADRAO.nProximasParadasTestadas).toBeGreaterThan(0);
+    expect(PARAMS_DESVIO_TESTE_PADRAO.sequenciaValidadeMin).toBeGreaterThan(0);
   });
 });

@@ -1,111 +1,198 @@
 // src/lib/detectores-teste.ts
 //
 // Motor de desvio do "modo teste" (spec
-// docs/superpowers/specs/2026-08-11-modo-teste-desvio-zero-design.md,
-// secao 2). Codigo proprio, isolado -- NAO importa nada de
-// src/lib/detectores.ts.
+// docs/superpowers/specs/2026-08-11-modo-teste-desvio-zero-design.md).
 //
-// Historico de achados reais (revisao caso a caso com dado de um dia
-// inteiro de producao, 11/08, ver docs/analise-desvio-raiz-2026-08-11.md):
-// - "menor distancia global" e' insegura (falso-positiva ao passar reto
-//   por um cliente rumo a outro).
-// - "todos os destinos precisam crescer" e' segura mas conservadora
-//   demais (nunca dispara em desvio real).
-// - "media simples de TODOS os pendentes" (validada no harness com
-//   76.1%/47.2%) passou no harness mas, revisada caso a caso, mostrou 3
-//   causas de falso positivo: pendentes longe diluindo a media, volta pra
-//   base nao contando como destino, cliente visitado mas nao confirmado
-//   continuando a pesar. Corrigidas com peso por proximidade +
-//   visitados + base incluida (ver historico abaixo).
-// - ACHADO CRITICO (11/08, mesmo dia): mesmo com as 3 correcoes acima, a
-//   distancia usada era sempre EM LINHA RETA (haversine). Testado com
-//   distancia REAL de rua (OSRM) nos casos mais fortes de "desvio real"
-//   do dia: nenhum deles disparou com rota real -- todos eram artefato de
-//   linha reta (geografia do Rio -- baias, morros, ruas de mao unica --
-//   faz a reta mentir sobre o quanto o carro andou de verdade). Por isso
-//   esta funcao NAO calcula distancia internamente -- recebe distancias
-//   JA CALCULADAS (rota real, via src/lib/distancias-osrm.ts) do
-//   chamador. Mantida pura/sem rede pra continuar testavel sem OSRM.
-//
-// Regra: MEDIA PONDERADA do delta de distancia entre os destinos
-// pendentes que existiam tanto no ciclo anterior quanto no atual (casados
-// por id) -- cada destino pesa PROPORCIONAL A SUA PROXIMIDADE (perto pesa
-// quase 1, longe pesa quase 0, decaimento suave, sem corte duro tipo
-// top-K). Destinos "visitados" (chegou a menos de raioVisitaM em algum
-// momento) saem do calculo dali em diante, mesmo que ainda apareçam na
-// lista de pendentes. Bases devem ser passadas como destinos normais pelo
-// chamador -- essa funcao nao distingue base de cliente, e' so mais um
-// ponto.
+// HISTORICO DO DIA (11/08) -- por que a regra mudou de arquitetura duas
+// vezes, nao so' de parametro (ver docs/analise-desvio-raiz-2026-08-11.md
+// pro detalhe completo de cada etapa):
+// 1-4. Scoring por distancia (linha reta, depois rota real via OSRM) --
+//    melhorou muito (939 -> 161), mas revisao visual dos casos restantes
+//    ainda achou ambiguidade genuina.
+// 5. Trocado pra verificarCorredor ("esta em cima de estrada real que
+//    leva a algum pendente?") como regra PRIMARIA -- mais robusto em
+//    teoria, mas o teste de dia inteiro/frota inteira mostrou PIOR (380
+//    disparos, 66% da frota). Revisao visual achou dois modos de falha
+//    REAIS, nao ruido de calibracao: (a) disparo com 0 pendentes
+//    carregados (transito normal antes de ter entrega atribuida); (b)
+//    disparo em rota de entrega legitima com MULTIPLAS paradas --
+//    verificarCorredor traca origem->CADA destino individualmente a
+//    partir de um ponto congelado, nao modela "ja visitei 2 paradas,
+//    agora vou pra proxima da sequencia real".
+// 6. ESTA VERSAO: mantem verificarCorredor (a pergunta continua certa),
+//    mas corrige os dois modos de falha: (a) sem destino nenhum
+//    carregado, nao avalia (nao dispara, nao acumula); (b) usa OSRM
+//    /trip (sequenciaOtimizadaOSRM) pra ordenar os pendentes a partir da
+//    posicao atual, testa o corredor perna-a-perna contra as PROXIMAS
+//    paradas da sequencia (nao todos os destinos de uma vez), e reancora
+//    a origem quando o veiculo chega de verdade numa parada da sequencia
+//    (nao so' quando "esta dentro de algum corredor generico").
+
+import { verificarCorredor, sequenciaOtimizadaOSRM } from "./corredor-verificacao";
+import { haversineM } from "./unitrac";
 
 export type EstadoDesvioTeste = {
-  score: number;
-  distanciasAnteriores: Record<string, number>;
-  visitados: Record<string, true>;
+  // Ultima parada REAL confirmada (chegou fisicamente perto, raioVisitaM)
+  // -- e' a origem usada pra tracar a rota na proxima verificacao.
+  // Precisa ser um ponto do PASSADO (nunca a posicao atual), senao a
+  // checagem vira tautologica -- ver corredor-verificacao.ts:180-188.
+  ultimaParadaReal: { lat: number; lng: number };
+  foraStreak: number;
+  // Sequencia otimizada (ids dos destinos, na ordem de visita sugerida
+  // pelo OSRM /trip), cacheada entre ciclos -- recalcular todo ciclo
+  // seria caro e desnecessario, so' fica invalida quando o conjunto de
+  // destinos muda ou passa tempo demais.
+  sequenciaIds: string[] | null;
+  sequenciaAtualizadaEm: string | null;
 };
 
 export type ParametrosDesvioTeste = {
-  margemRuidoM: number;
-  decay: number;
-  limiar: number;
-  escalaProximidadeM: number; // peso de cada destino = 1/(1 + distAtual/escala) -- quanto menor, mais rapido o peso cai com a distancia
-  raioVisitaM: number; // destino a essa distancia ou menos vira "visitado", sai do calculo dali em diante
-  contribMaxM: number; // satura a media ponderada -- uma media grande nao dispara sozinha num ciclo so
+  // Quantos ciclos seguidos "fora de qualquer corredor" pra disparar.
+  streakMinParaDisparar: number;
+  // Raio (m) pra considerar que o veiculo chegou DE VERDADE numa parada
+  // da sequencia -- reancora a origem e avanca a sequencia. Mesmo
+  // principio da geofence de chegada existente (suspenderPorChegada).
+  raioVisitaM: number;
+  // Quantas proximas paradas da sequencia testar no corredor por ciclo
+  // -- >1 da' tolerancia a pequenos desvios de ORDEM (motorista visita
+  // fora da ordem sugerida) sem tratar isso como desvio de ROTA.
+  nProximasParadasTestadas: number;
+  // Minutos antes de recalcular a sequencia mesmo sem mudanca no
+  // conjunto de destinos -- rede pode ter falhado silenciosamente antes
+  // e ficado presa num cache velho.
+  sequenciaValidadeMin: number;
 };
 
-// Valores herdados da fase "linha reta" (11/08) -- precisam de nova
-// rodada de validacao (harness + dia real) agora que a distancia vem de
-// rota real via OSRM, nao mais haversine. A escala muda completamente:
-// distancia de rua tende a ser MAIOR que linha reta pro mesmo par de
-// pontos (nunca menor), entao os limiares abaixo sao só ponto de partida.
 export const PARAMS_DESVIO_TESTE_PADRAO: ParametrosDesvioTeste = {
-  margemRuidoM: 50,
-  decay: 0.6,
-  limiar: 2.1,
-  escalaProximidadeM: 1000,
+  streakMinParaDisparar: 3,
   raioVisitaM: 100,
-  contribMaxM: 80,
+  nProximasParadasTestadas: 2,
+  sequenciaValidadeMin: 20,
 };
 
-export function avaliarDesvioTeste(
-  distanciasAtuais: Record<string, number>,
+function sequenciaAindaValida(
+  sequenciaIds: string[] | null,
+  sequenciaAtualizadaEm: string | null,
+  idsAtuais: Set<string>,
+  validadeMin: number
+): boolean {
+  if (sequenciaIds === null || sequenciaAtualizadaEm === null) return false;
+  if (sequenciaIds.length !== idsAtuais.size) return false;
+  if (!sequenciaIds.every((id) => idsAtuais.has(id))) return false;
+  return Date.now() - new Date(sequenciaAtualizadaEm).getTime() < validadeMin * 60000;
+}
+
+export async function avaliarDesvioTeste(
+  posAtual: { lat: number; lng: number; velocidade: number },
+  destinos: { id: string; lat: number; lng: number }[],
   estadoAnterior: EstadoDesvioTeste | null,
   params: ParametrosDesvioTeste = PARAMS_DESVIO_TESTE_PADRAO
-): { estado: EstadoDesvioTeste; disparouAgora: boolean } {
-  const scoreAnterior = estadoAnterior?.score ?? 0;
-  const distanciasAnteriores = estadoAnterior?.distanciasAnteriores ?? {};
-  const visitados: Record<string, true> = { ...(estadoAnterior?.visitados ?? {}) };
+): Promise<{ estado: EstadoDesvioTeste; disparouAgora: boolean }> {
+  const foraStreakAnterior = estadoAnterior?.foraStreak ?? 0;
 
-  let somaPesos = 0;
-  let somaPesoVezesDelta = 0;
-
-  for (const [id, distAtual] of Object.entries(distanciasAtuais)) {
-    if (distAtual <= params.raioVisitaM) {
-      visitados[id] = true;
-    }
-    if (visitados[id]) continue; // "quase resolvido" -- nao pesa mais na media
-
-    const distAnterior = distanciasAnteriores[id];
-    if (distAnterior === undefined) continue; // primeira vez que aparece, sem delta ainda
-
-    const delta = distAtual - distAnterior;
-    const peso = 1 / (1 + distAtual / params.escalaProximidadeM);
-    somaPesos += peso;
-    somaPesoVezesDelta += peso * delta;
+  // Fix #1 (achado real 11/08): sem NENHUM destino carregado (pendente
+  // ou base), nao ha o que testar -- "fora de qualquer corredor" seria
+  // trivialmente verdade e nao significa desvio. Nao dispara, nao
+  // acumula streak, so' aguarda o proximo ciclo com destino de verdade.
+  if (destinos.length === 0) {
+    return {
+      estado: {
+        ultimaParadaReal: estadoAnterior?.ultimaParadaReal ?? { lat: posAtual.lat, lng: posAtual.lng },
+        foraStreak: 0,
+        sequenciaIds: null,
+        sequenciaAtualizadaEm: null,
+      },
+      disparouAgora: false,
+    };
   }
 
-  let novoScore = scoreAnterior * params.decay;
-  if (somaPesos > 0) {
-    const mediaDelta = somaPesoVezesDelta / somaPesos;
-    if (mediaDelta > params.margemRuidoM) {
-      const contribuicao = Math.min(mediaDelta, params.contribMaxM) / params.contribMaxM;
-      novoScore = scoreAnterior * params.decay + contribuicao;
+  // Primeira leitura (sem estado anterior): nao ha "ultima parada real"
+  // conhecida ainda -- usa a propria posicao atual como origem (fail-safe
+  // pro primeiro ciclo, evita disparar so' por falta de historico).
+  const origem = estadoAnterior?.ultimaParadaReal ?? { lat: posAtual.lat, lng: posAtual.lng };
+
+  const idsAtuais = new Set(destinos.map((d) => d.id));
+  let sequenciaIds = estadoAnterior?.sequenciaIds ?? null;
+  let sequenciaAtualizadaEm = estadoAnterior?.sequenciaAtualizadaEm ?? null;
+
+  if (!sequenciaAindaValida(sequenciaIds, sequenciaAtualizadaEm, idsAtuais, params.sequenciaValidadeMin)) {
+    const novaSequencia = await sequenciaOtimizadaOSRM(origem, destinos);
+    if (novaSequencia) {
+      sequenciaIds = novaSequencia;
+      sequenciaAtualizadaEm = new Date().toISOString();
+    } else if (sequenciaIds === null) {
+      // Sem sequencia nenhuma (nem cache, nem calculo novo) -- fail-open,
+      // nao dispara nem acumula, tenta de novo no proximo ciclo.
+      return {
+        estado: { ultimaParadaReal: origem, foraStreak: foraStreakAnterior, sequenciaIds: null, sequenciaAtualizadaEm: null },
+        disparouAgora: false,
+      };
     }
+    // Se a chamada falhou mas ja tinha cache antigo (mesmo que com IDs
+    // que sumiram do conjunto atual), segue usando o cache antigo --
+    // fail-open parcial, melhor que travar a avaliacao inteira.
   }
 
-  const disparouAgora = scoreAnterior < params.limiar && novoScore >= params.limiar;
+  const mapaDestinos = new Map(destinos.map((d) => [d.id, d]));
+  const proximasParadas = (sequenciaIds ?? [])
+    .map((id) => mapaDestinos.get(id))
+    .filter((d): d is { id: string; lat: number; lng: number } => d !== undefined)
+    .slice(0, params.nProximasParadasTestadas);
 
+  if (proximasParadas.length === 0) {
+    // Sequencia cacheada nao tem mais nenhum id presente no conjunto
+    // atual (mudou tudo entre ciclos) -- nao ha proxima parada valida
+    // pra testar ainda, aguarda o proximo ciclo recalcular.
+    return {
+      estado: { ultimaParadaReal: origem, foraStreak: foraStreakAnterior, sequenciaIds, sequenciaAtualizadaEm },
+      disparouAgora: false,
+    };
+  }
+
+  // Fix #2 (achado real 11/08): chegou DE VERDADE na proxima parada da
+  // sequencia planejada? Reancora a origem AQUI (parada real confirmada),
+  // nao so' quando "dentro de algum corredor generico" -- e' isso que
+  // faz a checagem acompanhar uma rota de multiplas paradas em vez de
+  // continuar testando contra um ponto de origem congelado.
+  const proximaParadaImediata = proximasParadas[0];
+  const distanciaProximaParada = haversineM(posAtual.lat, posAtual.lng, proximaParadaImediata.lat, proximaParadaImediata.lng);
+  if (distanciaProximaParada <= params.raioVisitaM) {
+    return {
+      estado: {
+        ultimaParadaReal: { lat: posAtual.lat, lng: posAtual.lng },
+        foraStreak: 0,
+        sequenciaIds: (sequenciaIds ?? []).filter((id) => id !== proximaParadaImediata.id),
+        sequenciaAtualizadaEm,
+      },
+      disparouAgora: false,
+    };
+  }
+
+  const resultado = await verificarCorredor(origem, posAtual, proximasParadas);
+
+  if (resultado.veredito === "dentro") {
+    return {
+      estado: { ultimaParadaReal: origem, foraStreak: 0, sequenciaIds, sequenciaAtualizadaEm },
+      disparouAgora: false,
+    };
+  }
+  if (resultado.veredito === "indisponivel") {
+    // Fail-open (mesmo principio de corredor-verificacao.ts): API fora
+    // do ar nao pode nem disparar nem suprimir por conta propria -- so
+    // mantem o estado como estava.
+    return {
+      estado: { ultimaParadaReal: origem, foraStreak: foraStreakAnterior, sequenciaIds, sequenciaAtualizadaEm },
+      disparouAgora: false,
+    };
+  }
+
+  // "fora" -- acumula streak, origem continua sendo a ultima parada real
+  // confirmada (nao a posicao atual, que e' exatamente o que esta sendo
+  // questionado).
+  const novoForaStreak = foraStreakAnterior + 1;
+  const disparouAgora = foraStreakAnterior < params.streakMinParaDisparar && novoForaStreak >= params.streakMinParaDisparar;
   return {
-    estado: { score: novoScore, distanciasAnteriores: distanciasAtuais, visitados },
+    estado: { ultimaParadaReal: origem, foraStreak: novoForaStreak, sequenciaIds, sequenciaAtualizadaEm },
     disparouAgora,
   };
 }
