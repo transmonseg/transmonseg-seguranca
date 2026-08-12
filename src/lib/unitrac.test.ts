@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, deveCorrigirComRomaneio, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
 
 describe("distanciaAoSegmentoM", () => {
   const origem = { lat: -22.9000, lng: -43.2000 };
@@ -368,5 +368,29 @@ describe("corrigirComPontoAprendido", () => {
     expect(r.lat).toBe(aprendidoManualLonge.lat);
     expect(r.lng).toBe(aprendidoManualLonge.lng);
     expect(r.raio).toBe(pontoBase.raio);
+  });
+});
+
+describe("deveCorrigirComRomaneio", () => {
+  const SP = { lat: -22.9, lng: -43.2 };
+
+  it("não corrige se a entrega não está confirmada, mesmo com coordenada bem diferente", () => {
+    const romaneio = { lat: -22.95, lng: -43.25 }; // ~7km de diferença
+    expect(deveCorrigirComRomaneio(SP, romaneio, false)).toBe(false);
+  });
+
+  it("não corrige se a coordenada é essencialmente igual (ruído de geocode < 15m)", () => {
+    const romaneio = { lat: -22.900001, lng: -43.200001 }; // ~0.15m
+    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(false);
+  });
+
+  it("corrige quando confirmada e diverge acima do piso de 15m", () => {
+    const romaneio = { lat: -22.9003, lng: -43.2 }; // ~33m
+    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(true);
+  });
+
+  it("corrige mesmo com divergência grande, sem teto superior (endereço verificado, não ruído de GPS)", () => {
+    const romaneio = { lat: -22.75, lng: -43.05 }; // ~20km+
+    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(true);
   });
 });

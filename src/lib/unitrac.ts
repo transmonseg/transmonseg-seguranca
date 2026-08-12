@@ -275,6 +275,30 @@ export function corrigirComPontoAprendido(
   return { ...pt, lat: aprendido.lat, lng: aprendido.lng };
 }
 
+// Piso de divergencia pra correcao via romaneio -- abaixo disso e ruido de
+// ponto-flutuante/precisao de geocode, nao correcao real. Sem teto superior
+// (diferente de CORRECAO_APRENDIDA_DIVERGENCIA_MAX_M): geocode de endereco
+// real e correcao verificada, nao acumulo estatistico sujeito a ruido de
+// GPS -- mesmo raciocinio de fonte='manual' (ver comentario acima).
+export const CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M = 15;
+
+// So corrige coordenada via romaneio quando a entrega daquele NF ja foi
+// CONFIRMADA (Unitrac feito=true OU parada real no perimetro do ponto) --
+// pedido explicito do usuario 12/08: nunca confiar num endereco
+// geocodificado que nunca foi validado por chegada de verdade (NF
+// cancelada, endereco errado nunca visitado, etc.). Quem decide ONDE
+// aplicar (busca de alvo, checagem de entregas_presenca) e' o caller, nao
+// aqui -- mesmo desenho de corrigirComPontoAprendido.
+export function deveCorrigirComRomaneio(
+  atual: { lat: number; lng: number },
+  romaneio: { lat: number; lng: number },
+  entregaConfirmada: boolean
+): boolean {
+  if (!entregaConfirmada) return false;
+  const divergenciaM = haversineM(atual.lat, atual.lng, romaneio.lat, romaneio.lng);
+  return divergenciaM > CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M;
+}
+
 // Menor distância (m) de uma posição aos pontos de entrega PENDENTES.
 // Retorna null se não houver pendentes (nada pra onde ir).
 export function distAlvoPendenteMaisProximoM(

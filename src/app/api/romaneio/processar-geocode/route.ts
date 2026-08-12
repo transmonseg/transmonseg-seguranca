@@ -1,7 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada } from "@/lib/romaneio-geocode-local";
-import { buscarAlvos } from "@/lib/unitrac";
+import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
 export const maxDuration = 60;
 
@@ -25,6 +25,10 @@ function esperar(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function hojeSP(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+}
+
 export async function POST(request: Request) {
   const chave = request.headers.get("x-motor-key");
   if (!chave || chave !== process.env.MOTOR_SECRET) {
@@ -42,7 +46,7 @@ export async function POST(request: Request) {
   const expiraAntesDe = new Date(Date.now() - REIVINDICACAO_EXPIRA_MIN * 60_000).toISOString();
   const { data: candidatos, error: erroCandidatos } = await admin
     .from("romaneio_pontos")
-    .select("id, endereco_bruto")
+    .select("id, endereco_bruto, veiculo_id, placa, nf")
     .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
     .order("criado_em", { ascending: true })
     .limit(LOTE_POR_INVOCACAO);
@@ -58,7 +62,7 @@ export async function POST(request: Request) {
   // toda vez sem nada pendente, sempre retornava antes de chegar la. Agora
   // so pula o processamento principal (pendentes = []), sem `return`, pra
   // sempre chegar no fallback.
-  let pendentes: { id: string; endereco_bruto: string }[] = [];
+  let pendentes: { id: string; endereco_bruto: string; veiculo_id: string | null; placa: string; nf: string }[] = [];
 
   if (candidatos && candidatos.length > 0) {
     // Reivindica ANTES de processar. Achado real 27/07 (pego em teste ao
@@ -79,7 +83,7 @@ export async function POST(request: Request) {
       .update({ geocode_status: "processando", geocode_reivindicado_em: new Date().toISOString() })
       .in("id", idsCandidatos)
       .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
-      .select("id, endereco_bruto");
+      .select("id, endereco_bruto, veiculo_id, placa, nf");
 
     if (erroReivindicar) {
       console.error(`Erro ao reivindicar romaneio_pontos: ${erroReivindicar.message}`);
@@ -165,6 +169,7 @@ export async function POST(request: Request) {
 
   let ok = 0;
   let falhou = 0;
+  const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number }[] = [];
 
   for (const linha of pendentes) {
     const cidadeBruta = extrairCidadeDoEndereco(linha.endereco_bruto);
@@ -185,7 +190,14 @@ export async function POST(request: Request) {
     });
 
     const geocodeStatus = geocode ? "ok" : "falhou";
-    if (geocode) ok++; else falhou++;
+    if (geocode) {
+      ok++;
+      if (linha.veiculo_id) {
+        geocodificadosOk.push({ id: linha.id, veiculo_id: linha.veiculo_id, placa: linha.placa, nf: linha.nf, lat: geocode.lat, lng: geocode.lng });
+      }
+    } else {
+      falhou++;
+    }
 
     const { error: erroUpdate } = await admin
       .from("romaneio_pontos")
@@ -215,17 +227,27 @@ export async function POST(request: Request) {
     .limit(LOTE_FALLBACK_UNITRAC);
 
   let fallbackUnitrac = 0;
-  if (semGeocode && semGeocode.length > 0) {
-    const veiculoIds = [...new Set(semGeocode.map((l) => l.veiculo_id))];
-    const { data: veiculosData } = await admin.from("veiculos").select("id, cv").in("id", veiculoIds);
+  let corrigidosViaRomaneio = 0;
+
+  const veiculoIdsTodos = [
+    ...new Set([
+      ...(semGeocode ?? []).map((l) => l.veiculo_id),
+      ...geocodificadosOk.map((l) => l.veiculo_id),
+    ].filter((v): v is string => !!v)),
+  ];
+
+  if (veiculoIdsTodos.length > 0) {
+    const { data: veiculosData } = await admin.from("veiculos").select("id, cv, cliente_id").in("id", veiculoIdsTodos);
     const cvsUnicos = [...new Set((veiculosData ?? []).map((v) => v.cv).filter((cv): cv is string => !!cv))];
+    const clientePorVeiculo = new Map((veiculosData ?? []).map((v) => [v.id, v.cliente_id]));
 
     if (cvsUnicos.length > 0) {
       try {
         const alvos = await buscarAlvos(cvsUnicos);
         const alvoPorPlacaNf = new Map(alvos.map((a) => [`${a.placa}:${a.alvodocumento}`, a]));
 
-        for (const linha of semGeocode) {
+        // Fallback existente: geocode falhou, usa coordenada da Unitrac.
+        for (const linha of semGeocode ?? []) {
           const alvo = alvoPorPlacaNf.get(`${linha.placa}:${linha.nf}`);
           if (alvo?.pontolatitude && alvo?.pontolongitude) {
             const { error: erroFallback } = await admin
@@ -235,11 +257,57 @@ export async function POST(request: Request) {
             if (!erroFallback) fallbackUnitrac++;
           }
         }
+
+        // Correcao nova: geocode do romaneio funcionou, compara com a
+        // Unitrac e corrige pontos_aprendidos se a entrega estiver
+        // confirmada e a coordenada divergir (ver
+        // docs/superpowers/specs/2026-08-12-correcao-pontos-via-romaneio-design.md).
+        for (const linha of geocodificadosOk) {
+          const alvo = alvoPorPlacaNf.get(`${linha.placa}:${linha.nf}`);
+          const clienteId = linha.veiculo_id ? clientePorVeiculo.get(linha.veiculo_id) : null;
+          if (!alvo?.pontocodigo || !alvo?.pontolatitude || !alvo?.pontolongitude || !clienteId) continue;
+
+          const entregaFeitaUnitrac = alvo.alvosituacaoservico !== 0;
+          let entregaConfirmada = entregaFeitaUnitrac;
+          if (!entregaConfirmada) {
+            const { data: presenca } = await admin
+              .from("entregas_presenca")
+              .select("dia")
+              .eq("cliente_id", clienteId)
+              .eq("ponto_codigo", alvo.pontocodigo)
+              .limit(1)
+              .maybeSingle();
+            entregaConfirmada = presenca !== null;
+          }
+
+          if (!deveCorrigirComRomaneio(
+            { lat: alvo.pontolatitude, lng: alvo.pontolongitude },
+            { lat: linha.lat, lng: linha.lng },
+            entregaConfirmada
+          )) continue;
+
+          const { error: erroCorrecao } = await admin.from("pontos_aprendidos").upsert(
+            {
+              cliente_id: clienteId,
+              ponto_codigo: alvo.pontocodigo,
+              lat: linha.lat,
+              lng: linha.lng,
+              raio_m: 30,
+              n_observacoes: 1,
+              primeira_observacao: hojeSP(),
+              ultima_observacao: hojeSP(),
+              fonte: "romaneio",
+            },
+            { onConflict: "cliente_id,ponto_codigo" }
+          );
+          if (!erroCorrecao) corrigidosViaRomaneio++;
+          else console.warn(`Aviso: erro ao gravar correcao via romaneio (cliente=${clienteId} ponto=${alvo.pontocodigo}): ${erroCorrecao.message}`);
+        }
       } catch (e) {
-        console.warn(`Aviso: erro no fallback Unitrac do geocode: ${e}`);
+        console.warn(`Aviso: erro no fallback/correcao Unitrac do geocode: ${e}`);
       }
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou, fallbackUnitrac });
+  return Response.json({ processados: pendentes.length, ok, falhou, fallbackUnitrac, corrigidosViaRomaneio });
 }
