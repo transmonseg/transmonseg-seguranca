@@ -115,3 +115,62 @@ Protótipo do score-com-decaimento já escrito em
 `scripts/backtest-desvio/replay-score.ts` (harness, NÃO produção) — próximo
 passo é rodar contra o corpus real (444+ casos) e reportar recall/FP antes
 de decidir subir qualquer coisa.
+
+## Achado maior do dia (tarde/noite, modo teste): distância em linha reta era a causa raiz dominante
+
+Depois de implementar a regra do modo teste (média ponderada por
+proximidade, base incluída, destino visitado excluído — ver spec
+`docs/superpowers/specs/2026-08-11-modo-teste-desvio-zero-design.md`) e
+testar contra o dia inteiro real da frota (139 veículos), o usuário
+questionou: como medir desvio sem saber a rota real do carro até o
+cliente, só linha reta? Testado direto: **dos 264 disparos do dia com
+linha reta, só 58 (22%) sobrevivem quando a distância é recalculada com
+rota real de rua (OSRM self-hosted, já rodando no Contabo,
+`osrm-transmonseg`, porta 5001 local)**. 206 (78%) eram puro artefato de
+linha reta — geografia do Rio (baías, morros, ruas de mão única) faz a
+distância reta mentir sobre o quanto o carro andou de verdade.
+
+Correção aplicada: `avaliarDesvioTeste` (src/lib/detectores-teste.ts) não
+calcula mais distância internamente — recebe um mapa de distâncias já
+calculadas do chamador. Novo módulo `src/lib/distancias-osrm.ts` busca
+distância real via OSRM `/table` (matriz, 1 chamada por veículo por
+ciclo, todos os destinos de uma vez — muito mais barato que uma rota
+completa por destino). `route.ts` já busca essas distâncias reais antes
+de avaliar a regra.
+
+### Tecnologias pesquisadas pra melhorar ainda mais (11/08, sem busca live — sessão sem cota de web search, conhecimento próprio)
+
+- **OSRM Map Matching (`/match`)** — encaixa a trilha de GPS bruta na rua
+  mais provável antes de qualquer cálculo de distância, reduz ruído de
+  GPS puro. Próximo passo natural depois da troca pra rota real — testar
+  nos 58 casos que sobreviveram, ver se cai mais ruído.
+- **Valhalla** — motor de rota alternativo, já citado como fallback
+  planejado em `src/lib/corredor-verificacao.ts` mas não usado no modo
+  teste ainda.
+- **Corredor/buffer de rota** — a ideia do outro chat consultado hoje de
+  manhã (rota real até cada pendente + buffer de tolerância + desvio =
+  sair da união dos buffers). Descartada de manhã por custo, mas agora
+  que OSRM já está confirmado barato/rápido no dia a dia, fica mais
+  viável como fase seguinte se sobrar ruído depois do map matching.
+- **PostGIS** (já em uso) — `ST_DWithin`/`ST_Buffer` fariam esse corredor
+  direto no banco, sem lógica extra em JS.
+- **H3 (grid hexagonal, Uber)** — ⭐ usuário demonstrou interesse
+  específico nessa, anotar pra aprofundar depois. Ideia: pré-computar os
+  corredores de rota comuns como conjuntos de células H3 uma vez (não a
+  cada ciclo), depois checar só "essa célula está no conjunto conhecido"
+  — evita chamar OSRM em tempo real pra toda checagem, escala melhor com
+  frota grande. Relevante especialmente se o corredor/buffer (item acima)
+  avançar — H3 seria a forma barata de consultar esse corredor depois de
+  computado, não substitui o cálculo de rota em si.
+
+### Testado: Map Matching não ajudou muito (nesta técnica específica)
+
+Rodado OSRM `/match` nos 58 casos que sobreviveram à troca pra rota real,
+snapeando a trilha bruta de GPS na rua antes de calcular distância: **57
+dos 58 continuaram disparando** (só 1 caiu). Não vale a complexidade/
+latência extra pra essa regra específica (média ponderada de distância) —
+`/table` já usa a malha viária internamente pra calcular a distância,
+então já captura a maior parte do ganho. Map matching provavelmente
+ajudaria mais numa abordagem de corredor/buffer (comparar o FORMATO do
+trajeto, não só distância ponto a ponto) — reavaliar se essa fase
+(corredor) avançar no futuro.

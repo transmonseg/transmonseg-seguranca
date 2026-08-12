@@ -93,7 +93,8 @@ import {
   type PontoJanela as PontoJanelaPlacar,
   type DestinoPlacar,
 } from "@/lib/placar-desvio";
-import { avaliarDesvioTeste, PARAMS_DESVIO_TESTE_PADRAO, type DestinoTeste, type EstadoDesvioTeste } from "@/lib/detectores-teste";
+import { avaliarDesvioTeste, PARAMS_DESVIO_TESTE_PADRAO, type EstadoDesvioTeste } from "@/lib/detectores-teste";
+import { distanciasReaisOSRM, type PontoComId } from "@/lib/distancias-osrm";
 
 // Estado persistido do placar de desvio (Fase 1, sombra) -- jsonb em
 // posicoes_atuais.placar_desvio_estado (migration 024). Ver Task 3 de
@@ -1482,7 +1483,7 @@ export async function POST(request: Request) {
     // de hoje marcado modo_teste=true (posicao SEMPRE por endereco, nunca
     // Unitrac), e o estado persistido do score de cada veiculo.
     const clientesModoTesteAtivo = new Set<string>();
-    const romaneioTestePorPlaca = new Map<string, DestinoTeste[]>();
+    const romaneioTestePorPlaca = new Map<string, PontoComId[]>();
     const estadoTestePorVeiculo = new Map<string, EstadoDesvioTeste>();
     try {
       const { rows } = await pool.query<{ id: string }>(
@@ -1511,11 +1512,18 @@ export async function POST(request: Request) {
         erros.push(`Aviso: modo teste indisponivel neste ciclo (romaneio): ${String(errRomaneioTeste)}`);
       }
       try {
-        const { rows } = await pool.query<{ veiculo_id: string; score: number; distancias_anteriores: Record<string, number> }>(
-          `SELECT veiculo_id, score, distancias_anteriores FROM desvio_teste_estado`
-        );
+        const { rows } = await pool.query<{
+          veiculo_id: string;
+          score: number;
+          distancias_anteriores: Record<string, number>;
+          visitados: Record<string, true>;
+        }>(`SELECT veiculo_id, score, distancias_anteriores, visitados FROM desvio_teste_estado`);
         for (const r of rows) {
-          estadoTestePorVeiculo.set(r.veiculo_id, { score: Number(r.score), distanciasAnteriores: r.distancias_anteriores });
+          estadoTestePorVeiculo.set(r.veiculo_id, {
+            score: Number(r.score),
+            distanciasAnteriores: r.distancias_anteriores,
+            visitados: r.visitados ?? {},
+          });
         }
       } catch (errEstadoTeste) {
         erros.push(`Aviso: modo teste indisponivel neste ciclo (estado): ${String(errEstadoTeste)}`);
@@ -2008,29 +2016,46 @@ export async function POST(request: Request) {
           // flag ligado. Nunca le nem escreve nada que o caminho de producao acima
           // usa (destinos/pendentes/desvioStreak/alertas sem modo_teste=true).
           if (clientesModoTesteAtivo.has(cliente_id)) {
-            const destinosTeste = (romaneioTestePorPlaca.get(pos.placa) ?? []).map((r) => ({
-              id: r.id,
-              lat: r.lat,
-              lng: r.lng,
-            }));
+            // Achado real (revisao caso a caso, 11/08): base tem que contar
+            // como destino valido -- sem isso, voltar pra base no fim da
+            // rota parecia "afastar de tudo". basesComoDestinoCerca ja
+            // existe nesta mesma iteracao com codigo estavel (base:${nome}).
+            const destinosTeste: PontoComId[] = [
+              ...(romaneioTestePorPlaca.get(pos.placa) ?? []).map((r) => ({ id: r.id, lat: r.lat, lng: r.lng })),
+              ...basesComoDestinoCerca.map((b) => ({ id: b.codigo, lat: b.lat, lng: b.lng })),
+            ];
             const estadoAnteriorTeste = estadoTestePorVeiculo.get(veiculo_id) ?? null;
 
             try {
-              const resultadoTeste = avaliarDesvioTeste(
+              // Achado real 11/08 (docs/analise-desvio-raiz-2026-08-11.md):
+              // distancia em linha reta gerava "desvio" que sumia quando
+              // testado com rota real -- geografia do Rio (baias, morros,
+              // mao unica) faz a reta mentir. Usa distancia real de rua
+              // (OSRM self-hosted, 1 chamada em lote pra todos os destinos).
+              const distanciasAtuais = await distanciasReaisOSRM(
                 { lat: pos.lat, lng: pos.lng },
-                destinosTeste,
+                destinosTeste
+              );
+              const resultadoTeste = avaliarDesvioTeste(
+                distanciasAtuais,
                 estadoAnteriorTeste,
                 PARAMS_DESVIO_TESTE_PADRAO
               );
 
               await pool.query(
-                `INSERT INTO desvio_teste_estado (veiculo_id, score, distancias_anteriores, atualizado_em)
-                 VALUES ($1, $2, $3::jsonb, now())
+                `INSERT INTO desvio_teste_estado (veiculo_id, score, distancias_anteriores, visitados, atualizado_em)
+                 VALUES ($1, $2, $3::jsonb, $4::jsonb, now())
                  ON CONFLICT (veiculo_id) DO UPDATE SET
                    score = EXCLUDED.score,
                    distancias_anteriores = EXCLUDED.distancias_anteriores,
+                   visitados = EXCLUDED.visitados,
                    atualizado_em = now()`,
-                [veiculo_id, resultadoTeste.estado.score, JSON.stringify(resultadoTeste.estado.distanciasAnteriores)]
+                [
+                  veiculo_id,
+                  resultadoTeste.estado.score,
+                  JSON.stringify(resultadoTeste.estado.distanciasAnteriores),
+                  JSON.stringify(resultadoTeste.estado.visitados),
+                ]
               );
 
               if (resultadoTeste.disparouAgora) {
