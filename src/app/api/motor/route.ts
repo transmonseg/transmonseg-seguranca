@@ -16,10 +16,6 @@ import {
   distanciaAoSegmentoM,
   suspenderPorChegada,
   RAIO_CHEGADA_MIN_M,
-  divergenciaRumoMinima,
-  divergenciaRumoGraus,
-  divergenciaRumoAcimaDoLimiar,
-  divergenciaRumoDispara,
   corrigirComPontoAprendido,
   PONTO_APRENDIDO_ATIVO,
 } from "@/lib/unitrac";
@@ -27,9 +23,6 @@ import type { EntregasPlaca, PontoEntrega } from "@/lib/unitrac";
 import {
   montarCandidatosCore,
   detectarJammer,
-  afastouDeTudo,
-  avancarStreaksDesvio,
-  devAvancarStreaksDesvio,
   emHorarioOperacao,
   detectarRetornoTardio,
   detectarParadaNoturnaIgnicaoAtiva,
@@ -42,83 +35,23 @@ import {
   detectarAnomaliaBaseline,
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
-  montarContextoDesvio,
-  desvioInicioEfetivoParaContexto,
-  zerarStreakDaOrigemVencedora,
-  reancorarOrigemVencedora,
-  razaoRetidaoRumo,
-  limiarRazaoRetidaoRumo,
-  rumoCoerenteComDestino,
-  RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS,
   PARADA_FORA_TAPETE_MIN,
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
   contaComoEventoDeSilenciamento,
-  deveAutoResolverAfastandoRotaConcluida,
-  elegivelParaAutoResolveAfastando,
-  elegivelParaAutoResolveAfastandoPorIdade,
-  IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN,
-  elegivelParaAnotarPlacarSombra,
-  origemMenorDistDestinoM,
-  BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO,
-  deveAutoResolverAfastandoChegadaReal,
-  saiuParadaConfirmadaHaMenosDe,
-  deveMarcarSaidaParadaConfirmada,
   type Alerta,
-  type DesvioInicio,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
 import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
-import { melhorClasse } from "@/lib/classificacao-viaria";
 import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
 import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
-import { verificarCorredor, dentroDoCorredor, bufferPorVelocidade, ordenarPendentesPorDistancia, ordenarPorPrioridadeVerificacao, deveVerificarRecuperacao, paradaLongaInvalidaCache } from "@/lib/corredor-verificacao";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
-import { aplicarFatorCalibrado, segmentoCalibracaoPreferido } from "@/lib/calibracao-desvio";
-import {
-  atualizarPlacar,
-  paradaRecentePertoDeEntrega,
-  padraoEntrega,
-  destinoAlinhadoAproximando,
-  PLACAR_AMARELO,
-  PLACAR_AMARELO_DESLIGA,
-  PLACAR_VERMELHO,
-  S5_ESTAGNADO_MIN,
-  S2_RUMO_LIMIAR_GRAUS,
-  S6_PARADO_MIN_SEG,
-  S6_DIST_MIN_M,
-  type SinaisPlacar,
-  type PontoJanela as PontoJanelaPlacar,
-  type DestinoPlacar,
-} from "@/lib/placar-desvio";
-import { avaliarDesvioTeste, PARAMS_DESVIO_TESTE_PADRAO, type EstadoDesvioTeste } from "@/lib/detectores-teste";
+import { buscarDistanciasReais } from "@/lib/distancia-real";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio } from "@/lib/desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
-
-// Estado persistido do placar de desvio (Fase 1, sombra) -- jsonb em
-// posicoes_atuais.placar_desvio_estado (migration 024). Ver Task 3 de
-// docs/superpowers/plans/2026-08-01-placar-desvio-fase1-plano.md.
-// distPorCodigo: dist_m por destino (codigo estavel) do ciclo anterior,
-// pra D3 (destinoAlinhadoAproximando) saber se a distancia esta caindo.
-// entregasFeitasRef/entregasFeitasDesde: ancora de S5 (dia estagnado).
-// amareloAtivo: histerese do limiar amarelo (liga >=40, desliga <25).
-type EstadoPlacarDesvio = {
-  distPorCodigo: Record<string, number>;
-  entregasFeitasRef: number;
-  entregasFeitasDesde: string;
-  amareloAtivo: boolean;
-};
-
-// Código estável do destino pro placar de desvio (chave de
-// distPorCodigo/rumoDivergenciaPorDestino, precisa ser consistente entre
-// ciclos) -- alvocodigo quando existe, fallback pra coordenada. Mesmo
-// padrão já usado pela cerca virtual (ver "codigo estavel p/ a cerca
-// virtual" em destinosCerca, mais abaixo no arquivo).
-function codigoDestinoPlacar(pt: PontoEntrega): string {
-  return String(pt.codigo ?? `${pt.lat},${pt.lng}`);
-}
 
 // Função serverless: roda em sao paulo (gru1, ver vercel.json) e pode levar ate 60s.
 export const maxDuration = 60;
@@ -209,63 +142,6 @@ type ContagemTapeteCache = { contagem: number; expiraEm: number };
 const CACHE_TAPETE_MS = 3 * 60_000;
 const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
 
-type ContagemFamiliaridadeCache = { contagens: Map<string, number>; expiraEm: number };
-const cacheContagemFamiliaridadePorCliente = new Map<string, ContagemFamiliaridadeCache>();
-
-// ─── Verificação por corredor real (ver lib/corredor-verificacao.ts) ────
-// REDESENHADA 10/07 apos incidente (ver docs/analise-deteccao.md secao 7.6):
-// versao original tracava a rota da POSICAO ATUAL ate o destino e depois
-// checava se a posicao atual estava perto dessa mesma rota -- tautologico,
-// SEMPRE "dentro" (a rota comeca onde o veiculo esta). Suprimiu quase todo
-// desvio real por 11h+ (108 veiculos/332 alertas em 09/07 sem o corredor
-// rodando full-day vs so 15 alertas, todos num unico burst de ~3min, em
-// 10/07 com o corredor ativo o dia todo). Fix: a rota agora sai de
-// desvioInicio (ponto FIXO, ultima posicao confirmada ANTES da suspeita de
-// desvio comecar), nunca da posicao atual -- ver verificarCorredor().
-const CAMADA_CORREDOR_ATIVA = true;
-// ─── Filtro comportamental de rumo-diverge (achado real 30/07) ────────────
-// Ver docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
-// SOMBRA (false): so loga contexto.retidao_rumo_sombra, nao muda nada no
-// alerta. Depois de alguns dias de dado real confirmando que nenhum
-// desvio genuino cai em "veredito_suprimiria: true", vira true (mesmo
-// padrao sombra->ativa ja usado por CERCA_VIRTUAL_MODO).
-const RUMO_DIVERGE_FILTRO_COMPORTAMENTAL_ATIVO = false;
-// SOMBRA (false): so loga contexto.rumo_coerente_sombra, nao muda nada no
-// comportamento real ainda. Ver
-// docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
-const CLASSE_VIARIA_FILTRO_RUMO_ATIVO = false;
-// Ao contrario das flags de sombra acima (nascem false, so viram true
-// depois de dias confirmando com dado real), esta nasce LIGADA: e a
-// TROCA DE REGRA decidida em 01/08 com base em dado real ja coletado --
-// classe_viaria era a maior fonte de falso positivo do sistema (~69%
-// historico; 53 alertas so nas 4h anteriores a 31/07).
-//
-// Redesign 01/08 pos-revisao-independente (a 1a versao deste gate, com
-// limiar numerico de placar >=15 aplicado DEPOIS da arbitragem, foi
-// reprovada com 3 findings Critical -- ver historico do commit anterior):
-// o criterio agora e' PROVA POSITIVA de atividade de entrega no ciclo --
-// suprime classe_viaria quando qualquer DESCONTO do placar de desvio
-// (D1 parada perto de entrega, D2 padrao de entrega, D3 destino alinhado
-// aproximando -- ver lib/placar-desvio.ts) esta ativo. D3 em particular
-// e' literalmente "indo em direcao a um cliente perto e se aproximando"
-// -- a queixa textual do cliente sobre esta regra. Dado real: em 32
-// ciclos de classe_viaria logados em placar_desvio_log, D3 disparou 18x,
-// D2 7x, D1 4x.
-//
-// Gate na DETECCAO (nao na emissao pos-arbitragem, ver
-// classeViariaSuprimidaPorEntrega em CtxDesvio/detectarDesvio,
-// detectores.ts -- mesmo padrao ja usado por classeViariaSuprimidaPorRumo
-// acima): classeViariaSuprimidaPorEntrega entra como INPUT do ctx que
-// monta os candidatos, entao quando suprime, detectarDesvio cai
-// naturalmente pros proximos branches (rumo_diverge, saida_parada, e
-// sobretudo o critico "caminho nunca percorrido") em vez de retornar
-// classe_viaria e nunca chegar la. quedaClasseViaria (deteccao) e a
-// verificacao de corredor (S3 do placar) continuam rodando exatamente
-// como antes -- o gate so decide se o BRANCH de classe_viaria participa
-// da arbitragem. Desligar reverte pro comportamento antigo (classe_viaria
-// dispara sozinho) instantaneamente, sem precisar reverter o commit.
-const CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO = true;
-
 // ─── Parada no local conta como entregue (usuario, 01/08) ─────────────
 // "os pontos de entrega, se tem parada no local, conta como entregue".
 //
@@ -283,84 +159,6 @@ const CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO = true;
 // da Unitrac decide).
 const ENTREGA_PRESENCA_ATIVA = true;
 const ENTREGA_PRESENCA_MIN_SEG = 120;
-// Corredor "vencedor" por veículo: enquanto o veículo seguir dentro dele,
-// suprime o desvio SEM novas chamadas de API. ultimoDentro = último ponto
-// confirmado dentro (vira o desvio_inicio REAL se ele sair e o alerta
-// confirmar — conserta o marcador de início errado reportado pela operação).
-// origemTs amarra o cache a UM episodio de desvio (desvioInicio.ts) -- um
-// novo episodio (novo desvioInicio) nunca reaproveita a polilinha antiga.
-type CorredorCache = {
-  polilinha: { lat: number; lng: number }[];
-  ultimoDentro: { lat: number; lng: number };
-  pendentesChave: string;
-  origemTs: string;
-  expiraEm: number;
-};
-const CORREDOR_CACHE_MS = 15 * 60_000;
-const cacheCorredorPorVeiculo = new Map<string, CorredorCache>();
-// Achado real 22/07 (auditoria): unificado de 2 orcamentos separados
-// (CERCA_SEEDS_POR_CICLO=3 + MAX_VERIFICACOES_POR_CICLO=3, ate 7 chamadas
-// seriais sem teto coordenado) pra 1 orcamento compartilhado. Pior caso
-// cai de ~7,7s pra ~6,6s por ciclo. A ordem do codigo (cerca antes do
-// comportamental, por veiculo) NAO protege o comportamental sozinha --
-// ela so vale DENTRO de um mesmo veiculo, e a semeadura da cerca roda pra
-// MUITOS veiculos por ciclo (warmup da frota inteira, cache expirando a
-// cada CERCA_CACHE_MS). Por isso ha reserva explicita (achado real 22/07,
-// revisao final de whole-branch): ver RESERVA_COMPORTAMENTAL_POR_CICLO
-// logo abaixo, que garante um piso pro comportamental mesmo se a cerca
-// consumisse o orcamento inteiro em veiculos anteriores no mesmo ciclo.
-const ORCAMENTO_CORREDOR_POR_CICLO = 6;
-// Achado real 22/07 (revisao final de whole-branch): sem reserva, a
-// semeadura da cerca virtual (que roda pra MUITOS veiculos em cenarios de
-// warmup -- frota inteira de manha, ou toda vez que CERCA_CACHE_MS=20min
-// expira / pendentes mudam) podia consumir o orcamento compartilhado
-// inteiro antes de qualquer veiculo chegar na verificacao comportamental
-// no mesmo ciclo -- zerando a garantia que a verificacao comportamental
-// tinha antes da unificacao (pote proprio, MAX_VERIFICACOES_POR_CICLO=3).
-// Reserva minima: cerca (semeadura+recuperacao juntas) fica limitada a
-// ORCAMENTO_CORREDOR_POR_CICLO - RESERVA_COMPORTAMENTAL_POR_CICLO = 4 (o
-// mesmo teto que ja tinha antes da unificacao), garantindo que sempre
-// sobrem pelo menos 2 pro comportamental.
-const RESERVA_COMPORTAMENTAL_POR_CICLO = 2;
-
-// ─── CERCA VIRTUAL de rota (Fase 1 do plano de 10/07) -- ATIVA (11/07) ───
-// Achado real 10/07: o gatilho comportamental ("afastar de TODOS os N
-// destinos") e geometricamente cego quando o veiculo tem muitas entregas --
-// 83% dos alertas de 7 dias dispararam com so 2 destinos restantes, sendo
-// que a frota trabalha com mediana de 11. A cerca inverte o sinal primario:
-// corredor PROATIVO por veiculo (rota real da posicao atual ate os pendentes
-// mais proximos, calculada quando o conjunto de pendentes muda), e a cada
-// ciclo uma checagem de geometria pura (zero API). Saiu do corredor: tenta
-// recuperar via verificarCorredor (ancora = ultimo ponto DENTRO, nunca a
-// posicao atual -- mesma licao do bug tautologico); "fora" confirmado vira
-// Alerta de verdade JA na 1a leitura fora (score 75, escala 85 na 2a). Rodou
-// em modo sombra 10-11/07, validado com um dia inteiro de operacao real
-// (44+ veiculos, 300+ momentos "fora" confirmados) -- ativado 11/07 por
-// diretiva explicita do usuario (falso positivo aceitavel, prioridade total
-// e nunca perder desvio real). cerca_sombra continua gravando em paralelo
-// (auditoria/historico), agora refletindo alerta real, nao mais hipotetico.
-const CERCA_VIRTUAL_MODO: "desligada" | "sombra" | "ativa" = "ativa";
-// Semeaduras (calculo inicial de corredor) por ciclo -- warmup da frota
-// inteira leva alguns ciclos de manha, com o gatilho comportamental cobrindo
-// ate la. Compartilha o throttle global de 1 req/s do modulo de corredor.
-// (ORCAMENTO_CORREDOR_POR_CICLO unificado, ver acima)
-const CERCA_CACHE_MS = 20 * 60_000;
-type CercaCache = {
-  polilinha: { lat: number; lng: number }[];
-  ultimoDentro: { lat: number; lng: number };
-  pendentesChave: string;
-  calculadoEm: number;
-  foraStreak: number;
-};
-const cacheCercaPorVeiculo = new Map<string, CercaCache>();
-
-// Rotação justa do orçamento de verificação de corredor -- ver
-// docs/superpowers/specs/2026-07-21-rotacao-justa-verificacao-corredor-design.md.
-// Grava quando cada veículo consumiu por último uma chamada real de
-// OSRM/Valhalla (nos dois pontos onde isso acontece: semeadura/recuperação
-// da cerca virtual, e confirmação do gatilho comportamental -- ambos
-// competem pelo mesmo throttle global de 1 req/s).
-const ultimaVerificacaoCorredorPorVeiculo = new Map<string, number>();
 
 // Log de snapshot de pendentes por ciclo -- ver
 // docs/superpowers/specs/2026-08-09-snapshot-pendentes-log-design.md.
@@ -857,7 +655,7 @@ export async function POST(request: Request) {
     // ciclo, degradacao aceitavel e temporaria; nao persistente).
     const { data: posatuaisRows, error: erroLeituraPosAtuais } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, desvio_streak, desvio_inicio, ultimo_evento, fora_tapete_streak, divergencia_rumo_streak, divergencia_rumo_inicio, aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, ultima_via_principal_em, saiu_parada_confirmada_em, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos, divergencia_rumo_caminho_m, placar_desvio, placar_desvio_estado");
+      .select("veiculo_id, lat, lng, velocidade, parado_desde, ultimo_evento, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos");
     if (erroLeituraPosAtuais) {
       const msg = `CRITICO: falha ao ler posicoes_atuais (estado por veiculo perdido neste ciclo, UPSERT sera pulado pra nao gravar cold-start por engano): ${erroLeituraPosAtuais.message}`;
       console.error(msg);
@@ -868,33 +666,14 @@ export async function POST(request: Request) {
       string,
       {
         lat: number | null; lng: number | null; velocidade: number | null;
-        parado_desde: string | null; desvio_streak: number; desvio_inicio: DesvioInicio | null;
-        ultimo_evento: string | null; fora_tapete_streak: number; divergencia_rumo_streak: number;
-        // Achado CRITICO da revisao independente 28/07 (Task 4b): anchor
-        // proprio da streak de divergencia de rumo -- mesmo shape/logica de
-        // desvio_inicio, ver detalhe no bloco que calcula divergenciaRumoStreak.
-        divergencia_rumo_inicio: DesvioInicio | null;
-        // Achado real 30/07: acumulador de distancia percorrida durante a
-        // streak de divergencia de rumo -- mesmo ciclo de vida de
-        // divergencia_rumo_inicio (migration 017). Ver
-        // docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
-        divergencia_rumo_caminho_m: number;
-        aproximando_streak: number;
-        origem_celula: string | null;
+        parado_desde: string | null;
+        ultimo_evento: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
-        ultima_via_principal_em: string | null;
-        // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
-        // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
-        saiu_parada_confirmada_em: string | null;
         // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
         // detectarParadaSemMarcacao em lib/detectores.ts. Colunas PROPRIAS
         // (migration 016), mesmo padrao de no_raio_alvo_codigo/no_raio_dwell_segundos.
         perto_sem_marcacao_codigo: number | null;
         perto_sem_marcacao_segundos: number;
-        // Placar de desvio (Fase 1, sombra) -- mesmo padrao dos streaks
-        // acima, ver EstadoPlacarDesvio.
-        placar_desvio: number;
-        placar_desvio_estado: EstadoPlacarDesvio | null;
       }
     >();
 
@@ -904,25 +683,27 @@ export async function POST(request: Request) {
         lng: row.lng,
         velocidade: row.velocidade,
         parado_desde: row.parado_desde,
-        desvio_streak: row.desvio_streak ?? 0,
-        desvio_inicio: (row.desvio_inicio as DesvioInicio | null) ?? null,
         ultimo_evento: row.ultimo_evento ?? null,
-        fora_tapete_streak: row.fora_tapete_streak ?? 0,
-        divergencia_rumo_streak: row.divergencia_rumo_streak ?? 0,
-        divergencia_rumo_inicio: (row.divergencia_rumo_inicio as DesvioInicio | null) ?? null,
-        divergencia_rumo_caminho_m: row.divergencia_rumo_caminho_m ?? 0,
-        aproximando_streak: row.aproximando_streak ?? 0,
-        origem_celula: row.origem_celula ?? null,
         no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
         no_raio_desde: row.no_raio_desde ?? null,
         no_raio_dwell_segundos: row.no_raio_dwell_segundos ?? 0,
-        ultima_via_principal_em: row.ultima_via_principal_em ?? null,
-        saiu_parada_confirmada_em: row.saiu_parada_confirmada_em ?? null,
         perto_sem_marcacao_codigo: row.perto_sem_marcacao_codigo ?? null,
         perto_sem_marcacao_segundos: row.perto_sem_marcacao_segundos ?? 0,
-        placar_desvio: row.placar_desvio ?? 0,
-        placar_desvio_estado: (row.placar_desvio_estado as EstadoPlacarDesvio | null) ?? null,
       });
+    }
+
+    // Detector de desvio v2: prefetch do estado (streaks) de todos os
+    // veiculos de uma vez -- ver docs/superpowers/specs/2026-08-12-desvio-de-rota-v2-design.md.
+    const desvioEstadoPorVeiculo = new Map<string, { afastandoStreak: number; ruaRaraStreak: number }>();
+    try {
+      const { rows } = await pool.query<{ veiculo_id: string; afastando_streak: number; rua_rara_streak: number }>(
+        `SELECT veiculo_id, afastando_streak, rua_rara_streak FROM desvio_estado`
+      );
+      for (const r of rows) {
+        desvioEstadoPorVeiculo.set(r.veiculo_id, { afastandoStreak: r.afastando_streak, ruaRaraStreak: r.rua_rara_streak });
+      }
+    } catch (errDesvioEstado) {
+      erros.push(`Aviso: desvio v2 indisponivel neste ciclo (estado): ${String(errDesvioEstado)}`);
     }
 
     // Baseline comportamental por veiculo/frota (Fase 3 do redesenho de
@@ -1007,21 +788,6 @@ export async function POST(request: Request) {
     // contexto -- nunca muda nivel/status, nunca fecha o alerta.
     const rotaConcluidaCiclo: { alerta_id: string; entregasFeitas: number; entregasTotal: number }[] = [];
 
-    // Anotação de progresso ao destino em alertas "afastando de tudo" ativos --
-    // ver docs/superpowers/specs/2026-08-06-progresso-destino-desvio-design.md.
-    // Mesmo padrão de proximidadeDesvioCiclo/rotaConcluidaCiclo: acumula por
-    // ciclo, flush em lote no final, so ADICIONA campo no contexto (jsonb ||),
-    // nunca muda nivel/status, nunca fecha o alerta.
-    const progressoDestinoCiclo: { alerta_id: string; deltaM: number }[] = [];
-
-    // Anotação do placar de desvio sombra em alertas afastando_de_tudo/
-    // classe_viaria ativos -- ver
-    // docs/superpowers/specs/2026-08-07-placar-sombra-anotacao-design.md.
-    // Mesmo padrão de progressoDestinoCiclo/proximidadeDesvioCiclo: acumula
-    // por ciclo, flush em lote no final, so ADICIONA campo no contexto
-    // (jsonb ||), nunca muda nivel/status, nunca fecha o alerta.
-    const placarSombraCiclo: { alerta_id: string; placar: number; componentes: Record<string, number | boolean | string> }[] = [];
-
     // Snapshot de pendentes por ciclo (throttled) -- ver
     // docs/superpowers/specs/2026-08-09-snapshot-pendentes-log-design.md.
     // Puramente auditoria, nunca lido por nenhum detector.
@@ -1046,41 +812,6 @@ export async function POST(request: Request) {
         latBruta: number | null; lngBruta: number | null;
       }[];
     }[] = [];
-
-    // Auto-resolucao retroativa de "afastando-se de todos os destinos"
-    // quando a rota foi 100% concluida E o veiculo chegou fisicamente
-    // dentro do poligono de uma base cadastrada -- ver
-    // docs/superpowers/plans/2026-07-27-auto-resolucao-rota-concluida-plano.md
-    // e deveAutoResolverAfastandoRotaConcluida em detectores.ts pro
-    // raciocinio completo (achado real 27/07: ~15 dos 91 casos de
-    // "afastando de destinos" revisados eram esse padrao). Mesmo padrao de
-    // acumulador por ciclo + flush em lote ja usado por rotaConcluidaCiclo
-    // acima.
-    const afastandoRotaConcluidaAutoResolveCiclo: { alerta_id: string }[] = [];
-
-    // SEGUNDO caso de auto-resolucao de "afastando-se de todos os destinos"
-    // (achado real 03/08, ver deveAutoResolverAfastandoChegadaReal em
-    // detectores.ts pro raciocinio completo): fecha o alerta quando o
-    // veiculo chega de verdade em QUALQUER destino/base conhecido e para la
-    // por tempo real, sem esperar a rota inteira terminar (diferente do
-    // acumulador acima, que so cobre rota 100% concluida). Mesmo padrao de
-    // acumulador por ciclo + flush em lote.
-    const afastandoChegadaRealAutoResolveCiclo: { alerta_id: string }[] = [];
-
-    // Calibracao ao vivo (12/07): carrega uma vez por ciclo, tabela pequena,
-    // mesmo padrao de mapaBaselineVeiculo/Frota acima. So aplica o fator
-    // quando o segmento ja tem amostra suficiente (mesma regra de 20 ja
-    // usada em baseline_veiculo).
-    const { data: calibracaoRows } = await supabase
-      .from("calibracao_desvio")
-      .select("segmento, n_amostras, taxa_falso_positivo");
-    const MIN_AMOSTRAS_CALIBRACAO = 20;
-    const mapaCalibracao = new Map<string, number>();
-    for (const r of calibracaoRows ?? []) {
-      if (r.n_amostras >= MIN_AMOSTRAS_CALIBRACAO) {
-        mapaCalibracao.set(r.segmento, r.taxa_falso_positivo);
-      }
-    }
 
     // Eventos nativos "rotineiros" da Unitrac — nao viram linha na tabela `eventos`
     // (senao toda transmissao periodica de 220+ veiculos vira log, sem sinal nenhum).
@@ -1196,43 +927,6 @@ export async function POST(request: Request) {
     // upsert em batch ao final (ver Camada 2 do desvio, abaixo no loop).
     const celulasCiclo: { cliente_id: string; celula: string; origem: string | null; destino: string | null }[] = [];
 
-    // Familiaridade por veiculo (Camada 3 do desvio) -- ver
-    // docs/superpowers/specs/2026-07-21-familiaridade-veiculo-desvio-design.md.
-    // Mesmo dado de celulasDoSegmento que ja alimenta celulasCiclo acima, so
-    // que POR VEICULO em vez de por cliente.
-    const celulasVeiculoCiclo: { veiculo_id: string; celula: string }[] = [];
-
-    // Orçamento COMPARTILHADO de chamadas ao corredor (OSRM/Valhalla) neste
-    // ciclo -- ver ORCAMENTO_CORREDOR_POR_CICLO no topo. Usado tanto pela
-    // cerca virtual (semeaduras + recuperacoes) quanto pela verificacao de
-    // corredor comportamental (Camada 1).
-    let chamadasCorredorNoCiclo = 0;
-    const cercaSombraCiclo: {
-      veiculo_id: string; cliente_id: string; lat: number; lng: number;
-      velocidade: number; veredito: string; pendentes: number; buffer_m: number;
-    }[] = [];
-
-    // Achado real 30/07 (Task 7, apos o backtest da Task 6 revelar que o
-    // veredito de sombra unico da Task 5 nao discrimina nada): log de serie
-    // temporal do sinal comportamental de rumo-diverge, mesmo padrao de
-    // cerca_sombra (nao-destrutivo, nunca interfere em nenhum alerta).
-    const rumoDivergeSombraCiclo: {
-      veiculo_id: string; cliente_id: string; streak: number; caminho_m: number;
-      liquido_m: number; razao: number | null; limiar: number;
-      dist_min_destino_m: number; veredito_suprimiria: boolean;
-    }[] = [];
-
-    // Placar de desvio (Fase 1, SOMBRA) -- ver
-    // docs/superpowers/specs/2026-08-01-placar-desvio-design.md e
-    // src/lib/placar-desvio.ts. Mesmo padrao nao-destrutivo de
-    // cercaSombraCiclo/rumoDivergeSombraCiclo acima: so grava quando
-    // placar > 0 (pra nao inflar a tabela com frota parada, decisao
-    // explicita da spec), nunca muda nenhum alerta.
-    const placarDesvioLogCiclo: {
-      veiculo_id: string; placar: number; componentes: Record<string, number | boolean | string>;
-      teria_amarelo: boolean; teria_vermelho: boolean;
-    }[] = [];
-
     // Posicoes de TODOS os veiculos processados neste ciclo — upsert em UM
     // batch ao final (mesma logica de celulasCiclo acima), em vez de 1
     // pool.connect()+query POR VEICULO dentro do loop. Achado 07/07/2026
@@ -1244,28 +938,13 @@ export async function POST(request: Request) {
       veiculo_id: string; lat: number; lng: number; velocidade: number; ignicao: boolean;
       atraso_min: number; panico: boolean; bau_aberto: boolean; nivel: string; motivo: string | null;
       datagps: string; parado_desde: string | null; updated_at: string; entregas_feitas: number;
-      entregas_total: number; local: string | null; desvio_streak: number; rumo: number | null;
-      ultimo_evento: string | null; desvio_inicio: string | null; fora_tapete_streak: number;
-      divergencia_rumo_streak: number;
-      // Task 4b (revisao independente 28/07): anchor proprio da streak de
-      // divergencia de rumo, mesmo shape/serializacao de desvio_inicio.
-      divergencia_rumo_inicio: string | null;
-      divergencia_rumo_caminho_m: number;
-      aproximando_streak: number; origem_celula: string | null;
+      entregas_total: number; local: string | null; rumo: number | null;
+      ultimo_evento: string | null;
       no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
-      ultima_via_principal_em: string | null;
-      // Achado real 28/07 (Task 6): ver saiuParadaConfirmadaHaMenosDe em
-      // lib/detectores.ts -- mesmo padrao de ultima_via_principal_em.
-      saiu_parada_confirmada_em: string | null;
       // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
       // detectarParadaSemMarcacao em lib/detectores.ts.
       perto_sem_marcacao_codigo: number | null;
       perto_sem_marcacao_segundos: number;
-      // Placar de desvio (Fase 1, sombra) -- ver EstadoPlacarDesvio acima.
-      // placar_desvio_estado serializado (mesmo padrao de desvio_inicio,
-      // JSON.stringify -> coluna jsonb via ::jsonb no INSERT).
-      placar_desvio: number;
-      placar_desvio_estado: string;
     };
     const posicoesCiclo: LinhaPosicaoCiclo[] = [];
 
@@ -1321,82 +1000,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Classificacao viaria (via principal x rua estreita) -- ver
-    // docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.
-    // vias_celulas NAO tem coluna de escopo (cliente_id/veiculo_id) --
-    // e geografia pura, entao a query e so por celula, sem WHERE de
-    // cliente. Reaproveita as MESMAS candidatas de celulasCandidatasTapete
-    // (mesma vizinhanca 3x3), nao coleta de novo.
-    async function buscarClassesViariasCandidatas(
-      candidatas: string[]
-    ): Promise<Map<string, string>> {
-      if (candidatas.length === 0) return new Map();
-      const pgVias = await pool.connect();
-      try {
-        const { rows } = await pgVias.query<{ celula: string; classe: string }>(
-          `SELECT celula, classe FROM vias_celulas WHERE celula = ANY($1::text[])`,
-          [candidatas]
-        );
-        return new Map(rows.map((r) => [r.celula, r.classe]));
-      } catch {
-        return new Map();
-      } finally {
-        pgVias.release();
-      }
-    }
-
-    // Contagem de células distintas por veículo (piso de cold-start da
-    // familiaridade, análogo a getContagemTapeteCliente) -- UMA query em
-    // lote por cliente por ciclo (todos os veículos do cliente de uma vez),
-    // nunca uma query por veículo.
-    async function getContagensFamiliaridadeCliente(
-      clienteId: string,
-      veiculoIds: string[]
-    ): Promise<Map<string, number>> {
-      const cache = cacheContagemFamiliaridadePorCliente.get(clienteId);
-      if (cache && cache.expiraEm > Date.now()) return cache.contagens;
-      if (veiculoIds.length === 0) return new Map();
-      const pgFamiliaridade = await pool.connect();
-      try {
-        const { rows } = await pgFamiliaridade.query<{ veiculo_id: string; n: string }>(
-          `SELECT veiculo_id, count(*)::bigint AS n FROM corredor_celulas_veiculo WHERE veiculo_id = ANY($1::uuid[]) GROUP BY veiculo_id`,
-          [veiculoIds]
-        );
-        const contagens = new Map(rows.map((r) => [r.veiculo_id, Number(r.n)]));
-        cacheContagemFamiliaridadePorCliente.set(clienteId, { contagens, expiraEm: Date.now() + CACHE_TAPETE_MS });
-        return contagens;
-      } catch {
-        return cache?.contagens ?? new Map();
-      } finally {
-        pgFamiliaridade.release();
-      }
-    }
-
-    // Células candidatas (vizinhança 3x3) que o PRÓPRIO veículo já visitou
-    // -- análogo a buscarCelulasTapeteCandidatas, mas casando (veiculo_id,
-    // celula) exato via JOIN, não só a celula isolada. Chave do Set:
-    // "${veiculo_id}:${celula}".
-    async function buscarCelulasVeiculoCandidatas(
-      candidatas: { veiculo_id: string; celula: string }[]
-    ): Promise<Set<string>> {
-      if (candidatas.length === 0) return new Set();
-      const pgFamiliaridade = await pool.connect();
-      try {
-        const { rows } = await pgFamiliaridade.query<{ veiculo_id: string; celula: string }>(
-          `SELECT c.veiculo_id, c.celula
-           FROM corredor_celulas_veiculo c
-           JOIN unnest($1::uuid[], $2::text[]) AS cand(veiculo_id, celula)
-             USING (veiculo_id, celula)`,
-          [candidatas.map((c) => c.veiculo_id), candidatas.map((c) => c.celula)]
-        );
-        return new Set(rows.map((r) => `${r.veiculo_id}:${r.celula}`));
-      } catch {
-        return new Set();
-      } finally {
-        pgFamiliaridade.release();
-      }
-    }
-
     // Presenca de entrega (decisao do usuario 01/08): "os pontos de entrega,
     // se tem parada no local, conta como entregue".
     //
@@ -1432,107 +1035,6 @@ export async function POST(request: Request) {
         return new Set();
       } finally {
         pgPresenca.release();
-      }
-    }
-
-    // Janela de 20min de posicoes_historico pro placar de desvio (D1/D2 --
-    // paradaRecentePertoDeEntrega/padraoEntrega, ver placar-desvio.ts) --
-    // UMA query batched por CLIENTE (mesmo padrao das funcoes acima:
-    // veiculoIdsCliente inteiro, nao filtrado por veiculo individual), nunca
-    // uma por veiculo. Sem cache/TTL: a janela desliza a cada ciclo (mesmo
-    // motivo de buscarCelulasTapeteCandidatas nao ter TTL).
-    //
-    // Alargada de 10 pra 20min (achado auditoria 04/08, caso TOS-0H81):
-    // entrega real confirmada (entregas_presenca) 15min antes de um alerta
-    // de classe_viaria disparar -- fora da janela antiga de 10min, D1
-    // (paradaRecentePertoDeEntrega) nao tinha como ver essa parada como
-    // corroboracao, mesmo o veiculo estando em zigue-zague normal de
-    // ultima milha entre duas entregas reais do mesmo dia. D1/D3
-    // continuam exigindo prova POSITIVA (raio+distancia+direcao) dentro da
-    // janela -- alargar so aumenta quanto tempo pra tras essa prova pode
-    // ter acontecido, nao afrouxa nenhum outro criterio.
-    async function buscarJanelaHistoricoCliente(
-      veiculoIds: string[]
-    ): Promise<Map<string, PontoJanelaPlacar[]>> {
-      if (veiculoIds.length === 0) return new Map();
-      const pgJanela = await pool.connect();
-      try {
-        const { rows } = await pgJanela.query<{
-          veiculo_id: string; lat: number; lng: number; velocidade: number; criado_em: Date;
-        }>(
-          `SELECT veiculo_id, lat, lng, velocidade, criado_em FROM posicoes_historico
-           WHERE veiculo_id = ANY($1::uuid[]) AND criado_em > now() - interval '20 minutes'
-           ORDER BY veiculo_id, criado_em ASC`,
-          [veiculoIds]
-        );
-        const porVeiculo = new Map<string, PontoJanelaPlacar[]>();
-        for (const r of rows) {
-          const lista = porVeiculo.get(r.veiculo_id) ?? [];
-          lista.push({ lat: r.lat, lng: r.lng, velocidade: r.velocidade, criadoEm: r.criado_em.toISOString() });
-          porVeiculo.set(r.veiculo_id, lista);
-        }
-        return porVeiculo;
-      } catch {
-        return new Map();
-      } finally {
-        pgJanela.release();
-      }
-    }
-
-    // Modo teste (spec docs/superpowers/specs/2026-08-11-modo-teste-desvio-zero-design.md):
-    // prefetch de uma vez por ciclo -- clientes com o flag ligado, romaneio
-    // de hoje marcado modo_teste=true (posicao SEMPRE por endereco, nunca
-    // Unitrac), e o estado persistido do score de cada veiculo.
-    const clientesModoTesteAtivo = new Set<string>();
-    const romaneioTestePorPlaca = new Map<string, PontoComId[]>();
-    const estadoTestePorVeiculo = new Map<string, EstadoDesvioTeste>();
-    try {
-      const { rows } = await pool.query<{ id: string }>(
-        `SELECT id FROM clientes WHERE modo_teste_ativo = true`
-      );
-      for (const r of rows) clientesModoTesteAtivo.add(r.id);
-    } catch (errModoTeste) {
-      erros.push(`Aviso: modo teste indisponivel neste ciclo (clientes): ${String(errModoTeste)}`);
-    }
-    if (clientesModoTesteAtivo.size > 0) {
-      try {
-        const { rows } = await pool.query<{ placa: string; id: string; lat: number; lng: number }>(
-          `SELECT rp.placa, rp.id::text, rp.lat, rp.lng
-             FROM romaneio_pontos rp
-            WHERE rp.modo_teste = true
-              AND rp.presenca_confirmada_em IS NULL
-              AND rp.lat IS NOT NULL AND rp.lng IS NOT NULL
-              AND rp.romaneio_data = (now() AT TIME ZONE 'America/Sao_Paulo')::date`
-        );
-        for (const r of rows) {
-          const lista = romaneioTestePorPlaca.get(r.placa) ?? [];
-          lista.push({ id: r.id, lat: r.lat, lng: r.lng });
-          romaneioTestePorPlaca.set(r.placa, lista);
-        }
-      } catch (errRomaneioTeste) {
-        erros.push(`Aviso: modo teste indisponivel neste ciclo (romaneio): ${String(errRomaneioTeste)}`);
-      }
-      try {
-        const { rows } = await pool.query<{
-          veiculo_id: string;
-          ultima_parada_real_lat: number;
-          ultima_parada_real_lng: number;
-          fora_streak: number;
-          sequencia_ids: string[] | null;
-          sequencia_atualizada_em: string | null;
-        }>(
-          `SELECT veiculo_id, ultima_parada_real_lat, ultima_parada_real_lng, fora_streak, sequencia_ids, sequencia_atualizada_em FROM desvio_teste_estado`
-        );
-        for (const r of rows) {
-          estadoTestePorVeiculo.set(r.veiculo_id, {
-            ultimaParadaReal: { lat: Number(r.ultima_parada_real_lat), lng: Number(r.ultima_parada_real_lng) },
-            foraStreak: Number(r.fora_streak),
-            sequenciaIds: r.sequencia_ids,
-            sequenciaAtualizadaEm: r.sequencia_atualizada_em,
-          });
-        }
-      } catch (errEstadoTeste) {
-        erros.push(`Aviso: modo teste indisponivel neste ciclo (estado): ${String(errEstadoTeste)}`);
       }
     }
 
@@ -1705,7 +1207,6 @@ export async function POST(request: Request) {
       // TODO veiculo fresco com sua velocidade, nao so os parados.
       const posicoesFrescasComVelocidade: { lat: number; lng: number; velocidade: number }[] = [];
       const celulasCandidatasTapete = new Set<string>();
-      const celulasCandidatasVeiculo: { veiculo_id: string; celula: string }[] = [];
       const chavesCandidatasGeocode = new Set<string>();
       for (const raw of posicoesRaw) {
         try {
@@ -1713,12 +1214,6 @@ export async function POST(request: Request) {
           if (p.fresco && p.lat != null && p.lng != null) {
             posicoesFrescasComVelocidade.push({ lat: p.lat, lng: p.lng, velocidade: p.velocidade });
             for (const c of vizinhanca3x3(p.lat, p.lng)) celulasCandidatasTapete.add(c);
-            const veiculoIdPrepass = mapaCv.get(p.cv)?.veiculo_id;
-            if (veiculoIdPrepass) {
-              for (const c of vizinhanca3x3(p.lat, p.lng)) {
-                celulasCandidatasVeiculo.push({ veiculo_id: veiculoIdPrepass, celula: c });
-              }
-            }
             chavesCandidatasGeocode.add(chaveGeocode(p.lat, p.lng));
           }
         } catch { /* posicao malformada: ignora na pre-passada */ }
@@ -1733,12 +1228,18 @@ export async function POST(request: Request) {
         cliente.id,
         [...celulasCandidatasTapete]
       );
-      const contagensFamiliaridadeCliente = await getContagensFamiliaridadeCliente(cliente.id, veiculoIdsCliente);
-      const celulasFamiliaridadeVeiculo = await buscarCelulasVeiculoCandidatas(celulasCandidatasVeiculo);
-      const classesViariasCliente = await buscarClassesViariasCandidatas([...celulasCandidatasTapete]);
-      // Placar de desvio (D1/D2): janela de 20min de TODOS os veiculos do
-      // cliente, 1 query batched (ver buscarJanelaHistoricoCliente acima).
-      const janelaHistoricoCliente = await buscarJanelaHistoricoCliente(veiculoIdsCliente);
+      // Detector de desvio v2: frequencia historica de celulas do cliente
+      // (frota inteira), pro Sinal B (rua rara). 1 query batched por cliente.
+      const celulasFrequenciaCliente = new Map<string, number>();
+      try {
+        const { rows: rowsFreqCelula } = await pool.query<{ celula: string; n_visitas: number }>(
+          `SELECT celula, n_visitas FROM celula_frequencia_cliente WHERE cliente_id = $1`,
+          [cliente.id]
+        );
+        for (const r of rowsFreqCelula) celulasFrequenciaCliente.set(r.celula, r.n_visitas);
+      } catch (errFreqCelula) {
+        erros.push(`Aviso: desvio v2 indisponivel neste ciclo (frequencia de celula): ${String(errFreqCelula)}`);
+      }
       // Presenca de entrega (decisao do usuario 01/08): pontos onde o
       // veiculo JA ficou parado o tempo minimo hoje contam como entregues,
       // mesmo sem marcacao na Unitrac. 1 query batched por cliente.
@@ -1802,9 +1303,7 @@ export async function POST(request: Request) {
         raw,
         veiculo_id: mapaCv.get(String((raw as Record<string, unknown> | null)?.veicucodigo))?.veiculo_id ?? "",
       }));
-      const posicoesOrdenadas = ordenarPorPrioridadeVerificacao(posicoesComVeiculoId, ultimaVerificacaoCorredorPorVeiculo);
-
-      for (const { raw } of posicoesOrdenadas) {
+      for (const { raw } of posicoesComVeiculoId) {
         try {
           const pos = normalizar(raw as Record<string, unknown>);
           totalProcessados++;
@@ -1859,13 +1358,6 @@ export async function POST(request: Request) {
             paradoMin = Math.round((agora.getTime() - new Date(parado_desde).getTime()) / 60000);
           }
 
-          // Origem pro par O-D do tapete (migration 014, so coleta): celula
-          // da ultima parada de 5+ min. Persistida em posicoes_atuais.
-          // origem_celula; carrega a anterior enquanto nao houver parada nova.
-          let origemCelula: string | null = anterior?.origem_celula ?? null;
-          if (pos.velocidade === 0 && paradoMin >= 5) {
-            origemCelula = celulaDe(pos.lat, pos.lng);
-          }
 
           // Calcular se o veiculo esta dentro de alguma base do cliente
           // (point-in-polygon contra o perímetro real da base).
@@ -2018,76 +1510,6 @@ export async function POST(request: Request) {
             ...escalaDoVeiculo.map((e) => ({ lat: e.lat, lng: e.lng, codigo: null })),
           ];
 
-          // Modo teste: caminho totalmente paralelo, so roda se o cliente tiver o
-          // flag ligado. Nunca le nem escreve nada que o caminho de producao acima
-          // usa (destinos/pendentes/desvioStreak/alertas sem modo_teste=true).
-          if (clientesModoTesteAtivo.has(cliente_id)) {
-            // Achado real (revisao caso a caso, 11/08): base tem que contar
-            // como destino valido -- sem isso, voltar pra base no fim da
-            // rota parecia "afastar de tudo". basesComoDestinoCerca ja
-            // existe nesta mesma iteracao com codigo estavel (base:${nome}).
-            const destinosTeste: PontoComId[] = [
-              ...(romaneioTestePorPlaca.get(pos.placa) ?? []).map((r) => ({ id: r.id, lat: r.lat, lng: r.lng })),
-              ...basesComoDestinoCerca.map((b) => ({ id: b.codigo, lat: b.lat, lng: b.lng })),
-            ];
-            const estadoAnteriorTeste = estadoTestePorVeiculo.get(veiculo_id) ?? null;
-
-            try {
-              // Achado 11/08 (docs/analise-desvio-raiz-2026-08-11.md): a
-              // pergunta certa continua "esta em cima de uma estrada real
-              // que leva a algum destino pendente?" (verificarCorredor),
-              // mas testada perna-a-perna contra a sequencia de visita
-              // otimizada (OSRM /trip) -- nao mais contra todos os
-              // destinos de uma vez a partir de um ponto congelado, que
-              // disparava em rotas de entrega legitimas de multiplas
-              // paradas.
-              const resultadoTeste = await avaliarDesvioTeste(
-                { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
-                destinosTeste,
-                estadoAnteriorTeste,
-                PARAMS_DESVIO_TESTE_PADRAO
-              );
-
-              await pool.query(
-                `INSERT INTO desvio_teste_estado (veiculo_id, ultima_parada_real_lat, ultima_parada_real_lng, fora_streak, sequencia_ids, sequencia_atualizada_em, atualizado_em)
-                 VALUES ($1, $2, $3, $4, $5::jsonb, $6, now())
-                 ON CONFLICT (veiculo_id) DO UPDATE SET
-                   ultima_parada_real_lat = EXCLUDED.ultima_parada_real_lat,
-                   ultima_parada_real_lng = EXCLUDED.ultima_parada_real_lng,
-                   fora_streak = EXCLUDED.fora_streak,
-                   sequencia_ids = EXCLUDED.sequencia_ids,
-                   sequencia_atualizada_em = EXCLUDED.sequencia_atualizada_em,
-                   atualizado_em = now()`,
-                [
-                  veiculo_id,
-                  resultadoTeste.estado.ultimaParadaReal.lat,
-                  resultadoTeste.estado.ultimaParadaReal.lng,
-                  resultadoTeste.estado.foraStreak,
-                  JSON.stringify(resultadoTeste.estado.sequenciaIds),
-                  resultadoTeste.estado.sequenciaAtualizadaEm,
-                ]
-              );
-
-              if (resultadoTeste.disparouAgora) {
-                await pool.query(
-                  `INSERT INTO alertas (cliente_id, veiculo_id, nivel, tipo, motivo, score, status, lat, lng, contexto, modo_teste)
-                   VALUES ($1, $2, 'atencao', 'desvio', $3, $4, 'ativo', $5, $6, $7::jsonb, true)`,
-                  [
-                    cliente_id,
-                    veiculo_id,
-                    `Modo teste: fora do corredor de qualquer destino pendente ha ${resultadoTeste.estado.foraStreak} leituras`,
-                    resultadoTeste.estado.foraStreak,
-                    pos.lat,
-                    pos.lng,
-                    JSON.stringify({ modo_teste: true, foraStreak: resultadoTeste.estado.foraStreak }),
-                  ]
-                );
-              }
-            } catch (errModoTesteGravacao) {
-              erros.push(`Aviso: falha ao gravar modo teste pro veiculo ${veiculo_id}: ${String(errModoTesteGravacao)}`);
-            }
-          }
-
           // Achado CRITICO da revisao final de branch (docs/superpowers/plans/2026-08-09-escala-rota.md):
           // destinos de escala (raio ~10km, coordenada aproximada -- centro
           // de cidade) NAO podem contar como "chegada" (chegouEmDestinoConhecido
@@ -2115,105 +1537,6 @@ export async function POST(request: Request) {
 
           // Achado real 11/08 (TOS-2B69, falso positivo ao vivo minutos
           // depois do deploy do pct80): veiculo se deslocou 80m dentro do
-          // proprio cliente (raio de entrega), e isso bastou pra "afastar"
-          // 22 de 26 destinos (>= pct80) so por geometria. TENTATIVA de fix:
-          // suprimir afastouDeTudo quando o veiculo esta dentro do raio de
-          // QUALQUER destino pendente -- REVERTIDA no mesmo dia (achado
-          // real, reclamacao direta do usuario as ~10h30: "identificava bem
-          // mais e hoje piorou"). Causa raiz do efeito colateral: a mesma
-          // sessao corrigiu 2.187 posicoes de pontos (fonte='manual', ver
-          // scripts/corrigir-pontos-manual.mjs) ao longo do dia -- quanto
-          // mais pontos ficam com coordenada certa, mais vezes o veiculo
-          // passa DENTRO do raio de ALGUM dos 15-30 destinos pendentes da
-          // rota (mesmo sem estar entregando ali, so passando perto),
-          // suprimindo leituras de desvio real com mais e mais frequencia
-          // ao longo do dia -- o oposto do que deveria acontecer quando o
-          // cadastro melhora. TOS-2B69 em si nem foi resolvido por este
-          // fix (o ponto real dele ja tinha saido de "pendentes", ver
-          // investigacao completa no commit anterior) -- so causou dano,
-          // sem beneficio no caso que motivou. Removido, pct80 volta a
-          // rodar sem nenhuma supressao extra.
-          const afastandoDeTudoAtual = afastouDeTudo(distDestinosM, distDestinosAnteriorM);
-
-          let desvioStreak: number = anterior?.desvio_streak ?? 0;
-          let desvioInicio: DesvioInicio | null = anterior?.desvio_inicio ?? null;
-          // aproximandoStreak: ciclos consecutivos aproximando (sem afastar
-          // de tudo) — usado pra HISTERESE do streak (avancarStreaksDesvio: 1
-          // aproximação isolada congela a suspeita em vez de apagar, 2 zeram
-          // — mata a detecção tardia em estrada de serra onde a linha reta
-          // oscila). Achado real 11/07 (TUL-1C38 e o bug de churn da cerca):
-          // NAO resolve mais alerta nenhum sozinho -- ver comentário no bloco
-          // de gerenciamento de alertas mais abaixo.
-          let aproximandoStreak: number = anterior?.aproximando_streak ?? 0;
-          // Reaproveitado tambem pelo streak de divergencia de rumo mais
-          // abaixo (achado revisao final 25/07) -- mesmo guard contra GPS
-          // congelado (POSICAO_CONGELADA_M), uma unica chamada.
-          const podeAvancarStreaksDesvio = devAvancarStreaksDesvio({
-            fresco: pos.fresco,
-            saltoImplausivel,
-            distanciaAoAnteriorM: temAnterior ? haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng) : null,
-            velocidade: pos.velocidade,
-          });
-          // Achado da revisao independente 29/07 (fallback de alvos acima):
-          // sem o gate extra, uma falha SUSTENTADA (>30min, cache expirado)
-          // degrada destinos pra bases-only e o streak avancava/zerava com
-          // geometria de "afastando so das bases" -- lixo geometrico que
-          // podia poluir a streak e disparar desvio bogus assim que o
-          // proximo fetch bem-sucedido reabrisse o gate de detectarDesvio.
-          // Congela em vez de avancar quando nao ha dado confiavel (live ou
-          // fallback de cache), mesmo espirito de leituraAlvosConfiavel.
-          if (podeAvancarStreaksDesvio && alvosDestinosDisponiveis) {
-            const r = avancarStreaksDesvio(
-              afastandoDeTudoAtual,
-              { desvioStreak, aproximandoStreak }
-            );
-            if (r.desvioStreak === 1 && desvioStreak === 0) {
-              // indiceReferencia: qual destino era o mais proximo neste
-              // instante -- guardado pra rastrear o MESMO destino depois
-              // (ver afastamentoAcumuladoM abaixo, achado real 11/08).
-              let indiceReferencia = -1;
-              for (let i = 0; i < distDestinosAnteriorM.length; i++) {
-                if (indiceReferencia === -1 || distDestinosAnteriorM[i] < distDestinosAnteriorM[indiceReferencia]) {
-                  indiceReferencia = i;
-                }
-              }
-              desvioInicio = {
-                lat: anterior!.lat!,
-                lng: anterior!.lng!,
-                ts: agora.toISOString(),
-                menor_dist_m: indiceReferencia >= 0 ? distDestinosAnteriorM[indiceReferencia] : 0,
-                pontoCodigoReferencia: indiceReferencia >= 0 ? destinos[indiceReferencia].codigo : null,
-              };
-            }
-            if (r.zerou) desvioInicio = null;
-            desvioStreak = r.desvioStreak;
-            aproximandoStreak = r.aproximandoStreak;
-          }
-          // Fix real 11/08 (bug de dado, so texto do alerta -- confirmado
-          // que nao afeta score/branch, so o "+Xkm acumulado" do motivo):
-          // se o destino de referencia (o mais proximo quando o streak
-          // comecou) tem codigo rastreavel, usa a distancia ATE ELE MESMO
-          // neste ciclo -- nao o minimo entre QUALQUER destino atual, que
-          // pode ter trocado de identidade se o de referencia foi entregue
-          // e saiu de `pendentes` no meio do streak. Se sumiu, nao inflar
-          // o acumulado comparando distancia-ate-destino-diferente -- so
-          // congela a contribuicao deste ciclo em 0. Sem referencia
-          // rastreavel (base/escala, codigo null), mantem o comportamento
-          // antigo -- esses destinos nao saem do conjunto no meio do
-          // streak, entao nao sao o bug que motivou isso.
-          const indiceReferenciaAtual =
-            desvioInicio?.pontoCodigoReferencia != null
-              ? destinos.findIndex((d) => d.codigo === desvioInicio!.pontoCodigoReferencia)
-              : -1;
-          const afastamentoAcumuladoM =
-            !desvioInicio || menorDistDestinoM === null
-              ? 0
-              : desvioInicio.pontoCodigoReferencia != null
-                ? indiceReferenciaAtual >= 0
-                  ? distDestinosM[indiceReferenciaAtual] - desvioInicio.menor_dist_m
-                  : 0
-                : menorDistDestinoM - desvioInicio.menor_dist_m;
-
           // Camada 2 (tapete): sinal PRIMÁRIO, calculado TODO ciclo (não só
           // quando já suspeito) — precisa estar pronto desde o 1º ciclo pra
           // decidir a severidade rápido. celulasTapeteCliente já veio restrita
@@ -2233,68 +1556,6 @@ export async function POST(request: Request) {
             dentroTapete = vizinhanca3x3(pos.lat, pos.lng).some((c) => celulasTapeteCliente.has(c));
           }
 
-          // Familiaridade PESSOAL do veiculo com a area atual -- ver
-          // docs/superpowers/specs/2026-07-21-familiaridade-veiculo-desvio-design.md.
-          // Piso bem menor que TAPETE_MIN_CELULAS (300, por FROTA): por ser
-          // por veiculo unico, 30 celulas distintas ja e cobertura razoavel
-          // (ajustavel depois com dado real, mesmo espirito de todo outro
-          // limiar deste arquivo).
-          const FAMILIARIDADE_MIN_CELULAS = 30;
-          let familiarVeiculo: boolean | null = null;
-          const contagemFamiliaridadeVeiculo = contagensFamiliaridadeCliente.get(veiculo_id) ?? 0;
-          if (pos.fresco && contagemFamiliaridadeVeiculo >= FAMILIARIDADE_MIN_CELULAS) {
-            familiarVeiculo = vizinhanca3x3(pos.lat, pos.lng).some((c) =>
-              celulasFamiliaridadeVeiculo.has(`${veiculo_id}:${c}`)
-            );
-          }
-
-          // Classificacao viaria (via principal x rua estreita) -- ver
-          // docs/superpowers/specs/2026-07-21-classe-viaria-desvio-design.md.
-          // classeViaAtual = melhor classe entre as 9 celulas da vizinhanca
-          // 3x3 da posicao atual (null = nenhuma celula mapeada ali).
-          let classeViaAtual: string | null = null;
-          if (pos.fresco) {
-            for (const c of vizinhanca3x3(pos.lat, pos.lng)) {
-              const classe = classesViariasCliente.get(c);
-              if (classe) {
-                classeViaAtual = melhorClasse(
-                  classeViaAtual as "principal" | "intermediaria" | "estreita" | null,
-                  classe as "principal" | "intermediaria" | "estreita"
-                );
-              }
-            }
-          }
-
-          // Estado persistido: quando foi a ultima vez visto numa via
-          // principal. Decai naturalmente pela checagem de janela abaixo
-          // (JANELA_QUEDA_CLASSE_MIN), sem precisar resetar explicitamente.
-          const ultimaViaPrincipalAnterior = anterior?.ultima_via_principal_em ?? null;
-          const ultimaViaPrincipalEm =
-            pos.fresco && classeViaAtual === "principal" ? agora.toISOString() : ultimaViaPrincipalAnterior;
-
-          const JANELA_QUEDA_CLASSE_MIN = 10;
-          const quedaClasseViaria =
-            classeViaAtual === "estreita" &&
-            ultimaViaPrincipalAnterior !== null &&
-            agora.getTime() - new Date(ultimaViaPrincipalAnterior).getTime() <= JANELA_QUEDA_CLASSE_MIN * 60_000;
-
-          // Streak de "aproximando mas fora do tapete" — Camada 3 do desvio
-          // (ver detectarDesvio em detectores.ts). So incrementa com
-          // cobertura minima confirmada (mesmo piso do dentroTapete acima) —
-          // sem tapete confiavel ainda, fica 0 (nunca dispara por cold-start,
-          // mesma protecao de sempre).
-          let foraTapeteStreak: number = anterior?.fora_tapete_streak ?? 0;
-          // alvosDestinosDisponiveis: mesmo achado da revisao 29/07 acima
-          // (desvioStreak) -- sem isso, falha sustentada de alvos degrada
-          // distDestinosM pra bases-only e polui esta streak tambem.
-          if (pos.fresco && !saltoImplausivel && alvosDestinosDisponiveis && contagemTapeteCliente >= TAPETE_MIN_CELULAS) {
-            if (!afastandoDeTudoAtual && dentroTapete === false) {
-              foraTapeteStreak += 1;
-            } else {
-              foraTapeteStreak = 0;
-            }
-          }
-
           // Alimentar o tapete: células do trajeto desde o ciclo anterior.
           // origem/destino: par O-D da migration 014 (só coleta, ver design)
           // — destino = célula do pendente mais próximo no momento.
@@ -2310,8 +1571,7 @@ export async function POST(request: Request) {
               destinoCelula = celulaDe(maisPerto.lat, maisPerto.lng);
             }
             for (const c of celulasDoSegmento(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng)) {
-              celulasCiclo.push({ cliente_id, celula: c, origem: origemCelula, destino: destinoCelula });
-              celulasVeiculoCiclo.push({ veiculo_id, celula: c });
+              celulasCiclo.push({ cliente_id, celula: c, origem: null, destino: destinoCelula });
             }
           }
 
@@ -2390,142 +1650,6 @@ export async function POST(request: Request) {
             idxMaisProximo >= 0 &&
             suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, false);
 
-          // Divergencia de rumo (achado 25/07): compara rumoMovimento (ja
-          // calculado acima) contra o rumo esperado ate o destino mais
-          // proximo. Streak persistido igual foraTapeteStreak.
-          //
-          // Achado revisao final 25/07: precisa do mesmo guard contra GPS
-          // congelado que devAvancarStreaksDesvio ja da pro streak de desvio
-          // (podeAvancarStreaksDesvio acima) -- sem ele, posicao congelada
-          // entre ciclos com pos.fresco ainda true faz rumoGraus(anterior,
-          // atual) com anterior===atual retornar 0 (atan2(0,0), norte fixo),
-          // uma divergencia fabricada que pode passar do limiar e disparar
-          // "atencao" falso a cada 2 ciclos parados.
-          let divergenciaRumoStreak: number = anterior?.divergencia_rumo_streak ?? 0;
-          // Achado CRITICO da revisao independente 28/07 (Task 4b): anchor
-          // PROPRIO da streak de divergencia de rumo, espelhando EXATAMENTE
-          // o padrao ja usado por desvioInicio/desvioStreak acima (mesmo
-          // shape DesvioInicio, mesma logica de setar na transicao 0->1 e
-          // limpar quando a streak zera). Sem isto, a Task 4 (ligar
-          // verificarCorredor em rumo-diverge) era wiring MORTO no caso
-          // exato que a motivou: rumo-diverge disparando SEM nenhum episodio
-          // de "afastando de tudo" antes (desvioInicio null) -- justamente o
-          // padrao rodovia-com-curva (TTK-4D14) que a Task 4 existe pra
-          // cobrir -- porque o gate de verificarCorredor exigia desvioInicio
-          // nao-nulo, e esse so pertence a streak de afastando-de-tudo.
-          let divergenciaRumoInicio: DesvioInicio | null = anterior?.divergencia_rumo_inicio ?? null;
-          let divergenciaRumoCaminhoM: number = anterior?.divergencia_rumo_caminho_m ?? 0;
-          // Achado real 26/07 (Fase 2): valor CRU do ciclo atual (nao
-          // acumulado em streak), exposto pra viradaErradaSaindoDeParada
-          // poder decidir com 1 leitura so -- reaproveita o MESMO calculo
-          // (e os mesmos guards: fresco, saltoImplausivel, suspensoPorChegada,
-          // podeAvancarStreaksDesvio) ja usado pro streak geral, sem duplicar
-          // a chamada de divergenciaRumoMinima.
-          let divergenciaGrausAtual: number | null = null;
-          // alvosDestinosDisponiveis: mesmo achado da revisao 29/07 acima --
-          // sem isso, `destinos` pode ser so uma base (falha sustentada,
-          // cache expirado), fabricando divergencia de rumo contra um alvo
-          // que nao e o real.
-          if (pos.fresco && !saltoImplausivel && !suspensoPorChegada && podeAvancarStreaksDesvio && alvosDestinosDisponiveis && destinos.length > 0) {
-            // Achado real 31/07-01/08: compara contra TODOS os destinos
-            // (nao so destinos[idxMaisProximo]) -- ver comentario de
-            // divergenciaRumoMinima em unitrac.ts.
-            const divergencia = divergenciaRumoMinima(
-              anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
-              destinos.slice(0, NAO_ESCALA_LEN),
-              pos.velocidade
-            );
-            divergenciaGrausAtual = divergencia;
-            if (divergenciaRumoAcimaDoLimiar(divergencia)) {
-              const streakAnteriorDivergencia = divergenciaRumoStreak;
-              divergenciaRumoStreak += 1;
-              // Achado real 30/07: acumula a distancia percorrida NESTE ciclo --
-              // na transicao 0->1 (mesmo ciclo que ancora divergenciaRumoInicio em
-              // anterior!), o "caminho" comeca do zero com o segmento
-              // anterior->atual (nao soma em cima de um valor de um episodio
-              // ANTERIOR ja encerrado); em ciclos seguintes da MESMA streak,
-              // continua somando.
-              const segmentoM = haversineM(anterior!.lat!, anterior!.lng!, pos.lat, pos.lng);
-              divergenciaRumoCaminhoM = streakAnteriorDivergencia === 0 ? segmentoM : divergenciaRumoCaminhoM + segmentoM;
-              // Transicao 0->1: mesma logica do desvioInicio acima (anterior!
-              // seguro aqui -- podeAvancarStreaksDesvio so e true quando ha
-              // ciclo anterior, ver devAvancarStreaksDesvio).
-              if (streakAnteriorDivergencia === 0) {
-                divergenciaRumoInicio = {
-                  lat: anterior!.lat!,
-                  lng: anterior!.lng!,
-                  ts: agora.toISOString(),
-                  menor_dist_m: distDestinosAnteriorM.length > 0 ? Math.min(...distDestinosAnteriorM) : 0,
-                };
-              }
-            } else {
-              divergenciaRumoStreak = 0;
-              divergenciaRumoInicio = null;
-              divergenciaRumoCaminhoM = 0;
-            }
-          } else {
-            divergenciaRumoStreak = 0;
-            divergenciaRumoInicio = null;
-            divergenciaRumoCaminhoM = 0;
-          }
-
-          // ─── Placar de desvio (Fase 1, SOMBRA) -- sinais que somam ──────
-          // Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md.
-          // S1/S2/S4/S5 (contribuições positivas) só somam sob os MESMOS
-          // guards que os streaks de desvio já usam -- guard duplicado de
-          // propósito (idêntico ao `if` de divergenciaGrausAtual logo acima)
-          // em vez de reescrever aquele `if`, pra não arriscar a lógica do
-          // streak já existente. Descontos (D1-D4) NÃO usam este guard --
-          // aplicam sempre que computáveis, ver bloco final mais abaixo.
-          const podeSomarSinaisPlacar =
-            pos.fresco && !saltoImplausivel && !suspensoPorChegada &&
-            podeAvancarStreaksDesvio && alvosDestinosDisponiveis && destinos.length > 0;
-
-          // D3 (placar): divergência de rumo POR DESTINO PENDENTE -- não só
-          // o mínimo agregado que divergenciaGrausAtual acima já calcula.
-          // destinoAlinhadoAproximando (lib) precisa da divergência e
-          // distância de CADA entrega individualmente. distDestinosM[i]
-          // alinha 1:1 com pendentes[i] (mesma ordem de construção de
-          // `destinos` acima: pendentes primeiro, bases depois) -- reusa a
-          // distância já calculada, não recalcula. Bases ficam de fora (D3 é
-          // sobre destino alinhado com uma ENTREGA, não retorno à base).
-          //
-          // Achado pos-revisao-final 01/08: isto é um DESCONTO (D3), então
-          // NÃO usa podeSomarSinaisPlacar (guard das contribuições
-          // POSITIVAS S1/S2/S4/S5) -- usava antes por engano, e isso
-          // mantinha D3 sempre vazio (array nunca preenchido) sempre que
-          // qualquer parte daquele guard mais restrito falhasse (ex.:
-          // podeAvancarStreaksDesvio=false), mesmo com D1/D2 rodando
-          // normalmente no mesmo ciclo. Guard correto = mesmo que D1/D2 já
-          // usam (pos.fresco && temPendentes, ver `if (!pos.fresco ||
-          // !temPendentes)` mais abaixo): descontos aplicam sempre que
-          // computáveis.
-          const rumoDivergenciaPorDestinoPlacar: { codigo: string; divergenciaGraus: number; distM: number }[] = [];
-          if (pos.fresco && temPontosParaCorroboracao) {
-            for (let i = 0; i < pontosVeiculoParaCorroboracao.length; i++) {
-              const pt = pontosVeiculoParaCorroboracao[i];
-              const divergenciaPt = divergenciaRumoGraus(
-                anterior?.lat ?? pos.lat, anterior?.lng ?? pos.lng, pos.lat, pos.lng,
-                pt.lat, pt.lng,
-                // Bypassa o piso de velocidade de divergenciaRumoGraus
-                // (999 = sem piso, ver default do parametro em unitrac.ts)
-                // SÓ pra este calculo POR DESTINO usado exclusivamente pelo
-                // D3. D3 tem corroborador independente -- distância caindo
-                // + <1500m (D3_DIST_MAX_M) -- então rumo ruidoso em baixa
-                // velocidade é aceitável pra um DESCONTO; um falso desconto
-                // é mais seguro que um falso ponto (que o piso continua
-                // protegendo: S2 e os detectores existentes NÃO mudam,
-                // seguem passando pos.velocidade normalmente).
-                999
-              );
-              if (divergenciaPt === null) continue;
-              rumoDivergenciaPorDestinoPlacar.push({
-                codigo: codigoDestinoPlacar(pt),
-                divergenciaGraus: divergenciaPt,
-                distM: distDestinosCorroboracaoM[i],
-              });
-            }
-          }
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
           let tiroteioIdadeMin: number | null = null;
@@ -2595,23 +1719,6 @@ export async function POST(request: Request) {
             dentroTapete === false &&
             foraDaBase && !noCliente && emOperacao;
 
-          // Candidato ao S6 do placar (achado auditoria 04/08, ver
-          // PLACAR_PESOS.s6ParadoLongeDeTudo em placar-desvio.ts): mesmo
-          // espirito de candidatoParadaForaTapete (gatilho rapido,
-          // independente do guard de movimento que S1/S2/S4/S5 usam), mas
-          // define "longe de tudo" por DISTANCIA (menorDistDestinoM, mesmo
-          // dado que S1 usa) em vez de familiaridade de rota (dentroTapete)
-          // -- nao exige dentroTapete===false de proposito, pra cobrir
-          // tambem o caso de parar numa rua CONHECIDA da frota mas longe de
-          // qualquer destino/base real (situacao que candidatoParadaForaTapete
-          // nao cobre). So placar (Fase 1, sombra) -- nao cria alerta.
-          const candidatoS6ParadoLongeDeTudo =
-            pos.fresco &&
-            pos.velocidade === 0 &&
-            paradoMin * 60 >= S6_PARADO_MIN_SEG &&
-            menorDistDestinoM !== null && menorDistDestinoM >= S6_DIST_MIN_M &&
-            foraDaBase && !noCliente && emOperacao;
-
           // Candidato a SAIDA NAO AUTORIZADA parado: tambem precisa de temPOI para
           // suprimir abastecimento/parada de apoio (so faz sentido fora ~2km da base).
           const candidatoSaidaParado =
@@ -2642,8 +1749,8 @@ export async function POST(request: Request) {
             esMadrugada = horaSP >= 0 && horaSP < 5;
           }
           // POI consultado para parada anomala, saida nao autorizada parada,
-          // parada fora do tapete E S6 do placar (mesma supressao anti-FP).
-          if (candidatoParadaAnomala || candidatoSaidaParado || candidatoParadaForaTapete || candidatoS6ParadoLongeDeTudo) {
+          // parada fora do tapete (mesma supressao anti-FP).
+          if (candidatoParadaAnomala || candidatoSaidaParado || candidatoParadaForaTapete) {
             try {
               temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
             } catch {
@@ -2658,21 +1765,16 @@ export async function POST(request: Request) {
           }
 
           // Congestionamento: quantos OUTROS veiculos da frota estao parados num
-          // raio curto. >= 2 => transito/fila, suprime a parada anomala, a
-          // parada fora do tapete E o S6 do placar (mesmo sinal, mesma supressao, anti-FP).
+          // raio curto. >= 2 => transito/fila, suprime a parada anomala e a
+          // parada fora do tapete (mesmo sinal, mesma supressao, anti-FP).
           let vizinhosParados = 0;
-          if (candidatoParadaAnomala || candidatoParadaForaTapete || candidatoS6ParadoLongeDeTudo) {
+          if (candidatoParadaAnomala || candidatoParadaForaTapete) {
             let dentro = 0;
             for (const q of posicoesFrescasComVelocidade) {
               if (q.velocidade === 0 && haversineM(pos.lat, pos.lng, q.lat, q.lng) <= RAIO_CONGESTION_M) dentro++;
             }
             vizinhosParados = Math.max(0, dentro - 1); // exclui o proprio veiculo
           }
-          // S6 do placar: candidato + mesma supressao anti-FP de
-          // detectarParadaAnomala/ForaTapete (POI legitimo por perto, ou
-          // 2+ vizinhos parados = transito/fila, nao desvio).
-          const s6ParadoLongeDeTudoAtual =
-            candidatoS6ParadoLongeDeTudo && !temPOI && vizinhosParados < 2;
           // Transito inferido pela propria frota (12/07): quantos OUTROS
           // veiculos estao LENTOS (nao parados) por perto -- corrobora
           // congestionamento real em vez de desvio suspeito.
@@ -2754,159 +1856,6 @@ export async function POST(request: Request) {
             amostrasBaselineCiclo.push({ veiculo_id, cliente_id, tipoViagem, velocidade: pos.velocidade });
           } else if (decisaoBaseline.marcarExclusaoAgora) {
             baselineExclusaoCiclo.set(chaveBaselineVeiculo, agora.toISOString());
-          }
-
-          // ─── CERCA VIRTUAL (ver CERCA_VIRTUAL_MODO no topo) ──────────────
-          // Mantem o corredor proativo por veiculo. Em modo "ativa" (11/07,
-          // diretiva explicita do usuario: falso positivo aceitavel,
-          // prioridade total e nunca perder desvio real), "fora" vira um
-          // Alerta de verdade (alertaCerca, mesclado nos "extras" mais
-          // abaixo) A PARTIR DA SEGUNDA leitura fora consecutiva -- aguarda confirmacao. Sempre
-          // grava em cerca_sombra tambem (auditoria/historico). Semeadura
-          // usa a POSICAO ATUAL como origem de rota (correto aqui: a rota
-          // semeada e checada contra posicoes FUTURAS, nunca contra a
-          // propria origem -- diferente do bug tautologico de 10/07, onde
-          // origem e ponto checado eram o mesmo).
-          let alertaCerca: Alerta | null = null;
-          if (
-            CERCA_VIRTUAL_MODO !== "desligada" &&
-            pos.fresco &&
-            pos.velocidade > 0 &&
-            pendentes.length > 0 &&
-            !saltoImplausivel &&
-            // Achado revisao final 25/07: a cerca virtual e um caminho de
-            // alerta SEPARADO de detectarDesvio (nunca passa por ele), entao
-            // nao herdava a suspensao por chegada aplicada la (linha ~672 em
-            // detectores.ts). A Task 8 removeu o alargamento de buffer perto
-            // da chegada assumindo que suspensoPorChegada cobria o mesmo
-            // caso -- so que so cobria o lado comportamental. Sem este guard,
-            // clientes com doca/portaria recuada da via publica (corredor
-            // OSRM nao alcanca) reintroduziam o falso positivo documentado
-            // no achado 15/07 (caso 3C94).
-            !suspensoPorChegada
-          ) {
-            // Achado real 15/07: a cerca so testava rota ate os PENDENTES,
-            // nunca ate a base -- veiculo com entrega ainda em aberto que
-            // volta pra base (fim de turno, recarga, decisao do motorista)
-            // nunca batia com nenhuma rota calculada e disparava desvio
-            // critico na 1a leitura, mesmo indo pra um destino legitimo. A
-            // Camada 1 (comportamental, destinos acima) ja tratava base como
-            // destino legitimo -- a cerca ficou dessincronizada dela. Fix:
-            // mesma lista de destinos legitimos (pendentes + bases).
-            const destinosCerca = [...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng, codigo: pt.codigo ?? `${pt.lat},${pt.lng}` })), ...basesComoDestinoCerca];
-            const chaveCerca = destinosCerca.map((pt) => pt.codigo).sort().join(",");
-            const cerca = cacheCercaPorVeiculo.get(veiculo_id);
-            const cercaValida =
-              cerca && cerca.pendentesChave === chaveCerca && Date.now() - cerca.calculadoEm < CERCA_CACHE_MS;
-            const bufferCerca = bufferPorVelocidade(pos.velocidade);
-            // Achado real 11/07: nao existe ordem de entrega, o motorista
-            // escolhe livremente qual pendente visitar primeiro. Cortar em
-            // "3 mais proximos" presumia que o motorista ia pro mais perto,
-            // o que gerava alerta em cima de gente indo legitimamente pra um
-            // pendente mais distante. Agora verifica TODOS, ordenados por
-            // distancia so como heuristica de prioridade (achado 09/08: a
-            // Camada 0 do OSRM self-hosted, sem throttle, testa essa lista
-            // inteira; so a Camada 1 -- fallback publico -- corta em
-            // MAX_CANDIDATOS_FALLBACK_PUBLICO internamente, dentro de
-            // verificarCorredor, nao mais aqui).
-            // Achado real 15/07: com orcamento apertado (~4-5 candidatos
-            // testaveis) e clientes com mediana de 11 pendentes, prioriza
-            // por alinhamento com o rumo de deslocamento (rumoMovimento, ja
-            // calculado acima) antes da distancia pura -- aumenta a chance
-            // de testar o destino real do motorista.
-            const todosPendentesPriorizados = () =>
-              ordenarPendentesPorDistancia(pos, destinosCerca, rumoMovimento).map((pt) => ({ lat: pt.lat, lng: pt.lng }));
-
-            if (!cercaValida) {
-              // Semeadura: rota real daqui ate o pendente mais proximo.
-              // Pressupoe veiculo em rota legitima NESTE momento (se ja
-              // estiver desviado, o gatilho comportamental cobre).
-              if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO - RESERVA_COMPORTAMENTAL_POR_CICLO) {
-                chamadasCorredorNoCiclo++;
-                const r = await verificarCorredor(
-                  { lat: pos.lat, lng: pos.lng },
-                  { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
-                  todosPendentesPriorizados()
-                );
-                ultimaVerificacaoCorredorPorVeiculo.set(veiculo_id, Date.now());
-                if (r.veredito === "dentro" && r.corredor) {
-                  cacheCercaPorVeiculo.set(veiculo_id, {
-                    polilinha: r.corredor,
-                    ultimoDentro: { lat: pos.lat, lng: pos.lng },
-                    pendentesChave: chaveCerca,
-                    calculadoEm: Date.now(),
-                    foraStreak: 0,
-                  });
-                }
-                // "indisponivel": tenta de novo no proximo ciclo (fail-open).
-              }
-            } else if (cerca && dentroDoCorredor(pos, cerca.polilinha, bufferCerca)) {
-              // Na rota esperada: atualiza a ancora e zera a suspeita.
-              cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
-              cerca.foraStreak = 0;
-            } else if (
-              cerca &&
-              chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO - RESERVA_COMPORTAMENTAL_POR_CICLO &&
-              deveVerificarRecuperacao(dentroTapete, familiarVeiculo)
-            ) {
-              // Saiu do corredor conhecido: tenta RECUPERAR (motorista pode
-              // ter escolhido outra rota legitima pra outro pendente).
-              // Ancora = ultimo ponto confirmado DENTRO (passado, nunca a
-              // posicao atual).
-              chamadasCorredorNoCiclo++;
-              const r = await verificarCorredor(
-                cerca.ultimoDentro,
-                { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
-                todosPendentesPriorizados()
-              );
-              ultimaVerificacaoCorredorPorVeiculo.set(veiculo_id, Date.now());
-              if (r.veredito === "dentro" && r.corredor) {
-                cerca.polilinha = r.corredor;
-                cerca.ultimoDentro = { lat: pos.lat, lng: pos.lng };
-                cerca.pendentesChave = chaveCerca;
-                cerca.calculadoEm = Date.now();
-                cerca.foraStreak = 0;
-                cercaSombraCiclo.push({
-                  veiculo_id, cliente_id, lat: pos.lat, lng: pos.lng,
-                  velocidade: pos.velocidade, veredito: "recuperado",
-                  pendentes: pendentes.length, buffer_m: bufferCerca,
-                });
-              } else if (r.veredito === "fora") {
-                cerca.foraStreak++;
-                // Log so nas 2 primeiras leituras fora (espelha o modelo
-                // atencao->critico que a versao ativa usaria) -- evita spam.
-                if (cerca.foraStreak <= 2) {
-                  cercaSombraCiclo.push({
-                    veiculo_id, cliente_id, lat: pos.lat, lng: pos.lng,
-                    velocidade: pos.velocidade, veredito: "fora",
-                    pendentes: pendentes.length, buffer_m: bufferCerca,
-                  });
-                }
-                // Achado real 22/07 (auditoria): alerta so a partir da 2a
-                // leitura "fora" consecutiva -- reduz blips que se autocorrigem
-                // sozinhos (GPS oscilando, manobra) e viravam alerta completo.
-                // O log de auditoria acima (cercaSombraCiclo) continua desde a
-                // 1a leitura -- so o alerta de verdade espera a confirmacao.
-                if (CERCA_VIRTUAL_MODO === "ativa" && cerca.foraStreak >= 2) {
-                  let distCorredorM = Infinity;
-                  for (let i = 0; i < cerca.polilinha.length - 1; i++) {
-                    const d = distanciaAoSegmentoM(pos, cerca.polilinha[i], cerca.polilinha[i + 1]);
-                    if (d < distCorredorM) distCorredorM = d;
-                  }
-                  const distFmt = Number.isFinite(distCorredorM) ? `${Math.round(distCorredorM)}m` : `${bufferCerca}m+`;
-                  alertaCerca = {
-                    nivel: "critico",
-                    tipo: "desvio",
-                    origemDesvio: "cerca_virtual",
-                    motivo: `Fora da rota esperada (${distFmt} da estrada real até o próximo ponto, buffer ${bufferCerca}m)`,
-                    score: cerca.foraStreak >= 3 ? 85 : 75,
-                  };
-                }
-              }
-              // "indisponivel": nao mexe em nada (fail-open).
-            }
-          } else if (pendentes.length === 0) {
-            cacheCercaPorVeiculo.delete(veiculo_id);
           }
 
           // Bypass de entrega sem parar (achado do audio do cliente).
@@ -3046,26 +1995,6 @@ export async function POST(request: Request) {
               })
             : null;
 
-          // Estado persistido: quando o veiculo saiu pela ultima vez de uma
-          // parada CONFIRMADA (dwell suficiente pra nao ser so uma
-          // passagem, mesmo limiar BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS que
-          // ja diferencia bypass de entrega real) -- achado real 28/07
-          // (Task 6, 36% dos FP manuais de rua-estreita). Mesmo padrao EXATO
-          // de ultima_via_principal_em acima: seta na transicao, propaga
-          // enquanto a janela abaixo nao expira, decai sozinho (sem reset
-          // explicito). saiuDoRaioAgora + dwellAnterior ja calculados acima
-          // pra bypass_entrega -- reaproveitados aqui, mesmo sinal.
-          const saiuParadaConfirmadaAnterior = anterior?.saiu_parada_confirmada_em ?? null;
-          const saiuParadaConfirmadaEm = deveMarcarSaidaParadaConfirmada({
-            fresco: pos.fresco,
-            alvosApiOk,
-            saiuDoRaioAgora,
-            dwellAnteriorSegundos: dwellAnterior,
-          })
-            ? agora.toISOString()
-            : saiuParadaConfirmadaAnterior;
-          const saiuParadaConfirmadaRecentemente = saiuParadaConfirmadaHaMenosDe(saiuParadaConfirmadaEm, agora);
-
           // Achado real 28/07 (cliente Nutry Max, TTM-7C13/TUS-1A47) -- ver
           // detectarParadaSemMarcacao em detectores.ts. Mesmo padrao EXATO
           // de no_raio_alvo_codigo/no_raio_desde/no_raio_dwell_segundos
@@ -3183,91 +2112,6 @@ export async function POST(request: Request) {
             horaSP < 20 &&
             pendentes.some((pt) => pt.dataInicio != null && pt.dataInicio.startsWith(dataHojeSP));
 
-          // Achado real 31/07 (revisao final): precisa saber ANTES de montarCandidatosCore
-          // se o classe_viaria SERIA candidato neste ciclo -- movido pra antes da chamada
-          // porque o ctx que entra em montarCandidatosCore precisa disso como INPUT (pra
-          // detectarDesvio poder deixar de retornar cedo e continuar checando os outros
-          // tipos, incluindo o critico "caminho nunca percorrido" -- suprimir So DEPOIS
-          // que detectarDesvio ja tinha retornado esse alerta mascarava esse critico sem
-          // deixar ele aparecer). Ver docs/superpowers/specs/2026-07-31-classe-viaria-coerencia-rumo-design.md.
-          let classeViariaRumoSombra: { divergenciaGraus: number | null; limiar: number; suprimiria: boolean } | null = null;
-          const classeViariaSeriaCandidata = !afastandoDeTudoAtual && quedaClasseViaria && !saiuParadaConfirmadaRecentemente;
-          if (classeViariaSeriaCandidata) {
-            const suprimiria = rumoCoerenteComDestino(divergenciaGrausAtual, RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS);
-            classeViariaRumoSombra = { divergenciaGraus: divergenciaGrausAtual, limiar: RUA_ESTRANHA_LIMIAR_RUMO_COERENTE_GRAUS, suprimiria };
-          }
-          const classeViariaSuprimidaPorRumo = CLASSE_VIARIA_FILTRO_RUMO_ATIVO && (classeViariaRumoSombra?.suprimiria ?? false);
-
-          // Achado real 01/08 (redesign pos-revisao-independente, ver
-          // CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO acima pro
-          // raciocinio/dado completo): D1/D2/D3 do placar de desvio
-          // (lib/placar-desvio.ts) precisam existir AQUI, antes de
-          // montarCandidatosCore, pelo MESMO motivo de
-          // classeViariaRumoSombra/classeViariaSuprimidaPorRumo acima --
-          // o ctx que entra nela precisa do resultado como INPUT. Guard
-          // identico ao "Guard 7" do bloco de calculo final do placar mais
-          // abaixo (sem posicao fresca OU sem pendente, os tres ficam
-          // false). FONTE UNICA: o bloco do placar mais abaixo REUSA estas
-          // MESMAS variaveis pra sinaisPlacar.d1/d2/d3 -- nao recalcula.
-          let d1ParadaPertoDeEntregaAtual = false;
-          let d2PadraoEntregaAtual = false;
-          let d3DestinoAlinhadoAproximandoAtual = false;
-          if (pos.fresco && temPontosParaCorroboracao) {
-            const destinosPlacarD1: DestinoPlacar[] = pontosVeiculoParaCorroboracao.map((pt) => ({
-              lat: pt.lat, lng: pt.lng, raio: pt.raio, codigo: codigoDestinoPlacar(pt),
-            }));
-            const janelaVeiculoPlacar = janelaHistoricoCliente.get(veiculo_id) ?? [];
-            d1ParadaPertoDeEntregaAtual = paradaRecentePertoDeEntrega(janelaVeiculoPlacar, destinosPlacarD1);
-            d2PadraoEntregaAtual = padraoEntrega(janelaVeiculoPlacar);
-            d3DestinoAlinhadoAproximandoAtual = destinoAlinhadoAproximando(
-              { lat: pos.lat, lng: pos.lng },
-              rumoDivergenciaPorDestinoPlacar,
-              anterior?.placar_desvio_estado?.distPorCodigo ?? {}
-            );
-          }
-          // Criterio: PROVA POSITIVA de atividade de entrega -- D1 ou D3
-          // basta (nao precisam bater juntos). Dado real que fundamenta o
-          // desenho: em 32 ciclos de classe_viaria logados, D3 disparou 18x,
-          // D2 7x, D1 4x.
-          //
-          // D2 (padraoEntrega) foi DELIBERADAMENTE deixado de fora, por
-          // recomendacao da revisao independente 01/08: e' o unico dos tres
-          // sem NENHUMA restricao de proximidade ou de direcao (so olha
-          // "media <=25km/h + 2 paradas nos ultimos 20min" -- janela
-          // alargada de 10 na auditoria 04/08, ver buscarJanelaHistoricoCliente),
-          // entao um caminhao sequestrado em area urbana continua
-          // satisfazendo D2 por ate 20min depois do sequestro, faca o que
-          // fizer -- a mesma janela grudenta que reprovou o desenho
-          // anterior, agora ainda mais longa. Custo medido de
-          // tirar: D2 sozinho responde por 3 das 29 supressoes (10%), e
-          // D1||D3 ja cobre 26 das 29. D1 exige parada perto de um destino;
-          // D3 exige rumo alinhado E distancia CAINDO neste ciclo, entao os
-          // dois morrem sozinhos quando o comportamento deixa de ser entrega.
-          // Achado real 04/08 (usuario, revisando os falso-positivo do dia:
-          // "tem um monte de desvio EM CIMA DO CLIENTE"): quedaClasseViaria
-          // (acima) e' PURAMENTE classificacao viaria -- "estava em via
-          // principal ha <=10min, agora esta em rua estreita" -- nunca
-          // checa proximidade de destino. O motivo do alerta ("fora do
-          // raio de qualquer destino conhecido") e' uma afirmacao que o
-          // gatilho nunca verifica de fato; quem deveria pegar isso e' esta
-          // supressao (D1/D3), mas os dois tem buraco pro caso "acabou de
-          // chegar": D1 exige um RUN de parada >=120s ja completo (nao
-          // cobre os primeiros 2min apos a chegada), D3 exige rumo
-          // alinhado E distancia caindo NESTE ciclo (nao cobre virar
-          // perpendicular pra entrar na rua do cliente). Confirmado com
-          // dado real do dia: 13 dos 19 falso-positivo individuais de hoje
-          // tinham `alvoNoRaioAgora` != null (nome de estabelecimento real
-          // batendo, ex. "M P S MINIMERCADO LTDA") no exato ciclo do
-          // disparo -- o veiculo estava FISICAMENTE dentro do raio
-          // cadastrado do cliente, nao so "perto". alvoNoRaioAgora (acima,
-          // ja calculado todo ciclo pro bypass_entrega, custo zero aqui)
-          // e' o sinal mais direto e menos ambiguo dos tres: nao depende
-          // de tempo parado nem de direcao, so "esta dentro do raio agora,
-          // sim ou nao".
-          const classeViariaSuprimidaPorEntrega =
-            CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO &&
-            (d1ParadaPertoDeEntregaAtual || d3DestinoAlinhadoAproximandoAtual || alvoNoRaioAgora !== null);
-
           // Achado real 12/07: avaliar() JA incluia detectarJammer(p) como um
           // dos seus proprios candidatos (arbitrados junto com desvio pela
           // mesma arbitrarCandidatos) -- pular avaliar() inteira quando ha
@@ -3288,31 +2132,11 @@ export async function POST(request: Request) {
                   emOperacao,
                   foraDaBase,
                   noCliente,
-                  distDestinosM,
-                  distDestinosAnteriorM,
-                  desvioStreak,
-                  afastamentoAcumuladoM,
                   dentroTapete,
-                  familiarVeiculo,
-                  quedaClasseViaria,
-                  saiuParadaConfirmadaRecentemente,
-                  classeViariaSuprimidaPorRumo,
-                  classeViariaSuprimidaPorEntrega,
                   riscoAreaAtual,
-                  foraTapeteStreak,
-                  suspensoPorChegada,
-                  divergenciaRumoStreak,
-                  saiuDoRaioAgora,
-                  divergenciaGrausAtual,
                   temPendentes,
                   entregasTotal: alvosApiOk ? entregas_total : undefined,
                   entregasFeitas: alvosApiOk ? entregas_feitas : undefined,
-                  // Achado real 29/07: SO pro gate de detectarDesvio, usa
-                  // alvosDestinosDisponiveis (true com fallback de cache
-                  // tambem, ver cacheAlvosFallbackPorCliente acima) -- nao a
-                  // flag estrita alvosApiOk. entregasTotal/entregasFeitas
-                  // acima continuam estritos de proposito (saida_nao_autorizada
-                  // nao deve usar contagem de entregas desatualizada).
                   alvosApiOk: alvosDestinosDisponiveis,
                   sabadoDiurnoComRota,
                   rumoMovimento,
@@ -3330,6 +2154,66 @@ export async function POST(request: Request) {
             // jammer continua valendo mesmo com atraso > 60min (caso que
             // montarCandidatosCore() nao cobre, ja que so roda com fresco).
             : (alertaJammer ? [alertaJammer] : []);
+
+          // ─── Detector de desvio v2 (spec 2026-08-12-desvio-de-rota-v2-design.md) ──
+          // Distancia REAL de rua (nunca linha reta) contra pendentes+base,
+          // suspenso perto de chegada (mesmo gate suspensoPorChegada de
+          // sempre). Dois sinais independentes: afastando de TODOS os
+          // destinos, ou entrando em celula rara no historico da frota (e
+          // nao aproximando de nada no mesmo ciclo).
+          const estadoDesvioAnterior = desvioEstadoPorVeiculo.get(veiculo_id) ?? { afastandoStreak: 0, ruaRaraStreak: 0 };
+          let afastandoStreakNovo = 0;
+          let ruaRaraStreakNovo = 0;
+          let alertaDesvioV2: Alerta | null = null;
+
+          if (pos.fresco && !suspensoPorChegada && destinos.length > 0) {
+            const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinos);
+            const distAnterioresReais =
+              anterior && anterior.lat != null && anterior.lng != null && distAtuaisReais
+                ? await buscarDistanciasReais({ lat: anterior.lat, lng: anterior.lng }, destinos)
+                : null;
+
+            if (distAtuaisReais && distAnterioresReais) {
+              const afastando = avaliarAfastandoDeTudo(distAtuaisReais, distAnterioresReais, estadoDesvioAnterior.afastandoStreak);
+              afastandoStreakNovo = afastando.streak;
+
+              const celulaAtualDesvio = celulaDe(pos.lat, pos.lng);
+              const nVisitasHistorico = celulasFrequenciaCliente.get(celulaAtualDesvio) ?? 0;
+              const ruaRara = avaliarRuaRara(nVisitasHistorico, afastando.aproximandoAlgum, estadoDesvioAnterior.ruaRaraStreak);
+              ruaRaraStreakNovo = ruaRara.streak;
+
+              alertaDesvioV2 = montarAlertaDesvio(afastando, { ...ruaRara, celula: celulaAtualDesvio, nVisitas: nVisitasHistorico });
+            } else {
+              afastandoStreakNovo = estadoDesvioAnterior.afastandoStreak;
+              ruaRaraStreakNovo = estadoDesvioAnterior.ruaRaraStreak;
+            }
+          }
+          if (alertaDesvioV2) candidatosCore.push(alertaDesvioV2);
+
+          try {
+            await pool.query(
+              `INSERT INTO desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, atualizado_em)
+               VALUES ($1, $2, $3, now())
+               ON CONFLICT (veiculo_id) DO UPDATE SET
+                 afastando_streak = EXCLUDED.afastando_streak,
+                 rua_rara_streak = EXCLUDED.rua_rara_streak,
+                 atualizado_em = now()`,
+              [veiculo_id, afastandoStreakNovo, ruaRaraStreakNovo]
+            );
+            if (pos.fresco) {
+              const celulaAgoraDesvio = celulaDe(pos.lat, pos.lng);
+              await pool.query(
+                `INSERT INTO celula_frequencia_cliente (cliente_id, celula, n_visitas, primeira_vez, ultima_vez)
+                 VALUES ($1, $2, 1, current_date, current_date)
+                 ON CONFLICT (cliente_id, celula) DO UPDATE SET
+                   n_visitas = celula_frequencia_cliente.n_visitas + 1,
+                   ultima_vez = current_date`,
+                [cliente_id, celulaAgoraDesvio]
+              );
+            }
+          } catch (errDesvioV2Gravacao) {
+            erros.push(`Aviso: falha ao gravar desvio v2 pro veiculo ${veiculo_id}: ${String(errDesvioV2Gravacao)}`);
+          }
 
           // Decisao intermediaria (so os candidatos core, sem os extras
           // ainda) -- usada pela verificacao de corredor logo abaixo, que
@@ -3350,230 +2234,6 @@ export async function POST(request: Request) {
           // suprimido aqui.
           let desvioSuprimidoPorCorredor = false;
 
-          // ─── Verificação por corredor real (Camada 1 do desvio) ─────────
-          // Intercepta desvio comportamental ("Afastando-se...") E, desde a
-          // Task 4 (achado 28/07), rumo-diverge tambem -- nunca panico/
-          // jammer/etc. A rota SEMPRE sai de um ponto FIXO do PASSADO (nunca
-          // da posicao atual, ver comentario em verificarCorredor sobre o
-          // incidente de 10/07) ate o destino. Sem esse ponto ainda gravado,
-          // nao da pra verificar: deixa passar como hoje (fail-open). Fluxo:
-          // cache primeiro (zero API); sem cache ou fora dele, verifica com
-          // OSRM/Valhalla (throttled, orçamento por ciclo). "dentro" = a
-          // posição atual está numa estrada real que sai de onde a suspeita
-          // começou e leva a um destino legítimo: suprime e zera o streak.
-          // "fora" = confirma, e o início real do desvio é onde saiu do
-          // corredor. "indisponivel" = comporta exatamente como hoje
-          // (fail-open).
-          //
-          // Achado CRITICO da revisao independente 28/07 (Task 4b): ate
-          // aqui, o gate e os efeitos "dentro"/"fora" so conheciam
-          // desvioInicio/desvioStreak (o anchor/streak de "afastando de
-          // tudo") -- rumo-diverge (Task 4) dispara justamente quando NAO ha
-          // afastamento de tudo, entao desvioInicio fica null exatamente no
-          // caso que motivou a Task 4 (rodovia com curva, TTK-4D14), e o
-          // wiring nunca rodava pra esse caso. Fix: qual anchor/streak usar
-          // -- pra decidir SE roda a verificacao, qual origem passar pro
-          // OSRM/Valhalla, e quais campos os vereditos "dentro"/"fora"
-          // reescrevem -- passa a depender de QUAL regra e' a vencedora
-          // atual (origemRumoDivergeGanhou), nao mais de um unico
-          // desvioInicio compartilhado. Isso tambem resolve o achado
-          // IMPORTANTE da mesma revisao: um alerta FRACO de rumo-diverge
-          // (nivel "atencao") nao pode zerar/reescrever a streak CRITICA de
-          // afastando-de-tudo de outro episodio em andamento (e vice-versa)
-          // -- os dois streaks sao independentes e nao podem compartilhar o
-          // mesmo efeito colateral.
-          // Precisa ficar calculado ANTES de qualquer `alerta = null` mais
-          // abaixo (veredito "dentro" some com o alerta) -- os 3 pontos que
-          // usam esta const (zerarStreakDaOrigemVencedora/
-          // reancorarOrigemVencedora) dependem de capturar QUEM venceu
-          // antes do alerta ser potencialmente zerado; inline nesses pontos
-          // leria sempre false e devolveria o efeito colateral pro streak
-          // errado (afastando-de-tudo em vez de rumo-diverge).
-          const origemRumoDivergeGanhou = alerta?.tipo === "desvio" && alerta.origemDesvio === "rumo_diverge";
-          // Mesma funcao usada pra Task 3 (contexto persistido) -- a
-          // escolha de qual anchor usar (Step 3b) e' identica nos dois
-          // lugares, ver desvioInicioEfetivoParaContexto em detectores.ts.
-          const anchorCorredor = desvioInicioEfetivoParaContexto(desvioInicio, origemRumoDivergeGanhou, divergenciaRumoInicio);
-          let corredorInfo: { veredito: "dentro" | "fora" | "indisponivel" | "orcamento_estourado"; bufferM: number } | null = null;
-          if (
-            CAMADA_CORREDOR_ATIVA &&
-            alerta?.tipo === "desvio" &&
-            alerta.precisaVerificacaoCorredor === true &&
-            pos.fresco &&
-            anchorCorredor
-          ) {
-            const origem = { lat: anchorCorredor.lat, lng: anchorCorredor.lng };
-            const pendentesChave = pendentes.map((pt) => pt.codigo ?? `${pt.lat},${pt.lng}`).sort().join(",");
-            const cache = cacheCorredorPorVeiculo.get(veiculo_id);
-            const cacheValido =
-              cache &&
-              cache.expiraEm > Date.now() &&
-              cache.pendentesChave === pendentesChave &&
-              cache.origemTs === anchorCorredor.ts &&
-              !paradaLongaInvalidaCache(anterior?.velocidade ?? null, anterior?.parado_desde ?? null, agora.getTime());
-
-            if (cacheValido && cache && dentroDoCorredor(pos, cache.polilinha, bufferPorVelocidade(pos.velocidade))) {
-              // Continua na estrada já confirmada: suprime sem API.
-              cache.ultimoDentro = { lat: pos.lat, lng: pos.lng };
-              corredorInfo = { veredito: "dentro", bufferM: bufferPorVelocidade(pos.velocidade) };
-              // Suprime a criacao de um NOVO alerta/reinicia o streak
-              // comportamental -- nao fecha nenhum alerta ja aberto no banco
-              // (achado real 11/07: fechamento automatico de desvio REMOVIDO
-              // de vez, so operador humano resolve/marca falso positivo).
-              alerta = null;
-              desvioSuprimidoPorCorredor = true;
-              ({ desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio } = zerarStreakDaOrigemVencedora(
-                origemRumoDivergeGanhou,
-                { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio }
-              ));
-              if (origemRumoDivergeGanhou) divergenciaRumoCaminhoM = 0;
-            } else if (chamadasCorredorNoCiclo < ORCAMENTO_CORREDOR_POR_CICLO) {
-              chamadasCorredorNoCiclo++;
-              const bufferAtual = bufferPorVelocidade(pos.velocidade);
-              const candidatos = destinos.slice(0, NAO_ESCALA_LEN).sort(
-                (a, b) => haversineM(pos.lat, pos.lng, a.lat, a.lng) - haversineM(pos.lat, pos.lng, b.lat, b.lng)
-              );
-              const r = await verificarCorredor(origem, { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade }, candidatos);
-              ultimaVerificacaoCorredorPorVeiculo.set(veiculo_id, Date.now());
-              corredorInfo = { veredito: r.veredito, bufferM: bufferAtual };
-              if (r.veredito === "dentro" && r.corredor) {
-                cacheCorredorPorVeiculo.set(veiculo_id, {
-                  polilinha: r.corredor,
-                  ultimoDentro: { lat: pos.lat, lng: pos.lng },
-                  pendentesChave,
-                  origemTs: anchorCorredor.ts,
-                  expiraEm: Date.now() + CORREDOR_CACHE_MS,
-                });
-                alerta = null;
-                desvioSuprimidoPorCorredor = true;
-                ({ desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio } = zerarStreakDaOrigemVencedora(
-                  origemRumoDivergeGanhou,
-                  { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio }
-                ));
-                if (origemRumoDivergeGanhou) divergenciaRumoCaminhoM = 0;
-              } else if (r.veredito === "fora") {
-                // Confirma o desvio. Início REAL: onde saiu do corredor.
-                if (cacheValido && cache) {
-                  const novoAnchor: DesvioInicio = {
-                    lat: cache.ultimoDentro.lat,
-                    lng: cache.ultimoDentro.lng,
-                    ts: agora.toISOString(),
-                    menor_dist_m: anchorCorredor.menor_dist_m,
-                  };
-                  ({ desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio } = reancorarOrigemVencedora(
-                    origemRumoDivergeGanhou,
-                    { desvioStreak, desvioInicio, divergenciaRumoStreak, divergenciaRumoInicio },
-                    novoAnchor
-                  ));
-                }
-                cacheCorredorPorVeiculo.delete(veiculo_id);
-              }
-              // "indisponivel": deixa o alerta seguir como hoje (fail-open).
-            } else {
-              // Orçamento estourado: deixa o alerta seguir como hoje (fail-open),
-              // so registra que aconteceu (achado real 10/07: antes disso nao
-              // ficava nenhum rastro de que o alerta passou sem verificacao).
-              // Achado IMPORTANTE da revisao independente 28/07 (Task 4b,
-              // Step 5): rumo-diverge agora disputa o MESMO orcamento
-              // compartilhado (ORCAMENTO_CORREDOR_POR_CICLO) que
-              // afastando-de-tudo (alertas CRITICOS). Aceito por ora -- o
-              // fail-open ja existente cobre o caso de orcamento estourado
-              // (o alerta sobrevive normalmente, so sem corroboracao) -- mas
-              // documentado explicitamente aqui pra nao ser "descoberta" de
-              // novo numa auditoria futura como se fosse um bug novo.
-              corredorInfo = { veredito: "orcamento_estourado", bufferM: bufferPorVelocidade(pos.velocidade) };
-            }
-          }
-
-          // S3/D4 (placar de desvio, Fase 1 sombra): reaproveita o MESMO
-          // veredito da Camada 1 do corredor calculado logo acima
-          // (corredorInfo) -- nunca chama dentroDoCorredor/verificarCorredor
-          // de novo. "dentro" desconta D4 (false), "fora" soma S3 (true),
-          // sem verificação neste ciclo ("indisponivel"/"orcamento_estourado")
-          // ou corredorInfo ainda null vira null (nem soma nem desconta, ver
-          // SinaisPlacar em placar-desvio.ts).
-          const s3ForaDoCorredorPlacar: boolean | null =
-            corredorInfo === null || corredorInfo.veredito === "indisponivel" || corredorInfo.veredito === "orcamento_estourado"
-              ? null
-              : corredorInfo.veredito === "fora";
-
-          // Achado real 30/07: veredito de sombra do filtro comportamental --
-          // so calcula quando rumo-diverge foi a regra vencedora E o corredor
-          // confirmou "fora" (as duas condicoes que a spec exige pra sequer
-          // considerar suprimir). Ver
-          // docs/superpowers/specs/2026-07-30-filtro-comportamental-rumo-diverge-design.md.
-          let retidaoRumoSombra: {
-            caminhoM: number; liquidoM: number | null; razao: number | null; limiar: number; veredito_suprimiria: boolean;
-          } | null = null;
-          if (origemRumoDivergeGanhou && corredorInfo?.veredito === "fora" && divergenciaRumoInicio && menorDistDestinoM !== null) {
-            // CORRIGIDO na revisao da Task 4 (achado Important): NAO usar
-            // haversineM(divergenciaRumoInicio.lat/lng, pos) -- esse lat/lng e'
-            // REESCRITO pelo reancorarOrigemVencedora sempre que o corredor
-            // confirma "fora" (exatamente os 25/27 casos reais que este filtro
-            // existe pra pegar), desalinhando numerador (caminho, que conta desde
-            // o INICIO real) e denominador (que passaria a contar so desde a
-            // reancora). Fix: usar a MESMA formula ja empregada por
-            // afastamentoAcumuladoM pro streak irmao (diferenca de menor_dist_m,
-            // nao haversine de posicao) -- menor_dist_m E' preservado atraves do
-            // reancor (confirmado na revisao: reancorarOrigemVencedora so reescreve
-            // lat/lng, novoAnchor.menor_dist_m vem de anchorCorredor.menor_dist_m,
-            // que foi capturado ANTES de qualquer reescrita neste ciclo). Bonus:
-            // essa formula mede progresso real rumo ao destino, nao so forma da
-            // trajetoria -- pega tambem o caso de um veiculo andando muito em linha
-            // reta mas PERPENDICULAR a qualquer destino (caminho grande, progresso
-            // ~0), que a versao com haversine de posicao deixaria passar.
-            const liquidoM = Math.abs(menorDistDestinoM - divergenciaRumoInicio.menor_dist_m);
-            const razao = razaoRetidaoRumo(divergenciaRumoCaminhoM, liquidoM);
-            const limiar = limiarRazaoRetidaoRumo(menorDistDestinoM);
-            // razao === null: sem deslocamento liquido suficiente pra confiar no
-            // sinal -- erra pro lado de NAO suprimir (diretiva do usuario: falso
-            // positivo aceitavel, nunca perder desvio real).
-            const veredito_suprimiria = razao !== null && razao < limiar;
-            retidaoRumoSombra = { caminhoM: divergenciaRumoCaminhoM, liquidoM, razao, limiar, veredito_suprimiria };
-            if (RUMO_DIVERGE_FILTRO_COMPORTAMENTAL_ATIVO && veredito_suprimiria) {
-              alerta = null;
-              desvioSuprimidoPorCorredor = true;
-            }
-          }
-
-          // Achado real 30/07 (Task 7): diferente do bloco acima (Task 5, so
-          // roda quando rumo-diverge venceu a arbitragem E o corredor ja
-          // confirmou "fora"), este grava TODO ciclo em que o episodio de
-          // divergencia esta ativo -- da a serie temporal completa (streak
-          // 1, 2, 3... ate o episodio zerar), nao so o instante frio de
-          // criacao do alerta.
-          if (pos.fresco && divergenciaRumoInicio && menorDistDestinoM !== null) {
-            const liquidoSombraM = Math.abs(menorDistDestinoM - divergenciaRumoInicio.menor_dist_m);
-            const razaoSombra = razaoRetidaoRumo(divergenciaRumoCaminhoM, liquidoSombraM);
-            const limiarSombra = limiarRazaoRetidaoRumo(menorDistDestinoM);
-            rumoDivergeSombraCiclo.push({
-              veiculo_id,
-              cliente_id,
-              streak: divergenciaRumoStreak,
-              caminho_m: divergenciaRumoCaminhoM,
-              liquido_m: liquidoSombraM,
-              razao: razaoSombra,
-              limiar: limiarSombra,
-              dist_min_destino_m: menorDistDestinoM,
-              veredito_suprimiria: razaoSombra !== null && razaoSombra < limiarSombra,
-            });
-          }
-
-          // Achado real 11/07: alerta "sem historico de comportamento" (0
-          // entregas feitas) so pode sobreviver com confirmacao EXPLICITA do
-          // corredor que a rota esta "dentro". Supressao so acontece em
-          // confirmacao POSITIVA (veredito === "dentro"), nao mais em qualquer
-          // coisa que nao seja "fora". Agora "indisponivel"/orcamento estourado
-          // fazem fail-open igual ao resto do detector, corrigindo a inversao
-          // de politica encontrada na auditoria de 22/07. Sem isso, o gate
-          // antigo (bloqueio total pre-1a-entrega) segue sendo necessario;
-          // com isso, a estrada real supre a falta de historico sem abrir mao
-          // de cautela quando a API estiver fora.
-          if (alerta?.tipo === "desvio" && alerta.exigeConfirmacaoCorredor === true && corredorInfo?.veredito === "dentro") {
-            alerta = null;
-            desvioSuprimidoPorCorredor = true;
-          }
-
           // Novos detectores: retorno_tardio, parada_noturna_ignicao, aceleracao_brusca.
           // Calculados separadamente e sobrepõem alerta principal se mais severos.
           const extras: Alerta[] = [
@@ -3583,21 +2243,15 @@ export async function POST(request: Request) {
               velocidadeAnterior: anterior?.velocidade ?? null,
               foraDaBase,
             }),
-            alertaCerca,
             alertaBypass,
             alertaBaseline,
             alertaParadaSemMarcacao,
           ].filter((a): a is Alerta => a !== null);
 
-          // Arbitragem FINAL, unica: candidatos core CRUS (sem o desvio
-          // comportamental, se o corredor ja suprimiu) + extras. Ver
-          // comentario acima de candidatosCore -- e essa uniao numa unica
-          // chamada de arbitrarCandidatos que evita o bug do bonus
-          // duplicado.
-          const candidatosCoreFinal = desvioSuprimidoPorCorredor
-            ? candidatosCore.filter((c) => c.tipo !== "desvio")
-            : candidatosCore;
-          alerta = arbitrarCandidatos([...candidatosCoreFinal, ...extras]);
+          // Arbitragem FINAL, unica: candidatos core + extras. Ver comentario
+          // acima de candidatosCore -- e essa uniao numa unica chamada de
+          // arbitrarCandidatos que evita o bug do bonus duplicado.
+          alerta = arbitrarCandidatos([...candidatosCore, ...extras]);
           if (alerta) {
             if (pos.fresco) {
               let dentroLento = 0;
@@ -3611,207 +2265,6 @@ export async function POST(request: Request) {
               vizinhosLentos,
             });
           }
-          if (alerta) {
-            segmentoEspecifico = segmentoCalibracaoPreferido(alerta, corredorInfo?.veredito);
-            taxaFp = (segmentoEspecifico !== null ? mapaCalibracao.get(segmentoEspecifico) : undefined)
-              ?? mapaCalibracao.get(`tipo:${alerta.tipo}`);
-            if (taxaFp !== undefined) {
-              alerta = { ...alerta, score: aplicarFatorCalibrado(alerta.score, taxaFp) };
-            }
-          }
-
-          // ─── Placar de desvio (Fase 1, SOMBRA) -- cálculo final ─────────
-          // Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md e
-          // src/lib/placar-desvio.ts. Calcula, persiste (junto dos streaks,
-          // mesmo UPSERT) e loga -- segue em SOMBRA, nunca muda alerta/
-          // nível/UI diretamente. D1/D2/D3 (sinaisPlacar.d1/d2/d3 abaixo)
-          // SAO os mesmos `d1ParadaPertoDeEntregaAtual`/`d2PadraoEntregaAtual`/
-          // `d3DestinoAlinhadoAproximandoAtual` computados mais acima (antes
-          // de montarCandidatosCore) pra alimentar
-          // classeViariaSuprimidaPorEntrega -- fonte unica, reusados aqui,
-          // nao recalculados.
-          //
-          // Achado real 01/08 (ordenacao, mantido de uma revisao anterior
-          // deste bloco): este trecho fica ANTES de "Determinar nivel"/
-          // "localizacao"/"motivo" (mais abaixo) -- essa reordenacao foi
-          // auditada e aprovada numa revisao independente; nao mexe no
-          // resultado de nivel/motivo hoje (o gate de classe_viaria mudou
-          // de lugar pra deteccao, ver CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO
-          // acima), mas mante-la evita reintroduzir o problema original
-          // (calculo tardio deixando nivel/motivo lerem `alerta` antes do
-          // placar do ciclo estar pronto) se um gate futuro voltar a
-          // depender do placar nesse ponto.
-          const placarAnterior = anterior?.placar_desvio ?? 0;
-          const estadoPlacarAnterior = anterior?.placar_desvio_estado ?? null;
-
-          // distPorCodigo do ciclo ATUAL (pra D3 do PRÓXIMO ciclo comparar
-          // "distância caindo") -- construído a partir de TODOS os pontos
-          // válidos do dia (pontosVeiculoParaCorroboracao, não só
-          // `pendentes` -- mesmo motivo do achado 03/08 acima: um ponto já
-          // marcado feito precisa continuar tendo "distância anterior"
-          // registrada, senão D3 nunca consegue comparar aproximação pra
-          // ele), independente dos guards de soma (é só um registro de
-          // estado).
-          const distPorCodigoPlacar: Record<string, number> = {};
-          for (let i = 0; i < pontosVeiculoParaCorroboracao.length; i++) {
-            distPorCodigoPlacar[codigoDestinoPlacar(pontosVeiculoParaCorroboracao[i])] = distDestinosCorroboracaoM[i];
-          }
-
-          let sinaisPlacar: SinaisPlacar;
-          let entregasFeitasRefPlacar: number;
-          let entregasFeitasDesdePlacar: string;
-
-          if (!pos.fresco || !temPendentes) {
-            // Guard 7 (Task 3 do plano): sem posição fresca OU sem destino
-            // pendente -- placar só decai (nenhum sinal soma nem desconta
-            // neste ciclo, sem novo cálculo de D1/D2/D3 pra este veículo).
-            // entregasFeitasRef/Desde carregam do ciclo anterior sem
-            // alteração (nada confiável pra comparar agora).
-            //
-            // s6ParadoLongeDeTudo (achado auditoria 04/08) e' excecao
-            // deliberada a este guard, mesmo espirito de D1/D2/D3 logo
-            // abaixo: sem destino PENDENTE nao significa "nada a temer" --
-            // um veiculo parado longe de QUALQUER destino/base (pendente ou
-            // nao) continua sendo sinal valido. candidatoS6ParadoLongeDeTudo
-            // ja exige pos.fresco por conta propria, entao fica false
-            // corretamente quando a posicao nao e fresca.
-            sinaisPlacar = {
-              s1AfastandoDeTudo: false, s2RumoDivergente: false, s3ForaDoCorredor: null,
-              s4CelulaDesconhecida: false, s5DiaEstagnado: false,
-              s6ParadoLongeDeTudo: s6ParadoLongeDeTudoAtual,
-              d1ParadaPertoDeEntrega: false, d2PadraoEntrega: false, d3DestinoAlinhadoAproximando: false,
-            };
-            entregasFeitasRefPlacar = estadoPlacarAnterior?.entregasFeitasRef ?? entregas_feitas;
-            entregasFeitasDesdePlacar = estadoPlacarAnterior?.entregasFeitasDesde ?? agora.toISOString();
-          } else {
-            // S5: entregas_feitas mudou desde o ciclo anterior? Se sim,
-            // reancora a referência (nova contagem, novo relógio). Se não,
-            // mantém a referência/timestamp antigos -- é essa persistência
-            // que mede "estagnado há quanto tempo".
-            const refAnteriorPlacar = estadoPlacarAnterior?.entregasFeitasRef;
-            const mudouEntregasFeitasPlacar = refAnteriorPlacar === undefined || refAnteriorPlacar !== entregas_feitas;
-            entregasFeitasRefPlacar = mudouEntregasFeitasPlacar ? entregas_feitas : (refAnteriorPlacar ?? entregas_feitas);
-            entregasFeitasDesdePlacar = mudouEntregasFeitasPlacar
-              ? agora.toISOString()
-              : (estadoPlacarAnterior?.entregasFeitasDesde ?? agora.toISOString());
-            const minutosEstagnadoPlacar = (agora.getTime() - new Date(entregasFeitasDesdePlacar).getTime()) / 60000;
-
-            const celulaAtualPlacar = celulaDe(pos.lat, pos.lng);
-
-            sinaisPlacar = {
-              s1AfastandoDeTudo: podeSomarSinaisPlacar && afastandoDeTudoAtual,
-              s2RumoDivergente: divergenciaGrausAtual !== null && divergenciaGrausAtual > S2_RUMO_LIMIAR_GRAUS,
-              s3ForaDoCorredor: s3ForaDoCorredorPlacar,
-              // S4: célula atual não visitada por ESTE veículo antes --
-              // celulasFamiliaridadeVeiculo já é a MESMA query batched por
-              // cliente que alimenta familiarVeiculo acima (vizinhança 3x3
-              // inclui a célula exata, ver celulas.ts), zero query nova.
-              s4CelulaDesconhecida:
-                podeSomarSinaisPlacar && !celulasFamiliaridadeVeiculo.has(`${veiculo_id}:${celulaAtualPlacar}`),
-              s5DiaEstagnado:
-                podeSomarSinaisPlacar && pendentes.length >= 2 && pos.velocidade > 0 &&
-                minutosEstagnadoPlacar >= S5_ESTAGNADO_MIN,
-              // S6 (achado auditoria 04/08): NAO usa podeSomarSinaisPlacar
-              // de proposito -- mesmo motivo de D1/D2/D3 abaixo, e' o sinal
-              // que cobre exatamente o caso que aquele guard (exige
-              // movimento) deixa cego. Fonte unica: s6ParadoLongeDeTudoAtual
-              // computado mais acima, mesmo padrao dos outros *Atual.
-              s6ParadoLongeDeTudo: s6ParadoLongeDeTudoAtual,
-              // D1/D2/D3: reusa os MESMOS valores calculados mais acima
-              // (antes de montarCandidatosCore, ver
-              // classeViariaSuprimidaPorEntrega) -- fonte unica, nao
-              // recalcula paradaRecentePertoDeEntrega/padraoEntrega/
-              // destinoAlinhadoAproximando aqui.
-              d1ParadaPertoDeEntrega: d1ParadaPertoDeEntregaAtual,
-              d2PadraoEntrega: d2PadraoEntregaAtual,
-              d3DestinoAlinhadoAproximando: d3DestinoAlinhadoAproximandoAtual,
-            };
-          }
-
-          const { placar: placarNovo, componentes: componentesPlacar } = atualizarPlacar(
-            placarAnterior,
-            sinaisPlacar,
-            suspensoPorChegada
-          );
-
-          // ─── Auditabilidade da supressao do classe_viaria ────────────────
-          // A supressao em si ja aconteceu na DETECCAO (classeViariaSuprimidaPorEntrega,
-          // calculado acima antes de montarCandidatosCore -- ver
-          // CLASSE_VIARIA_EXIGE_AUSENCIA_DE_ENTREGA_ATIVO). Este bloco so
-          // REGISTRA, nunca decide: licao do incidente real de 31/07 (um
-          // mecanismo automatico que esconde alerta sem deixar rastro ja
-          // causou incidente neste projeto -- auto-resolve fechou 2 desvios
-          // reais em silencio).
-          //
-          // classeViariaSeriaCandidata (calculado acima, mesmo campo que
-          // alimenta classeViariaRumoSombra) confirma que classe_viaria
-          // REALMENTE seria candidato neste ciclo -- sem esse segundo
-          // check, marcariamos "suprimido" em qualquer veiculo com D1/D2/D3
-          // ativo mesmo sem quedaClasseViaria, um falso registro de
-          // auditoria (D1/D2/D3 sao comuns em qualquer parada/aproximacao
-          // normal de entrega, nao so quando ha classe_viaria pra suprimir).
-          if (classeViariaSeriaCandidata && classeViariaSuprimidaPorEntrega) {
-            // Muta o MESMO componentesPlacar (nao cria um novo) porque
-            // placarDesvioSombraContexto abaixo reusa esta referencia. Nota:
-            // o gate do log logo abaixo (`Object.keys(componentesPlacar).length
-            // > 0`) ja fica satisfeito de qualquer forma sempre que este
-            // bloco roda -- componentesDoCiclo (placar-desvio.ts) sempre
-            // adiciona uma chave pra cada D1/D2/D3 ativo (d1ParadaPertoDeEntrega/
-            // d2PadraoEntrega/d3DestinoAlinhadoAproximando), independente do
-            // placar final ter dado 0. As duas chaves abaixo sao contexto
-            // ADICIONAL pra auditoria (o que exatamente foi suprimido e
-            // por qual motivo), nao o que garante o log em si.
-            componentesPlacar.classeViariaSuprimida = true;
-            // So D1/D3/raio -- D2 nao entra no criterio (ver comentario na
-            // composicao de classeViariaSuprimidaPorEntrega). Se D2 estava
-            // ativo no ciclo, isso ja aparece no proprio componentesPlacar
-            // via componentesDoCiclo; aqui o campo registra a CAUSA da
-            // supressao, entao listar d2 seria mentira de auditoria.
-            const motivosSupressao: string[] = [];
-            if (d1ParadaPertoDeEntregaAtual) motivosSupressao.push("d1");
-            if (d3DestinoAlinhadoAproximandoAtual) motivosSupressao.push("d3");
-            if (alvoNoRaioAgora !== null) motivosSupressao.push("raio");
-            componentesPlacar.classeViariaSuprimidaPor = motivosSupressao.join(",");
-          }
-
-          // Histerese do amarelo (só pro LOG na Fase 1 -- não afeta UI/alerta
-          // nenhum): liga a partir de PLACAR_AMARELO, só desliga abaixo de
-          // PLACAR_AMARELO_DESLIGA. Vermelho não tem histerese (Fase 1).
-          const amareloAtivoAnteriorPlacar = estadoPlacarAnterior?.amareloAtivo ?? false;
-          const amareloAtivoPlacar =
-            placarNovo >= PLACAR_AMARELO ? true : placarNovo < PLACAR_AMARELO_DESLIGA ? false : amareloAtivoAnteriorPlacar;
-          const teriaVermelhoPlacar = placarNovo >= PLACAR_VERMELHO;
-
-          const estadoPlacarNovo: EstadoPlacarDesvio = {
-            distPorCodigo: distPorCodigoPlacar,
-            entregasFeitasRef: entregasFeitasRefPlacar,
-            entregasFeitasDesde: entregasFeitasDesdePlacar,
-            amareloAtivo: amareloAtivoPlacar,
-          };
-
-          // Log sombra: grava quando placar > 0 OU houve algum componente no
-          // ciclo (não inflar a tabela com frota parada, decisão explícita
-          // da spec -- mas achado pos-revisao-final 01/08: `placar > 0`
-          // sozinho escondia ciclos com desconto que SEGUROU o placar em 0
-          // -- ex.: só D1/D2/D4 disparando sem nenhum sinal de soma -- e o
-          // ciclo de `zeradoPorChegada`, ambos com componentes reais mas
-          // placar final 0. Object.keys > 0 cobre os dois: componentes
-          // sempre tem pelo menos uma chave quando algo foi computado
-          // (inclusive "zeradoPorChegada").
-          if (placarNovo > 0 || Object.keys(componentesPlacar).length > 0) {
-            placarDesvioLogCiclo.push({
-              veiculo_id,
-              placar: placarNovo,
-              componentes: componentesPlacar,
-              teria_amarelo: amareloAtivoPlacar,
-              teria_vermelho: teriaVermelhoPlacar,
-            });
-          }
-
-          // Sombra no contexto dos alertas de desvio emitidos pelos 3
-          // detectores atuais (mesmo padrão de rumo_coerente_sombra, ver uso
-          // mais abaixo) -- nunca lido por nenhum detector, só auditoria.
-          const placarDesvioSombraContexto = { placar: placarNovo, componentes: componentesPlacar };
 
           // Determinar nivel da posicao atual. `alerta` aqui ja reflete
           // qualquer supressao de classe_viaria: essa decisao acontece la
@@ -3897,25 +2350,13 @@ export async function POST(request: Request) {
             entregas_feitas,
             entregas_total,
             local: localVeiculo,
-            desvio_streak: desvioStreak,
             rumo: rumoMovimento !== null ? Math.round(rumoMovimento) : null,
             ultimo_evento: pos.evento,
-            desvio_inicio: desvioInicio ? JSON.stringify(desvioInicio) : null,
-            fora_tapete_streak: foraTapeteStreak,
-            divergencia_rumo_streak: divergenciaRumoStreak,
-            divergencia_rumo_inicio: divergenciaRumoInicio ? JSON.stringify(divergenciaRumoInicio) : null,
-            divergencia_rumo_caminho_m: divergenciaRumoCaminhoM,
-            aproximando_streak: aproximandoStreak,
-            origem_celula: origemCelula,
             no_raio_alvo_codigo: noRaioAlvoCodigo,
             no_raio_desde: noRaioDesde,
             no_raio_dwell_segundos: noRaioDwellSegundos,
-            ultima_via_principal_em: ultimaViaPrincipalEm,
-            saiu_parada_confirmada_em: saiuParadaConfirmadaEm,
             perto_sem_marcacao_codigo: pertoSemMarcacaoCodigo,
             perto_sem_marcacao_segundos: pertoSemMarcacaoSegundos,
-            placar_desvio: placarNovo,
-            placar_desvio_estado: JSON.stringify(estadoPlacarNovo),
           });
 
           // 6. Gerenciar alertas — para posicoes frescas E para jammers
@@ -3986,157 +2427,6 @@ export async function POST(request: Request) {
           // mostrar "aproximando" bem na hora de uma anomalia de GPS, a
           // mesma assinatura que o resto do sistema ja trata com
           // desconfianca.
-          if (!saltoImplausivel && pos.fresco && alvosDestinosDisponiveis && menorDistDestinoM !== null) {
-            for (const d of alertasAbertos.filter((a) => elegivelParaAutoResolveAfastando(a))) {
-              const origemMenorDistM = origemMenorDistDestinoM(d.contexto);
-              // null = alerta sem dist_destinos_m utilizavel (ex: antigo
-              // demais) -- nao anota nada neste ciclo, a linha simplesmente
-              // nao aparece no card. Honesto: melhor que mostrar "+0m" errado.
-              if (origemMenorDistM === null) continue;
-              progressoDestinoCiclo.push({
-                alerta_id: d.id,
-                deltaM: menorDistDestinoM - origemMenorDistM,
-              });
-            }
-          }
-
-          // Anota o placar deste ciclo nos alertas abertos elegiveis deste
-          // veiculo -- mesmo padrao de progressoDestinoCiclo (ver linha
-          // ~3597 abaixo). Sem guard de saltoImplausivel/pos.fresco aqui: o
-          // placar ja tem seus proprios guards internos (Guard 7,
-          // podeSomarSinaisPlacar) -- reflete o valor real que o placar
-          // calculou pra este ciclo, sem duplicar logica de confiabilidade.
-          for (const d of alertasAbertos.filter((a) => elegivelParaAnotarPlacarSombra(a))) {
-            placarSombraCiclo.push({ alerta_id: d.id, placar: placarNovo, componentes: componentesPlacar });
-          }
-
-          // Auto-resolucao retroativa de "afastando-se de todos os
-          // destinos" quando a rota foi 100% concluida E o veiculo chegou
-          // fisicamente dentro do poligono de uma base cadastrada -- ver
-          // deveAutoResolverAfastandoRotaConcluida em detectores.ts pro
-          // raciocinio completo. NAO usa so "rota concluida" (mesma
-          // condicao do bloco acima) -- esse sinal sozinho e' exatamente o
-          // que um cenario de entrega forcada sob coacao tambem produziria;
-          // por isso exige TAMBEM baseOcupada (ja calculado mais acima
-          // nesta mesma iteracao por veiculo, ~linha 1247, via
-          // pontoEmGeo contra o poligono real da base -- reusado aqui, nao
-          // recalculado). Sem janela de tempo (diferente da rua estranha):
-          // "afastando de tudo" pode legitimamente levar bem mais tempo pra
-          // voltar fisicamente ate a base, entao o check roda enquanto o
-          // alerta continuar ativo, sem prazo.
-          //
-          // FIX 1+2 (revisao independente 27/07): "dentro do poligono" por
-          // si so nao e' garantia de instalacao segura (Base Benassi —
-          // CEASA-RJ e' um mercado publico de 739 mil m² com vias reais e
-          // 96 veiculos distintos passando por dentro) e o check original
-          // nao exigia parada de verdade nem posicao fresca (transitar pela
-          // base a qualquer velocidade, ou usar uma posicao de GPS obsoleta
-          // durante jammer ativo, bastava). baseElegivelAutoResolve exige
-          // que a base ocupada seja pequena o suficiente (ver
-          // BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO em detectores.ts,
-          // calculado uma vez no load de mapaBasesCliente, sem query nova
-          // por veiculo). pos.fresco && pos.velocidade===0 no gate externo +
-          // paradoMin no ctx exigem parada de verdade e leitura fresca antes
-          // de sequer considerar o auto-resolve.
-          //
-          // !alertaJammer (revisao independente, rodada 2): pos.fresco so
-          // exige atraso<60min, mas detectarJammer ja dispara critico a
-          // partir de 30min (ignicao ligada) -- sem este guard, uma posicao
-          // CONGELADA (jammer ativo, ~85% dos roubos de carga documentados
-          // correlacionam com essa assinatura, ver detectarJammer) dentro
-          // de uma base pequena podia acumular paradoMin so pelo relogio de
-          // parede e auto-resolver o desvio bem no meio da janela em que o
-          // veiculo pode estar sendo sequestrado agora.
-          if (
-            pos.fresco &&
-            !alertaJammer &&
-            pos.velocidade === 0 &&
-            entregas_total > 0 &&
-            entregas_feitas >= entregas_total &&
-            baseOcupada
-          ) {
-            const baseElegivelAutoResolve =
-              baseOcupada.areaM2 != null && baseOcupada.areaM2 < BASE_AREA_MAX_M2_AUTORESOLVE_AFASTANDO;
-            // Confirmado com dado real de producao (nao so relato do zap):
-            // fechamento 100% automatico sem nenhum piso de idade deixava
-            // um desvio real virar falso_positivo minutos depois de
-            // nascer, antes de qualquer chance de revisao humana -- ver
-            // elegivelParaAutoResolveAfastandoPorIdade em detectores.ts pro
-            // raciocinio completo e a evidencia real que motivou o piso de
-            // 20min.
-            for (const a of alertasAbertos
-              .filter(elegivelParaAutoResolveAfastando)
-              .filter((a) => elegivelParaAutoResolveAfastandoPorIdade(a.desde, agora))) {
-              if (
-                deveAutoResolverAfastandoRotaConcluida({
-                  rotaConcluida: true,
-                  baseOcupada: true,
-                  baseElegivelAutoResolve,
-                  paradoMin,
-                })
-              ) {
-                afastandoRotaConcluidaAutoResolveCiclo.push({ alerta_id: a.id });
-              }
-            }
-          }
-
-          // SEGUNDO caso de auto-resolucao de "afastando-se de todos os
-          // destinos" (achado real 03/08) -- ver
-          // deveAutoResolverAfastandoChegadaReal em detectores.ts pro
-          // raciocinio completo. Ao contrario do bloco irmao acima, este NAO
-          // exige rota concluida nem baseOcupada: fecha assim que o veiculo
-          // chega de verdade em QUALQUER destino/base conhecido (pendente ou
-          // base, ja resolvido por chegouEmDestinoConhecido com o piso de
-          // 300m, ~linha 1967 -- NAO suspensoPorChegada cru, ver comentario
-          // la em cima) e para la por tempo real. Motivado por achado real
-          // KYK-8G07: 7 disparos do mesmo alerta num unico dia, cada um um
-          // blip de navegacao normal entre paradas de ultima milha -- sem
-          // este mecanismo o alerta nunca fecha sozinho (TIPOS_NAO_GERENCIADOS)
-          // e a fila de ativos reenchia de 0 pra 84-85 em <24h. Verificado
-          // depois com dado real (revisao 03/08): o proprio KYK-8G07 estava
-          // parado num posto de gasolina a 2,5km do destino real quando um
-          // dos 7 disparos aconteceu -- e exatamente esse caso que a
-          // exclusao de ponto_seguro em chegouEmDestinoConhecido bloqueia.
-          //
-          // Guards de seguranca do bloco irmao (pos.fresco, !alertaJammer,
-          // pos.velocidade===0) + pos.atraso<=10 (guard extra deste bloco,
-          // ver comentario abaixo) -- protegem contra o mesmo cenario de
-          // perigo: um veiculo sequestrado passando raspando perto (dentro
-          // do raio) de um cliente/base durante a fuga, SEM
-          // parar, nao pode fechar o alerta. Isso exige pos.velocidade===0 E
-          // paradoMin>=2 (dois minutos parado no MESMO ponto, nao so uma
-          // leitura passageira) -- so "passar perto" nao satisfaz nenhum dos
-          // dois.
-          //
-          // pos.atraso<=10 (achado IMPORTANT da revisao 03/08): !alertaJammer
-          // exige ignicao ligada (detectarJammer retorna null com ignicao
-          // desligada, ver detectores.ts) -- posicao CONGELADA com ignicao
-          // desligada passa por pos.fresco (que aceita ate 60min de atraso)
-          // sem nunca disparar jammer, e paradoMin cresce so pelo relogio de
-          // parede. No bloco irmao (rota concluida) a area elegivel e meia
-          // duzia de bases pequenas; aqui, com o raio de 300m + chegouEmDestinoConhecido,
-          // a area e ordens de magnitude maior -- vale a checagem extra, e e
-          // barata (paradoMin>=2 ja exige leituras frescas mesmo).
-          if (
-            pos.fresco &&
-            pos.atraso <= 10 &&
-            !alertaJammer &&
-            pos.velocidade === 0 &&
-            chegouEmDestinoConhecido
-          ) {
-            // Mesmo guard de idade minima do bloco irmao acima (ver
-            // elegivelParaAutoResolveAfastandoPorIdade em detectores.ts) --
-            // este bloco e o outro mecanismo relatado no zap fechando
-            // desvio real cedo demais.
-            for (const a of alertasAbertos
-              .filter(elegivelParaAutoResolveAfastando)
-              .filter((a) => elegivelParaAutoResolveAfastandoPorIdade(a.desde, agora))) {
-              if (deveAutoResolverAfastandoChegadaReal({ chegouEmDestino: chegouEmDestinoConhecido, paradoMin })) {
-                afastandoChegadaRealAutoResolveCiclo.push({ alerta_id: a.id });
-              }
-            }
-          }
-
           // Resolucao automatica generica: todos os tipos EXCETO os listados
           // em TIPOS_NAO_GERENCIADOS (favela, desvio, bypass_entrega).
           // Achado real 11/07 (usuario pediu remocao explicita do
@@ -4203,74 +2493,21 @@ export async function POST(request: Request) {
               // origemSaidaParada tambem exclui ehDesvio, tambem sempre
               // posicao ATUAL (o ponto exato onde saiu do raio e virou
               // errado, sem "inicio de desvio" por movimento separado).
-              const origemClasseViaria = alerta.origemDesvio === "classe_viaria";
-              const origemSaidaParada = alerta.origemDesvio === "saida_parada";
-              // Achado real 28/07 (Task 3, REFEITO no Task 4b apos revisao
-              // independente -- BLOCK na 1a rodada): rumo_diverge (ver
-              // detectores.ts) dispara com !afastandoDeTudo -- desvioInicio
-              // (ancorado pelo streak de "afastando de tudo") normalmente
-              // esta null quando ELA e' a causa primaria do alerta.
-              // DIFERENTE de classe_viaria/saida_parada (que sao EXCLUIDAS
-              // de ehDesvio, sempre posicao ATUAL, contexto simples sem
-              // dist_destinos_m): rumo_diverge especificamente PRECISA do
-              // contexto RICO de montarContextoDesvio (dist_destinos_m/
-              // dist_destinos_anterior_m/divergencia_rumo_streak -- exatamente
-              // o dado que a Task 3 existe pra parar de perder) -- por isso
-              // ela e' INCLUIDA em ehDesvio via desvioInicioEfetivoParaContexto,
-              // que agora usa o anchor PROPRIO e sempre-real da streak de
-              // divergencia de rumo (divergenciaRumoInicio, Task 4b -- ja
-              // nao sintetiza mais nada da posicao atual, ver detectores.ts).
-              // Esse MESMO anchor tambem alimenta a verificacao de corredor
-              // da Task 4 (bloco mais acima) quando rumo_diverge e' a regra
-              // vencedora -- um so anchor real, usado nos dois lugares, sem
-              // ambiguidade sintetico-vs-real.
-              const origemRumoDiverge = alerta.origemDesvio === "rumo_diverge";
-              const desvioInicioParaContexto = desvioInicioEfetivoParaContexto(
-                desvioInicio,
-                origemRumoDiverge,
-                divergenciaRumoInicio
-              );
-              const ehDesvio = alerta.tipo === "desvio" && desvioInicioParaContexto !== null && !origemClasseViaria && !origemSaidaParada;
               const ehParadaForaTapete = alerta.tipo === "parada_fora_tapete";
               const contextoParadaForaTapete = {
                 parado_min: paradoMin,
                 dentro_tapete: dentroTapete,
                 risco_area_atual: riscoAreaAtual,
-                ...(segmentoEspecifico !== null || taxaFp !== undefined
-                  ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
-                  : {}),
               };
-              const contextoClasseViaria = {
-                classe_via_atual: classeViaAtual,
-                queda_classe_viaria: quedaClasseViaria,
-                dentro_tapete: dentroTapete,
-                risco_area_atual: riscoAreaAtual,
-                ...(classeViariaRumoSombra
-                  ? {
-                      rumo_coerente_sombra: {
-                        divergencia_graus: classeViariaRumoSombra.divergenciaGraus,
-                        limiar: classeViariaRumoSombra.limiar,
-                        suprimiria: classeViariaRumoSombra.suprimiria,
-                      },
-                    }
-                  : {}),
-                ...(segmentoEspecifico !== null || taxaFp !== undefined
-                  ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
-                  : {}),
-                // Placar de desvio (Fase 1, SOMBRA) -- mesmo padrao de
-                // rumo_coerente_sombra acima, nunca lido por nenhum
-                // detector.
-                placar_desvio_sombra: placarDesvioSombraContexto,
-              };
-              const contextoSaidaParada = {
-                divergencia_graus_atual: divergenciaGrausAtual,
-                dentro_tapete: dentroTapete,
-                risco_area_atual: riscoAreaAtual,
-                ...(segmentoEspecifico !== null || taxaFp !== undefined
-                  ? { calibracao: { segmento: segmentoEspecifico, taxa_falso_positivo: taxaFp ?? -1 } }
-                  : {}),
-                placar_desvio_sombra: placarDesvioSombraContexto,
-              };
+              // Detector de desvio v2: sempre posicao ATUAL (sem conceito de
+              // "inicio do desvio" por movimento -- os 2 sinais novos sao
+              // stateless quanto a posicao, so o streak persiste).
+              const contextoDesvioV2 = { origem_desvio: alerta.origemDesvio };
+              const contextoAlerta = ehParadaForaTapete
+                ? contextoParadaForaTapete
+                : alerta.tipo === "desvio"
+                  ? contextoDesvioV2
+                  : {};
               if (!jaExiste) {
                 await supabase.from("alertas").insert({
                   cliente_id,
@@ -4280,45 +2517,9 @@ export async function POST(request: Request) {
                   motivo: alerta.motivo,
                   score: alerta.score,
                   status: "ativo",
-                  // Desvio: lat/lng do PONTO DE INÍCIO da sequência (onde
-                  // começou a se afastar), não da posição do disparo.
-                  // parada_fora_tapete, classe_viaria e saida_parada:
-                  // sempre a posição ATUAL (pos.lat/lng) -- nenhuma das
-                  // tres tem conceito de "início do desvio" por movimento
-                  // separado da posição atual do veículo.
-                  lat: ehDesvio ? desvioInicioParaContexto!.lat : pos.lat,
-                  lng: ehDesvio ? desvioInicioParaContexto!.lng : pos.lng,
-                  contexto: ehDesvio
-                    ? {
-                        ...montarContextoDesvio({
-                          desvioInicio: desvioInicioParaContexto!,
-                          dentroTapete,
-                          corredorInfo,
-                          distDestinosM,
-                          distDestinosAnteriorM,
-                          desvioStreak,
-                          foraTapeteStreak,
-                          divergenciaRumoStreak,
-                          riscoAreaAtual,
-                          familiarVeiculo,
-                          classeViaAtual,
-                          quedaClasseViaria,
-                          segmentoEspecifico,
-                          taxaFp,
-                          retidaoRumoSombra,
-                        }),
-                        // Placar de desvio (Fase 1, SOMBRA) -- mesmo padrao
-                        // de rumo_coerente_sombra, ver contextoClasseViaria
-                        // acima. Nunca lido por nenhum detector.
-                        placar_desvio_sombra: placarDesvioSombraContexto,
-                      }
-                    : ehParadaForaTapete
-                      ? contextoParadaForaTapete
-                      : origemClasseViaria
-                        ? contextoClasseViaria
-                        : origemSaidaParada
-                          ? contextoSaidaParada
-                          : {},
+                  lat: pos.lat,
+                  lng: pos.lng,
+                  contexto: contextoAlerta,
                   desde: agora.toISOString(),
                 });
               } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
@@ -4336,86 +2537,7 @@ export async function POST(request: Request) {
                     nivel: alerta.nivel,
                     motivo: alerta.motivo,
                     score: alerta.score,
-                    ...(ehDesvio
-                      ? {
-                          lat: desvioInicioParaContexto!.lat,
-                          lng: desvioInicioParaContexto!.lng,
-                          // Achado real 27/07 (caso TTK-4D14): sem isto, `desde`
-                          // ficava preso no valor da criacao ORIGINAL do alerta
-                          // enquanto lat/lng/contexto ja refletiam o NOVO
-                          // desvioInicio deste episodio de streak -- o alerta
-                          // escalado descrevia dois momentos diferentes do
-                          // "mesmo" evento (idade exibida vs posicao exibida).
-                          // Efeito colateral aceito: a idade exibida pode
-                          // "encolher" ao escalar bem depois de criado -- correto
-                          // (reflete o inicio real do episodio atual), nao um bug
-                          // novo. Nao mexe no "preserva id" da escalacao (existe
-                          // pra evitar spam de alerta duplicado, achado 22/07).
-                          // rumo_diverge nunca chega aqui na pratica (nivel
-                          // sempre "atencao", hardcoded em detectores.ts --
-                          // este branch exige "critico") -- desvioInicioParaContexto!
-                          // usado por consistencia/seguranca de tipos, mesmo
-                          // padrao do bloco de insert acima.
-                          desde: desvioInicioParaContexto!.ts,
-                          contexto: {
-                            ...montarContextoDesvio({
-                              desvioInicio: desvioInicioParaContexto!,
-                              dentroTapete,
-                              corredorInfo,
-                              distDestinosM,
-                              distDestinosAnteriorM,
-                              desvioStreak,
-                              foraTapeteStreak,
-                              divergenciaRumoStreak,
-                              riscoAreaAtual,
-                              familiarVeiculo,
-                              classeViaAtual,
-                              quedaClasseViaria,
-                              segmentoEspecifico,
-                              taxaFp,
-                              retidaoRumoSombra,
-                            }),
-                            placar_desvio_sombra: placarDesvioSombraContexto,
-                          },
-                        }
-                      : ehParadaForaTapete
-                        ? { contexto: contextoParadaForaTapete }
-                        // origemClasseViaria e origemSaidaParada caem aqui
-                        // (contexto intocado na escalacao) DE PROPOSITO, nao
-                        // por descuido -- verificado explicitamente (nao só
-                        // assumido) ao adicionar o fix de saida_parada
-                        // (27/07): tanto detectarDesvio's branch de
-                        // quedaClasseViaria quanto o de
-                        // viradaErradaSaindoDeParada retornam
-                        // `nivel: "atencao"` HARDCODED (sem depender de
-                        // score), e nem arbitrarCandidatos nem
-                        // reduzirPorTransitoInferido nem
-                        // aplicarBonusClasseViaria jamais reescrevem o campo
-                        // `nivel` de um alerta (so score/motivo) -- entao um
-                        // alerta destas origens NUNCA chega com
-                        // `alerta.nivel === "critico"`, e este branch de
-                        // escalacao (que exige exatamente isso) e
-                        // estruturalmente inalcancavel pra ambas. Se um dia
-                        // alguem mudar o nivel hardcoded de uma dessas
-                        // regras pra tambem poder ser "critico", este
-                        // comentario e o gatilho pra adicionar aqui o mesmo
-                        // tratamento de contexto que o insert acima ja tem
-                        // (contextoClasseViaria / contextoSaidaParada) --
-                        // senao a escalacao voltaria a gravar contexto
-                        // desatualizado (o antigo, da criacao original) em
-                        // vez do contexto do episodio que causou a
-                        // escalacao, reintroduzindo silenciosamente o mesmo
-                        // bug de perda de dado corrigido aqui.
-                        //
-                        // rumo_diverge (Task 3, achado 28/07): mesma logica
-                        // se aplica (nivel "atencao" HARDCODED em
-                        // detectores.ts, branch nunca alcancavel aqui), mas
-                        // ela NAO cai neste `: {}` -- diferente de
-                        // classe_viaria/saida_parada, rumo_diverge e'
-                        // INCLUIDA em ehDesvio (via
-                        // desvioInicioEfetivoParaContexto), entao already
-                        // cai no branch `ehDesvio` acima, nao aqui.
-                        : {}),
+                    contexto: contextoAlerta,
                   })
                   .eq("id", alertaExistente.id);
               }
@@ -4454,44 +2576,32 @@ export async function POST(request: Request) {
           `INSERT INTO posicoes_atuais
              (veiculo_id, lat, lng, geom, velocidade, ignicao, atraso_min,
               panico, bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
-              entregas_feitas, entregas_total, local, desvio_streak, rumo,
-              ultimo_evento, ultimo_evento_em, desvio_inicio, fora_tapete_streak,
-              divergencia_rumo_streak, aproximando_streak, origem_celula,
+              entregas_feitas, entregas_total, local, rumo,
+              ultimo_evento, ultimo_evento_em,
               no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos,
-              ultima_via_principal_em, divergencia_rumo_inicio, saiu_parada_confirmada_em,
-              perto_sem_marcacao_codigo, perto_sem_marcacao_segundos,
-              divergencia_rumo_caminho_m, placar_desvio, placar_desvio_estado)
+              perto_sem_marcacao_codigo, perto_sem_marcacao_segundos)
            SELECT
              c.veiculo_id, c.lat, c.lng,
              ST_SetSRID(ST_MakePoint(c.lng, c.lat), 4326)::geography,
              c.velocidade, c.ignicao, c.atraso_min, c.panico, c.bau_aberto,
              c.nivel, c.motivo, c.datagps::timestamptz, c.parado_desde::timestamptz,
              c.updated_at::timestamptz, c.entregas_feitas, c.entregas_total, c.local,
-             c.desvio_streak, c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
-             c.desvio_inicio::jsonb, c.fora_tapete_streak, c.divergencia_rumo_streak,
-             c.aproximando_streak, c.origem_celula, c.no_raio_alvo_codigo,
+             c.rumo, c.ultimo_evento, c.updated_at::timestamptz,
+             c.no_raio_alvo_codigo,
              c.no_raio_desde::timestamptz, c.no_raio_dwell_segundos,
-             c.ultima_via_principal_em::timestamptz, c.divergencia_rumo_inicio::jsonb,
-             c.saiu_parada_confirmada_em::timestamptz,
-             c.perto_sem_marcacao_codigo, c.perto_sem_marcacao_segundos,
-             c.divergencia_rumo_caminho_m, c.placar_desvio, c.placar_desvio_estado::jsonb
+             c.perto_sem_marcacao_codigo, c.perto_sem_marcacao_segundos
            FROM unnest(
              $1::uuid[], $2::float8[], $3::float8[], $4::float8[], $5::boolean[],
              $6::integer[], $7::boolean[], $8::boolean[], $9::text[], $10::text[],
              $11::text[], $12::text[], $13::text[], $14::integer[], $15::integer[],
-             $16::text[], $17::integer[], $18::integer[], $19::text[], $20::text[],
-             $21::integer[], $22::integer[], $23::integer[], $24::text[], $25::integer[],
-             $26::text[], $27::integer[], $28::text[], $29::text[], $30::text[],
-             $31::integer[], $32::integer[], $33::float8[], $34::numeric[], $35::text[]
+             $16::text[], $17::integer[], $18::text[], $19::integer[], $20::text[],
+             $21::integer[], $22::integer[], $23::integer[]
            ) AS c(veiculo_id, lat, lng, velocidade, ignicao, atraso_min, panico,
                   bau_aberto, nivel, motivo, datagps, parado_desde, updated_at,
-                  entregas_feitas, entregas_total, local, desvio_streak, rumo,
-                  ultimo_evento, desvio_inicio, fora_tapete_streak, divergencia_rumo_streak,
-                  aproximando_streak, origem_celula, no_raio_alvo_codigo, no_raio_desde,
-                  no_raio_dwell_segundos, ultima_via_principal_em, divergencia_rumo_inicio,
-                  saiu_parada_confirmada_em, perto_sem_marcacao_codigo,
-                  perto_sem_marcacao_segundos, divergencia_rumo_caminho_m,
-                  placar_desvio, placar_desvio_estado)
+                  entregas_feitas, entregas_total, local, rumo,
+                  ultimo_evento, no_raio_alvo_codigo, no_raio_desde,
+                  no_raio_dwell_segundos, perto_sem_marcacao_codigo,
+                  perto_sem_marcacao_segundos)
            ON CONFLICT (veiculo_id) DO UPDATE SET
              lat              = EXCLUDED.lat,
              lng              = EXCLUDED.lng,
@@ -4509,27 +2619,15 @@ export async function POST(request: Request) {
              entregas_feitas  = EXCLUDED.entregas_feitas,
              entregas_total   = EXCLUDED.entregas_total,
              local            = COALESCE(EXCLUDED.local, posicoes_atuais.local),
-             desvio_streak    = EXCLUDED.desvio_streak,
-             desvio_inicio    = EXCLUDED.desvio_inicio,
              rumo             = EXCLUDED.rumo,
              ultimo_evento    = EXCLUDED.ultimo_evento,
              ultimo_evento_em = CASE WHEN EXCLUDED.ultimo_evento IS DISTINCT FROM posicoes_atuais.ultimo_evento
                                   THEN EXCLUDED.ultimo_evento_em ELSE posicoes_atuais.ultimo_evento_em END,
-             fora_tapete_streak = EXCLUDED.fora_tapete_streak,
-             divergencia_rumo_streak = EXCLUDED.divergencia_rumo_streak,
-             aproximando_streak = EXCLUDED.aproximando_streak,
-             origem_celula      = EXCLUDED.origem_celula,
              no_raio_alvo_codigo = EXCLUDED.no_raio_alvo_codigo,
              no_raio_desde       = EXCLUDED.no_raio_desde,
              no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos,
-             ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
-             divergencia_rumo_inicio = EXCLUDED.divergencia_rumo_inicio,
-             saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
              perto_sem_marcacao_codigo = EXCLUDED.perto_sem_marcacao_codigo,
-             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos,
-             divergencia_rumo_caminho_m = EXCLUDED.divergencia_rumo_caminho_m,
-             placar_desvio = EXCLUDED.placar_desvio,
-             placar_desvio_estado = EXCLUDED.placar_desvio_estado`,
+             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -4547,25 +2645,13 @@ export async function POST(request: Request) {
             posicoesCiclo.map((p) => p.entregas_feitas),
             posicoesCiclo.map((p) => p.entregas_total),
             posicoesCiclo.map((p) => p.local),
-            posicoesCiclo.map((p) => p.desvio_streak),
             posicoesCiclo.map((p) => p.rumo),
             posicoesCiclo.map((p) => p.ultimo_evento),
-            posicoesCiclo.map((p) => p.desvio_inicio),
-            posicoesCiclo.map((p) => p.fora_tapete_streak),
-            posicoesCiclo.map((p) => p.divergencia_rumo_streak),
-            posicoesCiclo.map((p) => p.aproximando_streak),
-            posicoesCiclo.map((p) => p.origem_celula),
             posicoesCiclo.map((p) => p.no_raio_alvo_codigo),
             posicoesCiclo.map((p) => p.no_raio_desde),
             posicoesCiclo.map((p) => p.no_raio_dwell_segundos),
-            posicoesCiclo.map((p) => p.ultima_via_principal_em),
-            posicoesCiclo.map((p) => p.divergencia_rumo_inicio),
-            posicoesCiclo.map((p) => p.saiu_parada_confirmada_em),
             posicoesCiclo.map((p) => p.perto_sem_marcacao_codigo),
             posicoesCiclo.map((p) => p.perto_sem_marcacao_segundos),
-            posicoesCiclo.map((p) => p.divergencia_rumo_caminho_m),
-            posicoesCiclo.map((p) => p.placar_desvio),
-            posicoesCiclo.map((p) => p.placar_desvio_estado),
           ]
         );
       } catch (errPosicoes) {
@@ -4606,27 +2692,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Cerca virtual (modo sombra): grava em batch o que TERIA alertado neste
-    // ciclo. Nao-critico: falha aqui nunca derruba o motor.
-    if (cercaSombraCiclo.length > 0) {
-      const { error: erroSombra } = await supabase.from("cerca_sombra").insert(cercaSombraCiclo);
-      if (erroSombra) console.warn(`Aviso: erro ao gravar cerca_sombra: ${erroSombra.message}`);
-    }
-
-    // Rumo-diverge (modo sombra, serie temporal): mesmo padrao nao-critico
-    // de cercaSombraCiclo -- falha aqui nunca derruba o motor.
-    if (rumoDivergeSombraCiclo.length > 0) {
-      const { error: erroRumoDivergeSombra } = await supabase.from("rumo_diverge_sombra").insert(rumoDivergeSombraCiclo);
-      if (erroRumoDivergeSombra) console.warn(`Aviso: erro ao gravar rumo_diverge_sombra: ${erroRumoDivergeSombra.message}`);
-    }
-
-    // Placar de desvio (Fase 1, SOMBRA, log): mesmo padrao nao-critico de
-    // cercaSombraCiclo/rumoDivergeSombraCiclo -- falha aqui nunca derruba o
-    // motor. Ver docs/superpowers/specs/2026-08-01-placar-desvio-design.md.
-    if (placarDesvioLogCiclo.length > 0) {
-      const { error: erroPlacarDesvioLog } = await supabase.from("placar_desvio_log").insert(placarDesvioLogCiclo);
-      if (erroPlacarDesvioLog) console.warn(`Aviso: erro ao gravar placar_desvio_log: ${erroPlacarDesvioLog.message}`);
-    }
 
     // Atualiza baseline_veiculo e baseline_frota incrementalmente (Welford)
     // com as amostras deste ciclo. Roda depois do loop de deteccao, mesmo
@@ -4851,59 +2916,6 @@ export async function POST(request: Request) {
       if (falhasRotaConcluida > 0) console.warn(`Aviso: ${falhasRotaConcluida} falha(s) ao anotar rota concluida neste ciclo`);
     }
 
-    // Anotacao de progresso ao destino em alertas de desvio ativos -- ver
-    // docs/superpowers/specs/2026-08-06-progresso-destino-desvio-design.md.
-    // Mesmo padrao de flush em lote + dedupe por alerta_id. SO ADICIONA
-    // campo no contexto (jsonb ||) -- nunca muda nivel/status, nunca fecha
-    // o alerta.
-    if (progressoDestinoCiclo.length > 0) {
-      const porAlertaProgresso = new Map(progressoDestinoCiclo.map((p) => [p.alerta_id, p]));
-      const resultadosProgresso = await Promise.allSettled(
-        [...porAlertaProgresso.values()].map((p) =>
-          pool.query(
-            `update alertas set contexto = contexto || $2::jsonb where id = $1`,
-            [
-              p.alerta_id,
-              JSON.stringify({
-                progresso_destino: {
-                  delta_m: Math.round(p.deltaM),
-                  atualizado_em: new Date().toISOString(),
-                },
-              }),
-            ]
-          )
-        )
-      );
-      const falhasProgresso = resultadosProgresso.filter((r) => r.status === "rejected").length;
-      if (falhasProgresso > 0) console.warn(`Aviso: ${falhasProgresso} falha(s) ao anotar progresso ao destino neste ciclo`);
-    }
-
-    // Flush do placar sombra -- mesmo padrao de flush em lote + dedupe por
-    // alerta_id, mesmo padrao aditivo (contexto || jsonb, nunca muda
-    // nivel/status/fecha alerta) que progressoDestinoCiclo acima.
-    if (placarSombraCiclo.length > 0) {
-      const porAlertaPlacar = new Map(placarSombraCiclo.map((p) => [p.alerta_id, p]));
-      const resultadosPlacar = await Promise.allSettled(
-        [...porAlertaPlacar.values()].map((p) =>
-          pool.query(
-            `update alertas set contexto = contexto || $2::jsonb where id = $1`,
-            [
-              p.alerta_id,
-              JSON.stringify({
-                placar_sombra: {
-                  placar: Math.round(p.placar),
-                  componentes: p.componentes,
-                  atualizado_em: new Date().toISOString(),
-                },
-              }),
-            ]
-          )
-        )
-      );
-      const falhasPlacar = resultadosPlacar.filter((r) => r.status === "rejected").length;
-      if (falhasPlacar > 0) console.warn(`Aviso: ${falhasPlacar} falha(s) ao anotar placar sombra neste ciclo`);
-    }
-
     // Flush do snapshot de pendentes -- mesmo padrao de flush em lote,
     // tolerante a falha parcial, dos outros logs de sombra.
     if (pendentesSnapshotCiclo.length > 0) {
@@ -4931,107 +2943,6 @@ export async function POST(request: Request) {
 
     // Flush da auto-resolucao retroativa de "afastando-se de todos os
     // destinos" quando rota concluida + chegou na base -- ver
-    // docs/superpowers/plans/2026-07-27-auto-resolucao-rota-concluida-plano.md.
-    // Mesmo padrao das outras auto-resolucoes deste arquivo: dedupe por
-    // alerta_id, SQL cru com merge de contexto (coalesce+||, nunca
-    // overwrite -- preserva lat/lng/geom/tudo que montarContextoDesvio
-    // gravou no insert original, so ACRESCENTA o marcador auto_resolvido),
-    // status='ativo' como guarda de corrida (nao pisa em cima de uma acao
-    // do operador no meio do ciclo), try/catch isolado (nao derruba o
-    // ciclo inteiro se o UPDATE falhar). SEM chamar registrarCasosDesvioRevisao
-    // -- nao poluir calibracao com veredito de maquina; contaComoRotuloHumano
-    // (detectores.ts), usado em recalibrar-desvio/route.ts, ja exclui essas
-    // linhas da calibracao so pelo marcador auto_resolvido, sem precisar de
-    // mudanca la. Tambem nao precisa de mudanca em mapaTiposSilenciados:
-    // contaComoEventoDeSilenciamento (detectores.ts) ja checa
-    // contexto.auto_resolvido===true de forma generica.
-    // Corte pro guard de idade minima (ver
-    // elegivelParaAutoResolveAfastandoPorIdade em detectores.ts) reaplicado
-    // no proprio UPDATE dos dois flushes abaixo -- achado da revisao
-    // independente deste fix: o guard e' checado no loop por veiculo, MAS
-    // o UPDATE roda bem depois, no fim do ciclo. No meio do caminho, uma
-    // escalacao atencao->critico do MESMO alerta pode reescrever `desde`
-    // pra frente (ver acoes-alertas.ts, mesmo TOCTOU ja resolvido la pra
-    // acao em massa) -- sem reaplicar o corte aqui, um alerta que passou no
-    // guard com o `desde` ANTIGO podia ser gravado como falso_positivo com
-    // o `desde` NOVO (idade real < 20min) ja persistido, quebrando a
-    // garantia visivel pro operador (a tela mostra idade a partir de
-    // `desde`).
-    const corteAutoResolveAfastando = new Date(
-      agora.getTime() - IDADE_MINIMA_AUTO_RESOLVE_AFASTANDO_MIN * 60_000
-    ).toISOString();
-
-    if (afastandoRotaConcluidaAutoResolveCiclo.length > 0) {
-      const porAlertaAfastando = new Map(afastandoRotaConcluidaAutoResolveCiclo.map((r) => [r.alerta_id, r]));
-      const idsAfastando = [...porAlertaAfastando.keys()];
-      try {
-        await pool.query(
-          `UPDATE alertas
-           SET status = 'falso_positivo',
-               resolvido_em = $3,
-               contexto = coalesce(contexto, '{}'::jsonb) || $2::jsonb
-           WHERE id = ANY($1::uuid[])
-             AND status = 'ativo'
-             AND desde <= $4`,
-          [
-            idsAfastando,
-            JSON.stringify({
-              auto_resolvido: true,
-              motivo: "rota concluida e chegou na base",
-            }),
-            agora.toISOString(),
-            corteAutoResolveAfastando,
-          ]
-        );
-      } catch (erroAutoResolveAfastando) {
-        console.warn(`Aviso: erro ao auto-resolver afastando-de-destinos (rota concluida): ${String(erroAutoResolveAfastando)}`);
-      }
-    }
-
-    // Flush do SEGUNDO caso de auto-resolucao de "afastando-se de todos os
-    // destinos" (achado real 03/08, KYK-8G07: 7 disparos/dia do mesmo
-    // alerta, fila de ativos reenchendo de 0 pra 84-85 em <24h) -- chegada
-    // real num destino/base conhecido, sem esperar a rota inteira terminar.
-    // Mesmo padrao EXATO do flush acima: dedupe por alerta_id, SQL cru com
-    // merge aditivo de contexto (coalesce+||, nunca overwrite -- preserva
-    // lat/lng/geom/rastro forense do insert original, licao do incidente de
-    // 31/07), status='ativo' como guarda de corrida (nao pisa em cima de
-    // acao do operador no meio do ciclo), try/catch isolado, mesmo status
-    // final 'falso_positivo' do mecanismo irmao. `motivo` no contexto e'
-    // DIFERENTE e especifico ("chegada real confirmada em destino/base
-    // conhecido") pra distinguir no banco depois qual dos dois mecanismos
-    // fechou cada linha. SEM chamar registrarCasosDesvioRevisao (mesma razao
-    // do mecanismo irmao: nao e' veredito humano); contaComoRotuloHumano e
-    // contaComoEventoDeSilenciamento (detectores.ts) ja excluem essas linhas
-    // so pelo marcador auto_resolvido, de forma generica -- sem amarrar ao
-    // motivo especifico.
-    if (afastandoChegadaRealAutoResolveCiclo.length > 0) {
-      const porAlertaChegadaReal = new Map(afastandoChegadaRealAutoResolveCiclo.map((r) => [r.alerta_id, r]));
-      const idsChegadaReal = [...porAlertaChegadaReal.keys()];
-      try {
-        await pool.query(
-          `UPDATE alertas
-           SET status = 'falso_positivo',
-               resolvido_em = $3,
-               contexto = coalesce(contexto, '{}'::jsonb) || $2::jsonb
-           WHERE id = ANY($1::uuid[])
-             AND status = 'ativo'
-             AND desde <= $4`,
-          [
-            idsChegadaReal,
-            JSON.stringify({
-              auto_resolvido: true,
-              motivo: "chegada real confirmada em destino/base conhecido",
-            }),
-            agora.toISOString(),
-            corteAutoResolveAfastando,
-          ]
-        );
-      } catch (erroAutoResolveChegadaReal) {
-        console.warn(`Aviso: erro ao auto-resolver afastando-de-destinos (chegada real): ${String(erroAutoResolveChegadaReal)}`);
-      }
-    }
-
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo
     // (lotes de 8), fora do caminho critico da deteccao -- ver comentario na
     // fila geocodesPendentes. Mesmo orcamento de sempre (LIMITE_GEOCODES_NOVOS
@@ -5144,36 +3055,6 @@ export async function POST(request: Request) {
         erros.push(msg);
       } finally {
         pgCelulas.release();
-      }
-    }
-
-    // Upsert batch da familiaridade por veiculo -- mesmo padrao de
-    // corredor_celulas acima, so chaveado por veiculo_id. DISTINCT ON evita
-    // "ON CONFLICT DO UPDATE command cannot affect row a second time" quando
-    // o mesmo veiculo cruza a mesma celula 2x no mesmo ciclo (segmentos
-    // interpolados adjacentes).
-    if (celulasVeiculoCiclo.length > 0) {
-      const pgCelulasVeiculo = await pool.connect();
-      try {
-        await pgCelulasVeiculo.query(
-          `INSERT INTO corredor_celulas_veiculo (veiculo_id, celula, ultimo_visto)
-           SELECT DISTINCT ON (c.vid, c.cel) c.vid::uuid, c.cel, current_date
-           FROM unnest($1::uuid[], $2::text[]) AS c(vid, cel)
-           ORDER BY c.vid, c.cel
-           ON CONFLICT (veiculo_id, celula) DO UPDATE
-             SET ultimo_visto = EXCLUDED.ultimo_visto
-             WHERE corredor_celulas_veiculo.ultimo_visto < EXCLUDED.ultimo_visto`,
-          [
-            celulasVeiculoCiclo.map((c) => c.veiculo_id),
-            celulasVeiculoCiclo.map((c) => c.celula),
-          ]
-        );
-      } catch (errCelulasVeiculo) {
-        const msg = `Aviso: erro ao salvar corredor_celulas_veiculo: ${String(errCelulasVeiculo)}`;
-        console.warn(msg);
-        erros.push(msg);
-      } finally {
-        pgCelulasVeiculo.release();
       }
     }
 
@@ -5425,11 +3306,6 @@ export async function POST(request: Request) {
         // Tapete: células sem visita há mais de 30 dias saem do corredor.
         await pgClean.query(
           `DELETE FROM corredor_celulas WHERE ultimo_visto < current_date - 30`
-        );
-        // Familiaridade por veiculo: mesma janela de 30 dias do tapete de
-        // frota -- ver docs/superpowers/specs/2026-07-21-familiaridade-veiculo-desvio-design.md.
-        await pgClean.query(
-          `DELETE FROM corredor_celulas_veiculo WHERE ultimo_visto < current_date - 30`
         );
       } catch (errClean) {
         console.warn("Limpeza periódica falhou (não crítico):", errClean);
