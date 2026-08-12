@@ -2339,11 +2339,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           })()}
 
           {/* Resolver todos / Limpar avisos — os VISÍVEIS na aba atual
-              (Crítico/Tudo). Somem no split view: com 2 secoes (TODOS/
-              SELECIONADOS) o "todos" desses botoes fica ambiguo — cada card
-              mantem seu proprio Resolver/Falso. Os 2 botoes ficam lado a
-              lado, sobre o MESMO conjunto (alertasFiltrados), mas com
-              significados diferentes: "Resolver todos" (resolverVarios)
+              (Crítico/Tudo), sobre o MESMO conjunto (alertasFiltrados) em
+              QUALQUER modo de tela, inclusive split view -- pedido explicito
+              do usuario 12/08 (antes sumiam em split view por ambiguidade
+              conceitual entre TODOS/SELECIONADOS; a implementacao sempre foi
+              bem definida, agia sempre sobre alertasFiltrados, so a
+              visibilidade que escondia). "Resolver todos" (resolverVarios)
               afirma veredito humano e alimenta a calibracao; "Limpar avisos"
               (limparVarios) so tira da tela, sem fingir revisao caso a caso
               — pedido do usuario 28/07 depois do achado de que "Resolver
@@ -2351,7 +2352,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               confirmados de verdade". Cada botao tem seu proprio fluxo de
               confirmar/cancelar (confirmarResolver/confirmarLimpar), so um
               ativo por vez. */}
-          {!splitView && alertasFiltrados.length > 0 && (
+          {alertasFiltrados.length > 0 && (
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
                 <div style={{ display: "flex", gap: 5 }}>
