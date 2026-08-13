@@ -2318,18 +2318,37 @@ export async function POST(request: Request) {
             let posicaoFoiCorrigida = false;
 
             if (estadoDesvioAnterior.afastandoStreak > 0) {
-              const { rows: janelaRecente } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
-                `SELECT lat, lng, criado_em FROM posicoes_historico
-                  WHERE veiculo_id = $1 AND criado_em > now() - interval '5 minutes'
-                  ORDER BY criado_em ASC`,
-                [veiculo_id]
-              );
-              const pontosMatch = janelaRecente.map((p) => ({ lat: p.lat, lng: p.lng, timestamp: p.criado_em }));
-              const corrigido = await corrigirPosicoesComMatch(pontosMatch);
-              if (corrigido && corrigido.confidence >= LIMIAR_CONFIANCA_MATCH) {
-                posParaAvaliar = corrigido.atual;
-                anteriorParaAvaliar = corrigido.anterior;
-                posicaoFoiCorrigida = true;
+              try {
+                const { rows: janelaRecente } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
+                  `SELECT lat, lng, criado_em FROM posicoes_historico
+                    WHERE veiculo_id = $1 AND criado_em > now() - interval '5 minutes'
+                    ORDER BY criado_em ASC`,
+                  [veiculo_id]
+                );
+                const pontosMatch = janelaRecente.map((p) => ({ lat: p.lat, lng: p.lng, timestamp: p.criado_em }));
+                // A leitura fresca deste ciclo (`pos`) so' e' persistida em
+                // posicoes_historico/posicoes_atuais no INSERT em lote, DEPOIS que
+                // o loop por veiculo termina -- a query acima nunca a enxerga, entao
+                // sem isto o /match corrigiria com base em 1-2 ciclos atras,
+                // dessincronizado do resto da avaliacao (que usa pos.lat/pos.lng
+                // frescos, ex. pra filtrar destinosRelevantes). Adiciona o ponto
+                // atual em memoria, com o mesmo timestamp `agora` que sera usado
+                // quando ele for gravado no banco mais abaixo.
+                pontosMatch.push({ lat: pos.lat, lng: pos.lng, timestamp: agora });
+                const corrigido = await corrigirPosicoesComMatch(pontosMatch);
+                if (corrigido && corrigido.confidence >= LIMIAR_CONFIANCA_MATCH) {
+                  posParaAvaliar = corrigido.atual;
+                  anteriorParaAvaliar = corrigido.anterior;
+                  posicaoFoiCorrigida = true;
+                }
+              } catch (errMatch) {
+                // Mesmo padrao defensivo do resto do arquivo (ex. calibracao/
+                // desvio_disparo_log acima): um erro aqui (timeout, pool
+                // esgotado, blip de rede) nao pode abortar o veiculo INTEIRO --
+                // so' significa que a correcao de posicao fica indisponivel
+                // neste ciclo, seguindo com o fallback bruto (posParaAvaliar/
+                // anteriorParaAvaliar ja inicializados com pos/anterior).
+                erros.push(`Aviso: falha ao corrigir posicao via /match pro veiculo ${veiculo_id}: ${String(errMatch)}`);
               }
             }
 
