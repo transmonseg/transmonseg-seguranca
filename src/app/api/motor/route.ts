@@ -50,6 +50,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
+import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
 
@@ -88,6 +89,27 @@ type RomaneioCache = { pontosPorPlaca: Map<string, { nf: string; clienteNome: st
 const CACHE_ROMANEIO_MS = 3 * 60_000;
 const cacheRomaneioPorCliente = new Map<string, RomaneioCache>();
 const cacheEscalaPorCliente = new Map<string, { pontosPorPlaca: Map<string, { lat: number; lng: number; raioM: number }[]>; expiraEm: number }>();
+
+// Achado real 13/08 (pesquisa + auditoria: circuito de aprendizado morto --
+// recalibrar-desvio/route.ts calcula e grava calibracao_desvio toda semana,
+// mas nada aqui NUNCA lia de volta pra ajustar o score ao vivo, apesar do
+// comentario antigo em recalibrar-desvio afirmar o contrario. Cache global
+// (nao por cliente, tabela pequena) com o mesmo TTL dos outros caches deste
+// arquivo -- so' ajusta o SCORE final do alerta (prioridade/severidade
+// exibida), nunca decide se dispara nem mexe no streak/limiar -- efeito
+// seguro pra recall: taxa alta so' deprioriza, nunca suprime.
+let cacheCalibracaoDesvio: { taxas: Map<string, number>; expiraEm: number } | null = null;
+async function getTaxasCalibracaoDesvio(pool: pg.Pool): Promise<Map<string, number>> {
+  if (cacheCalibracaoDesvio && cacheCalibracaoDesvio.expiraEm > Date.now()) {
+    return cacheCalibracaoDesvio.taxas;
+  }
+  const { rows } = await pool.query<{ segmento: string; taxa_falso_positivo: number }>(
+    `SELECT segmento, taxa_falso_positivo FROM calibracao_desvio`
+  );
+  const taxas = new Map(rows.map((r) => [r.segmento, Number(r.taxa_falso_positivo)]));
+  cacheCalibracaoDesvio = { taxas, expiraEm: Date.now() + CACHE_ROMANEIO_MS };
+  return taxas;
+}
 
 // ─── Fallback de alvos pro detector de desvio quando a Unitrac falha ──────
 // (achado real 29/07): detectarDesvio() bloqueava TODA deteccao
@@ -2288,6 +2310,29 @@ export async function POST(request: Request) {
               // pra nao perder a serie historica caso volte a ser religado,
               // so' forca disparou=false na hora de montar o alerta.
               alertaDesvioV2 = montarAlertaDesvio(afastando, { ...ruaRara, disparou: false, celula: celulaAtualDesvio, nVisitas: nVisitasHistorico });
+
+              // Achado real 13/08 (pesquisa + auditoria: circuito de
+              // aprendizado morto -- ver comentario de getTaxasCalibracaoDesvio
+              // acima). Reconecta aqui: pega a taxa de falso positivo
+              // calibrada do segmento deste sinal especifico (fallback pro
+              // balde generico tipo:desvio se o segmento fino ainda nao tem
+              // amostra), e SO' ajusta o score (prioridade exibida) -- nunca
+              // decide se o alerta dispara, nunca mexe em streak/limiar.
+              if (alertaDesvioV2) {
+                try {
+                  const taxas = await getTaxasCalibracaoDesvio(pool);
+                  const segmento = segmentoCalibracaoPreferido(
+                    { tipo: alertaDesvioV2.tipo, origemDesvio: alertaDesvioV2.origemDesvio },
+                    null
+                  );
+                  const taxa = (segmento ? taxas.get(segmento) : undefined) ?? taxas.get(`tipo:${alertaDesvioV2.tipo}`);
+                  if (taxa != null) {
+                    alertaDesvioV2 = { ...alertaDesvioV2, score: aplicarFatorCalibrado(alertaDesvioV2.score, taxa) };
+                  }
+                } catch (errCalibracao) {
+                  erros.push(`Aviso: falha ao aplicar calibracao de desvio pro veiculo ${veiculo_id}: ${String(errCalibracao)}`);
+                }
+              }
 
               // Achado real 13/08 (casos TTH-3C94 e RQU-1G17, "falso
               // positivo" reportados no grupo -- ver comentario da migration

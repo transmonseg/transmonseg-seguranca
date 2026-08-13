@@ -39,9 +39,33 @@ export function aplicarFatorCalibrado(scoreBase: number, taxaFalsoPositivo: numb
 // silenciosamente toda vez que o texto do motivo mudava (ja mudou 3 vezes
 // so nesta sessao).
 export function segmentoCalibracaoPreferido(
-  alerta: { tipo: string; origemDesvio?: "comportamental" | "cerca_virtual" | "saida_parada" | "classe_viaria" | "rumo_diverge" },
+  alerta: {
+    tipo: string;
+    origemDesvio?:
+      | "comportamental"
+      | "cerca_virtual"
+      | "saida_parada"
+      | "classe_viaria"
+      | "rumo_diverge"
+      | "afastando_geral"
+      | "rua_rara_frota";
+  },
   corredorVeredito: string | null | undefined
 ): string | null {
+  // Achado real 13/08 (pesquisa + auditoria: o motor NUNCA leu
+  // calibracao_desvio de volta -- circuito de aprendizado morto desde o
+  // rewrite do detector v2, que trocou as origens antigas por
+  // "afastando_geral"/"rua_rara_frota" sem ganhar segmento proprio aqui).
+  // Mesmo padrao dos branches abaixo: segmento proprio por sinal, pra
+  // recalibrar-desvio aprender a taxa real de CADA sinal do v2 separado,
+  // em vez de tudo cair no balde generico `tipo:desvio` (que ainda
+  // acontece via fallback quando esta funcao retorna null).
+  if (alerta.tipo === "desvio" && alerta.origemDesvio === "afastando_geral") {
+    return "origem:afastando_geral";
+  }
+  if (alerta.tipo === "desvio" && alerta.origemDesvio === "rua_rara_frota") {
+    return "origem:rua_rara_frota";
+  }
   // Achado real 28/07 (Task 2, Step 4 -- grep obrigatorio por todo o repo
   // antes de estender "rumo_diverge"): `alerta.origemDesvio === "comportamental"`
   // so e checado neste UNICO lugar em todo o codebase (fora de comentarios/

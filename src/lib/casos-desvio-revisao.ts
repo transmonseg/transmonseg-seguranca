@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { segmentoCalibracaoPreferido } from "./calibracao-desvio";
 
 const JANELA_TRILHA_ANTES_MIN = 15;
 const JANELA_TRILHA_CAP_HORAS = 6;
@@ -50,7 +51,7 @@ export async function registrarCasosDesvioRevisao(
   try {
     const { data: alertasDesvio, error: errAlertas } = await admin
       .from("alertas")
-      .select("id, veiculo_id, contexto, desde")
+      .select("id, veiculo_id, tipo, contexto, desde")
       .in("id", ids)
       .eq("modo_teste", false)
       .in("tipo", TIPOS_CASO_REVISAO);
@@ -67,12 +68,31 @@ export async function registrarCasosDesvioRevisao(
         .lte("criado_em", fim.toISOString())
         .order("criado_em", { ascending: true });
 
+      // Achado real 13/08 (pesquisa + auditoria adversarial: segmentoCalibracaoPreferido
+      // tinha testes completos mas NUNCA era chamada em codigo real -- so'
+      // aparecia em comentarios. recalibrar-desvio le
+      // contexto_detector->'calibracao'->>'segmento', mas nada nunca escrevia
+      // essa chave -- a segmentacao FINA (origem:X, corredor_veredito:X) nunca
+      // funcionou de verdade, so' a grosseira tipo:desvio. Calcula e injeta
+      // aqui, no MESMO snapshot que ja protege contra o STRIP_PESADO.
+      const contextoOriginal = (a.contexto ?? {}) as Record<string, unknown>;
+      const origemDesvio = contextoOriginal.origem_desvio as
+        | "comportamental"
+        | "cerca_virtual"
+        | "saida_parada"
+        | "classe_viaria"
+        | "rumo_diverge"
+        | "afastando_geral"
+        | "rua_rara_frota"
+        | undefined;
+      const segmento = segmentoCalibracaoPreferido({ tipo: a.tipo, origemDesvio }, null);
+
       await admin.from("casos_desvio_revisao").insert({
         alerta_id: a.id,
         veiculo_id: a.veiculo_id,
         status_final: statusFinal,
         origem_acao: origemAcao,
-        contexto_detector: a.contexto ?? {},
+        contexto_detector: segmento ? { ...contextoOriginal, calibracao: { segmento } } : contextoOriginal,
         trilha: trilha ?? [],
         motivo_falso_positivo: motivoFalsoPositivo ?? null,
       });

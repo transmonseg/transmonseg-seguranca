@@ -101,4 +101,13 @@ describe("segmentoCalibracaoPreferido (achado real 12/07, campo estrutural desde
     const alerta = { tipo: "desvio" };
     expect(segmentoCalibracaoPreferido(alerta, "fora")).toBeNull();
   });
+
+  it("origemDesvio='afastando_geral' (detector v2, sinal A): retorna segmento proprio -- achado real 13/08, o motor nunca lia calibracao_desvio de volta e o v2 nunca tinha segmento, misturando tudo no balde generico tipo:desvio", () => {
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "afastando_geral" }, null)).toBe("origem:afastando_geral");
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "afastando_geral" }, "fora")).toBe("origem:afastando_geral");
+  });
+
+  it("origemDesvio='rua_rara_frota' (detector v2, sinal B): retorna segmento proprio", () => {
+    expect(segmentoCalibracaoPreferido({ tipo: "desvio", origemDesvio: "rua_rara_frota" }, null)).toBe("origem:rua_rara_frota");
+  });
 });
