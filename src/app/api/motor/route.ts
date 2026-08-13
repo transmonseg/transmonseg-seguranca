@@ -2246,11 +2246,30 @@ export async function POST(request: Request) {
               : null;
           const movimentoInsignificante = movimentoRealM != null && movimentoRealM < LIMIAR_MOVIMENTO_MINIMO_M;
 
-          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinos.length > 0) {
-            const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinos);
+          // Achado real 13/08 (analise do dia inteiro via desvio_disparo_log):
+          // metade dos disparos de "afastando de tudo" tinha pelo menos 1
+          // destino a mais de 50km de distancia -- tipicamente a OUTRA base
+          // do cliente (ex: Nutry tem base em Penha e em Campos dos
+          // Goytacazes, ~300km uma da outra) ou ponto de escala de rota
+          // longa. Um destino tao distante quase nunca reflete comportamento
+          // LOCAL do motorista: pode disparar por coincidencia (irrelevante)
+          // OU, pior, BLOQUEAR uma divergencia local real, porque
+          // avaliarAfastandoDeTudo exige que TODOS os destinos divirjam --
+          // se a direcao geral do veiculo aproxima de leve da base distante
+          // enquanto ele desvia de verdade localmente, o desvio real nunca
+          // dispara. Filtra (linha reta, sem custo de OSRM) os destinos
+          // acima de 50km ANTES de avaliar o sinal -- so' pra essa avaliacao,
+          // nao mexe no `destinos` usado por chegada/corredor/corroboracao.
+          const LIMIAR_DESTINO_RELEVANTE_M = 50_000;
+          const destinosRelevantes = destinos.filter(
+            (d) => haversineM(pos.lat, pos.lng, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M
+          );
+
+          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0) {
+            const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinosRelevantes);
             const distAnterioresReais =
               anterior && anterior.lat != null && anterior.lng != null && distAtuaisReais
-                ? await buscarDistanciasReais({ lat: anterior.lat, lng: anterior.lng }, destinos)
+                ? await buscarDistanciasReais({ lat: anterior.lat, lng: anterior.lng }, destinosRelevantes)
                 : null;
 
             if (distAtuaisReais && distAnterioresReais) {
@@ -2287,7 +2306,7 @@ export async function POST(request: Request) {
                       veiculo_id,
                       alertaDesvioV2.origemDesvio,
                       JSON.stringify(
-                        destinos.map((d, i) => ({
+                        destinosRelevantes.map((d, i) => ({
                           codigo: d.codigo,
                           lat: d.lat,
                           lng: d.lng,
