@@ -281,6 +281,17 @@ export function corrigirComPontoAprendido(
 // real e correcao verificada, nao acumulo estatistico sujeito a ruido de
 // GPS -- mesmo raciocinio de fonte='manual' (ver comentario acima).
 export const CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M = 15;
+// Teto de seguranca -- achado real 12/08 (simulacao contra o romaneio de
+// hoje, casos SEPETIBA/CAMPOS): geocode de endereco pode errar por dezenas
+// a centenas de km quando o nome da rua se repete numa cidade diferente
+// (ex.: "Avenida Liberdade" existe em Sao Joao da Barra E no Rio de
+// Janeiro, ~270km de distancia) -- entrega "confirmada" e' sobre a
+// ENTREGA em si (o motorista chegou lá), nao prova que o GEOCODE do
+// endereco esta certo. Mesma ordem de grandeza do pior caso legitimo ja
+// documentado no codigo (hotel/pousada em zona rural, 17km) -- acima
+// disso, mais provavel ser erro de geocodificacao do que endereco
+// genuinamente distante.
+export const CORRECAO_ROMANEIO_DIVERGENCIA_MAX_M = 20_000;
 
 // So corrige coordenada via romaneio quando a entrega daquele NF ja foi
 // CONFIRMADA (Unitrac feito=true OU parada real no perimetro do ponto) --
@@ -292,11 +303,13 @@ export const CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M = 15;
 export function deveCorrigirComRomaneio(
   atual: { lat: number; lng: number },
   romaneio: { lat: number; lng: number },
-  entregaConfirmada: boolean
+  entregaConfirmada: boolean,
+  opts?: { tetoM?: number }
 ): boolean {
   if (!entregaConfirmada) return false;
   const divergenciaM = haversineM(atual.lat, atual.lng, romaneio.lat, romaneio.lng);
-  return divergenciaM > CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M;
+  const teto = opts?.tetoM ?? CORRECAO_ROMANEIO_DIVERGENCIA_MAX_M;
+  return divergenciaM > CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M && divergenciaM <= teto;
 }
 
 // Menor distância (m) de uma posição aos pontos de entrega PENDENTES.

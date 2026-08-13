@@ -90,9 +90,9 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
 
 describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/022_cnefe_enderecos.sql)", () => {
   const mockDeps = (overrides: Partial<{
-    buscarPorRuaNumero: () => Promise<{ lat: number; lng: number }[]>;
-    buscarPorRua: () => Promise<{ lat: number; lng: number }[]>;
-    buscarPorSimilaridade: () => Promise<{ lat: number; lng: number }[]>;
+    buscarPorRuaNumero: (nome: string, numero: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
+    buscarPorRua: (nome: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
+    buscarPorSimilaridade: (nome: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
   }> = {}) => ({
     buscarPorRuaNumero: vi.fn(overrides.buscarPorRuaNumero ?? (async () => [])),
     buscarPorRua: vi.fn(overrides.buscarPorRua ?? (async () => [])),
@@ -101,13 +101,13 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
 
   it("sem candidato em nenhum nivel: null", async () => {
     const deps = mockDeps();
-    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
     expect(r).toBeNull();
   });
 
   it("bate por rua+numero exato: usa esse resultado, nao chega a buscar so por rua nem por similaridade", async () => {
     const deps = mockDeps({ buscarPorRuaNumero: async () => [{ lat: 1, lng: 2 }] });
-    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
     expect(r).toEqual({ lat: 1, lng: 2 });
     expect(deps.buscarPorRua).not.toHaveBeenCalled();
     expect(deps.buscarPorSimilaridade).not.toHaveBeenCalled();
@@ -115,20 +115,20 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
 
   it("rua+numero nao bate, cai pra so rua: nao chega a buscar por similaridade", async () => {
     const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
-    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
     expect(r).toEqual({ lat: 3, lng: 4 });
     expect(deps.buscarPorSimilaridade).not.toHaveBeenCalled();
   });
 
   it("rua+numero e so-rua nao batem, cai pra similaridade (pg_trgm)", async () => {
     const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: 5, lng: 6 }] });
-    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, deps);
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
     expect(r).toEqual({ lat: 5, lng: 6 });
   });
 
   it("numero S/N: nao tenta buscar por rua+numero, vai direto pra so-rua", async () => {
     const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
-    const r = await geocodificarCnefe("RUA X, S/N - BAIRRO, CIDADE - *", null, deps);
+    const r = await geocodificarCnefe("RUA X, S/N - BAIRRO, CIDADE - *", null, null, deps);
     expect(r).toEqual({ lat: 3, lng: 4 });
     expect(deps.buscarPorRuaNumero).not.toHaveBeenCalled();
   });
@@ -140,8 +140,36 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
       { lat: -21.06, lng: -41.97 },
     ];
     const deps = mockDeps({ buscarPorRua: async () => candidatos });
-    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", pontoCidade, deps);
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", pontoCidade, null, deps);
     expect(r).toEqual(candidatos[1]);
+  });
+
+  // Achado real 12/08 (romaneio de hoje, casos SEPETIBA/CAMPOS -- erro de
+  // ate 270km por rua homonima em cidade errada): filtro de municipio na
+  // query em si, nao so proximidade depois. Ver
+  // docs/superpowers/specs/2026-08-12-precisao-geocodificacao-romaneio-design.md.
+  it("passa o codigo de municipio pros 3 niveis de busca do CNEFE", async () => {
+    const deps = mockDeps();
+    await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, "3304557", deps);
+    expect(deps.buscarPorRuaNumero).toHaveBeenCalledWith(expect.any(String), "10", "3304557");
+  });
+
+  it("sem codigo de municipio resolvido: passa null pros 3 niveis (comportamento de hoje, sem regressao)", async () => {
+    const deps = mockDeps();
+    await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
+    expect(deps.buscarPorRuaNumero).toHaveBeenCalledWith(expect.any(String), "10", null);
+  });
+
+  it("cai pra so-rua COM o codigo de municipio tambem (nao perde o filtro no fallback)", async () => {
+    const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
+    await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, "3301009", deps);
+    expect(deps.buscarPorRua).toHaveBeenCalledWith(expect.any(String), "3301009");
+  });
+
+  it("cai pra similaridade COM o codigo de municipio tambem", async () => {
+    const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: 5, lng: 6 }] });
+    await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, "3305000", deps);
+    expect(deps.buscarPorSimilaridade).toHaveBeenCalledWith(expect.any(String), "3305000");
   });
 });
 

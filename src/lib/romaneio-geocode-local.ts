@@ -79,6 +79,125 @@ export function expandirCidadeTruncada(cidade: string): string {
   return candidatos.length === 1 ? candidatos[0] : cidade;
 }
 
+// Codigo IBGE de 7 digitos por municipio (fonte: API oficial
+// servicodados.ibge.gov.br/api/v1/localidades/estados/RJ/municipios,
+// consultada 12/08) -- mesma cobertura de MUNICIPIOS_RJ (so RJ, mesmo
+// escopo do CNEFE ja ingerido). Chave "Parati" (nao "Paraty", grafia
+// oficial do IBGE) pra bater com a grafia ja usada em MUNICIPIOS_RJ acima.
+// Achado real 12/08: usado pra filtrar CNEFE por municipio na consulta
+// (nao so por proximidade depois) -- ver
+// docs/superpowers/specs/2026-08-12-precisao-geocodificacao-romaneio-design.md.
+const MUNICIPIO_CODIGO_IBGE: Record<string, string> = {
+  "Angra dos Reis": "3300100",
+  "Aperibé": "3300159",
+  "Araruama": "3300209",
+  "Areal": "3300225",
+  "Armação dos Búzios": "3300233",
+  "Arraial do Cabo": "3300258",
+  "Barra do Piraí": "3300308",
+  "Barra Mansa": "3300407",
+  "Belford Roxo": "3300456",
+  "Bom Jardim": "3300506",
+  "Bom Jesus do Itabapoana": "3300605",
+  "Cabo Frio": "3300704",
+  "Cachoeiras de Macacu": "3300803",
+  "Cambuci": "3300902",
+  "Campos dos Goytacazes": "3301009",
+  "Cantagalo": "3301108",
+  "Carapebus": "3300936",
+  "Cardoso Moreira": "3301157",
+  "Carmo": "3301207",
+  "Casimiro de Abreu": "3301306",
+  "Comendador Levy Gasparian": "3300951",
+  "Conceição de Macabu": "3301405",
+  "Cordeiro": "3301504",
+  "Duas Barras": "3301603",
+  "Duque de Caxias": "3301702",
+  "Engenheiro Paulo de Frontin": "3301801",
+  "Guapimirim": "3301850",
+  "Iguaba Grande": "3301876",
+  "Itaboraí": "3301900",
+  "Itaguaí": "3302007",
+  "Italva": "3302056",
+  "Itaocara": "3302106",
+  "Itaperuna": "3302205",
+  "Itatiaia": "3302254",
+  "Japeri": "3302270",
+  "Laje do Muriaé": "3302304",
+  "Macaé": "3302403",
+  "Macuco": "3302452",
+  "Magé": "3302502",
+  "Mangaratiba": "3302601",
+  "Maricá": "3302700",
+  "Mendes": "3302809",
+  "Mesquita": "3302858",
+  "Miguel Pereira": "3302908",
+  "Miracema": "3303005",
+  "Natividade": "3303104",
+  "Nilópolis": "3303203",
+  "Niterói": "3303302",
+  "Nova Friburgo": "3303401",
+  "Nova Iguaçu": "3303500",
+  "Paracambi": "3303609",
+  "Paraíba do Sul": "3303708",
+  "Parati": "3303807",
+  "Paty do Alferes": "3303856",
+  "Petrópolis": "3303906",
+  "Pinheiral": "3303955",
+  "Piraí": "3304003",
+  "Porciúncula": "3304102",
+  "Porto Real": "3304110",
+  "Quatis": "3304128",
+  "Queimados": "3304144",
+  "Quissamã": "3304151",
+  "Resende": "3304201",
+  "Rio Bonito": "3304300",
+  "Rio Claro": "3304409",
+  "Rio das Flores": "3304508",
+  "Rio das Ostras": "3304524",
+  "Rio de Janeiro": "3304557",
+  "Santa Maria Madalena": "3304607",
+  "Santo Antônio de Pádua": "3304706",
+  "São Fidélis": "3304805",
+  "São Francisco de Itabapoana": "3304755",
+  "São Gonçalo": "3304904",
+  "São João da Barra": "3305000",
+  "São João de Meriti": "3305109",
+  "São José de Ubá": "3305133",
+  "São José do Vale do Rio Preto": "3305158",
+  "São Pedro da Aldeia": "3305208",
+  "São Sebastião do Alto": "3305307",
+  "Sapucaia": "3305406",
+  "Saquarema": "3305505",
+  "Seropédica": "3305554",
+  "Silva Jardim": "3305604",
+  "Sumidouro": "3305703",
+  "Tanguá": "3305752",
+  "Teresópolis": "3305802",
+  "Trajano de Moraes": "3305901",
+  "Três Rios": "3306008",
+  "Valença": "3306107",
+  "Varre-Sai": "3306156",
+  "Vassouras": "3306206",
+  "Volta Redonda": "3306305",
+};
+
+const MUNICIPIO_CODIGO_IBGE_NORMALIZADOS: Record<string, string> = Object.fromEntries(
+  Object.entries(MUNICIPIO_CODIGO_IBGE).map(([nome, codigo]) => [semAcentoMaiusculo(nome), codigo])
+);
+
+// Achado real 12/08: expandirCidadeTruncada preserva o case ORIGINAL do
+// endereco quando a cidade ja bate direto sem precisar truncar/expandir
+// (so normaliza pra Title Case no caso truncado) -- entao a entrada aqui
+// pode chegar tanto "Rio de Janeiro" (truncado, ja expandido) quanto "RIO
+// DE JANEIRO" (formato bruto do romaneio, CAIXA ALTA). Normaliza os dois
+// lados (mesma funcao semAcentoMaiusculo ja usada por
+// expandirCidadeTruncada) pra achar o codigo independente de qual forma
+// chegou.
+export function municipioCodigoIbge(cidadeExpandida: string): string | null {
+  return MUNICIPIO_CODIGO_IBGE_NORMALIZADOS[semAcentoMaiusculo(cidadeExpandida)] ?? null;
+}
+
 // Monta uma string enxuta especificamente pra mandar pro Google/Nominatim
 // -- SEM o sufixo de complemento de entrega (ex. "LOJA 02", "KM 270
 // QUADRA F 101", "1 PISO PARTE UNIDADE DO SHOPPING 530AB"), que nao faz

@@ -389,8 +389,23 @@ describe("deveCorrigirComRomaneio", () => {
     expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(true);
   });
 
-  it("corrige mesmo com divergência grande, sem teto superior (endereço verificado, não ruído de GPS)", () => {
-    const romaneio = { lat: -22.75, lng: -43.05 }; // ~20km+
+  it("corrige com divergência grande, ainda dentro do teto de 20km (mesma ordem do pior caso legítimo documentado, 17km)", () => {
+    const romaneio = { lat: -22.98, lng: -43.2 }; // ~8,9km
     expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(true);
+  });
+
+  // Achado real 12/08 (simulação contra o romaneio de hoje, casos
+  // SEPETIBA/CAMPOS): geocode de romaneio pode errar por dezenas a
+  // centenas de km quando rua homônima existe em cidade errada -- teto
+  // evita corromper pontos_aprendidos mesmo com entrega "confirmada"
+  // (confirmação é sobre a ENTREGA, não sobre a qualidade do geocode).
+  it("NÃO corrige acima do teto de 20km, mesmo com entrega confirmada", () => {
+    const romaneio = { lat: -21.7, lng: -41.03 }; // ~230km (caso real: Grussaí/SJB geocodificado no Rio)
+    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(false);
+  });
+
+  it("aceita teto customizado", () => {
+    const romaneio = { lat: -22.9003, lng: -43.2 }; // ~33m
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, { tetoM: 20 })).toBe(false);
   });
 });

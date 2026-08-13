@@ -70,13 +70,24 @@ export async function geocodificarLocal(
 // naquela rua), (3) similaridade de nome via pg_trgm (pega variacao tipo
 // abreviacao -- "FRANCISCO" vs "F." -- que nem o match exato da rua
 // resolve). Cada nivel so roda se o anterior nao achou nada.
+// municipioCodigo (achado real 12/08, ver
+// docs/superpowers/specs/2026-08-12-precisao-geocodificacao-romaneio-design.md):
+// filtro RIGIDO na propria query CNEFE, nao so proximidade depois --
+// rua/nome_normalizado pode se repetir em municipios diferentes (o caso
+// real que gerou isso: "Avenida Liberdade" existe em Sao Joao da Barra E
+// no Rio de Janeiro, ~270km de distancia), e o teto de 30km em
+// escolherCandidatoMaisProximo nao discrimina bem quando o ponto de
+// referencia e' a cidade inteira (municipio grande) ou quando nao ha
+// candidato bom por perto. Passado adiante pros 3 niveis -- o filtro nao
+// deve se perder no fallback rua+numero -> so-rua -> similaridade.
 export async function geocodificarCnefe(
   enderecoBruto: string,
   pontoCidade: { lat: number; lng: number } | null,
+  municipioCodigo: string | null,
   deps: {
-    buscarPorRuaNumero: (nomeNormalizado: string, numero: string) => Promise<{ lat: number; lng: number }[]>;
-    buscarPorRua: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>;
-    buscarPorSimilaridade: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>;
+    buscarPorRuaNumero: (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
+    buscarPorRua: (nomeNormalizado: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
+    buscarPorSimilaridade: (nomeNormalizado: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
   }
 ): Promise<{ lat: number; lng: number } | null> {
   const rua = extrairRuaDoEndereco(enderecoBruto);
@@ -84,16 +95,16 @@ export async function geocodificarCnefe(
   const numero = extrairNumeroDoEndereco(enderecoBruto);
 
   if (numero && !/^S\/?N$/i.test(numero)) {
-    const porRuaNumero = await deps.buscarPorRuaNumero(nomeNormalizado, numero);
+    const porRuaNumero = await deps.buscarPorRuaNumero(nomeNormalizado, numero, municipioCodigo);
     const resultado = escolherCandidatoMaisProximo(porRuaNumero, pontoCidade);
     if (resultado) return resultado;
   }
 
-  const porRua = await deps.buscarPorRua(nomeNormalizado);
+  const porRua = await deps.buscarPorRua(nomeNormalizado, municipioCodigo);
   const resultadoRua = escolherCandidatoMaisProximo(porRua, pontoCidade);
   if (resultadoRua) return resultadoRua;
 
-  const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado);
+  const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado, municipioCodigo);
   return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade);
 }
 

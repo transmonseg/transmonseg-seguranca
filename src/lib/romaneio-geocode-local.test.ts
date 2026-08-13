@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   extrairRuaDoEndereco, extrairCidadeDoEndereco, normalizarNomeRua,
   extrairNumeroDoEndereco, extrairBairroDoEndereco, expandirCidadeTruncada,
-  montarEnderecoParaGeocode,
+  montarEnderecoParaGeocode, municipioCodigoIbge,
 } from "./romaneio-geocode-local";
 
 describe("extrairRuaDoEndereco", () => {
@@ -145,5 +145,31 @@ describe("montarEnderecoParaGeocode", () => {
   it("S/N nao vira parte do numero (rua sozinha)", () => {
     expect(montarEnderecoParaGeocode("EST NATIVIDADE RAPOSO, S/N - ZONA RURAL, NATIVIDADE - ."))
       .toBe("EST NATIVIDADE RAPOSO, ZONA RURAL, NATIVIDADE, RJ, Brasil");
+  });
+});
+
+describe("municipioCodigoIbge", () => {
+  it("acha o codigo IBGE de 7 digitos pra um municipio conhecido do RJ", () => {
+    expect(municipioCodigoIbge("Rio de Janeiro")).toBe("3304557");
+    expect(municipioCodigoIbge("Campos dos Goytacazes")).toBe("3301009");
+    expect(municipioCodigoIbge("São João da Barra")).toBe("3305000");
+  });
+
+  it("retorna null pra cidade fora da lista do RJ", () => {
+    expect(municipioCodigoIbge("São Paulo")).toBeNull();
+  });
+
+  it("retorna null pra string vazia", () => {
+    expect(municipioCodigoIbge("")).toBeNull();
+  });
+
+  // Achado real 12/08: expandirCidadeTruncada preserva o CASE ORIGINAL
+  // quando a cidade ja bate direto sem precisar truncar/expandir (so
+  // retorna a forma canonica pro caso truncado) -- cidade que chega
+  // completa do romaneio em CAIXA ALTA (o formato real da fonte) tem que
+  // achar o codigo do mesmo jeito, nao so quando ja está em Title Case.
+  it("acha o codigo mesmo com a cidade em CAIXA ALTA (formato real do romaneio, sem acento)", () => {
+    expect(municipioCodigoIbge("RIO DE JANEIRO")).toBe("3304557");
+    expect(municipioCodigoIbge("CAMPOS DOS GOYTACAZES")).toBe("3301009");
   });
 });

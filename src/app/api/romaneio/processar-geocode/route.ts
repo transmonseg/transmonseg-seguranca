@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
-import { extrairCidadeDoEndereco, expandirCidadeTruncada } from "@/lib/romaneio-geocode-local";
+import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge } from "@/lib/romaneio-geocode-local";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
 export const maxDuration = 60;
@@ -136,6 +136,45 @@ export async function POST(request: Request) {
     }
   }
 
+  // Achado real 12/08 (romaneio de hoje, casos SEPETIBA/CAMPOS): o ponto de
+  // cidade acima e' bom pra pegar cidade ERRADA (ex. rua homonima em outro
+  // estado), mas Rio de Janeiro (cidade) e' grande demais pra discriminar
+  // bairro errado DENTRO da cidade certa -- rua comprida sem numero exato
+  // no CNEFE caia no candidato mais proximo do centro da CIDADE, nao do
+  // bairro real do endereco, as vezes dezenas de km errado mesmo "dentro"
+  // do teto de 30km (DISTANCIA_MAX_MATCH_LOCAL_M em romaneio-geocode.ts).
+  // extrairBairroDoEndereco ja existia (usado so pra montar o texto do
+  // Nominatim) -- agora tambem resolve um ponto de referencia mais
+  // apertado (bairro+cidade), mesmo padrao de cache/throttle do ponto de
+  // cidade, chave "BAIRRO:<bairro>:<cidade>" pra nao colidir. Quando falha
+  // (bairro raro sem match no Nominatim) cai pro ponto de cidade, nunca
+  // bloqueia a geocodificacao.
+  const bairroCidadeUnicos = [...new Set(
+    pendentes
+      .map((l) => {
+        const bairro = extrairBairroDoEndereco(l.endereco_bruto);
+        const cidadeBruta = extrairCidadeDoEndereco(l.endereco_bruto);
+        const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
+        return bairro && cidade ? `${bairro}|${cidade}` : null;
+      })
+      .filter((x): x is string => x !== null)
+  )];
+  const pontosBairro = new Map<string, { lat: number; lng: number }>();
+  for (const chave of bairroCidadeUnicos) {
+    const [bairro, cidade] = chave.split("|");
+    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${cidade.toUpperCase()}`;
+    const doCache = await buscarCache(chaveCache);
+    if (doCache) {
+      pontosBairro.set(chave, { lat: doCache.lat, lng: doCache.lng });
+      continue;
+    }
+    const ponto = await geocodificarNominatimThrottled(`${bairro}, ${cidade}`);
+    if (ponto) {
+      await salvarCache(chaveCache, { ...ponto, fonte: "nominatim" });
+      pontosBairro.set(chave, ponto);
+    }
+  }
+
   // nome_sem_conectores (nao nome_normalizado direto): achado real 31/07,
   // conectores (de/da/do) aparecem de forma inconsistente entre o romaneio
   // e o OSM nos dois sentidos -- coluna gerada (migration 021) remove dos
@@ -151,19 +190,30 @@ export async function POST(request: Request) {
   // (buscarCandidatosPorNome acima) na cadeia de geocodificarEndereco --
   // endereco+coordenada real de campo, mais preciso que nome de rua + ponto
   // medio do trecho.
-  const buscarCnefePorRuaNumero = async (nomeNormalizado: string, numero: string) => {
-    const { data } = await admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).limit(50);
+  // municipioCodigo (achado real 12/08 -- ver
+  // docs/superpowers/specs/2026-08-12-precisao-geocodificacao-romaneio-design.md):
+  // filtro RIGIDO na query, nao so proximidade depois -- rua homonima em
+  // municipio errado (ex. "Avenida Liberdade" em Sao Joao da Barra E no
+  // Rio, ~270km de distancia) nao aparece nem como candidato quando o
+  // municipio nao bate.
+  const buscarCnefePorRuaNumero = async (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => {
+    let query = admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).limit(50);
+    if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
+    const { data } = await query;
     return data ?? [];
   };
-  const buscarCnefePorRua = async (nomeNormalizado: string) => {
-    const { data } = await admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).limit(200);
+  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null) => {
+    let query = admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).limit(200);
+    if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
+    const { data } = await query;
     return data ?? [];
   };
   // pg_trgm -- pega variacao tipo abreviacao ("FRANCISCO" vs "F.") que nem
   // o match exato da rua resolve. RPC (nao dá pra fazer ORDER BY
-  // similarity() pelo query builder do Supabase-js).
-  const buscarCnefePorSimilaridade = async (nomeNormalizado: string) => {
-    const { data } = await admin.rpc("cnefe_buscar_por_similaridade", { termo: nomeNormalizado, limite: 5 });
+  // similarity() pelo query builder do Supabase-js). filtro_municipio_codigo
+  // -- migration contabo/045.
+  const buscarCnefePorSimilaridade = async (nomeNormalizado: string, municipioCodigo: string | null) => {
+    const { data } = await admin.rpc("cnefe_buscar_por_similaridade", { termo: nomeNormalizado, limite: 5, filtro_municipio_codigo: municipioCodigo });
     return data ?? [];
   };
 
@@ -174,12 +224,15 @@ export async function POST(request: Request) {
   for (const linha of pendentes) {
     const cidadeBruta = extrairCidadeDoEndereco(linha.endereco_bruto);
     const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
-    const pontoCidade = cidade ? pontosCidade.get(cidade) ?? null : null;
+    const bairro = extrairBairroDoEndereco(linha.endereco_bruto);
+    const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
+    const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
+    const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
 
-    const geocode = await geocodificarEndereco(linha.endereco_bruto, pontoCidade, {
+    const geocode = await geocodificarEndereco(linha.endereco_bruto, pontoReferencia, {
       buscarCache,
       salvarCache,
-      geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, {
+      geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, municipioCodigo, {
         buscarPorRuaNumero: buscarCnefePorRuaNumero,
         buscarPorRua: buscarCnefePorRua,
         buscarPorSimilaridade: buscarCnefePorSimilaridade,
