@@ -376,22 +376,22 @@ describe("deveCorrigirComRomaneio", () => {
 
   it("não corrige se a entrega não está confirmada, mesmo com coordenada bem diferente", () => {
     const romaneio = { lat: -22.95, lng: -43.25 }; // ~7km de diferença
-    expect(deveCorrigirComRomaneio(SP, romaneio, false)).toBe(false);
+    expect(deveCorrigirComRomaneio(SP, romaneio, false, "cnefe")).toBe(false);
   });
 
   it("não corrige se a coordenada é essencialmente igual (ruído de geocode < 15m)", () => {
     const romaneio = { lat: -22.900001, lng: -43.200001 }; // ~0.15m
-    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(false);
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe")).toBe(false);
   });
 
-  it("corrige quando confirmada e diverge acima do piso de 15m", () => {
+  it("corrige quando confirmada, fonte=cnefe e diverge acima do piso de 15m", () => {
     const romaneio = { lat: -22.9003, lng: -43.2 }; // ~33m
-    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(true);
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe")).toBe(true);
   });
 
   it("corrige com divergência grande, ainda dentro do teto de 20km (mesma ordem do pior caso legítimo documentado, 17km)", () => {
     const romaneio = { lat: -22.98, lng: -43.2 }; // ~8,9km
-    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(true);
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe")).toBe(true);
   });
 
   // Achado real 12/08 (simulação contra o romaneio de hoje, casos
@@ -399,13 +399,33 @@ describe("deveCorrigirComRomaneio", () => {
   // centenas de km quando rua homônima existe em cidade errada -- teto
   // evita corromper pontos_aprendidos mesmo com entrega "confirmada"
   // (confirmação é sobre a ENTREGA, não sobre a qualidade do geocode).
-  it("NÃO corrige acima do teto de 20km, mesmo com entrega confirmada", () => {
+  it("NÃO corrige acima do teto de 20km, mesmo com entrega confirmada e fonte=cnefe", () => {
     const romaneio = { lat: -21.7, lng: -41.03 }; // ~230km (caso real: Grussaí/SJB geocodificado no Rio)
-    expect(deveCorrigirComRomaneio(SP, romaneio, true)).toBe(false);
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe")).toBe(false);
   });
 
   it("aceita teto customizado", () => {
     const romaneio = { lat: -22.9003, lng: -43.2 }; // ~33m
-    expect(deveCorrigirComRomaneio(SP, romaneio, true, { tetoM: 20 })).toBe(false);
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe", { tetoM: 20 })).toBe(false);
+  });
+
+  // Achado real 12/08: so CNEFE (dado de campo do IBGE, ja filtrado por
+  // municipio na consulta) tem garantia forte o bastante pra corrigir
+  // cadastro automaticamente -- local (OSM)/Google/Nominatim nao tem
+  // filtro de municipio rigido, so proximidade de referencia, que ja
+  // mostrou falhar em bairro grande (achado real 12/08, caso Rua Iate).
+  it("NÃO corrige com fonte='local' (OSM), mesmo confirmada e dentro do teto", () => {
+    const romaneio = { lat: -22.9003, lng: -43.2 }; // ~33m
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "local")).toBe(false);
+  });
+
+  it("NÃO corrige com fonte='nominatim'", () => {
+    const romaneio = { lat: -22.9003, lng: -43.2 };
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "nominatim")).toBe(false);
+  });
+
+  it("NÃO corrige com fonte='google'", () => {
+    const romaneio = { lat: -22.9003, lng: -43.2 };
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "google")).toBe(false);
   });
 });

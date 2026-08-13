@@ -219,7 +219,7 @@ export async function POST(request: Request) {
 
   let ok = 0;
   let falhou = 0;
-  const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number }[] = [];
+  const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" }[] = [];
 
   for (const linha of pendentes) {
     const cidadeBruta = extrairCidadeDoEndereco(linha.endereco_bruto);
@@ -246,7 +246,7 @@ export async function POST(request: Request) {
     if (geocode) {
       ok++;
       if (linha.veiculo_id) {
-        geocodificadosOk.push({ id: linha.id, veiculo_id: linha.veiculo_id, placa: linha.placa, nf: linha.nf, lat: geocode.lat, lng: geocode.lng });
+        geocodificadosOk.push({ id: linha.id, veiculo_id: linha.veiculo_id, placa: linha.placa, nf: linha.nf, lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte });
       }
     } else {
       falhou++;
@@ -336,7 +336,8 @@ export async function POST(request: Request) {
           if (!deveCorrigirComRomaneio(
             { lat: alvo.pontolatitude, lng: alvo.pontolongitude },
             { lat: linha.lat, lng: linha.lng },
-            entregaConfirmada
+            entregaConfirmada,
+            linha.fonte
           )) continue;
 
           const { error: erroCorrecao } = await admin.from("pontos_aprendidos").upsert(

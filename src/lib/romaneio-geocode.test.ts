@@ -86,6 +86,44 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     expect(deps.geocodificarCnefeDep).toHaveBeenCalledWith(enderecoOriginal, null);
     expect(deps.geocodificarLocalDep).toHaveBeenCalledWith(enderecoOriginal, null);
   });
+
+  // Achado real 12/08: CNEFE/local ja tinham checagem de distancia contra
+  // o ponto de referencia (escolherCandidatoMaisProximo, teto de 30km) --
+  // Google/Nominatim NUNCA tiveram essa protecao, aceitavam qualquer
+  // resultado direto. Ver docs/superpowers/specs/2026-08-12-precisao-geocodificacao-romaneio-design.md.
+  describe("teto de distancia contra o ponto de referencia -- Google/Nominatim (achado real 12/08)", () => {
+    const pontoCidade = { lat: -22.9, lng: -43.2 };
+    const pertoDoPontoCidade = { lat: -22.91, lng: -43.21 }; // ~1.5km
+    const longeDoPontoCidade = { lat: -21.7, lng: -41.03 }; // ~270km (caso real: Grussai geocodificado no Rio)
+
+    it("Google longe do ponto de referencia: rejeita, cai pra Nominatim", async () => {
+      const deps = mockDeps({
+        geocodificarGoogle: async () => longeDoPontoCidade,
+        geocodificarNominatim: async () => pertoDoPontoCidade,
+      });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", pontoCidade, deps);
+      expect(r).toEqual({ ...pertoDoPontoCidade, fonte: "nominatim" });
+    });
+
+    it("Google perto do ponto de referencia: aceita normalmente", async () => {
+      const deps = mockDeps({ geocodificarGoogle: async () => pertoDoPontoCidade });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", pontoCidade, deps);
+      expect(r).toEqual({ ...pertoDoPontoCidade, fonte: "google" });
+    });
+
+    it("Nominatim longe do ponto de referencia (ultima fonte da cadeia): rejeita, resultado final e' null", async () => {
+      const deps = mockDeps({ geocodificarNominatim: async () => longeDoPontoCidade });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", pontoCidade, deps);
+      expect(r).toBeNull();
+      expect(deps.salvarCache).not.toHaveBeenCalled();
+    });
+
+    it("sem ponto de referencia (null): aceita qualquer resultado, sem checagem -- comportamento de hoje preservado", async () => {
+      const deps = mockDeps({ geocodificarGoogle: async () => longeDoPontoCidade });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", null, deps);
+      expect(r).toEqual({ ...longeDoPontoCidade, fonte: "google" });
+    });
+  });
 });
 
 describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/022_cnefe_enderecos.sql)", () => {

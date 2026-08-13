@@ -300,13 +300,25 @@ export const CORRECAO_ROMANEIO_DIVERGENCIA_MAX_M = 20_000;
 // cancelada, endereco errado nunca visitado, etc.). Quem decide ONDE
 // aplicar (busca de alvo, checagem de entregas_presenca) e' o caller, nao
 // aqui -- mesmo desenho de corrigirComPontoAprendido.
+//
+// fonte (achado real 12/08, segunda rodada de melhoria pos-deploy): so
+// CNEFE (dado de campo do IBGE, ja filtrado por municipio na consulta,
+// ver romaneio-geocode.ts) tem garantia forte o bastante pra corrigir
+// cadastro AUTOMATICAMENTE. 'local' (OSM)/'google'/'nominatim' nao tem
+// filtro de municipio rigido, so proximidade de ponto de referencia -- ja
+// mostrou falhar em bairro grande (caso real Rua Iate, Sepetiba: 41km de
+// erro mesmo com o fix de bairro). Essas fontes continuam geocodificando
+// o romaneio normalmente (nao bloqueia a entrega), so nao viram correcao
+// automatica de pontos_aprendidos.
 export function deveCorrigirComRomaneio(
   atual: { lat: number; lng: number },
   romaneio: { lat: number; lng: number },
   entregaConfirmada: boolean,
+  fonte: "google" | "nominatim" | "local" | "cnefe",
   opts?: { tetoM?: number }
 ): boolean {
   if (!entregaConfirmada) return false;
+  if (fonte !== "cnefe") return false;
   const divergenciaM = haversineM(atual.lat, atual.lng, romaneio.lat, romaneio.lng);
   const teto = opts?.tetoM ?? CORRECAO_ROMANEIO_DIVERGENCIA_MAX_M;
   return divergenciaM > CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M && divergenciaM <= teto;
