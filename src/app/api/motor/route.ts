@@ -2262,7 +2262,13 @@ export async function POST(request: Request) {
               const ruaRara = avaliarRuaRara(nVisitasHistorico, afastando.aproximandoAlgum, estadoDesvioAnterior.ruaRaraStreak);
               ruaRaraStreakNovo = ruaRara.streak;
 
-              alertaDesvioV2 = montarAlertaDesvio(afastando, { ...ruaRara, celula: celulaAtualDesvio, nVisitas: nVisitasHistorico });
+              // Decisao real 13/08 (pedido explicito do usuario, apos ver o
+              // volume de falso positivo do dia): sinal B ("rua rara") DESLIGADO
+              // -- so' o sinal A (afastando de tudo) dispara alerta. Continua
+              // calculando/gravando o streak (desvio_estado.rua_rara_streak)
+              // pra nao perder a serie historica caso volte a ser religado,
+              // so' forca disparou=false na hora de montar o alerta.
+              alertaDesvioV2 = montarAlertaDesvio(afastando, { ...ruaRara, disparou: false, celula: celulaAtualDesvio, nVisitas: nVisitasHistorico });
 
               // Achado real 13/08 (casos TTH-3C94 e RQU-1G17, "falso
               // positivo" reportados no grupo -- ver comentario da migration
