@@ -70,6 +70,24 @@ const TIMEOUT_UNITRAC_MS = 20_000;
 const TEM_GOOGLE_GEOCODE = !!process.env.GOOGLE_MAPS_API_KEY;
 const LIMITE_GEOCODES_NOVOS = TEM_GOOGLE_GEOCODE ? 30 : 3;
 
+// Teto de correcoes via /match (OSRM) BEM-SUCEDIDAS por ciclo do motor
+// (achado real 13/08, revisao final de branch). Cada chamada individual ja
+// tem timeout de 5s (AbortSignal.timeout, ver osrm-match.ts), mas sem um
+// teto agregado, um ciclo com muitos veiculos com afastandoStreak>0 ao
+// mesmo tempo poderia gastar minutos so' em correcoes seriais, arriscando
+// estourar maxDuration=60s (a Vercel mata a funcao no meio do ciclo,
+// deixando os UPSERTs em lote do fim do ciclo sem rodar pra frota inteira).
+// motor_lease ja serializa ciclos (protecao existente contra dois ciclos
+// simultaneos), mas isso nao limita quanto tempo UM ciclo pode levar. Acima
+// do teto, os veiculos excedentes simplesmente pulam a correcao neste ciclo
+// e usam o fallback bruto de sempre (sem erro) -- mesmo raciocinio do
+// comentario sobre LIMIAR_CONFIANCA_MATCH mais abaixo: o pior efeito e'
+// atrasar/distorcer um alerta que ja estava se formando, nunca perde
+// deteccao. Valor generoso (afastandoStreak>0 simultaneo em muitos veiculos
+// e' incomum -- e' um sinal por veiculo ja em formacao, nao o estado normal
+// da frota inteira).
+const MAX_CORRECOES_MATCH_POR_CICLO = 40;
+
 // ─── Cache em memória da frota por cliente (best-effort entre ciclos) ──────
 // A frota (quais veículos existem/estão ativos) muda raríssimo — não faz
 // sentido reler do banco toda vez que o motor roda (a cada 1 min, pra sempre).
@@ -513,6 +531,11 @@ export async function POST(request: Request) {
 
   // Contador de geocodes novos consumidos neste ciclo
   const contadorGeocodesNovos = { valor: 0 };
+  // Contador de correcoes via /match BEM-SUCEDIDAS neste ciclo (ver
+  // MAX_CORRECOES_MATCH_POR_CICLO acima) -- checado antes de tentar a
+  // proxima correcao, incrementado so' quando corrigirPosicoesComMatch
+  // retorna um resultado usavel (confidence acima do piso).
+  const contadorCorrecoesMatch = { valor: 0 };
   // Populado por cliente (candidatos deste ciclo, ver preencherGeocodeCacheCandidatos
   // e a pre-passada de cada cliente) — nao busca a tabela inteira (ver comentario ali).
   const cacheGeocode = new Map<string, string>();
@@ -2317,7 +2340,18 @@ export async function POST(request: Request) {
               : null;
             let posicaoFoiCorrigida = false;
 
-            if (estadoDesvioAnterior.afastandoStreak > 0) {
+            // Achado real 13/08 (revisao final, Importante): a correcao via
+            // /match so' pode entrar em acao quando ja' existe um `anterior`
+            // BRUTO valido (lido de posicoes_atuais no inicio do ciclo) --
+            // senao ela "fabricaria" um anteriorParaAvaliar que na pratica
+            // nao deveria existir. O motor trata anterior==null como caso
+            // legitimo de "sem dado suficiente ainda" (gates como
+            // paradoSemSeMover/movimentoInsignificante acima dependem disso).
+            // Sem esta checagem, o bloco de /match poderia rodar so' com a
+            // janela do banco + o ponto atual e devolver um "anterior"
+            // corrigido mesmo num ciclo em que o motor deveria estar tratando
+            // este veiculo como cold-start.
+            if (estadoDesvioAnterior.afastandoStreak > 0 && anteriorParaAvaliar !== null && contadorCorrecoesMatch.valor < MAX_CORRECOES_MATCH_POR_CICLO) {
               try {
                 const { rows: janelaRecente } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
                   `SELECT lat, lng, criado_em FROM posicoes_historico
@@ -2332,14 +2366,19 @@ export async function POST(request: Request) {
                 // sem isto o /match corrigiria com base em 1-2 ciclos atras,
                 // dessincronizado do resto da avaliacao (que usa pos.lat/pos.lng
                 // frescos, ex. pra filtrar destinosRelevantes). Adiciona o ponto
-                // atual em memoria, com o mesmo timestamp `agora` que sera usado
-                // quando ele for gravado no banco mais abaixo.
+                // atual em memoria, usando `agora` (o timestamp de INICIO do
+                // processamento deste veiculo neste ciclo) -- NAO e' o mesmo
+                // valor que vai parar em posicoes_historico.criado_em: aquela
+                // coluna e' DEFAULT now(), calculado pelo Postgres no momento do
+                // INSERT em lote (que roda DEPOIS, so' no fim do ciclo inteiro),
+                // entao os dois timestamps divergem por segundos a mais.
                 pontosMatch.push({ lat: pos.lat, lng: pos.lng, timestamp: agora });
                 const corrigido = await corrigirPosicoesComMatch(pontosMatch);
                 if (corrigido && corrigido.confidence >= LIMIAR_CONFIANCA_MATCH) {
                   posParaAvaliar = corrigido.atual;
                   anteriorParaAvaliar = corrigido.anterior;
                   posicaoFoiCorrigida = true;
+                  contadorCorrecoesMatch.valor += 1;
                 }
               } catch (errMatch) {
                 // Mesmo padrao defensivo do resto do arquivo (ex. calibracao/

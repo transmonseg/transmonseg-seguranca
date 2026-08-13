@@ -35,11 +35,22 @@ export async function corrigirPosicoesComMatch(
     const data = (await res.json()) as RespostaMatch;
     if (data.code !== "Ok" || !data.matchings || !data.tracepoints) return null;
 
-    const validos = data.tracepoints.filter((tp): tp is NonNullable<TracePoint> => tp !== null);
-    if (validos.length < 2) return null;
+    // Achado real 13/08 (revisao final, confirmado ao vivo contra o OSRM
+    // real de producao): o OSRM pode descartar o(s) ULTIMO(S) ponto(s) da
+    // janela como outlier e ainda assim responder code:"Ok" com confidence
+    // alta (ex: 0.9386) -- tracepoints termina em null(s) (ex: [tp0, tp1,
+    // null, null]). Filtrar so' os tracepoints nao-nulos e pegar os 2
+    // ultimos DESSA LISTA FILTRADA (comportamento antigo, bugado) entrega
+    // uma leitura de 1-2 ciclos atras como "atual" -- exatamente no cenario
+    // mais comum de GPS ruidoso, que e' a razao de existir esta feature.
+    // Precisa ser o ULTIMO e o PENULTIMO INDICE DO ARRAY ORIGINAL (o ponto
+    // mais recente enviado ao /match e o anterior a ele), nunca de uma
+    // lista filtrada -- se qualquer um dos dois vier null, nao corrige
+    // (retorna null, cai no fallback bruto, seguro).
+    const tpAtual = data.tracepoints[pontos.length - 1];
+    const tpAnterior = data.tracepoints[pontos.length - 2];
+    if (!tpAtual || !tpAnterior) return null;
 
-    const tpAtual = validos[validos.length - 1];
-    const tpAnterior = validos[validos.length - 2];
     const confidence = data.matchings[tpAtual.matchings_index]?.confidence;
     if (confidence == null) return null;
 
