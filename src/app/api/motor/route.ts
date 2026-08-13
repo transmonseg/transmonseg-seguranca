@@ -2188,7 +2188,28 @@ export async function POST(request: Request) {
           // real -- suspende os 2 sinais nesse caso, independente de
           // suspensoPorChegada (que ja nao cobre mais o pendente que acabou
           // de ser confirmado).
-          const paradoSemSeMover = pos.velocidade === 0 && !!mesmoPonto;
+          //
+          // Achado real 13/08 (caso TUS-1A47 e TOS-3C21, capturados pelo
+          // novo desvio_disparo_log): a condicao original exigia
+          // `pos.velocidade === 0`, mas o rastreador de alguns veiculos
+          // repete a MESMA posicao (lat/lng identicos, nao so arredondados)
+          // por 2-3 leituras seguidas enquanto ainda reporta uma velocidade
+          // instantanea diferente de zero (ex: 13km/h, 10km/h) -- artefato
+          // do proprio hardware/protocolo de rastreamento, nao movimento
+          // real. Nessas leituras, distAtualM bate EXATAMENTE com
+          // distAnteriorM pra TODO destino (confirmado no log de disparo),
+          // ou seja, aproximandoAlgum sempre da false por posicao repetida,
+          // nao por afastamento de verdade -- alimentando rua_rara sem o
+          // veiculo ter se movido nem 1m. `mesmoPonto` ja e' a fonte de
+          // verdade sobre "a posicao mudou" (independente do campo
+          // velocidade, que pode ser ruidoso) -- exigir tambem
+          // velocidade===0 so cria um buraco onde o sensor de velocidade
+          // discorda da propria posicao GPS. Removido: agora basta a
+          // posicao ser identica ao ciclo anterior, sem exigir velocidade
+          // exatamente zero -- so' pode suprimir um UNICO ciclo onde a
+          // posicao provadamente nao mudou, nunca custa recall de um desvio
+          // real (que exige movimento em varios ciclos seguidos).
+          const paradoSemSeMover = !!mesmoPonto;
 
           if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && destinos.length > 0) {
             const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinos);
