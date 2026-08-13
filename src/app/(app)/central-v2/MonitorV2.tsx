@@ -545,6 +545,16 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [confirmarLimpar, setConfirmarLimpar] = useState(false);
   const [limpandoTodos, startLimpar] = useTransition();
   const [avisoRecentes, setAvisoRecentes] = useState<{ acao: "resolver" | "limpar"; quantidade: number } | null>(null);
+  // Achado real 13/08 (usuario reportou "botao de limpar nao funciona"):
+  // handleResolverTodos/handleLimparTodos removiam os alertas da TELA antes
+  // mesmo de saber se o servidor confirmou (optimistic update), e nunca
+  // checavam o retorno de resolverVarios/limparVarios -- se a sessao tivesse
+  // expirado (erro: "Sessao expirada.") ou o update no banco falhasse por
+  // qualquer motivo, os alertas sumiam da tela mas NUNCA eram de fato
+  // fechados no banco, voltando no proximo reload/revalidate. Silencioso:
+  // parecia que o botao "nao fazia nada" (ou fazia e desfazia sozinho).
+  // Agora guarda o erro pra reverter a remocao otimista e avisar o operador.
+  const [erroAcaoMassa, setErroAcaoMassa] = useState<string | null>(null);
 
   // Filtro por tipo de alerta (sidebar) — multi-select
   const [filtroTipos, setFiltroTipos] = useState<Set<string>>(new Set());
@@ -1103,6 +1113,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const alvos = alertasFiltrados;
     if (alvos.length === 0) return;
     setAvisoRecentes(null);
+    setErroAcaoMassa(null);
     // Guard de idade minima (achado real 08/08, caso TTH-3C94): alerta
     // recem-nascido nunca some da tela por acao em massa -- ver
     // docs/superpowers/specs/2026-08-09-idade-minima-acao-massa-design.md.
@@ -1133,7 +1144,20 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         ));
         return restante;
       });
-      await resolverVarios(elegiveis.map(a => a.id));
+      const resultado = await resolverVarios(elegiveis.map(a => a.id));
+      if (resultado.erro || !resultado.ok) {
+        // Servidor nao confirmou -- devolve os alertas pra tela (senao
+        // ficam invisiveis ate o proximo reload, dando a impressao de que
+        // "resolveu" quando na verdade nada mudou no banco).
+        setAlertas(a => {
+          const idsPresentes = new Set(a.map(x => x.id));
+          const devolvidos = elegiveis.filter(e => !idsPresentes.has(e.id));
+          return devolvidos.length > 0 ? [...a, ...devolvidos] : a;
+        });
+        setErroAcaoMassa(resultado.erro ?? "Não foi possível resolver os alertas.");
+        setConfirmarResolver(false);
+        return;
+      }
       if (recentes > 0) setAvisoRecentes({ acao: "resolver", quantidade: recentes });
       setConfirmarResolver(false);
     });
@@ -1147,6 +1171,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const alvos = alertasFiltrados;
     if (alvos.length === 0) return;
     setAvisoRecentes(null);
+    setErroAcaoMassa(null);
     // Mesmo guard de idade minima de handleResolverTodos acima.
     // elegivelParaAcaoMassa (nao minutosDesde, que arredonda pra exibicao)
     // -- reusa a MESMA funcao pura do servidor, evita o servidor rejeitar
@@ -1172,7 +1197,20 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         ));
         return restante;
       });
-      await limparVarios(elegiveis.map(a => a.id));
+      const resultado = await limparVarios(elegiveis.map(a => a.id));
+      if (resultado.erro || !resultado.ok) {
+        // Mesmo raciocinio de handleResolverTodos: sem isso, sessao expirada
+        // ou falha no banco fazia os alertas sumirem da tela sem realmente
+        // serem limpos -- pareciam "voltar sozinhos" no proximo reload.
+        setAlertas(a => {
+          const idsPresentes = new Set(a.map(x => x.id));
+          const devolvidos = elegiveis.filter(e => !idsPresentes.has(e.id));
+          return devolvidos.length > 0 ? [...a, ...devolvidos] : a;
+        });
+        setErroAcaoMassa(resultado.erro ?? "Não foi possível limpar os alertas.");
+        setConfirmarLimpar(false);
+        return;
+      }
       if (recentes > 0) setAvisoRecentes({ acao: "limpar", quantidade: recentes });
       setConfirmarLimpar(false);
     });
@@ -2356,6 +2394,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {avisoRecentes && (
             <div style={{ padding: "5px 8px", fontSize: 10, color: T.dim, borderBottom: `1px solid ${T.border}` }}>
               {avisoRecentes.quantidade} alerta{avisoRecentes.quantidade > 1 ? "s" : ""} recente{avisoRecentes.quantidade > 1 ? "s" : ""} (menos de {IDADE_MINIMA_ACAO_MASSA_MIN}min) {avisoRecentes.quantidade > 1 ? "ficaram" : "ficou"} de fora d{avisoRecentes.acao === "resolver" ? "a resolução" : "a limpeza"} em massa — revise individualmente.
+            </div>
+          )}
+
+          {erroAcaoMassa && (
+            <div style={{ padding: "5px 8px", fontSize: 10, color: "#f87171", borderBottom: `1px solid ${T.border}` }}>
+              {erroAcaoMassa} Nada foi alterado — os alertas continuam na lista.
             </div>
           )}
 
