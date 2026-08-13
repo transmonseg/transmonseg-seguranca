@@ -49,6 +49,7 @@ import { manterSessaoViva } from "@/lib/unitrac-comandos";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
+import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
 import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
@@ -2288,10 +2289,54 @@ export async function POST(request: Request) {
           );
 
           if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0) {
-            const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinosRelevantes);
+            // Achado real 13/08 (4 falsos positivos no mesmo dia com delta de
+            // distancia identico entre destinos completamente diferentes -- ver
+            // docs/superpowers/specs/2026-08-13-osrm-match-desvio-design.md): /table
+            // encaixa cada ponto independentemente na malha viaria, sem contexto de
+            // trajeto. Quando ja ha um possivel desvio se formando
+            // (afastandoStreak>0), corrige a posicao atual/anterior via /match
+            // (Hidden Markov Model sobre os ultimos 5min de trajeto) antes de medir
+            // distancia -- so' entra em acao quando ja' ha streak, entao o pior
+            // cenario de bug aqui e' atrasar/distorcer um alerta que ja estava se
+            // formando, nunca cria um do zero. Piso de confianca calibrado (Task 3,
+            // scripts/calibrar-piso-confianca-match.mjs) contra os 4 casos reais de
+            // falso positivo do 13/08 (RBG-5G18, TTH-6G37, RQU-2H61, TOS-2B69): 3
+            // deles (confidence 0.98/0.81/0.96) ficam acima do piso e usam a posicao
+            // corrigida. O 4o (TTH-6G37) veio com confidence=0 exato -- quirk
+            // conhecido do algoritmo de confidence do /match do OSRM em trajetos com
+            // muitos pontos parados/duplicados na janela (o encaixe geometrico em si
+            // era bom, so' a metrica de confianca degenerou pra zero por causa do
+            // padrao de pontos parados, nao por match ruim). Decisao consciente:
+            // esse caso fica de fora da correcao e continua usando o fallback bruto
+            // de sempre, ja protegido por LIMIAR_MOVIMENTO_MINIMO_M acima.
+            const LIMIAR_CONFIANCA_MATCH = 0.5;
+
+            let posParaAvaliar = { lat: pos.lat, lng: pos.lng };
+            let anteriorParaAvaliar = anterior && anterior.lat != null && anterior.lng != null
+              ? { lat: anterior.lat, lng: anterior.lng }
+              : null;
+            let posicaoFoiCorrigida = false;
+
+            if (estadoDesvioAnterior.afastandoStreak > 0) {
+              const { rows: janelaRecente } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
+                `SELECT lat, lng, criado_em FROM posicoes_historico
+                  WHERE veiculo_id = $1 AND criado_em > now() - interval '5 minutes'
+                  ORDER BY criado_em ASC`,
+                [veiculo_id]
+              );
+              const pontosMatch = janelaRecente.map((p) => ({ lat: p.lat, lng: p.lng, timestamp: p.criado_em }));
+              const corrigido = await corrigirPosicoesComMatch(pontosMatch);
+              if (corrigido && corrigido.confidence >= LIMIAR_CONFIANCA_MATCH) {
+                posParaAvaliar = corrigido.atual;
+                anteriorParaAvaliar = corrigido.anterior;
+                posicaoFoiCorrigida = true;
+              }
+            }
+
+            const distAtuaisReais = await buscarDistanciasReais(posParaAvaliar, destinosRelevantes);
             const distAnterioresReais =
-              anterior && anterior.lat != null && anterior.lng != null && distAtuaisReais
-                ? await buscarDistanciasReais({ lat: anterior.lat, lng: anterior.lng }, destinosRelevantes)
+              anteriorParaAvaliar && distAtuaisReais
+                ? await buscarDistanciasReais(anteriorParaAvaliar, destinosRelevantes)
                 : null;
 
             if (distAtuaisReais && distAnterioresReais) {
@@ -2345,8 +2390,8 @@ export async function POST(request: Request) {
                 try {
                   await pool.query(
                     `INSERT INTO desvio_disparo_log
-                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, posicao_corrigida)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
                     [
                       veiculo_id,
                       alertaDesvioV2.origemDesvio,
@@ -2363,6 +2408,7 @@ export async function POST(request: Request) {
                       ruaRara.streak,
                       celulaAtualDesvio,
                       nVisitasHistorico,
+                      posicaoFoiCorrigida,
                     ]
                   );
                 } catch (errDisparoLog) {
