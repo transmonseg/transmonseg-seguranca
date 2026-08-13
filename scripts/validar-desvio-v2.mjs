@@ -10,6 +10,14 @@
 // este script via SSH: ssh transmonseg-vps "cd /srv/transmonseg/temp &&
 // npx tsx --env-file=.env.production scripts/validar-desvio-v2.mjs"
 //
+// Achado real 12/08 (1a tentativa morreu 2x): sem limite de data, o replay
+// processa posicoes_historico INTEIRO (todo o arquivo grande, nao so
+// "hoje") sequencialmente, 1 veiculo por vez -- inviavel (~14h estimado).
+// Fix: janela de 3 dias (cobre com folga a retencao de 2 dias de
+// casos_desvio_revisao, unico consumidor que precisa de dado historico
+// aqui) + pool de 16 workers em paralelo, mesmo padrao ja validado em
+// scripts/simular-dia-desvio-v2.mjs.
+//
 // Uso: npx tsx --env-file=<.env> scripts/validar-desvio-v2.mjs
 // (tsx, não node puro -- este script importa .ts direto de src/lib/)
 import pg from "pg";
@@ -46,24 +54,29 @@ const { rows: janelaCasos } = await client.query(
 );
 console.log("Janela de casos_desvio_revisao (retenção curta, 2 dias):", janelaCasos[0]);
 
+const JANELA_DIAS = 3;
+const inicioJanela = new Date(Date.now() - JANELA_DIAS * 24 * 60 * 60 * 1000);
+console.log(`\nReplay limitado aos últimos ${JANELA_DIAS} dias (desde ${inicioJanela.toISOString()}) -- cobre com folga a retenção de casos_desvio_revisao.`);
+
 // 1. Replay por veiculo, cruzando posicoes_historico com o snapshot de
 // pendentes mais recente <= aquele timestamp (aproximacao -- snapshot e
 // throttled, nao existe 1 por ciclo exato).
-const { rows: veiculos } = await client.query(`SELECT DISTINCT veiculo_id FROM posicoes_historico`);
+const { rows: veiculos } = await client.query(
+  `SELECT DISTINCT veiculo_id FROM posicoes_historico WHERE criado_em >= $1`,
+  [inicioJanela]
+);
+console.log(`Veículos com posição na janela: ${veiculos.length}`);
+
 let totalDisparos = 0;
 let disparosAfastando = 0;
 let disparosRuaRara = 0;
 const disparosPorVeiculo = new Map();
 
-for (const { veiculo_id } of veiculos) {
-  const { rows: posicoes } = await client.query(
-    `SELECT lat, lng, criado_em FROM posicoes_historico WHERE veiculo_id = $1 ORDER BY criado_em ASC`,
-    [veiculo_id]
-  );
-  const { rows: snapshots } = await client.query(
-    `SELECT criado_em, pendentes FROM pendentes_snapshot_log WHERE veiculo_id = $1 ORDER BY criado_em ASC`,
-    [veiculo_id]
-  );
+// Cache de frequencia de celula POR CLIENTE (poucos clientes, muitos
+// veiculos por cliente) -- mesmo padrao de simular-dia-desvio-v2.mjs.
+const freqPorVeiculo = new Map();
+async function getFreqVeiculo(veiculo_id) {
+  if (freqPorVeiculo.has(veiculo_id)) return freqPorVeiculo.get(veiculo_id);
   const { rows: freq } = await client.query(
     `SELECT f.celula, f.n_visitas
        FROM celula_frequencia_cliente f
@@ -72,6 +85,23 @@ for (const { veiculo_id } of veiculos) {
     [veiculo_id]
   );
   const freqMap = new Map(freq.map((r) => [r.celula, r.n_visitas]));
+  freqPorVeiculo.set(veiculo_id, freqMap);
+  return freqMap;
+}
+
+let processados = 0;
+const inicioExec = Date.now();
+
+async function processarVeiculo({ veiculo_id }) {
+  const { rows: posicoes } = await client.query(
+    `SELECT lat, lng, criado_em FROM posicoes_historico WHERE veiculo_id = $1 AND criado_em >= $2 ORDER BY criado_em ASC`,
+    [veiculo_id, inicioJanela]
+  );
+  const { rows: snapshots } = await client.query(
+    `SELECT criado_em, pendentes FROM pendentes_snapshot_log WHERE veiculo_id = $1 AND criado_em >= $2 ORDER BY criado_em ASC`,
+    [veiculo_id, inicioJanela]
+  );
+  const freqMap = await getFreqVeiculo(veiculo_id);
 
   let afastandoStreak = 0;
   let ruaRaraStreak = 0;
@@ -111,7 +141,23 @@ for (const { veiculo_id } of veiculos) {
     }
     anterior = pos;
   }
+
+  processados++;
+  if (processados % 20 === 0 || processados === veiculos.length) {
+    const decorridoMin = ((Date.now() - inicioExec) / 60000).toFixed(1);
+    console.log(`[progresso] ${processados}/${veiculos.length} veículos | ${totalDisparos} disparos até agora | ${decorridoMin}min decorridos`);
+  }
 }
+
+const CONCORRENCIA = 16;
+let cursor = 0;
+async function worker() {
+  while (cursor < veiculos.length) {
+    const v = veiculos[cursor++];
+    await processarVeiculo(v);
+  }
+}
+await Promise.all(Array.from({ length: CONCORRENCIA }, () => worker()));
 
 console.log(`\nTotal de disparos no replay: ${totalDisparos} (afastando: ${disparosAfastando}, rua rara: ${disparosRuaRara})`);
 console.log(`Veiculos com >=1 disparo: ${disparosPorVeiculo.size} / ${veiculos.length}`);
@@ -122,12 +168,15 @@ const { rows: casosReais } = await client.query(
 );
 console.log(`\nCasos confirmados 'resolvido' na janela disponivel: ${casosReais.length}`);
 let cobertos = 0;
+const naoCobertos = [];
 for (const caso of casosReais) {
   if (disparosPorVeiculo.has(caso.veiculo_id)) cobertos++;
+  else naoCobertos.push(caso);
 }
-console.log(`Recall aproximado (veiculo teve >=1 disparo no dia do caso confirmado): ${cobertos}/${casosReais.length}`);
-if (casosReais.length > 0 && cobertos < casosReais.length) {
+console.log(`Recall aproximado (veiculo teve >=1 disparo na janela do caso confirmado): ${cobertos}/${casosReais.length}`);
+if (naoCobertos.length > 0) {
   console.warn("\nAVISO: nem todo caso confirmado teve disparo correspondente -- revisar manualmente antes de considerar pronto (prioridade é recall, não perder desvio real).");
+  console.log("Casos SEM disparo correspondente:", JSON.stringify(naoCobertos, null, 2));
 }
 
 await client.end();
