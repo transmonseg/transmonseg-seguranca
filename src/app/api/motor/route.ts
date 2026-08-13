@@ -2173,7 +2173,24 @@ export async function POST(request: Request) {
           // sem ser desvio de verdade. distBaseM já vem calculado acima.
           const emCarenciaDeBase = foraDaBase && distBaseM != null && distBaseM < LIMIAR_CARENCIA_BASE_M;
 
-          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && destinos.length > 0) {
+          // Achado real 13/08 (caso real TTM-7C13, reportado no grupo
+          // "DESVIO DE ROTA"): caminhao parado 13min na porta do cliente
+          // (no_raio_dwell_segundos=780), entrega confirmada durante a
+          // parada -- o ponto SAI da lista de pendentes (`destinos`) nesse
+          // exato ciclo, o pendente mais proximo pula pro proximo (689m
+          // longe), e o sistema disparou "rua rara"/"afastando" mesmo o
+          // veiculo NAO TENDO SE MOVIDO NEM UM METRO. suspensoPorChegada so
+          // olha o pendente mais proximo ATUAL -- quando a lista muda sob o
+          // veiculo parado, ele "afasta" sem se mexer. Se o veiculo esta
+          // parado e no MESMO ponto do ciclo anterior (`mesmoPonto`, ja
+          // calculado acima pra parado_desde), qualquer "afastamento" so
+          // pode ser artefato da lista de destinos mudando, nunca movimento
+          // real -- suspende os 2 sinais nesse caso, independente de
+          // suspensoPorChegada (que ja nao cobre mais o pendente que acabou
+          // de ser confirmado).
+          const paradoSemSeMover = pos.velocidade === 0 && !!mesmoPonto;
+
+          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && destinos.length > 0) {
             const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinos);
             const distAnterioresReais =
               anterior && anterior.lat != null && anterior.lng != null && distAtuaisReais
