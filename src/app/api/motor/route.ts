@@ -2207,6 +2207,42 @@ export async function POST(request: Request) {
               ruaRaraStreakNovo = ruaRara.streak;
 
               alertaDesvioV2 = montarAlertaDesvio(afastando, { ...ruaRara, celula: celulaAtualDesvio, nVisitas: nVisitasHistorico });
+
+              // Achado real 13/08 (casos TTH-3C94 e RQU-1G17, "falso
+              // positivo" reportados no grupo -- ver comentario da migration
+              // 045/047_desvio_disparo_log.sql): reconstruir o disparo via
+              // posicoes_historico + pendentes_snapshot_log depois do fato
+              // nao reproduziu o gatilho real (snapshot e' throttled, perde o
+              // ciclo exato). Grava aqui, ATOMICO com a decisao, o snapshot
+              // completo que decidiu -- tabela imune a STRIP_PESADO.
+              if (alertaDesvioV2) {
+                try {
+                  await pool.query(
+                    `INSERT INTO desvio_disparo_log
+                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [
+                      veiculo_id,
+                      alertaDesvioV2.origemDesvio,
+                      JSON.stringify(
+                        destinos.map((d, i) => ({
+                          codigo: d.codigo,
+                          lat: d.lat,
+                          lng: d.lng,
+                          distAtualM: distAtuaisReais[i],
+                          distAnteriorM: distAnterioresReais[i],
+                        }))
+                      ),
+                      afastandoStreakNovo,
+                      ruaRara.streak,
+                      celulaAtualDesvio,
+                      nVisitasHistorico,
+                    ]
+                  );
+                } catch (errDisparoLog) {
+                  erros.push(`Aviso: falha ao gravar desvio_disparo_log pro veiculo ${veiculo_id}: ${String(errDisparoLog)}`);
+                }
+              }
             } else {
               afastandoStreakNovo = estadoDesvioAnterior.afastandoStreak;
               ruaRaraStreakNovo = estadoDesvioAnterior.ruaRaraStreak;
