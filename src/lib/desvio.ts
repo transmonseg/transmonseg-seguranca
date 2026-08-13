@@ -46,7 +46,21 @@ export function avaliarAfastandoDeTudo(
     Math.min(...distanciasAtuais) > (opts?.limiarTransitoLongoM ?? LIMIAR_TRANSITO_LONGO_M);
   const afastouDeTodos = !emTransitoLongo && distanciasAtuais.every((d, i) => d > distanciasAnteriores[i]);
 
-  const streak = afastouDeTodos ? streakAnterior + 1 : 0;
+  // Achado real 13/08 (analise do dia inteiro via desvio_disparo_log, apos
+  // ja ter filtrado ruido de GPS/movimento insignificante e destino
+  // distante): o proprio comentario acima ja documentava que distancia
+  // real de rua NAO e perfeitamente monotona nem numa divergencia real
+  // (alças de acesso e contornos de rodovia fazem 1-2 leituras "aproximar"
+  // por acaso mesmo indo na direcao errada) -- mas o streak era reset
+  // TOTAL na primeira leitura assim, perdendo QUALQUER divergencia real
+  // acumulada ate ali por causa de um unico blip de geometria. Prioridade
+  // e recall (aceita falso positivo, nunca perde desvio real) -- decai 1
+  // em vez de zerar quando aproximou de algum destino (mas continua
+  // evaluavel, i.e. nao em transito longo): precisa de 3 leituras
+  // NAO-diverentes seguidas pra apagar um streak de 3, nao mais so' 1.
+  // emTransitoLongo continua zerando na hora -- não é ruido, é "fora da
+  // zona onde a avaliacao local faz sentido agora".
+  const streak = afastouDeTodos ? streakAnterior + 1 : emTransitoLongo ? 0 : Math.max(0, streakAnterior - 1);
   return { streak, disparou: streak >= LIMIAR_STREAK_AFASTANDO, aproximandoAlgum };
 }
 

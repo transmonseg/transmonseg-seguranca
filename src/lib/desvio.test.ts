@@ -13,11 +13,29 @@ describe("avaliarAfastandoDeTudo", () => {
     expect(r.disparou).toBe(false);
   });
 
-  it("zera o streak se aproximou de PELO MENOS UM destino", () => {
+  it("decai o streak em 1 (não zera) se aproximou de PELO MENOS UM destino -- achado real 13/08, distância real de rua não é perfeitamente monótona nem numa divergência real (ruído de geometria de estrada não pode apagar streak todo)", () => {
     const r = avaliarAfastandoDeTudo([1100, 900], [1000, 1000], 2);
-    expect(r.streak).toBe(0);
+    expect(r.streak).toBe(1);
     expect(r.disparou).toBe(false);
     expect(r.aproximandoAlgum).toBe(true);
+  });
+
+  it("decai até 0 (nunca negativo) com streak já em 0", () => {
+    const r = avaliarAfastandoDeTudo([1100, 900], [1000, 1000], 0);
+    expect(r.streak).toBe(0);
+  });
+
+  it("streak tolerante: sobrevive a 1 blip de ruído no meio de uma divergência real e ainda dispara", () => {
+    let streak = 0;
+    streak = avaliarAfastandoDeTudo([1100, 2100], [1000, 2000], streak).streak; // afasta -> 1
+    expect(streak).toBe(1);
+    streak = avaliarAfastandoDeTudo([1150, 2050], [1100, 2100], streak).streak; // blip: aproxima do 2º -> decai pra 0
+    expect(streak).toBe(0);
+    streak = avaliarAfastandoDeTudo([1250, 2150], [1150, 2050], streak).streak; // afasta de novo -> 1
+    streak = avaliarAfastandoDeTudo([1350, 2250], [1250, 2150], streak).streak; // -> 2
+    const r = avaliarAfastandoDeTudo([1450, 2350], [1350, 2250], streak); // -> 3, dispara
+    expect(r.streak).toBe(3);
+    expect(r.disparou).toBe(true);
   });
 
   it("acumula streak quando afasta de TODOS", () => {
