@@ -2211,7 +2211,42 @@ export async function POST(request: Request) {
           // real (que exige movimento em varios ciclos seguidos).
           const paradoSemSeMover = !!mesmoPonto;
 
-          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && destinos.length > 0) {
+          // Achado real 13/08 (4 casos no mesmo dia: RBG-5G18, TTH-6G37,
+          // RQU-2H61, TOS-2B69, todos capturados pelo desvio_disparo_log):
+          // em TODOS, o delta de distancia (atual - anterior) era
+          // PRATICAMENTE IDENTICO pra TODOS os destinos simultaneamente,
+          // mesmo entre destinos a 6,9km e a 287km de distancia um do
+          // outro (delta=35m pros dois; noutro caso, delta=98m tanto pro
+          // destino a 7,2km quanto pro de 90km). Isso e' matematicamente
+          // impossivel pra divergencia real de rota -- movimento real na
+          // direcao de destinos diferentes produz deltas DIFERENTES,
+          // proporcionais a geometria de cada rota. O padrao bate com
+          // ruido de snap-to-road do OSRM: quando o veiculo malmove entre
+          // duas leituras (saindo de uma parada, manobrando, GPS com
+          // poucos metros de jitter), os dois pontos (anterior/atual)
+          // podem colar em nos diferentes da malha viaria local, e essa
+          // pequena diferenca de "ultima milha" se propaga quase igual
+          // pra TODAS as rotas adiante, porque compartilham o mesmo
+          // corredor. Conferido com posicoes_historico: o deslocamento
+          // real (haversine) entre as duas leituras nesses casos ficava
+          // na faixa de 5-155m -- bem abaixo do que um veiculo em transito
+          // real cobre entre leituras (~30s de intervalo). Se o
+          // deslocamento real entre a leitura atual e a anterior for
+          // pequeno demais pra confiar na distancia de rota do OSRM,
+          // suspende a avaliacao desse ciclo -- mesmo raciocinio de
+          // paradoSemSeMover, só que tolerante a um pouco de movimento
+          // real (nao exige posicao identica). Nao custa recall de desvio
+          // real: um veiculo genuinamente se afastando cobre bem mais que
+          // isso por leitura, e o streak so' precisa de leituras
+          // consecutivas validas, nao de TODAS as leituras.
+          const LIMIAR_MOVIMENTO_MINIMO_M = 50;
+          const movimentoRealM =
+            anterior && anterior.lat != null && anterior.lng != null
+              ? haversineM(anterior.lat, anterior.lng, pos.lat, pos.lng)
+              : null;
+          const movimentoInsignificante = movimentoRealM != null && movimentoRealM < LIMIAR_MOVIMENTO_MINIMO_M;
+
+          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinos.length > 0) {
             const distAtuaisReais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinos);
             const distAnterioresReais =
               anterior && anterior.lat != null && anterior.lng != null && distAtuaisReais
