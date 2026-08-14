@@ -1,6 +1,6 @@
 // Dados do mapa: veículos do cliente, bases e a malha de pontos de entrega.
 import pg from "pg";
-import { buscarAlvos, agruparPontosPorPlaca } from "@/lib/unitrac";
+import { buscarAlvos, agruparPontosPorPlaca, corrigirComPontoAprendido } from "@/lib/unitrac";
 import { createClient } from "@/lib/supabase/server";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 
@@ -105,12 +105,38 @@ export async function GET(request: Request) {
           )
         ).rows.map((r) => r.cv);
         if (cvs.length) {
+          // Achado real 13/08 (usuario reportou: marcador do mapa nunca
+          // "andava" da posicao bruta pra corrigida via romaneio): esta rota
+          // buscava os pontos direto de buscarAlvos() sem NUNCA aplicar
+          // corrigirComPontoAprendido -- o motor (route.ts) ja aplicava a
+          // correcao desde a feature de 12/08, mas o mapa continuava
+          // mostrando a coordenada crua da Unitrac pra sempre, deixando os
+          // dois desalinhados. Mesmo padrao de carregamento de route.ts:
+          // ponto_codigo e' bigint, o driver `pg` devolve como string sem
+          // setTypeParser custom -- Number() explicito, senao o Map nunca
+          // bate com pt.pontoCodigo (achado real 10/08, mesma licao).
+          const { rows: aprendidosRows } = await client.query<{
+            ponto_codigo: string;
+            lat: number;
+            lng: number;
+            fonte: "aprendido" | "manual";
+          }>(
+            `SELECT ponto_codigo, lat, lng, fonte FROM pontos_aprendidos WHERE cliente_id = $1`,
+            [clienteId]
+          );
+          const pontosAprendidos = new Map(
+            aprendidosRows.map((r) => [Number(r.ponto_codigo), { lat: r.lat, lng: r.lng, fonte: r.fonte }])
+          );
+
           const alvos = await buscarAlvos(cvs);
           const porPlaca = agruparPontosPorPlaca(alvos);
           const vistos = new Set<string>();
           for (const pts of porPlaca.values()) {
-            for (const pt of pts) {
-              if (pt.feito) continue;
+            for (const ptBruto of pts) {
+              if (ptBruto.feito) continue;
+              const pt = ptBruto.pontoCodigo != null
+                ? corrigirComPontoAprendido(ptBruto, pontosAprendidos.get(ptBruto.pontoCodigo))
+                : ptBruto;
               const k = `${pt.lat.toFixed(4)},${pt.lng.toFixed(4)}`;
               if (vistos.has(k)) continue;
               vistos.add(k);
