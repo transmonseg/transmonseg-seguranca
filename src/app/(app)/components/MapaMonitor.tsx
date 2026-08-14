@@ -588,6 +588,14 @@ export default function MapaMonitor({
   /* ---- Calor de incidentes (30 dias) ---- */
   const [alertasGeo, setAlertasGeo] = useState<{ lat: number; lng: number }[]>([]);
 
+  /* ---- Malha de pontos de entrega pendentes (ja' com correcao de
+     pontos_aprendidos aplicada -- ver api/mapa/route.ts). Achado real
+     13/08 (usuario reportou "os pontos nao mudam de lugar"): a API ja
+     devolvia esse dado corrigido, mas o componente nunca lia
+     `d.pontos` -- os marcadores de destino simplesmente nunca existiam
+     nesta tela, so' os de veiculo. ---- */
+  const [pontosEntrega, setPontosEntrega] = useState<{ lat: number; lng: number; nome: string }[]>([]);
+
   /* ---- Busca na sidebar ---- */
   const [busca, setBusca] = useState("");
 
@@ -707,6 +715,9 @@ export default function MapaMonitor({
         }
         if (d?.bases?.type === "FeatureCollection") {
           setBasesGeo(d.bases as GeoJSON.FeatureCollection);
+        }
+        if (Array.isArray(d?.pontos)) {
+          setPontosEntrega(d.pontos as { lat: number; lng: number; nome: string }[]);
         }
       })
       .catch(() => {});
@@ -1960,6 +1971,33 @@ export default function MapaMonitor({
                         fillOpacity: 0.07,
                       }}
                     />
+                  ))}
+                </LayerGroup>
+              </LayersControl.Overlay>
+
+              <LayersControl.Overlay checked name={`Pontos pendentes (${pontosEntrega.length})`}>
+                <LayerGroup>
+                  {pontosEntrega.map((pt, i) => (
+                    <CircleMarker
+                      key={`pend${i}`}
+                      center={[pt.lat, pt.lng]}
+                      radius={5}
+                      pathOptions={{
+                        color: "#c4b5fd",
+                        weight: 1,
+                        fillColor: "#a78bfa",
+                        fillOpacity: 0.85,
+                      }}
+                    >
+                      <Popup>
+                        <div style={{ fontWeight: 700, fontSize: 12, color: "#6d28d9" }}>
+                          {pt.nome}
+                        </div>
+                        <div style={{ fontSize: 11, marginTop: 2, color: "#666" }}>
+                          Entrega pendente
+                        </div>
+                      </Popup>
+                    </CircleMarker>
                   ))}
                 </LayerGroup>
               </LayersControl.Overlay>

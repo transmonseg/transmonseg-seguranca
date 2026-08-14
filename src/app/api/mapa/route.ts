@@ -20,7 +20,7 @@ const pool = new pg.Pool({
 // minutos, não em 10s. Cachear por cliente evita reconsultar (e rechamar a
 // API do Unitrac) a cada poll de CADA sessão. TTL curto o bastante pra
 // refletir mudança de rota em até 1min.
-type CacheEntry = { bases: unknown; pontosEntrega: { lat: number; lng: number }[]; expiraEm: number };
+type CacheEntry = { bases: unknown; pontosEntrega: { lat: number; lng: number; nome: string }[]; expiraEm: number };
 const CACHE_MS = 60_000;
 const cachePorCliente = new Map<string, CacheEntry>();
 
@@ -96,7 +96,7 @@ export async function GET(request: Request) {
       // Malha de pontos de entrega PENDENTES do cliente (a "rota" que a frota
       // deveria cobrir). Um veículo longe de toda a malha = candidato a desvio.
       // Dedupe por coordenada; limite defensivo para não pesar o mapa.
-      let pontosEntrega: { lat: number; lng: number }[] = [];
+      let pontosEntrega: { lat: number; lng: number; nome: string }[] = [];
       try {
         const cvs = (
           await client.query<{ cv: string }>(
@@ -140,7 +140,7 @@ export async function GET(request: Request) {
               const k = `${pt.lat.toFixed(4)},${pt.lng.toFixed(4)}`;
               if (vistos.has(k)) continue;
               vistos.add(k);
-              pontosEntrega.push({ lat: pt.lat, lng: pt.lng });
+              pontosEntrega.push({ lat: pt.lat, lng: pt.lng, nome: pt.nome });
             }
           }
         }
