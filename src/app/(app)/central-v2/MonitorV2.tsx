@@ -112,6 +112,24 @@ function minutosDesde(desde: string): number {
   return Math.round((Date.now() - new Date(desde).getTime()) / 60000);
 }
 
+// Achado real 13/08 (checagem ao vivo): alerta achado parado 19h sem
+// nenhuma revisao, entre 92 alertas ativos -- nenhum destaque na tela
+// distinguia "acabou de abrir" de "esta ha' horas esperando", entao a
+// fila envelhecida ficava invisivel misturada com o resto. Limiares
+// pedidos pelo usuario: 3h chama atencao, 8h+ fica critico (era
+// aproximadamente a idade do alerta de 19h achado). Canal de cor
+// SEPARADO do `cor` semantico de tipo/nivel do alerta (que ja' e' usado
+// pra borda/fundo do card) -- escalonar por idade nao deve se confundir
+// com "que tipo de alerta e'".
+const LIMIAR_ALERTA_ATENCAO_MIN = 3 * 60;
+const LIMIAR_ALERTA_CRITICO_MIN = 8 * 60;
+function corIdadeAlerta(desde: string, tema: "dark" | "light"): { cor: string; peso: number } {
+  const min = minutosDesde(desde);
+  if (min >= LIMIAR_ALERTA_CRITICO_MIN) return { cor: tema === "dark" ? "#ff6b5e" : "#c9392c", peso: 800 };
+  if (min >= LIMIAR_ALERTA_ATENCAO_MIN) return { cor: tema === "dark" ? "#f2b84b" : "#a66a10", peso: 700 };
+  return { cor: "", peso: 400 }; // "" = mantem a cor padrao (T.dim) de sempre
+}
+
 function formatarDist(m: number): string {
   if (m < 1000) return `${Math.round(m)}m`;
   return `${(m / 1000).toFixed(1)}km`;
@@ -1361,9 +1379,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             }}>
               {nomeT(a.tipo)}
             </span>
-            <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, marginLeft: "auto", fontFamily: FONT_MONO }}>
-              {tempoAtras(a.desde)}
-            </span>
+            {(() => {
+              const idade = corIdadeAlerta(a.desde, tema);
+              return (
+                <span suppressHydrationWarning title={idade.cor ? "Parado sem revisao ha' muito tempo" : undefined} style={{
+                  fontSize: 10, color: idade.cor || T.dim, marginLeft: "auto", fontFamily: FONT_MONO,
+                  fontWeight: idade.peso, letterSpacing: idade.cor ? ".02em" : "normal",
+                }}>
+                  {idade.cor && "⏱ "}{tempoAtras(a.desde)}
+                </span>
+              );
+            })()}
           </div>
           {a.motivo && (() => {
             const expandido = motivosExpandidos.has(a.id);
@@ -1530,7 +1556,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                     DESVIO DE ROTA
                   </span>
                 )}
-                <span suppressHydrationWarning style={{ fontSize: 10, color: T.dim, fontFamily: FONT_MONO }}>
+                <span suppressHydrationWarning style={{ fontSize: 10, color: corIdadeAlerta(a.desde, tema).cor || T.dim, fontFamily: FONT_MONO, fontWeight: corIdadeAlerta(a.desde, tema).peso }}>
                   {tempoAtras(a.desde)}
                 </span>
               </button>
