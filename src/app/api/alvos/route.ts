@@ -1,4 +1,4 @@
-import { buscarAlvos, agruparPontosPorPlaca, type PontoEntrega } from "@/lib/unitrac";
+import { buscarAlvos, agruparPontosPorPlaca, corrigirComPontoAprendido, type PontoEntrega } from "@/lib/unitrac";
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 
@@ -104,6 +104,47 @@ async function buscarPresencaPorPlaca(placas: string[]): Promise<Set<string>> {
   }
 }
 
+// Achado real 13/08 (usuario reportou de novo "os pontos nao mudaram de
+// lugar", agora na tela certa: esta rota, nao /api/mapa): correcao de
+// pontos_aprendidos so era aplicada no motor (route.ts) e em /api/mapa --
+// jamais aqui, que e' quem alimenta o mapa central-v2 com a aba ROMANEIO
+// que o operador realmente usa no dia a dia. NAO confundir com a
+// coordenada do romaneio (essa continua sendo so texto, ver comentario
+// acima sobre a medicao 43m x 152m) -- pontos_aprendidos e' outra fonte,
+// clusterizada a partir de posicoes reais de chegada, corrige o cadastro
+// da propria Unitrac.
+async function buscarPontosAprendidos(
+  cvs: string[]
+): Promise<Map<number, { lat: number; lng: number; fonte: "aprendido" | "manual" }>> {
+  const mapa = new Map<number, { lat: number; lng: number; fonte: "aprendido" | "manual" }>();
+  if (cvs.length === 0) return mapa;
+  const cliente = await pool.connect();
+  try {
+    const { rows } = await cliente.query<{
+      ponto_codigo: string;
+      lat: number;
+      lng: number;
+      fonte: "aprendido" | "manual";
+    }>(
+      `SELECT pa.ponto_codigo, pa.lat, pa.lng, pa.fonte
+         FROM pontos_aprendidos pa
+        WHERE pa.cliente_id IN (
+          SELECT DISTINCT cliente_id FROM veiculos WHERE cv = ANY($1::text[])
+        )`,
+      [cvs]
+    );
+    // ponto_codigo e' bigint -> driver `pg` devolve string sem setTypeParser
+    // custom -- Number() explicito, senao o Map nunca bate com pt.pontoCodigo
+    // (mesmo achado real de 10/08 repetido em /api/mapa).
+    for (const r of rows) mapa.set(Number(r.ponto_codigo), { lat: r.lat, lng: r.lng, fonte: r.fonte });
+    return mapa;
+  } catch {
+    return mapa;
+  } finally {
+    cliente.release();
+  }
+}
+
 function normalizarNf(v: string | null | undefined): string {
   return (v ?? "").trim().replace(/^0+/, "").toUpperCase();
 }
@@ -124,16 +165,20 @@ export async function GET(request: Request) {
     const raw = await buscarAlvos(cvs);
     const mapa = agruparPontosPorPlaca(raw);
     const placas = [...mapa.keys()];
-    const [romaneioPorPlaca, presenca] = await Promise.all([
+    const [romaneioPorPlaca, presenca, pontosAprendidos] = await Promise.all([
       buscarRomaneioPorPlaca(placas),
       buscarPresencaPorPlaca(placas),
+      buscarPontosAprendidos(cvs),
     ]);
 
     const todos: PontoEntrega[] = [];
-    for (const [placa, pontosUnitrac] of mapa.entries()) {
+    for (const [placa, pontosUnitracBrutos] of mapa.entries()) {
       const doRomaneio = romaneioPorPlaca.get(placa) ?? [];
       const porNf = new Map(doRomaneio.map((r) => [normalizarNf(r.nf), r]));
       const nfsUsadas = new Set<string>();
+      const pontosUnitrac = pontosUnitracBrutos.map((pt) =>
+        pt.pontoCodigo != null ? corrigirComPontoAprendido(pt, pontosAprendidos.get(pt.pontoCodigo)) : pt
+      );
 
       for (const pt of pontosUnitrac) {
         const entreguePorParada =
