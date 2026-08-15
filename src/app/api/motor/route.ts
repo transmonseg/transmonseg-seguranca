@@ -752,29 +752,59 @@ export async function POST(request: Request) {
     const desvioEstadoPorVeiculo = new Map<string, {
       afastandoStreak: number;
       ruaRaraStreak: number;
-      ultimaViaPrincipalEm: Date | null;
-      saiuParadaConfirmadaEm: Date | null;
     }>();
     try {
       const { rows } = await pool.query<{
         veiculo_id: string;
         afastando_streak: number;
         rua_rara_streak: number;
-        ultima_via_principal_em: Date | null;
-        saiu_parada_confirmada_em: Date | null;
       }>(
-        `SELECT veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em FROM desvio_estado`
+        `SELECT veiculo_id, afastando_streak, rua_rara_streak FROM desvio_estado`
       );
       for (const r of rows) {
         desvioEstadoPorVeiculo.set(r.veiculo_id, {
           afastandoStreak: r.afastando_streak,
           ruaRaraStreak: r.rua_rara_streak,
-          ultimaViaPrincipalEm: r.ultima_via_principal_em,
-          saiuParadaConfirmadaEm: r.saiu_parada_confirmada_em,
         });
       }
     } catch (errDesvioEstado) {
       erros.push(`Aviso: desvio v2 indisponivel neste ciclo (estado): ${String(errDesvioEstado)}`);
+    }
+
+    // Classe viaria (ultima_via_principal_em/saiu_parada_confirmada_em) --
+    // ver docs/superpowers/specs/2026-08-15-classe-viaria-corroboracao-design.md.
+    // Query PROPRIA e independente da de cima (mesma tabela desvio_estado,
+    // mas SELECT e catch separados). Achado da revisao final da leva de
+    // correcao (15/08, Important): antes essas 2 colunas eram lidas na
+    // MESMA query que afastando_streak/rua_rara_streak -- se so a parte
+    // NOVA falhasse (ex: deploy rodando antes da migration destas colunas,
+    // ou ambiente sem elas ainda), o catch generico zerava TAMBEM o streak
+    // do detector principal (afastando_geral) pra frota inteira, nao so a
+    // classe viaria. Com a query separada, uma falha aqui so degrada a
+    // classe viaria (fail-open normal, sem estado decaindo) -- o streak do
+    // afastando_geral (bloco acima) nunca e afetado. Mesmo raciocinio ja
+    // aplicado a query de vias_celulas (try/catch proprio, separado do
+    // catch geral do veiculo).
+    const classeViariaEstadoPorVeiculo = new Map<string, {
+      ultimaViaPrincipalEm: Date | null;
+      saiuParadaConfirmadaEm: Date | null;
+    }>();
+    try {
+      const { rows } = await pool.query<{
+        veiculo_id: string;
+        ultima_via_principal_em: Date | null;
+        saiu_parada_confirmada_em: Date | null;
+      }>(
+        `SELECT veiculo_id, ultima_via_principal_em, saiu_parada_confirmada_em FROM desvio_estado`
+      );
+      for (const r of rows) {
+        classeViariaEstadoPorVeiculo.set(r.veiculo_id, {
+          ultimaViaPrincipalEm: r.ultima_via_principal_em,
+          saiuParadaConfirmadaEm: r.saiu_parada_confirmada_em,
+        });
+      }
+    } catch (errClasseViariaEstado) {
+      erros.push(`Aviso: classe viaria indisponivel neste ciclo (estado): ${String(errClasseViariaEstado)}`);
     }
 
     // Baseline comportamental por veiculo/frota (Fase 3 do redesenho de
@@ -1310,6 +1340,28 @@ export async function POST(request: Request) {
         for (const r of rowsFreqCelula) celulasFrequenciaCliente.set(r.celula, r.n_visitas);
       } catch (errFreqCelula) {
         erros.push(`Aviso: desvio v2 indisponivel neste ciclo (frequencia de celula): ${String(errFreqCelula)}`);
+      }
+      // Classe viaria (queda de via principal/intermediaria pra rua
+      // estreita) como sinal de CORROBORACAO -- ver
+      // docs/superpowers/specs/2026-08-15-classe-viaria-corroboracao-design.md.
+      // Classifica em LOTE, 1 query por cliente por ciclo, mesmo padrao das
+      // outras buscas restritas acima (buscarCelulasTapeteCandidatas,
+      // celula_frequencia_cliente): reusa celulasCandidatasTapete (vizinhanca
+      // 3x3 de TODA posicao fresca da frota deste cliente, ja coletada na
+      // pre-passada acima) em vez de rodar 1 query POR VEICULO A CADA CICLO
+      // (~30s) como antes -- achado Important da revisao final (15/08),
+      // custava query redundante ate pra veiculo parado na base o dia
+      // inteiro. Mapa celula->classe; o loop por veiculo mais abaixo so
+      // dobra melhorClasse sobre a vizinhanca de cada posicao, sem I/O.
+      const classePorCelula = new Map<string, ClasseViaria>();
+      try {
+        const { rows: classesRows } = await pool.query<{ celula: string; classe: ClasseViaria }>(
+          `SELECT celula, classe FROM vias_celulas WHERE celula = ANY($1::text[])`,
+          [[...celulasCandidatasTapete]]
+        );
+        for (const r of classesRows) classePorCelula.set(r.celula, r.classe);
+      } catch (errClasseViariaBatch) {
+        erros.push(`Aviso: falha ao classificar classe viaria em lote pro cliente ${cliente.id}: ${String(errClasseViariaBatch)}`);
       }
       // Presenca de entrega (decisao do usuario 01/08): pontos onde o
       // veiculo JA ficou parado o tempo minimo hoje contam como entregues,
@@ -2056,10 +2108,17 @@ export async function POST(request: Request) {
           // estreita) como sinal de CORROBORACAO -- ver
           // docs/superpowers/specs/2026-08-15-classe-viaria-corroboracao-design.md.
           // Classifica a celula atual (vizinhanca 3x3, mesma tolerancia a
-          // GPS na beirada da via que o sistema antigo usava) contra
-          // vias_celulas (1.322.207 linhas, ainda no banco, nao precisa
-          // reingestao). So classifica quando fresco -- posicao velha nao
-          // deve contaminar o estado decaindo.
+          // GPS na beirada da via que o sistema antigo usava) lendo do mapa
+          // classePorCelula (batch em lote, 1x por cliente por ciclo --
+          // calculado acima, antes deste loop por veiculo; ver comentario
+          // la). So classifica quando fresco -- posicao velha nao deve
+          // contaminar o estado decaindo. Sem I/O aqui: so dobra
+          // melhorClasse sobre as 9 celulas da vizinhanca lendo do Map ja
+          // carregado -- por isso classeViaAtual so vira "estreita" quando
+          // NENHUMA das 9 celulas tiver via principal/intermediaria (a
+          // melhor classe encontrada em qualquer uma das 9 ja venceria);
+          // provavel motivo mecanico da taxa de deteccao baixa (~11%)
+          // medida pelo script de validacao.
           //
           // Calculado aqui (junto de saiuDoRaioAgora) porque nao depende de
           // estadoDesvioAnterior -- essa variavel so e' declarada mais
@@ -2069,24 +2128,10 @@ export async function POST(request: Request) {
           // de fato depende de estadoDesvioAnterior (ultimaViaPrincipalAnteriorEm/
           // ultimaViaPrincipalEmNova/saiuParadaConfirmadaEmNova) fica logo
           // apos a declaracao dele, mais abaixo.
-          // Envolvida em try/catch (nao existe no bloco original do brief)
-          // porque o loop por veiculo tem so um catch por FORA de tudo
-          // (errVeiculo, mais abaixo) que pula o veiculo inteiro no ciclo --
-          // sem este try/catch local, uma falha aqui (sem classificacao de
-          // celula, erro de banco) derrubaria TAMBEM jammer/bypass/desvio
-          // deste veiculo no ciclo, violando a regra de fail-open estrito
-          // (classe viaria so pode somar sinal, nunca pode impedir os
-          // outros detectores de rodar).
           let classeViaAtual: ClasseViaria | null = null;
           if (pos.fresco) {
-            try {
-              const { rows: classesRows } = await pool.query<{ celula: string; classe: ClasseViaria }>(
-                `SELECT celula, classe FROM vias_celulas WHERE celula = ANY($1::text[])`,
-                [vizinhanca3x3(pos.lat, pos.lng)]
-              );
-              for (const r of classesRows) classeViaAtual = melhorClasse(classeViaAtual, r.classe);
-            } catch (errClasseViariaClassificacao) {
-              erros.push(`Aviso: falha ao classificar classe viaria pro veiculo ${veiculo_id}: ${String(errClasseViariaClassificacao)}`);
+            for (const cel of vizinhanca3x3(pos.lat, pos.lng)) {
+              classeViaAtual = melhorClasse(classeViaAtual, classePorCelula.get(cel) ?? null);
             }
           }
 
@@ -2280,6 +2325,8 @@ export async function POST(request: Request) {
           const estadoDesvioAnterior = desvioEstadoPorVeiculo.get(veiculo_id) ?? {
             afastandoStreak: 0,
             ruaRaraStreak: 0,
+          };
+          const estadoClasseViariaAnterior = classeViariaEstadoPorVeiculo.get(veiculo_id) ?? {
             ultimaViaPrincipalEm: null,
             saiuParadaConfirmadaEm: null,
           };
@@ -2288,13 +2335,13 @@ export async function POST(request: Request) {
           let alertaDesvioV2: Alerta | null = null;
 
           // Continuacao do bloco de classe viaria (ver comentario acima, perto
-          // de saiuDoRaioAgora) -- agora que estadoDesvioAnterior existe.
-          const ultimaViaPrincipalAnteriorEm = estadoDesvioAnterior.ultimaViaPrincipalEm;
+          // de saiuDoRaioAgora) -- agora que estadoClasseViariaAnterior existe.
+          const ultimaViaPrincipalAnteriorEm = estadoClasseViariaAnterior.ultimaViaPrincipalEm;
           const ultimaViaPrincipalEmNova =
             pos.fresco && classeViaAtual === "principal" ? agora : ultimaViaPrincipalAnteriorEm;
           const saiuParadaConfirmadaEmNova = deveMarcarSaidaParadaConfirmada
             ? agora
-            : estadoDesvioAnterior.saiuParadaConfirmadaEm;
+            : estadoClasseViariaAnterior.saiuParadaConfirmadaEm;
 
           // Achado real 12/08 (simulação do dia inteiro): ~40% dos disparos
           // de "afastando de tudo" acontecem a <1,2km de alguma base --
@@ -2592,20 +2639,39 @@ export async function POST(request: Request) {
               // no mesmo ponto e com a mesma disciplina do corredor acima:
               // so ajusta score de um alerta que ja existe, fail-open
               // silencioso em qualquer falha.
+              //
+              // Achado da revisao final da leva de correcao (15/08, Minor
+              // x2): (1) o gate de supressao usava
+              // estadoDesvioAnterior.saiuParadaConfirmadaEm (valor de 1
+              // ciclo ATRAS) em vez de saiuParadaConfirmadaEmNova (valor
+              // DESTE ciclo, que ja reflete uma saida de parada confirmada
+              // agora mesmo) -- o sistema antigo usava o valor novo; corrigido
+              // pra cobrir a supressao desde o ciclo exato da saida, nao so
+              // a partir do ciclo seguinte. (2) classeViariaConfirmou
+              // re-derivava `quedaDetectada && !saiuParadaRecente`, a MESMA
+              // condicao ja dentro de aplicarCorroboracaoClasseViaria --
+              // duplicacao que podia divergir se um dos dois mudasse, e
+              // escondia a diferenca entre "sem queda" e "teve queda mas foi
+              // suprimida por saida de parada recente". Corrigido pra
+              // observar o resultado real (score mudou -> a funcao pura
+              // decidiu corroborar) em vez de reimplementar a condicao.
               let classeViariaConfirmou = false;
               if (alertaDesvioV2) {
                 try {
                   const { quedaDetectada } = avaliarQuedaClasseViaria(classeViaAtual, ultimaViaPrincipalAnteriorEm, agora);
-                  const saiuParadaRecente = avaliarSaiuParadaConfirmadaRecentemente(estadoDesvioAnterior.saiuParadaConfirmadaEm, agora);
-                  if (quedaDetectada && !saiuParadaRecente) {
-                    classeViariaConfirmou = true;
-                  }
+                  const saiuParadaRecente = avaliarSaiuParadaConfirmadaRecentemente(saiuParadaConfirmadaEmNova, agora);
+                  // Compara motivo (nao score): aplicarCorroboracaoClasseViaria
+                  // sempre concatena o motivo quando corrobora, mesmo quando o
+                  // score ja estava no teto de 100 (Math.min) e portanto nao
+                  // muda -- comparar score subestimaria a confirmacao nesse caso.
+                  const motivoAntes = alertaDesvioV2.motivo;
                   alertaDesvioV2 = aplicarCorroboracaoClasseViaria(
                     alertaDesvioV2,
                     quedaDetectada,
                     saiuParadaRecente,
                     BONUS_CORROBORACAO_POR_SINAL
                   );
+                  classeViariaConfirmou = alertaDesvioV2.motivo !== motivoAntes;
                 } catch (errClasseViaria) {
                   erros.push(`Aviso: falha ao avaliar classe viaria pro veiculo ${veiculo_id}: ${String(errClasseViaria)}`);
                 }
@@ -2663,8 +2729,19 @@ export async function POST(request: Request) {
                ON CONFLICT (veiculo_id) DO UPDATE SET
                  afastando_streak = EXCLUDED.afastando_streak,
                  rua_rara_streak = EXCLUDED.rua_rara_streak,
-                 ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
-                 saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
+                 -- COALESCE (achado da revisao final, 15/08, Important):
+                 -- estas 2 colunas nunca sao INTENCIONALMENTE setadas de
+                 -- volta a null pelo JS -- so ficam null quando o app nao
+                 -- sabe o valor real (falha de leitura da query de estado
+                 -- acima, ou o evento nunca aconteceu pra este veiculo).
+                 -- Sobrescrever incondicionalmente com EXCLUDED (como era
+                 -- antes) fazia uma falha PONTUAL de leitura da classe
+                 -- viaria zerar esse estado da frota inteira no UPSERT
+                 -- seguinte -- COALESCE preserva o valor ja gravado quando
+                 -- o novo e null, so atualiza quando o evento de fato
+                 -- aconteceu neste ciclo.
+                 ultima_via_principal_em = COALESCE(EXCLUDED.ultima_via_principal_em, desvio_estado.ultima_via_principal_em),
+                 saiu_parada_confirmada_em = COALESCE(EXCLUDED.saiu_parada_confirmada_em, desvio_estado.saiu_parada_confirmada_em),
                  atualizado_em = now()`,
               [veiculo_id, afastandoStreakNovo, ruaRaraStreakNovo, ultimaViaPrincipalEmNova, saiuParadaConfirmadaEmNova]
             );
