@@ -909,7 +909,7 @@ export function detectarAnomaliaBaseline(ctx: CtxAnomaliaBaseline): Alerta | nul
 // de proposito: continuam disputando a arbitragem normalmente, so nao
 // geram bonus de corroboracao, pra nao diluir o sinal.
 const TIPOS_CORROBORANTES = new Set(["jammer", "desvio", "bypass_entrega", "baseline_veiculo"]);
-const BONUS_CORROBORACAO_POR_SINAL = 15;
+export const BONUS_CORROBORACAO_POR_SINAL = 15;
 
 // Tipos EXCLUÍDOS do auto-resolve genérico e da resolução de "obsoletos" em
 // route.ts (ver alertasGerenciados) -- ficam abertos até ação manual do

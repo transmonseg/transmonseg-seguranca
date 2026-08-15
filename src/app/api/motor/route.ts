@@ -39,9 +39,11 @@ import {
   TIPOS_NAO_GERENCIADOS,
   temCoordenadaValida,
   contaComoEventoDeSilenciamento,
+  BONUS_CORROBORACAO_POR_SINAL,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
+import { verificarCorredorFora } from "@/lib/corredor-confirmacao";
 import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
 import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
@@ -2437,6 +2439,48 @@ export async function POST(request: Request) {
                 }
               }
 
+              // Corredor real via OSRM como sinal de CORROBORACAO (nunca
+              // supressao) -- ver
+              // docs/superpowers/specs/2026-08-14-desvio-corredor-corroboracao-design.md.
+              // So roda quando o alerta ja vai disparar (nunca decide SE
+              // dispara), ancorado na posicao de quando o streak atual
+              // COMECOU (nunca a posicao atual -- checagem tautologica
+              // senao), buscada em posicoes_historico pela janela
+              // equivalente ao streak em ciclos de 30s (motor-tick-30s no
+              // pg_cron). Qualquer falha (sem ancora, OSRM indisponivel,
+              // erro de rede) cai em fail-open silencioso -- sem bonus, o
+              // alerta grava do mesmo jeito.
+              let corredorConfirmou = false;
+              if (alertaDesvioV2) {
+                try {
+                  const segundosStreak = afastandoStreakNovo * 30;
+                  const { rows: ancoraRows } = await pool.query<{ lat: number; lng: number }>(
+                    `SELECT lat, lng FROM posicoes_historico
+                      WHERE veiculo_id = $1 AND criado_em <= now() - ($2 || ' seconds')::interval
+                      ORDER BY criado_em DESC LIMIT 1`,
+                    [veiculo_id, String(segundosStreak)]
+                  );
+                  const ancora = ancoraRows[0];
+                  if (ancora) {
+                    const { confirmaFora } = await verificarCorredorFora(
+                      { lat: ancora.lat, lng: ancora.lng },
+                      { lat: pos.lat, lng: pos.lng, velocidade: pos.velocidade },
+                      destinosRelevantes
+                    );
+                    if (confirmaFora) {
+                      corredorConfirmou = true;
+                      alertaDesvioV2 = {
+                        ...alertaDesvioV2,
+                        score: Math.min(100, alertaDesvioV2.score + BONUS_CORROBORACAO_POR_SINAL),
+                        motivo: `${alertaDesvioV2.motivo} (corroborado por: corredor real fora de rota)`,
+                      };
+                    }
+                  }
+                } catch (errCorredor) {
+                  erros.push(`Aviso: falha ao verificar corredor pro veiculo ${veiculo_id}: ${String(errCorredor)}`);
+                }
+              }
+
               // Achado real 13/08 (casos TTH-3C94 e RQU-1G17, "falso
               // positivo" reportados no grupo -- ver comentario da migration
               // 045/047_desvio_disparo_log.sql): reconstruir o disparo via
@@ -2448,8 +2492,8 @@ export async function POST(request: Request) {
                 try {
                   await pool.query(
                     `INSERT INTO desvio_disparo_log
-                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, posicao_corrigida)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, posicao_corrigida, corredor_confirmou)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
                     [
                       veiculo_id,
                       alertaDesvioV2.origemDesvio,
@@ -2467,6 +2511,7 @@ export async function POST(request: Request) {
                       celulaAtualDesvio,
                       nVisitasHistorico,
                       posicaoFoiCorrigida,
+                      corredorConfirmou,
                     ]
                   );
                 } catch (errDisparoLog) {
