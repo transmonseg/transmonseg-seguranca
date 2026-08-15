@@ -44,6 +44,13 @@ import {
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
+import {
+  melhorClasse,
+  avaliarQuedaClasseViaria,
+  avaliarSaiuParadaConfirmadaRecentemente,
+  aplicarCorroboracaoClasseViaria,
+  type ClasseViaria,
+} from "@/lib/classe-viaria-confirmacao";
 import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
 import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
@@ -742,13 +749,29 @@ export async function POST(request: Request) {
 
     // Detector de desvio v2: prefetch do estado (streaks) de todos os
     // veiculos de uma vez -- ver docs/superpowers/specs/2026-08-12-desvio-de-rota-v2-design.md.
-    const desvioEstadoPorVeiculo = new Map<string, { afastandoStreak: number; ruaRaraStreak: number }>();
+    const desvioEstadoPorVeiculo = new Map<string, {
+      afastandoStreak: number;
+      ruaRaraStreak: number;
+      ultimaViaPrincipalEm: Date | null;
+      saiuParadaConfirmadaEm: Date | null;
+    }>();
     try {
-      const { rows } = await pool.query<{ veiculo_id: string; afastando_streak: number; rua_rara_streak: number }>(
-        `SELECT veiculo_id, afastando_streak, rua_rara_streak FROM desvio_estado`
+      const { rows } = await pool.query<{
+        veiculo_id: string;
+        afastando_streak: number;
+        rua_rara_streak: number;
+        ultima_via_principal_em: Date | null;
+        saiu_parada_confirmada_em: Date | null;
+      }>(
+        `SELECT veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em FROM desvio_estado`
       );
       for (const r of rows) {
-        desvioEstadoPorVeiculo.set(r.veiculo_id, { afastandoStreak: r.afastando_streak, ruaRaraStreak: r.rua_rara_streak });
+        desvioEstadoPorVeiculo.set(r.veiculo_id, {
+          afastandoStreak: r.afastando_streak,
+          ruaRaraStreak: r.rua_rara_streak,
+          ultimaViaPrincipalEm: r.ultima_via_principal_em,
+          saiuParadaConfirmadaEm: r.saiu_parada_confirmada_em,
+        });
       }
     } catch (errDesvioEstado) {
       erros.push(`Aviso: desvio v2 indisponivel neste ciclo (estado): ${String(errDesvioEstado)}`);
@@ -2028,6 +2051,51 @@ export async function POST(request: Request) {
 
           const saiuDoRaioAgora = codigoAnteriorNoRaio !== null && alvoNoRaioAgora === null;
           const alvoQueSaiu = (pontosVeiculo ?? []).find((pt) => pt.pontoCodigo === codigoAnteriorNoRaio) ?? null;
+
+          // Classe viaria (queda de via principal/intermediaria pra rua
+          // estreita) como sinal de CORROBORACAO -- ver
+          // docs/superpowers/specs/2026-08-15-classe-viaria-corroboracao-design.md.
+          // Classifica a celula atual (vizinhanca 3x3, mesma tolerancia a
+          // GPS na beirada da via que o sistema antigo usava) contra
+          // vias_celulas (1.322.207 linhas, ainda no banco, nao precisa
+          // reingestao). So classifica quando fresco -- posicao velha nao
+          // deve contaminar o estado decaindo.
+          //
+          // Calculado aqui (junto de saiuDoRaioAgora) porque nao depende de
+          // estadoDesvioAnterior -- essa variavel so e' declarada mais
+          // abaixo (perto da avaliacao de desvio v2). deveMarcarSaidaParadaConfirmada
+          // tambem so usa variaveis ja disponiveis neste ponto do ciclo
+          // (pos, alvosApiOk, saiuDoRaioAgora, dwellAnterior); a parte que
+          // de fato depende de estadoDesvioAnterior (ultimaViaPrincipalAnteriorEm/
+          // ultimaViaPrincipalEmNova/saiuParadaConfirmadaEmNova) fica logo
+          // apos a declaracao dele, mais abaixo.
+          // Envolvida em try/catch (nao existe no bloco original do brief)
+          // porque o loop por veiculo tem so um catch por FORA de tudo
+          // (errVeiculo, mais abaixo) que pula o veiculo inteiro no ciclo --
+          // sem este try/catch local, uma falha aqui (sem classificacao de
+          // celula, erro de banco) derrubaria TAMBEM jammer/bypass/desvio
+          // deste veiculo no ciclo, violando a regra de fail-open estrito
+          // (classe viaria so pode somar sinal, nunca pode impedir os
+          // outros detectores de rodar).
+          let classeViaAtual: ClasseViaria | null = null;
+          if (pos.fresco) {
+            try {
+              const { rows: classesRows } = await pool.query<{ celula: string; classe: ClasseViaria }>(
+                `SELECT celula, classe FROM vias_celulas WHERE celula = ANY($1::text[])`,
+                [vizinhanca3x3(pos.lat, pos.lng)]
+              );
+              for (const r of classesRows) classeViaAtual = melhorClasse(classeViaAtual, r.classe);
+            } catch (errClasseViariaClassificacao) {
+              erros.push(`Aviso: falha ao classificar classe viaria pro veiculo ${veiculo_id}: ${String(errClasseViariaClassificacao)}`);
+            }
+          }
+
+          // Achado real 28/07 (sistema antigo): "confirmada" = parou tempo
+          // suficiente pra nao ser so uma passagem -- mesmo limiar que
+          // detectarBypassEntrega ja usa (BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS).
+          const deveMarcarSaidaParadaConfirmada =
+            pos.fresco && alvosApiOk && saiuDoRaioAgora && dwellAnterior >= BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS;
+
           // mesmoAlvoCodigo: por construcao deste fluxo, saiuDoRaioAgora so
           // fica true quando NADA e encontrado no raio atual (alvoNoRaioAgora
           // null) -- a unica identidade em jogo no momento da saida e
@@ -2209,10 +2277,24 @@ export async function POST(request: Request) {
           // sempre). Dois sinais independentes: afastando de TODOS os
           // destinos, ou entrando em celula rara no historico da frota (e
           // nao aproximando de nada no mesmo ciclo).
-          const estadoDesvioAnterior = desvioEstadoPorVeiculo.get(veiculo_id) ?? { afastandoStreak: 0, ruaRaraStreak: 0 };
+          const estadoDesvioAnterior = desvioEstadoPorVeiculo.get(veiculo_id) ?? {
+            afastandoStreak: 0,
+            ruaRaraStreak: 0,
+            ultimaViaPrincipalEm: null,
+            saiuParadaConfirmadaEm: null,
+          };
           let afastandoStreakNovo = 0;
           let ruaRaraStreakNovo = 0;
           let alertaDesvioV2: Alerta | null = null;
+
+          // Continuacao do bloco de classe viaria (ver comentario acima, perto
+          // de saiuDoRaioAgora) -- agora que estadoDesvioAnterior existe.
+          const ultimaViaPrincipalAnteriorEm = estadoDesvioAnterior.ultimaViaPrincipalEm;
+          const ultimaViaPrincipalEmNova =
+            pos.fresco && classeViaAtual === "principal" ? agora : ultimaViaPrincipalAnteriorEm;
+          const saiuParadaConfirmadaEmNova = deveMarcarSaidaParadaConfirmada
+            ? agora
+            : estadoDesvioAnterior.saiuParadaConfirmadaEm;
 
           // Achado real 12/08 (simulação do dia inteiro): ~40% dos disparos
           // de "afastando de tudo" acontecem a <1,2km de alguma base --
@@ -2506,6 +2588,29 @@ export async function POST(request: Request) {
                 }
               }
 
+              // Classe viaria como corroboracao (nunca supressao) -- roda
+              // no mesmo ponto e com a mesma disciplina do corredor acima:
+              // so ajusta score de um alerta que ja existe, fail-open
+              // silencioso em qualquer falha.
+              let classeViariaConfirmou = false;
+              if (alertaDesvioV2) {
+                try {
+                  const { quedaDetectada } = avaliarQuedaClasseViaria(classeViaAtual, ultimaViaPrincipalAnteriorEm, agora);
+                  const saiuParadaRecente = avaliarSaiuParadaConfirmadaRecentemente(estadoDesvioAnterior.saiuParadaConfirmadaEm, agora);
+                  if (quedaDetectada && !saiuParadaRecente) {
+                    classeViariaConfirmou = true;
+                  }
+                  alertaDesvioV2 = aplicarCorroboracaoClasseViaria(
+                    alertaDesvioV2,
+                    quedaDetectada,
+                    saiuParadaRecente,
+                    BONUS_CORROBORACAO_POR_SINAL
+                  );
+                } catch (errClasseViaria) {
+                  erros.push(`Aviso: falha ao avaliar classe viaria pro veiculo ${veiculo_id}: ${String(errClasseViaria)}`);
+                }
+              }
+
               // Achado real 13/08 (casos TTH-3C94 e RQU-1G17, "falso
               // positivo" reportados no grupo -- ver comentario da migration
               // 045/047_desvio_disparo_log.sql): reconstruir o disparo via
@@ -2517,8 +2622,8 @@ export async function POST(request: Request) {
                 try {
                   await pool.query(
                     `INSERT INTO desvio_disparo_log
-                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, posicao_corrigida, corredor_confirmou)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, posicao_corrigida, corredor_confirmou, classe_viaria_confirmou)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
                     [
                       veiculo_id,
                       alertaDesvioV2.origemDesvio,
@@ -2537,6 +2642,7 @@ export async function POST(request: Request) {
                       nVisitasHistorico,
                       posicaoFoiCorrigida,
                       corredorConfirmou,
+                      classeViariaConfirmou,
                     ]
                   );
                 } catch (errDisparoLog) {
@@ -2552,13 +2658,15 @@ export async function POST(request: Request) {
 
           try {
             await pool.query(
-              `INSERT INTO desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, atualizado_em)
-               VALUES ($1, $2, $3, now())
+              `INSERT INTO desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, atualizado_em)
+               VALUES ($1, $2, $3, $4, $5, now())
                ON CONFLICT (veiculo_id) DO UPDATE SET
                  afastando_streak = EXCLUDED.afastando_streak,
                  rua_rara_streak = EXCLUDED.rua_rara_streak,
+                 ultima_via_principal_em = EXCLUDED.ultima_via_principal_em,
+                 saiu_parada_confirmada_em = EXCLUDED.saiu_parada_confirmada_em,
                  atualizado_em = now()`,
-              [veiculo_id, afastandoStreakNovo, ruaRaraStreakNovo]
+              [veiculo_id, afastandoStreakNovo, ruaRaraStreakNovo, ultimaViaPrincipalEmNova, saiuParadaConfirmadaEmNova]
             );
             if (pos.fresco) {
               const celulaAgoraDesvio = celulaDe(pos.lat, pos.lng);
