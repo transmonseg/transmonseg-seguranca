@@ -84,3 +84,24 @@ export async function verificarCorredorFora(
   }
   return { confirmaFora: algumaRotaSucesso };
 }
+
+// Aplica a corroboracao do corredor num alerta ja formado -- funcao pura
+// extraida de route.ts (achado da revisao final 14/08: o spec exige uma
+// guarda automatizada garantindo que essa logica so roda quando o alerta
+// ja existe e que uma falha nunca impede a gravacao; route.ts nao tem
+// harness de teste, entao a logica em si vira testavel aqui). Nunca muta
+// `alerta` -- confirmaFora=false devolve a MESMA referencia (identidade
+// preservada), confirmaFora=true devolve um objeto novo com score somado
+// (nunca acima de 100) e motivo anotado.
+export function aplicarCorroboracaoCorredor<T extends { score: number; motivo: string }>(
+  alerta: T,
+  confirmaFora: boolean,
+  bonus: number
+): T {
+  if (!confirmaFora) return alerta;
+  return {
+    ...alerta,
+    score: Math.min(100, alerta.score + bonus),
+    motivo: `${alerta.motivo} (corroborado por: corredor real fora de rota)`,
+  };
+}

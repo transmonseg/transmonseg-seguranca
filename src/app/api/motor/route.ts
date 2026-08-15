@@ -43,7 +43,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { verificarCorredorFora } from "@/lib/corredor-confirmacao";
+import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import { celulasDoSegmento, vizinhanca3x3, celulaDe } from "@/lib/celulas";
 import { buscarTiroteiosRJ, obterPerfilHorario } from "@/lib/fogocruzado";
 import type { Tiroteio } from "@/lib/fogocruzado";
@@ -2450,10 +2450,39 @@ export async function POST(request: Request) {
               // pg_cron). Qualquer falha (sem ancora, OSRM indisponivel,
               // erro de rede) cai em fail-open silencioso -- sem bonus, o
               // alerta grava do mesmo jeito.
+              //
+              // Interacao com reduzirPorTransitoInferido (decisao explicita
+              // da revisao final 14/08, documentada aqui e nao mudada): o
+              // bonus do corredor (+15, aplicado aqui) e o mitigador de
+              // transito inferido (-20 com piso 30, aplicado bem mais abaixo
+              // sobre `alerta` ja arbitrado) PODEM compor no mesmo alerta.
+              // Isso e intencional, nao um bug nao percebido -- os dois
+              // sinais respondem perguntas independentes: o corredor
+              // responde "esse trajeto bate com alguma rota real conhecida
+              // ate os destinos pendentes?", o mitigador de transito
+              // responde "tem gente da frota andando devagar perto daqui
+              // agora?". Um veiculo pode estar genuinamente fora de
+              // qualquer rota conhecida (corredor confirma, +15) E
+              // coincidentemente ter vizinhos lentos por perto (transito
+              // reduz, -20 com piso 30) -- os dois cenarios nao sao
+              // mutuamente exclusivos, entao a composicao aditiva (soma o
+              // bonus aqui, na ORIGEM do candidato; reduz depois, na
+              // arbitragem final) e o comportamento correto por design.
               let corredorConfirmou = false;
               if (alertaDesvioV2) {
                 try {
-                  const segundosStreak = afastandoStreakNovo * 30;
+                  // Achado real da revisao final (14/08): sem teto, o streak
+                  // nunca decai a zero enquanto o desvio persiste (so decai
+                  // por 1 quando aproxima de algum destino, ver desvio.ts) --
+                  // um desvio de horas gerava uma ancora de horas atras,
+                  // quase garantindo "fora de rota" por definicao (o veiculo
+                  // ja andou tanto que qualquer rota daquele ponto antigo
+                  // parece nao bater), nao porque o corredor esteja
+                  // discriminando desvio real de falso. Teto de 20 ciclos
+                  // (10min) mantem a ancora recente o suficiente pra ainda
+                  // ser um sinal de geometria de trajeto, nao so um artefato
+                  // do tamanho do streak.
+                  const segundosStreak = Math.min(afastandoStreakNovo, 20) * 30;
                   const { rows: ancoraRows } = await pool.query<{ lat: number; lng: number }>(
                     `SELECT lat, lng FROM posicoes_historico
                       WHERE veiculo_id = $1 AND criado_em <= now() - ($2 || ' seconds')::interval
@@ -2469,11 +2498,7 @@ export async function POST(request: Request) {
                     );
                     if (confirmaFora) {
                       corredorConfirmou = true;
-                      alertaDesvioV2 = {
-                        ...alertaDesvioV2,
-                        score: Math.min(100, alertaDesvioV2.score + BONUS_CORROBORACAO_POR_SINAL),
-                        motivo: `${alertaDesvioV2.motivo} (corroborado por: corredor real fora de rota)`,
-                      };
+                      alertaDesvioV2 = aplicarCorroboracaoCorredor(alertaDesvioV2, confirmaFora, BONUS_CORROBORACAO_POR_SINAL);
                     }
                   }
                 } catch (errCorredor) {
@@ -2555,19 +2580,6 @@ export async function POST(request: Request) {
           // precisa saber SE o vencedor atual e um desvio comportamental
           // antes de decidir se suprime ou confirma.
           let alerta: Alerta | null = arbitrarCandidatos(candidatosCore);
-          // Hoisted (Task 3 da Fase 2): precisam sobreviver ate o bloco de
-          // gerenciamento de alertas mais abaixo, que monta o contexto
-          // expandido do desvio via montarContextoDesvio -- calculados so
-          // quando ha alerta (ver bloco `if (alerta)` logo apos a
-          // calibracao/arbitragem final).
-          let segmentoEspecifico: string | null = null;
-          let taxaFp: number | undefined = undefined;
-          // Quando o corredor confirma legitimidade (ou exige confirmacao
-          // que nao veio), o desvio comportamental precisa ser removido dos
-          // candidatos CRUS tambem -- senao ele reaparece na arbitragem
-          // final mais abaixo (junto com os extras) mesmo depois de
-          // suprimido aqui.
-          let desvioSuprimidoPorCorredor = false;
 
           // Novos detectores: retorno_tardio, parada_noturna_ignicao, aceleracao_brusca.
           // Calculados separadamente e sobrepõem alerta principal se mais severos.
