@@ -4,17 +4,26 @@
 
 import type { Alerta } from "./detectores";
 
-export const LIMIAR_STREAK_AFASTANDO = 3;
+// Revertido 16/08 pra 1 (era 3 desde 12/08): resgate da "Fase Agressiva"
+// (11/07, commit 2b94ca4) que gerou o unico elogio real e confirmado do
+// cliente no grupo de WhatsApp ("7C13 deu certinho desvio 👏", "Melhorou",
+// 13/07) -- diretiva explicita do usuario daquela epoca, retomada aqui:
+// "falso positivo aceitavel, prioridade total e nunca perder desvio real,
+// detectar no PRIMEIRO ciclo". Aceita conscientemente o ruido de geometria
+// de estrada que motivou o streak=3 de 12/08 (ex. caso RQP-2G33, ver
+// git blame) -- ja documentado em [[feedback_desvio_priorizar_recall]] como
+// tradeoff aceito, nao um bug reintroduzido por descuido.
+export const LIMIAR_STREAK_AFASTANDO = 1;
 export const LIMIAR_STREAK_RUA_RARA = 2;
 export const LIMIAR_VISITAS_RARA = 2;
-// Achado real 12/08 (simulação do dia inteiro, caso RQP-2G33 -- 11 disparos
-// em 36min andando reto numa BR): distância real de rua não é perfeitamente
-// monótona nem na rota correta -- alças de acesso e contornos de rodovia
-// fazem a distância "aumentar" por 1-2 leituras mesmo indo na direção certa.
-// Enquanto o destino mais próximo ainda está muito longe (trânsito longo
-// entre clientes distantes), esse ruído de geometria de estrada não é
-// sinal -- só avalia o sinal A quando já está na "aproximação final".
-export const LIMIAR_TRANSITO_LONGO_M = 15_000;
+// Revertido 16/08 pra 300km (era 15km desde 12/08): mesmo resgate da Fase
+// Agressiva -- o teto de deslocamento interurbano subiu de proposito de
+// 25km->80km->300km em 11-12/07 (commits 77cb4f9/36df499/ac312da) porque um
+// teto baixo escondia desvio real dentro da faixa normal de operacao entre
+// clientes distantes. O piso de 15km (12/08) resolvia ruido de geometria em
+// transito longo mas reintroduzia exatamente esse problema -- escolha
+// deliberada de voltar pro valor validado que gerou o elogio de 13/07.
+export const LIMIAR_TRANSITO_LONGO_M = 300_000;
 // Achado real 12/08 (mesma simulação): manobra de saída/permanência no
 // pátio da base produz ruído de "afastando de tudo" -- suprime avaliação
 // do detector de desvio inteiro (os 2 sinais) enquanto ainda perto da base.
@@ -84,13 +93,19 @@ export function avaliarRuaRara(
 
 // Monta o Alerta final. Se os dois sinais dispararem no mesmo ciclo,
 // "afastando de tudo" tem prioridade (sinal mais direto/menos ambiguo).
+//
+// nivel="critico" pros dois desde 16/08 (era "atencao"): resgate da Fase
+// Agressiva (11/07) -- todo desvio comportamental ja nascia critico
+// (vermelho) naquela epoca, sem escala intermediaria "atencao"
+// (amarelo/observando). Reverte a diretiva original do usuario, que tinha
+// sido invertida na pratica pelas camadas de agosto (placar, modo teste).
 export function montarAlertaDesvio(
   afastando: { disparou: boolean; streak: number },
   ruaRara: { disparou: boolean; streak: number; celula: string; nVisitas: number }
 ): Alerta | null {
   if (afastando.disparou) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "desvio",
       motivo: "Afastando de todos os clientes pendentes e da base (distância real de rua)",
       score: 60,
@@ -99,7 +114,7 @@ export function montarAlertaDesvio(
   }
   if (ruaRara.disparou) {
     return {
-      nivel: "atencao",
+      nivel: "critico",
       tipo: "desvio",
       motivo: `Entrou em trecho raramente percorrido pela frota (célula ${ruaRara.celula}, ${ruaRara.nVisitas} visita(s) no histórico)`,
       score: 55,

@@ -16,7 +16,7 @@ describe("avaliarAfastandoDeTudo", () => {
   it("decai o streak em 1 (não zera) se aproximou de PELO MENOS UM destino -- achado real 13/08, distância real de rua não é perfeitamente monótona nem numa divergência real (ruído de geometria de estrada não pode apagar streak todo)", () => {
     const r = avaliarAfastandoDeTudo([1100, 900], [1000, 1000], 2);
     expect(r.streak).toBe(1);
-    expect(r.disparou).toBe(false);
+    expect(r.disparou).toBe(true); // limiar voltou a 1 (16/08) -- streak=1 já dispara
     expect(r.aproximandoAlgum).toBe(true);
   });
 
@@ -25,42 +25,29 @@ describe("avaliarAfastandoDeTudo", () => {
     expect(r.streak).toBe(0);
   });
 
-  it("streak tolerante: sobrevive a 1 blip de ruído no meio de uma divergência real e ainda dispara", () => {
-    let streak = 0;
-    streak = avaliarAfastandoDeTudo([1100, 2100], [1000, 2000], streak).streak; // afasta -> 1
-    expect(streak).toBe(1);
-    streak = avaliarAfastandoDeTudo([1150, 2050], [1100, 2100], streak).streak; // blip: aproxima do 2º -> decai pra 0
-    expect(streak).toBe(0);
-    streak = avaliarAfastandoDeTudo([1250, 2150], [1150, 2050], streak).streak; // afasta de novo -> 1
-    streak = avaliarAfastandoDeTudo([1350, 2250], [1250, 2150], streak).streak; // -> 2
-    const r = avaliarAfastandoDeTudo([1450, 2350], [1350, 2250], streak); // -> 3, dispara
-    expect(r.streak).toBe(3);
+  it("dispara na 1a leitura, sem esperar streak acumular -- limiar voltou a 1 (16/08, resgate da Fase Agressiva de 11/07)", () => {
+    const r = avaliarAfastandoDeTudo([1100, 2100], [1000, 2000], 0);
+    expect(r.streak).toBe(1);
     expect(r.disparou).toBe(true);
+    expect(r.aproximandoAlgum).toBe(false);
   });
 
-  it("acumula streak quando afasta de TODOS", () => {
+  it("acumula streak quando afasta de TODOS por leituras seguidas (streak segue crescendo mesmo já disparado)", () => {
     const r = avaliarAfastandoDeTudo([1100, 2100], [1000, 2000], 1);
     expect(r.streak).toBe(2);
     expect(r.aproximandoAlgum).toBe(false);
-    expect(r.disparou).toBe(false); // ainda não bateu o limiar (3)
-  });
-
-  it("dispara na 3a leitura seguida afastando de todos", () => {
-    const r = avaliarAfastandoDeTudo([1300, 2300], [1200, 2200], 2);
-    expect(r.streak).toBe(3);
     expect(r.disparou).toBe(true);
   });
 
-  it("não acumula streak em trânsito longo (destino mais próximo além do teto) -- ruído de rodovia/alça de acesso", () => {
-    // 16km e 20km de distância -- ambos além do teto de 15km, mesmo afastando dos dois.
-    const r = avaliarAfastandoDeTudo([16100, 20100], [16000, 20000], 2);
+  it("não acumula streak em trânsito longo (destino mais próximo além do teto de 300km) -- ruído de rodovia/alça de acesso", () => {
+    const r = avaliarAfastandoDeTudo([300_100_100, 300_200_100], [300_100_000, 300_200_000], 2);
     expect(r.streak).toBe(0);
     expect(r.disparou).toBe(false);
   });
 
-  it("volta a acumular streak assim que o destino mais próximo entra no teto de trânsito", () => {
-    const r = avaliarAfastandoDeTudo([14900, 20100], [14800, 20000], 2);
-    expect(r.streak).toBe(3);
+  it("dispara assim que o destino mais próximo entra no teto de trânsito de 300km", () => {
+    const r = avaliarAfastandoDeTudo([299_900, 300_100], [299_800, 300_000], 0);
+    expect(r.streak).toBe(1);
     expect(r.disparou).toBe(true);
   });
 
@@ -122,5 +109,18 @@ describe("montarAlertaDesvio", () => {
     expect(a?.origemDesvio).toBe("rua_rara_frota");
     expect(a?.motivo).toContain("-22900:-43200");
     expect(a?.motivo).toContain("1");
+  });
+
+  it("nasce crítico (nunca 'atencao') pros dois sinais -- resgate 16/08 da Fase Agressiva de 11/07", () => {
+    const afastando = montarAlertaDesvio(
+      { disparou: true, streak: 1 },
+      { disparou: false, streak: 0, celula: "0:0", nVisitas: 10 }
+    );
+    expect(afastando?.nivel).toBe("critico");
+    const ruaRara = montarAlertaDesvio(
+      { disparou: false, streak: 0 },
+      { disparou: true, streak: 2, celula: "0:0", nVisitas: 0 }
+    );
+    expect(ruaRara?.nivel).toBe("critico");
   });
 });
