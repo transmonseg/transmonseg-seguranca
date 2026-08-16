@@ -4,16 +4,24 @@
 
 import type { Alerta } from "./detectores";
 
-// Revertido 16/08 pra 1 (era 3 desde 12/08): resgate da "Fase Agressiva"
-// (11/07, commit 2b94ca4) que gerou o unico elogio real e confirmado do
-// cliente no grupo de WhatsApp ("7C13 deu certinho desvio 👏", "Melhorou",
-// 13/07) -- diretiva explicita do usuario daquela epoca, retomada aqui:
-// "falso positivo aceitavel, prioridade total e nunca perder desvio real,
-// detectar no PRIMEIRO ciclo". Aceita conscientemente o ruido de geometria
-// de estrada que motivou o streak=3 de 12/08 (ex. caso RQP-2G33, ver
-// git blame) -- ja documentado em [[feedback_desvio_priorizar_recall]] como
-// tradeoff aceito, nao um bug reintroduzido por descuido.
-export const LIMIAR_STREAK_AFASTANDO = 1;
+// 16/08: tentativa inicial de resgatar o streak=1 da "Fase Agressiva"
+// (11/07, commit 2b94ca4, epoca do unico elogio real confirmado do cliente
+// -- "7C13 deu certinho desvio 👏", "Melhorou", 13/07) foi CORRIGIDA no
+// mesmo dia apos simular um dia real (sexta 14/08) contra o codigo atual:
+// streak=1 deu 14014 disparos brutos/dia (228/347 veiculos) -- ~40x o pior
+// dia ja visto neste projeto. Causa: streak=1 foi validado em 11/07 contra
+// distancia em LINHA RETA (sinal suave); o motor de hoje usa distancia
+// REAL de rua via OSRM (sinal ruidoso por natureza, ja documentado em
+// 12/08 -- alcas de acesso fazem a distancia aumentar por 1-2 leituras
+// mesmo indo certo). Os dois nunca foram validados juntos. Comparacao no
+// mesmo dia real: streak=2 -> 973/dia, streak=3 -> 212/dia (proximo do
+// pior dia historico). streak=2 escolhido como meio-termo -- ainda bem
+// mais sensivel que o streak=3 anterior, sem a explosao do streak=1. Ver
+// scripts/simular-dia-desvio-v2.mjs e scripts/comparar-streaks-desvio-v2.mjs
+// (o 2o nao commitado, uso unico). Aceita conscientemente MAIS ruido de
+// geometria de estrada que o streak=3 tinha (ex. caso RQP-2G33) -- ja
+// documentado em [[feedback_desvio_priorizar_recall]] como tradeoff aceito.
+export const LIMIAR_STREAK_AFASTANDO = 2;
 export const LIMIAR_STREAK_RUA_RARA = 2;
 export const LIMIAR_VISITAS_RARA = 2;
 // Revertido 16/08 pra 300km (era 15km desde 12/08): mesmo resgate da Fase

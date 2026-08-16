@@ -16,7 +16,7 @@ describe("avaliarAfastandoDeTudo", () => {
   it("decai o streak em 1 (não zera) se aproximou de PELO MENOS UM destino -- achado real 13/08, distância real de rua não é perfeitamente monótona nem numa divergência real (ruído de geometria de estrada não pode apagar streak todo)", () => {
     const r = avaliarAfastandoDeTudo([1100, 900], [1000, 1000], 2);
     expect(r.streak).toBe(1);
-    expect(r.disparou).toBe(true); // limiar voltou a 1 (16/08) -- streak=1 já dispara
+    expect(r.disparou).toBe(false); // limiar=2 (16/08b) -- streak=1 ainda não dispara
     expect(r.aproximandoAlgum).toBe(true);
   });
 
@@ -25,14 +25,14 @@ describe("avaliarAfastandoDeTudo", () => {
     expect(r.streak).toBe(0);
   });
 
-  it("dispara na 1a leitura, sem esperar streak acumular -- limiar voltou a 1 (16/08, resgate da Fase Agressiva de 11/07)", () => {
+  it("não dispara na 1a leitura (limiar=2, 16/08b) -- streak=1 só acumula", () => {
     const r = avaliarAfastandoDeTudo([1100, 2100], [1000, 2000], 0);
     expect(r.streak).toBe(1);
-    expect(r.disparou).toBe(true);
+    expect(r.disparou).toBe(false);
     expect(r.aproximandoAlgum).toBe(false);
   });
 
-  it("acumula streak quando afasta de TODOS por leituras seguidas (streak segue crescendo mesmo já disparado)", () => {
+  it("dispara na 2a leitura seguida afastando de todos -- limiar=2, valor escolhido 16/08b apos simulacao real mostrar que streak=1 explodia (14014 disparos/dia) contra distancia real de rua via OSRM", () => {
     const r = avaliarAfastandoDeTudo([1100, 2100], [1000, 2000], 1);
     expect(r.streak).toBe(2);
     expect(r.aproximandoAlgum).toBe(false);
@@ -45,9 +45,9 @@ describe("avaliarAfastandoDeTudo", () => {
     expect(r.disparou).toBe(false);
   });
 
-  it("dispara assim que o destino mais próximo entra no teto de trânsito de 300km", () => {
-    const r = avaliarAfastandoDeTudo([299_900, 300_100], [299_800, 300_000], 0);
-    expect(r.streak).toBe(1);
+  it("dispara na 2a leitura assim que o destino mais próximo entra no teto de trânsito de 300km", () => {
+    const r = avaliarAfastandoDeTudo([299_900, 300_100], [299_800, 300_000], 1);
+    expect(r.streak).toBe(2);
     expect(r.disparou).toBe(true);
   });
 
