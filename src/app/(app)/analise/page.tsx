@@ -115,6 +115,7 @@ type AlertaRow = {
   desde: string;
   resolvido_em: string | null;
   motivo: string | null;
+  operador_id: string | null;
   veiculos: { placa: string } | null;
 };
 
@@ -141,10 +142,10 @@ export default async function AnalisePage({
   const cutoff = new Date(agoraMs - dias * 24 * 60 * 60 * 1000).toISOString();
   const cutoffAnterior = new Date(agoraMs - 2 * dias * 24 * 60 * 60 * 1000).toISOString();
 
-  const [atualRes, antRes] = await Promise.all([
+  const [atualRes, antRes, operadoresRes] = await Promise.all([
     admin
       .from("alertas")
-      .select("id, nivel, tipo, status, desde, resolvido_em, motivo, veiculos(placa)")
+      .select("id, nivel, tipo, status, desde, resolvido_em, motivo, operador_id, veiculos(placa)")
       .eq("modo_teste", false)
       .gte("desde", cutoff)
       .order("desde", { ascending: false })
@@ -157,10 +158,19 @@ export default async function AnalisePage({
       .lt("desde", cutoff)
       .order("desde", { ascending: false })
       .limit(2000),
+    // "Resolvido por": o dado (operador_id) já era gravado em toda acao de
+    // Resolver/Falso positivo/Limpar (ver acoes-alertas.ts) mas nunca
+    // aparecia em lugar nenhum da tela -- so' juntar aqui pro nome, sem
+    // mudar nada no fluxo de resolucao (achado real 16/08, pedido direto
+    // do usuario: "so quero saber qual login foi").
+    admin.from("operadores").select("id, nome"),
   ]);
 
   const todos = (atualRes.data ?? []) as unknown as AlertaRow[];
   const todosAnt = (antRes.data ?? []) as unknown as AlertaAnt[];
+  const nomePorOperador = new Map(
+    ((operadoresRes.data ?? []) as { id: string; nome: string }[]).map((o) => [o.id, o.nome])
+  );
 
   const aplicaFiltro = <T extends { tipo: string; nivel: string; status: string }>(r: T) =>
     (!tipoFiltro || r.tipo === tipoFiltro) &&
@@ -696,7 +706,7 @@ export default async function AnalisePage({
             <table className="w-full text-xs">
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  {["Tipo", "Placa", "Quando", "Status", "Tempo até resolver"].map((h) => (
+                  {["Tipo", "Placa", "Quando", "Status", "Tempo até resolver", "Resolvido por"].map((h) => (
                     <th key={h} className="text-left px-4 py-3 font-medium" style={{ color: "var(--text-muted)" }}>
                       {h}
                     </th>
@@ -734,6 +744,9 @@ export default async function AnalisePage({
                       </td>
                       <td className="px-4 py-3 tabular-nums" style={{ color: "var(--text-muted)" }}>
                         {tempoAteResolver(r.desde, r.resolvido_em)}
+                      </td>
+                      <td className="px-4 py-3" style={{ color: "var(--text-muted)" }}>
+                        {r.operador_id ? (nomePorOperador.get(r.operador_id) ?? "—") : "—"}
                       </td>
                     </tr>
                   );
