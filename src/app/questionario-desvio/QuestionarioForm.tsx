@@ -3,8 +3,34 @@
 import { useActionState } from "react";
 import { enviarRespostas, type EstadoQuestionario } from "./actions";
 import { PERGUNTAS } from "./perguntas";
+import {
+  DiagramaAfastandoTudo,
+  DiagramaVelocidade,
+  DiagramaNivel,
+  DiagramaViagemLonga,
+  DiagramaRuaEstreita,
+  DiagramaCorredor,
+  DiagramaRuaRara,
+  DiagramaPrioridade,
+  DiagramaParadaFora,
+  DiagramaBase,
+} from "./Diagramas";
 
 const estadoInicial: EstadoQuestionario = {};
+
+// Um diagrama por numero de pergunta -- ver Diagramas.tsx.
+const DIAGRAMA_POR_NUMERO: Record<number, () => React.ReactElement> = {
+  1: DiagramaAfastandoTudo,
+  2: DiagramaVelocidade,
+  3: DiagramaNivel,
+  4: DiagramaViagemLonga,
+  5: DiagramaRuaEstreita,
+  6: DiagramaCorredor,
+  7: DiagramaRuaRara,
+  8: DiagramaPrioridade,
+  9: DiagramaParadaFora,
+  10: DiagramaBase,
+};
 
 const inputStyle: React.CSSProperties = {
   backgroundColor: "var(--card)",
@@ -48,10 +74,19 @@ export default function QuestionarioForm() {
         />
       </div>
 
-      {PERGUNTAS.map((p) => (
+      {PERGUNTAS.map((p) => {
+        const Diagrama = DIAGRAMA_POR_NUMERO[p.numero];
+        return (
         <div key={p.numero} className="flex flex-col gap-3 pt-6" style={{ borderTop: "1px solid var(--border-subtle)" }}>
+          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-subtle)" }}>
+            <Diagrama />
+          </div>
+
           <p className="text-sm leading-relaxed" style={{ color: "var(--text)" }}>
             <span style={{ color: "var(--accent)" }}>{p.numero}.</span> {p.texto}
+          </p>
+          <p className="text-xs leading-relaxed italic" style={{ color: "var(--text-muted)" }}>
+            {p.exemplo}
           </p>
 
           <div className="flex flex-col gap-2">
@@ -75,7 +110,8 @@ export default function QuestionarioForm() {
             style={{ ...inputStyle, backgroundColor: "transparent" }}
           />
         </div>
-      ))}
+        );
+      })}
 
       <div className="flex flex-col gap-2 pt-6" style={{ borderTop: "1px solid var(--border-subtle)" }}>
         <label htmlFor="observacao_livre" className="text-sm font-medium" style={{ color: "var(--text)" }}>
