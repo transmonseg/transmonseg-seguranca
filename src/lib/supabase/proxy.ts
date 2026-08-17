@@ -39,9 +39,13 @@ export async function updateSession(request: NextRequest) {
 
   const path = request.nextUrl.pathname;
   const ehLogin = path === "/login";
+  // /questionario-desvio (17/08): formulario publico pra Erica/Ana/Elloisy
+  // darem opiniao sobre as regras de desvio -- elas nao sao operadoras
+  // cadastradas, nao dá pra exigir login.
+  const ehRotaPublica = ehLogin || path === "/questionario-desvio";
 
   // Não autenticado em rota protegida → manda pro login.
-  if (!user && !ehLogin) {
+  if (!user && !ehRotaPublica) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
