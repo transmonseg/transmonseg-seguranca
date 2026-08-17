@@ -67,15 +67,32 @@ export default function QuestionarioForm() {
             ))}
           </div>
 
-          <input
-            type="text"
+          <textarea
             name={`comentario_${p.numero}`}
-            placeholder="Comentário (opcional)"
-            className="px-3.5 py-2 rounded-lg text-sm outline-none"
+            placeholder="Quer escrever mais sobre essa? Conta com suas palavras (opcional)"
+            rows={2}
+            className="px-3.5 py-2.5 rounded-lg text-sm outline-none resize-y"
             style={{ ...inputStyle, backgroundColor: "transparent" }}
           />
         </div>
       ))}
+
+      <div className="flex flex-col gap-2 pt-6" style={{ borderTop: "1px solid var(--border-subtle)" }}>
+        <label htmlFor="observacao_livre" className="text-sm font-medium" style={{ color: "var(--text)" }}>
+          Espaço livre: tem mais alguma coisa que você acha que eu deveria saber?
+        </label>
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          Pode escrever à vontade, o quanto quiser. Não precisa ser sobre as regras acima.
+        </p>
+        <textarea
+          id="observacao_livre"
+          name="observacao_livre"
+          placeholder="Escreve aqui..."
+          rows={5}
+          className="px-3.5 py-2.5 rounded-lg text-sm outline-none resize-y"
+          style={inputStyle}
+        />
+      </div>
 
       {estado.erro && (
         <p

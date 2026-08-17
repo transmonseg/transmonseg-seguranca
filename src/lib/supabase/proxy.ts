@@ -39,10 +39,12 @@ export async function updateSession(request: NextRequest) {
 
   const path = request.nextUrl.pathname;
   const ehLogin = path === "/login";
-  // /questionario-desvio (17/08): formulario publico pra Erica/Ana/Elloisy
-  // darem opiniao sobre as regras de desvio -- elas nao sao operadoras
-  // cadastradas, nao dá pra exigir login.
-  const ehRotaPublica = ehLogin || path === "/questionario-desvio";
+  // /questionario-desvio e /desvio-proximos-passos (17/08): paginas publicas
+  // pra Erica/Ana/Elloisy -- documento explicando o plano + formulario de
+  // opiniao sobre as regras de desvio. Elas nao sao operadoras cadastradas,
+  // nao dá pra exigir login.
+  const ehRotaPublica =
+    ehLogin || path === "/questionario-desvio" || path === "/desvio-proximos-passos";
 
   // Não autenticado em rota protegida → manda pro login.
   if (!user && !ehRotaPublica) {

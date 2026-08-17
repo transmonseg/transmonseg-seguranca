@@ -39,6 +39,21 @@ export async function enviarRespostas(
     });
   }
 
+  // Espaco livre no final (17/08, pedido direto: "bote pra pessoa
+  // escrever") -- nao amarrado a nenhuma pergunta especifica, guardado com
+  // pergunta_numero=99 pra caber no mesmo esquema de 1-linha-por-pergunta
+  // sem precisar de coluna nova.
+  const observacaoLivre = String(formData.get("observacao_livre") ?? "").trim();
+  if (observacaoLivre) {
+    linhas.push({
+      respondente,
+      pergunta_numero: 99,
+      pergunta_texto: "Espaço livre — o que mais você acha que eu deveria saber",
+      resposta: "(comentário livre)",
+      comentario: observacaoLivre,
+    });
+  }
+
   const admin = createAdminClient();
   const { error } = await admin.from("questionario_desvio_respostas").insert(linhas);
   if (error) return { erro: "Não deu pra enviar, tenta de novo." };
