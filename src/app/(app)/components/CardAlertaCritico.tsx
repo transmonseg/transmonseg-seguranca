@@ -105,6 +105,17 @@ function IconJammer({ size = 16 }: { size?: number }) {
   );
 }
 
+// So diferencia os 2 tipos deste pedido (desvio movimento vs parada fora do
+// esperado) -- os demais tipos continuam mostrando o slug cru, como sempre
+// mostraram (nao e pedido "prettify" geral do badge).
+const ROTULO_BADGE_TIPO: Record<string, string> = {
+  desvio: "Desvio em movimento",
+  parada_fora_tapete: "Parada fora do esperado",
+};
+function rotuloBadgeTipo(tipo: string): string {
+  return ROTULO_BADGE_TIPO[tipo] ?? tipo;
+}
+
 export function IconTipoAlerta({ tipo, size = 16 }: { tipo: string; size?: number }) {
   const t = tipo?.toLowerCase() ?? "";
   if (t.includes("tiroteio")) return <IconTiroteio size={size} />;
@@ -199,7 +210,7 @@ export default function CardAlertaCritico({
               <span style={{ color: corNivel, opacity: 0.9 }}>
                 <IconTipoAlerta tipo={tipo} size={10} />
               </span>
-              {tipo}
+              {rotuloBadgeTipo(tipo)}
             </span>
             {novo && (
               <span style={{ fontSize: "9px", fontWeight: 800, letterSpacing: "0.1em", color: "#fff", backgroundColor: "var(--vermelho, #ef4444)", borderRadius: 4, padding: "2px 5px", textTransform: "uppercase", animation: "pulse-live 1s ease-in-out 4" }}>

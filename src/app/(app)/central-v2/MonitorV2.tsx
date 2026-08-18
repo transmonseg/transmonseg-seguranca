@@ -59,7 +59,7 @@ const NOME_TIPO: Record<string, string> = {
   panico: "Pânico", bau: "Baú aberto", favela: "Favela/risco",
   tiroteio: "Tiroteio", jammer: "Jammer/sinal", saida_nao_autorizada: "Saída n.aut.",
   parada_anomala: "Par. anômala", parada_longa: "Par. longa", parada_cliente: "Par. cliente",
-  ignicao_noturna: "Ign. noturna", desvio: "Desvio de rota", parada_fora_tapete: "Desvio de rota", excesso: "Excesso vel.",
+  ignicao_noturna: "Ign. noturna", desvio: "Desvio em movimento", parada_fora_tapete: "Parada fora do esperado", excesso: "Excesso vel.",
   retorno_tardio: "Retorno tardio", aceleracao: "Acel. brusca", sem_comunicacao: "Sem comunicação",
 };
 function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
@@ -1545,7 +1545,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   border: `1px solid ${cor}55`, borderLeft: `3px solid ${cor}`,
                   boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
                 }}
-                title={`Desvio de rota — ${a.placa} — clique pra focar`}
+                title={`${nomeT(a.tipo)} — ${a.placa} — clique pra focar`}
               >
                 <span className="animate-pulse-live" style={{ width: 7, height: 7, borderRadius: "50%", background: cor, flexShrink: 0 }} />
                 <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: opts.compacto ? 11 : 13, color: T.text, letterSpacing: ".04em" }}>
@@ -1553,7 +1553,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 </span>
                 {!opts.compacto && (
                   <span style={{ fontSize: 10, fontWeight: 700, color: cor, letterSpacing: ".03em" }}>
-                    DESVIO DE ROTA
+                    {nomeT(a.tipo).toUpperCase()}
                   </span>
                 )}
                 <span suppressHydrationWarning style={{ fontSize: 10, color: corIdadeAlerta(a.desde, tema).cor || T.dim, fontFamily: FONT_MONO, fontWeight: corIdadeAlerta(a.desde, tema).peso }}>

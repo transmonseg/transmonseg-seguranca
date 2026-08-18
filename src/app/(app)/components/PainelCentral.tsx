@@ -79,8 +79,8 @@ const NOME_TIPO: Record<string, string> = {
   parada_cliente: "Parada no cliente",
   parada_anomala: "Parada anômala",
   parada_longa: "Parada longa",
-  desvio: "Desvio de rota",
-  parada_fora_tapete: "Desvio de rota",
+  desvio: "Desvio em movimento",
+  parada_fora_tapete: "Parada fora do esperado",
   excesso: "Excesso de velocidade",
 };
 function nomeTipo(t: string): string {

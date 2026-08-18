@@ -25,3 +25,28 @@ describe("ehAlertaAntigo", () => {
     expect(ehAlertaAntigo(cincoHorasAtras)).toBe(true);
   });
 });
+
+// Mesmo padrao de ehAlertaAntigo acima: funcao nao exportada de um .tsx,
+// reimplementada aqui identica. Ver CardAlertaCritico.tsx para a fonte da verdade.
+const ROTULO_BADGE_TIPO: Record<string, string> = {
+  desvio: "Desvio em movimento",
+  parada_fora_tapete: "Parada fora do esperado",
+};
+function rotuloBadgeTipo(tipo: string): string {
+  return ROTULO_BADGE_TIPO[tipo] ?? tipo;
+}
+
+describe("rotuloBadgeTipo", () => {
+  it("desvio vira 'Desvio em movimento'", () => {
+    expect(rotuloBadgeTipo("desvio")).toBe("Desvio em movimento");
+  });
+
+  it("parada_fora_tapete vira 'Parada fora do esperado'", () => {
+    expect(rotuloBadgeTipo("parada_fora_tapete")).toBe("Parada fora do esperado");
+  });
+
+  it("tipo sem entrada no mapa cai no slug cru (fallback preservado)", () => {
+    expect(rotuloBadgeTipo("panico")).toBe("panico");
+    expect(rotuloBadgeTipo("tiroteio")).toBe("tiroteio");
+  });
+});
