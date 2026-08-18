@@ -46,7 +46,7 @@ export async function POST(request: Request) {
   const expiraAntesDe = new Date(Date.now() - REIVINDICACAO_EXPIRA_MIN * 60_000).toISOString();
   const { data: candidatos, error: erroCandidatos } = await admin
     .from("romaneio_pontos")
-    .select("id, endereco_bruto, veiculo_id, placa, nf")
+    .select("id, endereco_bruto, veiculo_id, placa, nf, cliente_codigo")
     .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
     .order("criado_em", { ascending: true })
     .limit(LOTE_POR_INVOCACAO);
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
   // toda vez sem nada pendente, sempre retornava antes de chegar la. Agora
   // so pula o processamento principal (pendentes = []), sem `return`, pra
   // sempre chegar no fallback.
-  let pendentes: { id: string; endereco_bruto: string; veiculo_id: string | null; placa: string; nf: string }[] = [];
+  let pendentes: { id: string; endereco_bruto: string; veiculo_id: string | null; placa: string; nf: string; cliente_codigo: string | null }[] = [];
 
   if (candidatos && candidatos.length > 0) {
     // Reivindica ANTES de processar. Achado real 27/07 (pego em teste ao
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       .update({ geocode_status: "processando", geocode_reivindicado_em: new Date().toISOString() })
       .in("id", idsCandidatos)
       .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
-      .select("id, endereco_bruto, veiculo_id, placa, nf");
+      .select("id, endereco_bruto, veiculo_id, placa, nf, cliente_codigo");
 
     if (erroReivindicar) {
       console.error(`Erro ao reivindicar romaneio_pontos: ${erroReivindicar.message}`);
@@ -91,6 +91,48 @@ export async function POST(request: Request) {
       pendentes = reivindicados;
     }
   }
+
+  // Cache por (cliente_id, cliente_codigo) -- ver migration 052. Politica
+  // write-once: le antes de geocodificar (se ja tem ancora, usa direto,
+  // pula a cascata de texto inteira), grava so' na PRIMEIRA vez que um
+  // codigo resolve com sucesso (nunca sobrescreve sozinha depois, ver
+  // comentario da migration). Precisa do cliente_id por linha ANTES do
+  // loop principal -- veiculo->cliente_id so' era resolvido mais abaixo,
+  // no bloco de fallback Unitrac, tarde demais pra decidir aqui.
+  const veiculoIdsPendentes = [...new Set(pendentes.map((l) => l.veiculo_id).filter((v): v is string => !!v))];
+  const clientePorVeiculoAntecipado = new Map<string, string>();
+  if (veiculoIdsPendentes.length > 0) {
+    const { data: veiculosPendentes } = await admin.from("veiculos").select("id, cliente_id").in("id", veiculoIdsPendentes);
+    for (const v of veiculosPendentes ?? []) clientePorVeiculoAntecipado.set(v.id, v.cliente_id);
+  }
+  const buscarCacheClienteCodigo = async (clienteId: string, clienteCodigo: string) => {
+    const { data } = await admin
+      .from("romaneio_cliente_codigo_geocode")
+      .select("lat, lng, fonte")
+      .eq("cliente_id", clienteId)
+      .eq("cliente_codigo", clienteCodigo)
+      .maybeSingle();
+    return data ?? null;
+  };
+  const salvarCacheClienteCodigoSeNovo = async (clienteId: string, clienteCodigo: string, r: { lat: number; lng: number; fonte: string }) => {
+    // ON CONFLICT DO NOTHING (nao upsert de verdade) -- write-once de
+    // proposito, ver migration 052. upsert() com ignoreDuplicates:true e'
+    // o equivalente do supabase-js pra isso (insert() simples nao aceita
+    // onConflict, so' upsert aceita).
+    await admin.from("romaneio_cliente_codigo_geocode").upsert(
+      {
+        cliente_id: clienteId,
+        cliente_codigo: clienteCodigo,
+        lat: r.lat,
+        lng: r.lng,
+        fonte: r.fonte,
+        n_observacoes: 1,
+        primeira_observacao: hojeSP(),
+        ultima_observacao: hojeSP(),
+      },
+      { onConflict: "cliente_id,cliente_codigo", ignoreDuplicates: true }
+    );
+  };
 
   const buscarCache = async (chaveNormalizada: string) => {
     const { data } = await admin.from("romaneio_geocode_cache").select("lat, lng, fonte").eq("endereco_normalizado", chaveNormalizada).maybeSingle();
@@ -221,31 +263,67 @@ export async function POST(request: Request) {
   let falhou = 0;
   const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" }[] = [];
 
-  for (const linha of pendentes) {
-    const cidadeBruta = extrairCidadeDoEndereco(linha.endereco_bruto);
-    const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
-    const bairro = extrairBairroDoEndereco(linha.endereco_bruto);
-    const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
-    const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
-    const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
+  let doCacheClienteCodigo = 0;
 
-    const geocode = await geocodificarEndereco(linha.endereco_bruto, pontoReferencia, {
-      buscarCache,
-      salvarCache,
-      geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, municipioCodigo, {
-        buscarPorRuaNumero: buscarCnefePorRuaNumero,
-        buscarPorRua: buscarCnefePorRua,
-        buscarPorSimilaridade: buscarCnefePorSimilaridade,
-      }),
-      geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
-      geocodificarGoogle,
-      geocodificarNominatim: geocodificarNominatimThrottled,
-    });
+  for (const linha of pendentes) {
+    // Cache por cliente_codigo primeiro (ver migration 052) -- se esse
+    // codigo ja resolveu com sucesso em outro dia, usa a ancora direto e
+    // pula a cascata de texto inteira (mais rapido e mais estavel: elimina
+    // a variacao de 1-2 coordenadas pro MESMO cliente que a analise de
+    // 16/08 achou). So aplica quando o codigo existe e o veiculo tem
+    // cliente_id resolvido -- sem isso cai pra cascata normal, igual antes.
+    const clienteIdLinha = linha.veiculo_id ? clientePorVeiculoAntecipado.get(linha.veiculo_id) : null;
+    let geocode: { lat: number; lng: number; fonte: string } | null = null;
+    let viaCacheClienteCodigo = false;
+
+    if (clienteIdLinha && linha.cliente_codigo) {
+      const ancora = await buscarCacheClienteCodigo(clienteIdLinha, linha.cliente_codigo);
+      if (ancora) {
+        geocode = { lat: ancora.lat, lng: ancora.lng, fonte: ancora.fonte };
+        viaCacheClienteCodigo = true;
+        doCacheClienteCodigo++;
+      }
+    }
+
+    if (!geocode) {
+      const cidadeBruta = extrairCidadeDoEndereco(linha.endereco_bruto);
+      const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
+      const bairro = extrairBairroDoEndereco(linha.endereco_bruto);
+      const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
+      const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
+      const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
+
+      geocode = await geocodificarEndereco(linha.endereco_bruto, pontoReferencia, {
+        buscarCache,
+        salvarCache,
+        geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, municipioCodigo, {
+          buscarPorRuaNumero: buscarCnefePorRuaNumero,
+          buscarPorRua: buscarCnefePorRua,
+          buscarPorSimilaridade: buscarCnefePorSimilaridade,
+        }),
+        geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
+        geocodificarGoogle,
+        geocodificarNominatim: geocodificarNominatimThrottled,
+      });
+
+      // Grava a ancora write-once (nunca sobrescreve, ver migration 052)
+      // so' quando veio FRESCO da cascata -- um hit de cache nao deve se
+      // regravar em cima de si mesmo (nao é' o caso aqui, ja' que so' entra
+      // aqui quando geocode ainda era null, mas deixa explicito o porque).
+      if (geocode && clienteIdLinha && linha.cliente_codigo) {
+        await salvarCacheClienteCodigoSeNovo(clienteIdLinha, linha.cliente_codigo, geocode);
+      }
+    }
 
     const geocodeStatus = geocode ? "ok" : "falhou";
     if (geocode) {
       ok++;
-      if (linha.veiculo_id) {
+      // Hits de cache nao entram em geocodificadosOk: deveCorrigirComRomaneio
+      // exige fonte==="cnefe" pra comparar contra a Unitrac (ver
+      // src/lib/unitrac.ts) -- um hit de cache e' reuso de um resultado
+      // antigo, nao uma geocodificacao fresca, nao faz sentido competir
+      // com a Unitrac de novo pra corrigir pontos_aprendidos.
+      if (linha.veiculo_id && !viaCacheClienteCodigo && (geocode.fonte === "google" || geocode.fonte === "nominatim" || geocode.fonte === "local" || geocode.fonte === "cnefe")) {
         geocodificadosOk.push({ id: linha.id, veiculo_id: linha.veiculo_id, placa: linha.placa, nf: linha.nf, lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte });
       }
     } else {
@@ -363,5 +441,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou, fallbackUnitrac, corrigidosViaRomaneio });
+  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio });
 }
