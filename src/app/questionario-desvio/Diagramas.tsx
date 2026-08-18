@@ -1,181 +1,285 @@
 // Diagramas SVG explicando visualmente cada regra do questionario --
 // pedido direto do usuario 17/08 ("explique melhor as regras dando
-// exemplos ate visuais dos carros"). Mesma linguagem de icone em traco do
-// resto do app (ver o escudo no header/login: stroke 1.5, rounded caps),
-// paleta reaproveitada das CSS vars (--accent/--vermelho/--amarelo/--verde).
-// Cada diagrama e um mini "radar" escuro, viewBox fixo 300x130.
+// exemplos ate visuais dos carros, use a skill de designer"). Sem chave
+// Gemini configurada neste ambiente pra gerar icone via IA (script
+// scripts/icon/generate.py da skill "design") -- ilustracao construida a
+// mao, mas com acabamento de painel de radar/mapa de verdade (grade,
+// brilho radial, sombra), nao geometria solta. Paleta das CSS vars
+// (--accent/--vermelho/--amarelo/--verde), mesma familia visual do escudo
+// do header/login (traco 1.5-2, rounded caps).
 
-function Moldura({ children }: { children: React.ReactNode }) {
+import { useId as useIdReact } from "react";
+
+// Wrapper fino sobre o useId nativo do React (seguro pra hidratacao SSR,
+// ao contrario de um contador de modulo) -- só troca o prefixo padrão
+// (":r0:") por algo legível nos ids dos <defs>.
+function useId(prefixo: string) {
+  return `${prefixo}${useIdReact().replace(/:/g, "")}`;
+}
+
+// Moldura: painel escuro tipo "radar" -- grade sutil de mapa, brilho
+// radial atras do centro de acao, vinheta nas bordas. viewBox 340x170,
+// consideravelmente maior que a v1 (300x130) pra caber detalhe de verdade.
+function Moldura({ children, foco = { x: 170, y: 78 } }: { children: React.ReactNode; foco?: { x: number; y: number } }) {
+  const gradId = useId("grad");
+  const gridId = useId("grid");
+  const vinhetaId = useId("vin");
   return (
-    <svg viewBox="0 0 300 130" className="w-full h-auto" style={{ maxHeight: 150 }} aria-hidden="true">
-      <rect x={0.5} y={0.5} width={299} height={129} rx={10} fill="var(--bg)" stroke="var(--border)" />
+    <svg viewBox="0 0 340 170" className="w-full h-auto block" style={{ maxHeight: 200 }} aria-hidden="true">
+      <defs>
+        <radialGradient id={gradId} cx={`${(foco.x / 340) * 100}%`} cy={`${(foco.y / 170) * 100}%`} r="65%">
+          <stop offset="0%" stopColor="var(--accent-dim)" stopOpacity={0.9} />
+          <stop offset="100%" stopColor="var(--bg)" stopOpacity={0} />
+        </radialGradient>
+        <pattern id={gridId} width={17} height={17} patternUnits="userSpaceOnUse">
+          <path d="M17 0 L0 0 0 17" fill="none" stroke="var(--border-subtle)" strokeWidth={0.6} />
+        </pattern>
+        <radialGradient id={vinhetaId} cx="50%" cy="50%" r="75%">
+          <stop offset="60%" stopColor="black" stopOpacity={0} />
+          <stop offset="100%" stopColor="black" stopOpacity={0.35} />
+        </radialGradient>
+      </defs>
+      <rect x={0.5} y={0.5} width={339} height={169} rx={12} fill="var(--bg)" stroke="var(--border)" />
+      <rect x={1} y={1} width={338} height={168} rx={11.5} fill={`url(#${gridId})`} />
+      <rect x={1} y={1} width={338} height={168} rx={11.5} fill={`url(#${gradId})`} />
       {children}
+      <rect x={1} y={1} width={338} height={168} rx={11.5} fill={`url(#${vinhetaId})`} />
     </svg>
   );
 }
 
-// Caminhao visto de cima -- retangulo com cabine, le como "veiculo" em
-// qualquer escala pequena sem virar mancha ilegivel.
+// Caminhao-bau visto de perfil: cabine com para-brisa inclinado + bau de
+// carga com linhas de painel + rodas com aro detalhado + sombra de
+// contato no chao. Reconhecivel como "caminhao de entrega" mesmo pequeno,
+// nao mais uma mancha retangular.
 function Caminhao({
-  x, y, rot = 0, cor = "var(--accent)",
-}: { x: number; y: number; rot?: number; cor?: string }) {
+  x, y, rot = 0, escala = 1, cor = "var(--accent)", apagado = false,
+}: { x: number; y: number; rot?: number; escala?: number; cor?: string; apagado?: boolean }) {
+  const op = apagado ? 0.55 : 1;
   return (
-    <g transform={`translate(${x} ${y}) rotate(${rot})`} stroke={cor} strokeWidth={2} fill="none" strokeLinejoin="round">
-      <rect x={-9} y={-5} width={18} height={10} rx={2} />
-      <rect x={5} y={-3.5} width={6} height={7} rx={1} fill={cor} />
-      <circle cx={-5} cy={5.5} r={1.6} fill={cor} stroke="none" />
-      <circle cx={5} cy={5.5} r={1.6} fill={cor} stroke="none" />
+    <g transform={`translate(${x} ${y}) rotate(${rot}) scale(${escala})`} opacity={op}>
+      <ellipse cx={0} cy={12.5} rx={19} ry={2.6} fill="black" opacity={0.35} />
+      {/* bau de carga */}
+      <rect x={-17} y={-13} width={24} height={19} rx={2} fill={cor} opacity={0.16} stroke={cor} strokeWidth={1.6} />
+      <line x1={-9} y1={-13} x2={-9} y2={6} stroke={cor} strokeWidth={0.9} opacity={0.5} />
+      <line x1={-1} y1={-13} x2={-1} y2={6} stroke={cor} strokeWidth={0.9} opacity={0.5} />
+      {/* cabine */}
+      <path d="M7 6 L7 -5 L11.5 -5 L17 1.5 L17 6 Z" fill={cor} stroke={cor} strokeWidth={1.6} strokeLinejoin="round" />
+      <path d="M9.3 -4 L9.3 0.5 L14.4 0.5 L11.2 -4 Z" fill="var(--bg)" opacity={0.85} />
+      {/* parachoque + grade */}
+      <line x1={17} y1={5.6} x2={19.5} y2={5.6} stroke={cor} strokeWidth={2} strokeLinecap="round" />
+      {/* rodas */}
+      {[-9, 12].map((wx) => (
+        <g key={wx} transform={`translate(${wx} 8)`}>
+          <circle r={4.6} fill="var(--bg)" stroke={cor} strokeWidth={1.8} />
+          <circle r={1.7} fill={cor} />
+        </g>
+      ))}
     </g>
   );
 }
 
-function PinCliente({ x, y, cor = "var(--text-muted)", ativo = false }: { x: number; y: number; cor?: string; ativo?: boolean }) {
+// Pin de cliente: gota com aro duplo + sombra de contato, estado "ativo"
+// preenche solido.
+function PinCliente({ x, y, cor = "var(--text-muted)", ativo = false, rotulo }: { x: number; y: number; cor?: string; ativo?: boolean; rotulo?: string }) {
   return (
     <g transform={`translate(${x} ${y})`}>
+      <ellipse cx={0} cy={14.5} rx={5} ry={1.4} fill="black" opacity={0.3} />
       <path
-        d="M0 -10 C5.5 -10 9 -6.2 9 -1.8 C9 3 0 12 0 12 C0 12 -9 3 -9 -1.8 C-9 -6.2 -5.5 -10 0 -10 Z"
-        fill={ativo ? cor : "none"}
+        d="M0 -13 C7 -13 12 -8 12 -2.2 C12 5.5 0 15 0 15 C0 15 -12 5.5 -12 -2.2 C-12 -8 -7 -13 0 -13 Z"
+        fill={ativo ? cor : "var(--bg)"}
         stroke={cor}
-        strokeWidth={1.6}
+        strokeWidth={1.8}
       />
-      <circle cx={0} cy={-1.8} r={2.6} fill={ativo ? "var(--bg)" : cor} />
+      <circle cx={0} cy={-2.2} r={3.6} fill={ativo ? "var(--bg)" : cor} />
+      {rotulo && (
+        <text x={0} y={26} fontSize={8} fill={cor} textAnchor="middle" fontFamily="var(--font-geist), sans-serif" fontWeight={600}>
+          {rotulo}
+        </text>
+      )}
     </g>
   );
 }
 
-function Rotulo({ x, y, children, cor = "var(--text-muted)", tamanho = 8.5 }: { x: number; y: number; children: React.ReactNode; cor?: string; tamanho?: number }) {
+function Rotulo({ x, y, children, cor = "var(--text-muted)", tamanho = 9.5, peso = 500 }: { x: number; y: number; children: React.ReactNode; cor?: string; tamanho?: number; peso?: number }) {
   return (
-    <text x={x} y={y} fontSize={tamanho} fill={cor} fontFamily="var(--font-geist), sans-serif" textAnchor="middle">
+    <text x={x} y={y} fontSize={tamanho} fill={cor} fontFamily="var(--font-geist), sans-serif" fontWeight={peso} textAnchor="middle">
       {children}
     </text>
   );
 }
 
+function Legenda({ children }: { children: React.ReactNode }) {
+  return (
+    <text x={170} y={158} fontSize={10} fill="var(--text)" fontFamily="var(--font-geist), sans-serif" fontWeight={600} textAnchor="middle">
+      {children}
+    </text>
+  );
+}
+
+// Marcadores de seta com id unico por instancia (useId) -- markers em SVG
+// sao resolvidos no DOM inteiro da pagina, nao escopados por <svg>; com 10
+// diagramas na mesma pagina, um id fixo tipo "seta-accent" repetido em
+// varios diagramas quebraria os markers dos diagramas depois do primeiro.
+function useMarcadores() {
+  const idAccent = useId("seta-a-");
+  const idDim = useId("seta-d-");
+  const idVermelho = useId("seta-v-");
+  const defs = (
+    <defs>
+      <marker id={idAccent} markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+        <path d="M0 0 L7 3.5 L0 7 Z" fill="var(--accent)" />
+      </marker>
+      <marker id={idDim} markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+        <path d="M0 0 L7 3.5 L0 7 Z" fill="var(--text-dim)" />
+      </marker>
+      <marker id={idVermelho} markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+        <path d="M0 0 L7 3.5 L0 7 Z" fill="var(--vermelho)" />
+      </marker>
+    </defs>
+  );
+  return { setaAccent: `url(#${idAccent})`, setaDim: `url(#${idDim})`, setaVermelho: `url(#${idVermelho})`, defs };
+}
+
 // 1. Sinal principal: caminhao no centro, 3 clientes ao redor, setas
-// tracejadas de TODOS crescendo ao mesmo tempo -- a leitura e literal:
-// afastou de todo mundo junto.
+// tracejadas vermelhas crescendo dos 3 ao mesmo tempo.
 export function DiagramaAfastandoTudo() {
+  const { setaVermelho, defs } = useMarcadores();
   return (
     <Moldura>
-      <Caminhao x={150} y={65} />
-      {[[60, 25], [240, 30], [230, 100]].map(([px, py], i) => (
-        <g key={i}>
-          <line x1={150} y1={65} x2={px} y2={py} stroke="var(--vermelho)" strokeWidth={1.3} strokeDasharray="3 3" opacity={0.75} />
-          <PinCliente x={px} y={py} cor="var(--text-muted)" />
-        </g>
+      {defs}
+      {[[62, 38], [270, 42], [255, 118]].map(([px, py], i) => (
+        <line key={i} x1={170} y1={80} x2={px} y2={py} stroke="var(--vermelho)" strokeWidth={1.6} strokeDasharray="4 4" opacity={0.8} markerEnd={setaVermelho} />
       ))}
-      <Rotulo x={150} y={118}>Distância aumenta pra TODOS ao mesmo tempo</Rotulo>
+      {[[62, 38], [270, 42], [255, 118]].map(([px, py], i) => (
+        <PinCliente key={i} x={px} y={py} cor="var(--text-muted)" />
+      ))}
+      <Caminhao x={170} y={80} />
+      <Legenda>Distância aumenta pra TODOS ao mesmo tempo</Legenda>
     </Moldura>
   );
 }
 
-// 2. Velocidade de disparo: 2 leituras de GPS na linha do tempo, ~30s de
-// intervalo, virando alerta vermelho na 2a.
+// 2. Velocidade de disparo: 2 leituras de GPS na linha do tempo.
 export function DiagramaVelocidade() {
   return (
-    <Moldura>
-      <line x1={40} y1={65} x2={260} y2={65} stroke="var(--border)" strokeWidth={1.5} />
-      <circle cx={90} cy={65} r={5} fill="var(--text-muted)" />
-      <Rotulo x={90} y={45} cor="var(--text-muted)">leitura 1</Rotulo>
-      <circle cx={210} cy={65} r={6} fill="var(--vermelho)" />
-      <circle cx={210} cy={65} r={11} fill="none" stroke="var(--vermelho)" strokeWidth={1.2} opacity={0.5} />
-      <Rotulo x={210} y={45} cor="var(--vermelho)">leitura 2 → crítico</Rotulo>
-      <Rotulo x={150} y={95} cor="var(--text-dim)">~30 segundos entre leituras</Rotulo>
-      <Rotulo x={150} y={118}>2 leituras seguidas afastando = dispara</Rotulo>
+    <Moldura foco={{ x: 240, y: 75 }}>
+      <line x1={50} y1={80} x2={295} y2={80} stroke="var(--border)" strokeWidth={2} strokeLinecap="round" />
+      <g transform="translate(100 80)">
+        <circle r={5.5} fill="var(--card)" stroke="var(--text-muted)" strokeWidth={2} />
+        <Rotulo x={0} y={-16} cor="var(--text-muted)">leitura 1</Rotulo>
+        <Rotulo x={0} y={30} cor="var(--text-dim)" tamanho={8.5} peso={400}>0s</Rotulo>
+      </g>
+      <path d="M120 80 L225 80" stroke="var(--text-dim)" strokeWidth={1.3} strokeDasharray="2 4" />
+      <g transform="translate(240 80)">
+        <circle r={13} fill="var(--vermelho)" opacity={0.18}>
+          <animate attributeName="r" values="13;17;13" dur="1.6s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0.22;0.05;0.22" dur="1.6s" repeatCount="indefinite" />
+        </circle>
+        <circle r={7} fill="var(--vermelho)" />
+        <Rotulo x={0} y={-22} cor="var(--vermelho)" peso={700}>leitura 2 → crítico</Rotulo>
+        <Rotulo x={0} y={30} cor="var(--text-dim)" tamanho={8.5} peso={400}>~30s</Rotulo>
+      </g>
+      <Legenda>2 leituras seguidas afastando já dispara</Legenda>
     </Moldura>
   );
 }
 
-// 3. Nivel do alerta: antes (amarelo/atencao, riscado) vs agora (direto
-// vermelho/critico).
+// 3. Nivel do alerta: amarelo/atencao riscado -> vermelho/critico direto.
 export function DiagramaNivel() {
+  const { setaDim, defs } = useMarcadores();
   return (
     <Moldura>
-      <g transform="translate(90 55)">
-        <circle r={16} fill="none" stroke="var(--amarelo)" strokeWidth={2} opacity={0.4} />
-        <line x1={-11} y1={-11} x2={11} y2={11} stroke="var(--amarelo)" strokeWidth={1.6} opacity={0.6} />
-        <line x1={-11} y1={11} x2={11} y2={-11} stroke="var(--amarelo)" strokeWidth={1.6} opacity={0.6} />
-        <Rotulo x={0} y={34} cor="var(--text-dim)">“atenção” não existe mais</Rotulo>
+      {defs}
+      <g transform="translate(110 78)">
+        <circle r={22} fill="var(--amarelo)" opacity={0.12} />
+        <circle r={22} fill="none" stroke="var(--amarelo)" strokeWidth={2} strokeDasharray="3 4" opacity={0.7} />
+        <path d="M-9 -9 L9 9 M9 -9 L-9 9" stroke="var(--amarelo)" strokeWidth={2.2} strokeLinecap="round" opacity={0.85} />
+        <Rotulo x={0} y={42} cor="var(--text-muted)" tamanho={9}>“atenção” não existe mais</Rotulo>
       </g>
-      <path d="M135 55 L165 55" stroke="var(--text-dim)" strokeWidth={1.5} markerEnd="url(#seta)" />
-      <g transform="translate(210 55)">
-        <circle r={16} fill="var(--vermelho)" opacity={0.15} />
-        <circle r={9} fill="var(--vermelho)" />
-        <Rotulo x={0} y={34} cor="var(--vermelho)">nasce crítico</Rotulo>
+      <path d="M158 78 L182 78" stroke="var(--text-dim)" strokeWidth={1.8} markerEnd={setaDim} />
+      <g transform="translate(230 78)">
+        <circle r={24} fill="var(--vermelho)" opacity={0.16}>
+          <animate attributeName="r" values="24;28;24" dur="1.8s" repeatCount="indefinite" />
+        </circle>
+        <circle r={13} fill="var(--vermelho)" />
+        <path d="M-3.5 -6 L3.5 -6 L2 3 L-2 3 Z M-1.5 5 L1.5 5 L1.5 7.5 L-1.5 7.5 Z" fill="var(--bg)" />
+        <Rotulo x={0} y={42} cor="var(--vermelho)" peso={700}>nasce crítico</Rotulo>
       </g>
-      <defs>
-        <marker id="seta" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-          <path d="M0 0 L6 3 L0 6 Z" fill="var(--text-dim)" />
-        </marker>
-      </defs>
-      <Rotulo x={150} y={118}>Todo desvio já dispara vermelho, direto</Rotulo>
+      <Legenda>Todo desvio já dispara vermelho, direto</Legenda>
     </Moldura>
   );
 }
 
-// 4. Viagem longa: rodovia comprida, caminhao no meio, cliente pendente
-// bem distante -- ainda assim avaliado (teto so' entra acima de 300km).
+// 4. Viagem longa: rodovia comprida, caminhao no meio, cliente a 300km.
 export function DiagramaViagemLonga() {
   return (
-    <Moldura>
-      <line x1={25} y1={65} x2={275} y2={65} stroke="var(--border)" strokeWidth={3} strokeDasharray="8 6" />
-      <Caminhao x={90} y={65} />
-      <PinCliente x={255} y={65} ativo cor="var(--accent)" />
-      <Rotulo x={172} y={50} cor="var(--text-muted)">até 300 km — ainda avalia desvio</Rotulo>
-      <Rotulo x={150} y={118}>Só para de avaliar acima de 300 km</Rotulo>
+    <Moldura foco={{ x: 240, y: 75 }}>
+      <line x1={35} y1={80} x2={300} y2={80} stroke="var(--border)" strokeWidth={4} strokeDasharray="10 7" strokeLinecap="round" />
+      <Caminhao x={95} y={80} />
+      <PinCliente x={272} y={80} ativo cor="var(--accent)" rotulo="300 km" />
+      <Rotulo x={170} y={45} cor="var(--text-muted)">continua avaliando o trajeto inteiro</Rotulo>
+      <Legenda>Só ignora desvio acima de 300 km</Legenda>
     </Moldura>
   );
 }
 
-// 5. Rua estreita: via principal (larga) -> rua estreita, dentro de uma
-// janela de 10min (relogio), reforca o alerta.
+// 5. Rua estreita: via principal larga -> rua estreita, relogio de 10min.
 export function DiagramaRuaEstreita() {
   return (
     <Moldura>
-      <rect x={30} y={58} width={90} height={14} fill="var(--border-subtle)" />
-      <rect x={120} y={62} width={70} height={6} fill="var(--border-subtle)" />
-      <Caminhao x={150} y={65} />
-      <g transform="translate(235 65)">
-        <circle r={18} fill="none" stroke="var(--amarelo)" strokeWidth={1.8} />
-        <line x1={0} y1={0} x2={0} y2={-11} stroke="var(--amarelo)" strokeWidth={1.6} strokeLinecap="round" />
-        <line x1={0} y1={0} x2={7} y2={3} stroke="var(--amarelo)" strokeWidth={1.6} strokeLinecap="round" />
+      <rect x={20} y={70} width={110} height={20} rx={2} fill="var(--border-subtle)" />
+      <rect x={130} y={76} width={90} height={8} rx={1.5} fill="var(--border-subtle)" />
+      <Caminhao x={175} y={80} />
+      <g transform="translate(268 78)">
+        <circle r={22} fill="none" stroke="var(--amarelo)" strokeWidth={2} />
+        <line x1={0} y1={0} x2={0} y2={-13} stroke="var(--amarelo)" strokeWidth={2} strokeLinecap="round" />
+        <line x1={0} y1={0} x2={8} y2={4} stroke="var(--amarelo)" strokeWidth={2} strokeLinecap="round" />
+        <circle r={1.8} fill="var(--amarelo)" />
       </g>
-      <Rotulo x={235 as number} y={95} cor="var(--amarelo)">até 10 min depois</Rotulo>
-      <Rotulo x={75} y={95} cor="var(--text-muted)">via principal</Rotulo>
-      <Rotulo x={150} y={118}>Via principal → rua estreita reforça o alerta</Rotulo>
+      <Rotulo x={268} y={112} cor="var(--amarelo)" peso={700}>até 10 min depois</Rotulo>
+      <Rotulo x={75} y={112} cor="var(--text-muted)">via principal</Rotulo>
+      <Legenda>Via principal → rua estreita reforça o alerta</Legenda>
     </Moldura>
   );
 }
 
-// 6. Corredor real: rota conhecida (linha continua) vs posicao real do
-// caminhao fora dela (linha tracejada vermelha ate a rota).
+// 6. Corredor real: rota conhecida (linha verde) vs posicao real fora dela.
 export function DiagramaCorredor() {
   return (
     <Moldura>
-      <path d="M40 90 C 100 40, 200 40, 260 90" fill="none" stroke="var(--verde)" strokeWidth={2} opacity={0.55} />
-      <Caminhao x={165} y={65} />
-      <line x1={165} y1={65} x2={158} y2={78} stroke="var(--vermelho)" strokeWidth={1.4} strokeDasharray="2 2" />
-      <Rotulo x={90} y={100} cor="var(--verde)">rota real conhecida</Rotulo>
-      <Rotulo x={150} y={118}>Fora de qualquer rota real = reforça</Rotulo>
+      <path d="M45 118 C 110 45, 230 45, 295 118" fill="none" stroke="var(--verde)" strokeWidth={2.6} opacity={0.6} strokeLinecap="round" />
+      <Caminhao x={192} y={80} />
+      <line x1={192} y1={80} x2={178} y2={101} stroke="var(--vermelho)" strokeWidth={1.8} strokeDasharray="3 3" />
+      <circle cx={178} cy={101} r={2.6} fill="var(--vermelho)" />
+      <Rotulo x={100} y={128} cor="var(--verde)" peso={600}>rota real conhecida</Rotulo>
+      <Legenda>Fora de qualquer rota real reforça o alerta</Legenda>
     </Moldura>
   );
 }
 
-// 7. Rua rara: grade de ruas, a maioria "quente" (muito passada pela
-// frota), uma fraca/rara com <=2 visitas -- regra hoje desligada.
+// 7. Rua rara: grade de ruas, maioria "quente", uma rara/fraca.
 export function DiagramaRuaRara() {
-  const ruas = [
-    [40, 40, 90, 40, 6], [110, 40, 190, 40, 6], [210, 40, 260, 40, 5],
-    [40, 70, 130, 70, 6], [150, 70, 260, 70, 1],
-    [40, 95, 200, 95, 5],
+  const ruas: [number, number, number, number, number][] = [
+    [40, 45, 110, 45, 6], [130, 45, 230, 45, 6], [250, 45, 300, 45, 5],
+    [40, 80, 155, 80, 6], [175, 80, 300, 80, 1],
+    [40, 115, 240, 115, 5],
   ];
   return (
     <Moldura>
       {ruas.map(([x1, y1, x2, y2, peso], i) => (
-        <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={peso <= 1 ? "var(--vermelho)" : "var(--accent)"} strokeWidth={peso <= 1 ? 2 : 4} opacity={peso <= 1 ? 0.9 : 0.35} />
+        <line
+          key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+          stroke={peso <= 1 ? "var(--vermelho)" : "var(--accent)"}
+          strokeWidth={peso <= 1 ? 3 : 5}
+          strokeLinecap="round"
+          opacity={peso <= 1 ? 0.9 : 0.3}
+        />
       ))}
-      <Rotulo x={205} y={82} cor="var(--vermelho)">rara (≤2 visitas) — regra desligada</Rotulo>
-      <Rotulo x={150} y={118}>Rua que a frota quase nunca passa</Rotulo>
+      <circle cx={237} cy={80} r={4} fill="var(--vermelho)" />
+      <Rotulo x={237} y={100} cor="var(--vermelho)" peso={700}>rara (≤2 visitas)</Rotulo>
+      <Rotulo x={237} y={112} cor="var(--text-dim)" tamanho={8.5} peso={400}>regra desligada hoje</Rotulo>
+      <Legenda>Rua que a frota quase nunca passa</Legenda>
     </Moldura>
   );
 }
@@ -184,59 +288,66 @@ export function DiagramaRuaRara() {
 export function DiagramaPrioridade() {
   return (
     <Moldura>
-      <line x1={150} y1={30} x2={150} y2={50} stroke="var(--text-dim)" strokeWidth={1.5} />
-      <line x1={80} y1={50} x2={220} y2={50} stroke="var(--text-dim)" strokeWidth={1.5} />
-      <line x1={80} y1={50} x2={80} y2={68} stroke="var(--text-dim)" strokeWidth={1.2} />
-      <line x1={220} y1={50} x2={220} y2={68} stroke="var(--text-dim)" strokeWidth={1.2} />
-      <path d="M62 68 A18 10 0 0 0 98 68 Z" fill="var(--vermelho)" opacity={0.3} stroke="var(--vermelho)" strokeWidth={1.2} />
-      <path d="M202 68 A18 10 0 0 0 238 68 Z" fill="var(--verde)" opacity={0.3} stroke="var(--verde)" strokeWidth={1.2} />
-      <Rotulo x={80} y={92} cor="var(--vermelho)">rápido, mais bobagem</Rotulo>
-      <Rotulo x={220} y={92} cor="var(--verde)">devagar, mais certeza</Rotulo>
-      <Rotulo x={150} y={118}>Qual lado o sistema deveria pesar mais?</Rotulo>
+      <line x1={170} y1={35} x2={170} y2={62} stroke="var(--text-dim)" strokeWidth={2} strokeLinecap="round" />
+      <circle cx={170} cy={32} r={3} fill="var(--text-dim)" />
+      <line x1={95} y1={62} x2={245} y2={62} stroke="var(--text-dim)" strokeWidth={2} strokeLinecap="round" />
+      <line x1={95} y1={62} x2={95} y2={85} stroke="var(--text-dim)" strokeWidth={1.4} />
+      <line x1={245} y1={62} x2={245} y2={85} stroke="var(--text-dim)" strokeWidth={1.4} />
+      <path d="M73 85 A22 12 0 0 0 117 85 Z" fill="var(--vermelho)" opacity={0.22} stroke="var(--vermelho)" strokeWidth={1.6} />
+      <path d="M223 85 A22 12 0 0 0 267 85 Z" fill="var(--verde)" opacity={0.22} stroke="var(--verde)" strokeWidth={1.6} />
+      <Rotulo x={95} y={112} cor="var(--vermelho)" peso={700}>rápido</Rotulo>
+      <Rotulo x={95} y={124} cor="var(--text-dim)" tamanho={8.5} peso={400}>mais alerta bobo</Rotulo>
+      <Rotulo x={245} y={112} cor="var(--verde)" peso={700}>devagar</Rotulo>
+      <Rotulo x={245} y={124} cor="var(--text-dim)" tamanho={8.5} peso={400}>mais certeza</Rotulo>
+      <Legenda>Qual lado o sistema deveria pesar mais?</Legenda>
     </Moldura>
   );
 }
 
-// 9. Parada fora do esperado vs desvio de movimento: dois icones bem
-// diferentes (um parado/"P", um andando/seta) sob o MESMO rotulo na tela.
+// 9. Parada fora do esperado vs desvio de movimento: mesmo rotulo na tela.
 export function DiagramaParadaFora() {
+  const { setaAccent, defs } = useMarcadores();
   return (
     <Moldura>
-      <g transform="translate(95 60)">
-        <Caminhao x={0} y={0} />
-        <circle cx={0} cy={22} r={9} fill="none" stroke="var(--amarelo)" strokeWidth={1.6} />
-        <text x={0} y={26} fontSize={10} fill="var(--amarelo)" textAnchor="middle" fontWeight={700}>P</text>
-        <Rotulo x={0} y={-18} cor="var(--text-muted)">fica parado no lugar errado</Rotulo>
+      {defs}
+      <g transform="translate(105 78)">
+        <Caminhao x={0} y={0} apagado />
+        <g transform="translate(0 26)">
+          <circle r={10} fill="var(--amarelo)" opacity={0.18} />
+          <circle r={10} fill="none" stroke="var(--amarelo)" strokeWidth={1.8} />
+          <text y={3.5} fontSize={11} fill="var(--amarelo)" textAnchor="middle" fontWeight={800}>P</text>
+        </g>
+        <Rotulo x={0} y={-25} cor="var(--text-muted)" tamanho={9}>fica parado no lugar errado</Rotulo>
       </g>
-      <line x1={150} y1={60} x2={150} y2={100} stroke="var(--border)" strokeWidth={1} strokeDasharray="2 3" />
-      <g transform="translate(205 60)">
-        <Caminhao x={0} y={0} rot={20} />
-        <path d="M-9 20 L14 20" stroke="var(--accent)" strokeWidth={1.6} markerEnd="url(#seta2)" />
-        <Rotulo x={0} y={-18} cor="var(--text-muted)">se afasta em movimento</Rotulo>
+      <line x1={170} y1={45} x2={170} y2={125} stroke="var(--border)" strokeWidth={1.2} strokeDasharray="3 4" />
+      <g transform="translate(235 78)">
+        <Caminhao x={0} y={0} rot={18} />
+        <path d="M-16 26 L14 26" stroke="var(--accent)" strokeWidth={2} strokeLinecap="round" markerEnd={setaAccent} />
+        <Rotulo x={0} y={-25} cor="var(--text-muted)" tamanho={9}>se afasta em movimento</Rotulo>
       </g>
-      <defs>
-        <marker id="seta2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-          <path d="M0 0 L6 3 L0 6 Z" fill="var(--accent)" />
-        </marker>
-      </defs>
-      <Rotulo x={150} y={118} cor="var(--text-dim)">As duas aparecem na tela como “Desvio de rota”</Rotulo>
+      <Legenda>As duas aparecem na tela como “Desvio de rota”</Legenda>
     </Moldura>
   );
 }
 
-// 10. Zona de folga da base: circulo de 1200m ao redor da base -- dentro,
-// nao avalia; fora, avalia normal.
+// 10. Zona de folga da base: circulo de 1200m -- dentro nao avalia, fora avalia.
 export function DiagramaBase() {
   return (
     <Moldura>
-      <circle cx={110} cy={65} r={42} fill="var(--accent-dim)" opacity={0.5} />
-      <circle cx={110} cy={65} r={42} fill="none" stroke="var(--accent)" strokeWidth={1.2} strokeDasharray="4 3" />
-      <rect x={102} y={57} width={16} height={16} rx={2} fill="var(--accent)" />
-      <Caminhao x={110} y={40} cor="var(--text-muted)" />
-      <Rotulo x={110} y={20} cor="var(--text-muted)">dentro: não avalia</Rotulo>
-      <Caminhao x={225} y={65} cor="var(--vermelho)" />
-      <Rotulo x={225} y={95} cor="var(--vermelho)">fora: avalia normal</Rotulo>
-      <Rotulo x={150} y={118}>Raio de 1.200m ao redor da base</Rotulo>
+      <circle cx={120} cy={82} r={52} fill="var(--accent-dim)" opacity={0.55} />
+      <circle cx={120} cy={82} r={52} fill="none" stroke="var(--accent)" strokeWidth={1.4} strokeDasharray="5 4" />
+      <Rotulo x={120} y={38} cor="var(--accent)" tamanho={8.5} peso={600}>1.200 m</Rotulo>
+      <g transform="translate(120 82)">
+        <rect x={-14} y={-11} width={28} height={22} rx={2.5} fill="var(--accent)" opacity={0.9} />
+        <rect x={-8} y={-6} width={7} height={7} fill="var(--bg)" opacity={0.85} />
+        <rect x={2} y={-6} width={7} height={7} fill="var(--bg)" opacity={0.85} />
+        <rect x={-8} y={4} width={17} height={4} fill="var(--bg)" opacity={0.5} />
+      </g>
+      <Caminhao x={120} y={40} escala={0.85} cor="var(--text-muted)" apagado />
+      <Rotulo x={120} y={16} cor="var(--text-muted)" tamanho={9}>dentro: não avalia</Rotulo>
+      <Caminhao x={270} y={95} cor="var(--vermelho)" />
+      <Rotulo x={270} y={128} cor="var(--vermelho)" peso={700}>fora: avalia normal</Rotulo>
+      <Legenda>Raio de folga ao redor da base</Legenda>
     </Moldura>
   );
 }
