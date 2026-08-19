@@ -23,6 +23,7 @@
 // funciona pra qualquer cliente/veiculo que tenha romaneio_pontos com
 // coordenada.
 import pg from "pg";
+import { pathToFileURL } from "node:url";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??
@@ -33,7 +34,13 @@ const DATABASE_URL =
 // src/lib/detectores.ts). Duplicado aqui de proposito: este script roda
 // fora do Next.js, sem acesso a src/lib/*.ts (mesmo padrao ja usado por
 // scripts/ingerir-*.mjs).
-const RAIO_PADRAO_M = 50;
+// Corrigido 18/08 (Fase 2): era 50m, mas o motor ao vivo usa
+// Math.max(pt.raio, RAIO_CHEGADA_MIN_M=300) desde 01/08 -- achado real:
+// so 46% das paradas reais caem dentro de 100m do ponto nominal
+// geocodificado. Endereco geocodificado (nunca casado por NF/placa real
+// como o alvo Unitrac) e' por natureza menos preciso -- usar o mesmo piso
+// de 300m do motor, nao o valor antigo de 50m.
+const RAIO_PADRAO_M = 300;
 const DWELL_MINIMO_SEGUNDOS = 120;
 const VELOCIDADE_MAX_PARADO_KMH = 5;
 // So processa romaneios dos ultimos N dias -- historico antigo ja teve
@@ -48,13 +55,76 @@ function haversineM(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+const FONTES_GEOCODIFICADAS = new Set(["cnefe", "nominatim", "google", "local"]);
+
+// Extraida do loop original (ver Step 4) -- mesma logica de streak, so
+// que agora tambem acumula a posicao media real (lat/lng) da sequencia
+// vencedora, pra poder corrigir/confirmar romaneio_cliente_codigo_geocode
+// com onde o veiculo REALMENTE parou (Fase 2), nao so o timestamp de
+// presenca (que ja existia, ver header do arquivo).
+export function calcularStreakMaximoComPosicao(trilha, pontoLat, pontoLng, raioM, velMaxKmh, dwellMinimoS) {
+  let dwellAtualS = 0;
+  let dwellMaxS = 0;
+  let somaLat = 0, somaLng = 0, contagem = 0;
+  let somaLatMax = 0, somaLngMax = 0, contagemMax = 0;
+  let entrouEm = null;
+
+  for (let i = 0; i < trilha.length; i++) {
+    const ponto = trilha[i];
+    const dentro = haversineM(ponto.lat, ponto.lng, pontoLat, pontoLng) <= raioM && ponto.velocidade <= velMaxKmh;
+    if (dentro) {
+      if (entrouEm === null) {
+        entrouEm = i;
+        dwellAtualS = 0;
+        somaLat = 0; somaLng = 0; contagem = 0;
+      } else {
+        dwellAtualS += 30;
+      }
+      somaLat += ponto.lat; somaLng += ponto.lng; contagem++;
+      if (dwellAtualS > dwellMaxS) {
+        dwellMaxS = dwellAtualS;
+        somaLatMax = somaLat; somaLngMax = somaLng; contagemMax = contagem;
+      }
+    } else {
+      entrouEm = null;
+      dwellAtualS = 0;
+    }
+  }
+
+  if (dwellMaxS < dwellMinimoS || contagemMax === 0) {
+    return { dwellMaxS, posicaoReal: null };
+  }
+  return { dwellMaxS, posicaoReal: { lat: somaLatMax / contagemMax, lng: somaLngMax / contagemMax } };
+}
+
+// Decide a proxima escrita em romaneio_cliente_codigo_geocode dado o
+// estado atual (null se a linha nao existe ainda) e a posicao real
+// confirmada por dwell. Ver design doc, secao "Decisao", item 3.
+export function proximaEscritaCache(existente, posicaoReal) {
+  if (existente === null) {
+    return { lat: posicaoReal.lat, lng: posicaoReal.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: true };
+  }
+  if (FONTES_GEOCODIFICADAS.has(existente.fonte)) {
+    return { lat: posicaoReal.lat, lng: posicaoReal.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: false };
+  }
+  // ja e dwell_confirmado -- media ponderada
+  const n = existente.n_observacoes;
+  return {
+    lat: (existente.lat * n + posicaoReal.lat) / (n + 1),
+    lng: (existente.lng * n + posicaoReal.lng) / (n + 1),
+    fonte: "dwell_confirmado",
+    n_observacoes: n + 1,
+    novaLinha: false,
+  };
+}
+
 const DRY_RUN = process.argv.includes("--dry-run");
 
 async function main() {
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
   const { rows: pendentes } = await pool.query(
-    `SELECT id, veiculo_id, nf, romaneio_data, lat, lng
+    `SELECT id, veiculo_id, nf, romaneio_data, lat, lng, cliente_codigo
        FROM romaneio_pontos
       WHERE presenca_confirmada_em IS NULL
         AND lat IS NOT NULL AND lng IS NOT NULL
@@ -63,6 +133,20 @@ async function main() {
     [JANELA_DIAS]
   );
   console.log(`${pendentes.length} pontos de romaneio sem presenca confirmada, na janela de ${JANELA_DIAS} dias.`);
+
+  // Busca cliente_id por veiculo_id em lote (uma query so), antes do loop
+  // principal -- evita N queries repetidas pro mesmo veiculo (mesmo padrao
+  // de trilhaPorChave abaixo). Usado pra escrever no cache de geocode por
+  // (cliente_id, cliente_codigo).
+  const veiculoIdsUnicos = [...new Set(pendentes.map((p) => p.veiculo_id).filter(Boolean))];
+  const clienteIdPorVeiculo = new Map();
+  if (veiculoIdsUnicos.length > 0) {
+    const { rows: veiculosRows } = await pool.query(
+      `SELECT id, cliente_id FROM veiculos WHERE id = ANY($1::uuid[])`,
+      [veiculoIdsUnicos]
+    );
+    for (const v of veiculosRows) clienteIdPorVeiculo.set(v.id, v.cliente_id);
+  }
 
   // Agrupa por (veiculo_id, dia) e busca a trilha UMA VEZ por par --
   // muitos pontos do mesmo romaneio compartilham veiculo+dia. Achado real
@@ -98,40 +182,66 @@ async function main() {
     // pixel exato -- so dentro do raio de entrega, devagar, por tempo
     // suficiente. Estima segundos pela diferenca real entre leituras (nao
     // conta leitura fixa) -- posicoes_historico nao tem cadencia fixa.
-    let dwellAtualS = 0;
-    let dwellMaxS = 0;
-    let entrouEm = null;
-    for (let i = 0; i < trilha.length; i++) {
-      const ponto = trilha[i];
-      const dentro =
-        haversineM(ponto.lat, ponto.lng, p.lat, p.lng) <= RAIO_PADRAO_M &&
-        ponto.velocidade <= VELOCIDADE_MAX_PARADO_KMH;
-      if (dentro) {
-        if (entrouEm === null) {
-          entrouEm = i;
-          dwellAtualS = 0;
-        } else {
-          // soma o intervalo real desde a leitura anterior (assume
-          // continuidade -- se a leitura anterior tambem tava dentro).
-          dwellAtualS += 30; // aproximacao: cadencia tipica de GPS real, ver posicoes_historico
-        }
-        dwellMaxS = Math.max(dwellMaxS, dwellAtualS);
-      } else {
-        entrouEm = null;
-        dwellAtualS = 0;
-      }
-    }
+    // Usa a funcao extraida (Task 1, testada) -- tambem devolve a posicao
+    // media real (posicaoReal) da sequencia vencedora, pra corrigir o
+    // cache de geocode com onde o veiculo REALMENTE parou (Fase 2).
+    const { dwellMaxS, posicaoReal } = calcularStreakMaximoComPosicao(
+      trilha, p.lat, p.lng, RAIO_PADRAO_M, VELOCIDADE_MAX_PARADO_KMH, DWELL_MINIMO_SEGUNDOS
+    );
 
-    if (dwellMaxS >= DWELL_MINIMO_SEGUNDOS) {
-      if (!DRY_RUN) {
-        await pool.query(
-          `UPDATE romaneio_pontos SET presenca_confirmada_em = now() WHERE id = $1 AND presenca_confirmada_em IS NULL`,
-          [p.id]
+    if (dwellMaxS >= DWELL_MINIMO_SEGUNDOS && posicaoReal !== null) {
+      let sufixoCache = "";
+      let proxima = null;
+      const clienteId = clienteIdPorVeiculo.get(p.veiculo_id);
+      if (clienteId && p.cliente_codigo) {
+        const { rows: cacheRows } = await pool.query(
+          `SELECT lat, lng, fonte, n_observacoes FROM romaneio_cliente_codigo_geocode WHERE cliente_id = $1 AND cliente_codigo = $2`,
+          [clienteId, p.cliente_codigo]
         );
+        const existente = cacheRows[0] ?? null;
+        proxima = proximaEscritaCache(existente, posicaoReal);
+        sufixoCache = proxima.novaLinha ? " [cache: nova ancora]" : existente && existente.fonte === "dwell_confirmado" ? ` [cache: media atualizada, n=${proxima.n_observacoes}]` : " [cache: corrigido de geocodificacao pra dwell real]";
+      }
+
+      // As 2 escritas (upsert do cache + update de presenca) precisam
+      // acontecer juntas, numa transacao -- se o processo morresse entre
+      // uma e outra (2 pool.query() separadas, sem transacao), o proximo
+      // ciclo reprocessaria este ponto (presenca_confirmada_em ainda NULL),
+      // recalcularia a MESMA posicaoReal, e chamaria proximaEscritaCache de
+      // novo -- so que agora existente.fonte ja seria "dwell_confirmado"
+      // (da escrita anterior que teve sucesso), caindo no ramo de media
+      // ponderada CONTRA SI MESMA (mesma trilha, mesmo dado), inflando
+      // n_observacoes por uma unica observacao fisica real. BEGIN/COMMIT
+      // garantem que ou as duas escritas acontecem juntas, ou nenhuma.
+      if (!DRY_RUN) {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          if (proxima) {
+            await client.query(
+              `INSERT INTO romaneio_cliente_codigo_geocode (cliente_id, cliente_codigo, lat, lng, fonte, n_observacoes, primeira_observacao, ultima_observacao)
+               VALUES ($1, $2, $3, $4, $5, $6, current_date, current_date)
+               ON CONFLICT (cliente_id, cliente_codigo) DO UPDATE SET
+                 lat = EXCLUDED.lat, lng = EXCLUDED.lng, fonte = EXCLUDED.fonte,
+                 n_observacoes = EXCLUDED.n_observacoes, ultima_observacao = current_date`,
+              [clienteId, p.cliente_codigo, proxima.lat, proxima.lng, proxima.fonte, proxima.n_observacoes]
+            );
+          }
+          await client.query(
+            `UPDATE romaneio_pontos SET presenca_confirmada_em = now() WHERE id = $1 AND presenca_confirmada_em IS NULL`,
+            [p.id]
+          );
+          await client.query("COMMIT");
+        } catch (err) {
+          await client.query("ROLLBACK");
+          throw err;
+        } finally {
+          client.release();
+        }
       }
       confirmados++;
       const prefixo = DRY_RUN ? "[dry-run] Confirmaria" : "Confirmado";
-      console.log(`${prefixo}: veiculo=${p.veiculo_id} nf=${p.nf} dia=${p.romaneio_data.toISOString().slice(0,10)} dwell~${dwellMaxS}s`);
+      console.log(`${prefixo}: veiculo=${p.veiculo_id} nf=${p.nf} dia=${p.romaneio_data.toISOString().slice(0,10)} dwell~${dwellMaxS}s${sufixoCache}`);
     }
   }
 
@@ -139,7 +249,18 @@ async function main() {
   await pool.end();
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Guarda de entrypoint: so roda main() quando o arquivo e executado
+// diretamente (node scripts/confirmar-presenca-romaneio.mjs), nao quando
+// e importado (ex.: pelo teste, que importa pra pegar as 2 funcoes
+// exportadas). Usa pathToFileURL em vez de montar `file://${argv[1]}` na
+// mao -- argv[1] pode vir relativo (ex.: `node scripts/foo.mjs`, invocacao
+// usada de verdade neste repo, ver docs/superpowers/plans/2026-08-11-*)
+// e o path deste projeto tem espaco ("MONITORAMENTO TEMP"), que precisa
+// ser %20-encoded pra bater com import.meta.url -- comparacao ingenua
+// falha silenciosamente nos dois casos (main() nunca roda, sem erro).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
