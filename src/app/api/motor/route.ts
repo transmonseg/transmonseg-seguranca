@@ -1588,21 +1588,29 @@ export async function POST(request: Request) {
               }),
             });
           }
-          // Corroboração D1/D3 do placar (classeViariaSuprimidaPorEntrega):
-          // usa TODOS os pontos válidos do dia deste veículo, não só
-          // `pendentes`. Achado real 03/08 (caso UBO-5E01, "SENDAS BARRA
-          // I"): entregas_presenca marca o ponto como feito ~2min depois do
-          // veículo parar (ver acima), tirando-o de `pendentes` -- e D1/D3
-          // usavam SO pendentes, então um caminhão que fica 3h+ parado no
-          // MESMO local de entrega perde toda corroboração assim que a
-          // entrega é marcada feita, mesmo continuando fisicamente no mesmo
-          // lugar. Estar parado em cima de um ponto JÁ entregue é prova
-          // AINDA MAIS forte de atividade de entrega, não mais fraca --
-          // então aqui NÃO filtra feito/presença, só coordenada válida.
-          const pontosVeiculoParaCorroboracao = (pontosVeiculo ?? []).filter(temCoordenadaValida);
-          const temPontosParaCorroboracao = pontosVeiculoParaCorroboracao.length > 0;
-          const distDestinosCorroboracaoM = pontosVeiculoParaCorroboracao.map((pt) =>
-            haversineM(pos.lat, pos.lng, pt.lat, pt.lng)
+          // Fonte de `destinos` do Sinal A (afastando_geral) -- achado real
+          // 18/08 (caso RQQ-1B52, cliente confirmou "chegando na porta" mas
+          // o sistema apontou desvio): `destinos` usava `pendentes` direto,
+          // que já filtra por ENTREGA_PRESENCA_ATIVA (ver comentário acima,
+          // "parada no local conta como entregue") -- então no EXATO
+          // momento em que o caminhão fica parado ~2min na porta do cliente
+          // e a presença é detectada, o ponto certo some do array, e os
+          // outros 20 destinos distantes "ficam mais longe" porque o
+          // caminhão parou de se mover na direção deles. afastouDeTudo fica
+          // matematicamente verdadeiro dado um array sem o destino real --
+          // não é bug de fórmula, é o array errado.
+          //
+          // Mesma classe de bug já achada e corrigida uma vez neste arquivo
+          // (03/08, caso UBO-5E01, "SENDAS BARRA I", ver git blame/histórico
+          // do antigo `pontosVeiculoParaCorroboracao`) pro consumidor D1/D3
+          // do placar antigo (removido 12/08) -- reaproveitado aqui pro
+          // mesmo problema, consumidor novo. DIFERENÇA proposital do padrão
+          // antigo: aqui AINDA filtra `pt.feito` (confirmação real da
+          // Unitrac, dado externo, não o heurístico de presença nosso) --
+          // só o filtro de ENTREGA_PRESENCA_ATIVA/presencaEntregaCliente é
+          // removido, que é especificamente o que causa este bug.
+          const pontosVeiculoParaDesvio = (pontosVeiculo ?? []).filter(
+            (pt) => !pt.feito && temCoordenadaValida(pt)
           );
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))
@@ -1624,7 +1632,7 @@ export async function POST(request: Request) {
           // ciclo a ciclo. Bases/escala ficam com codigo null (nao mudam de
           // conjunto no meio de um streak, nao e' o bug que motivou isso).
           const destinos: { lat: number; lng: number; codigo: string | null }[] = [
-            ...pendentes.map((pt) => ({
+            ...pontosVeiculoParaDesvio.map((pt) => ({
               lat: pt.lat,
               lng: pt.lng,
               codigo: pt.pontoCodigo != null ? `pt:${pt.pontoCodigo}` : null,
@@ -1645,7 +1653,7 @@ export async function POST(request: Request) {
           // NAO_ESCALA_LEN e' o comprimento do prefixo de `destinos` que
           // exclui escala -- usado em todo consumidor de "chegada"/corredor/
           // rumo abaixo neste bloco.
-          const NAO_ESCALA_LEN = pendentes.length + centroidesBases.length;
+          const NAO_ESCALA_LEN = pontosVeiculoParaDesvio.length + centroidesBases.length;
           const temAnterior = !!anterior && anterior.lat != null && anterior.lng != null;
           const distDestinosM = destinos.map((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng));
           const distDestinosAnteriorM = temAnterior
