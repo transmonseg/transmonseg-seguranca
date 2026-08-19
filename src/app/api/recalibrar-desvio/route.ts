@@ -52,8 +52,12 @@ function taxaFalsoPositivoCalibrada(
 // os detectores atraves do prior global, mesmo com os segmentos individuais
 // ja corrigidos. Mesmo raciocinio do comentario "BLOCKER" mais abaixo,
 // sobre outro tipo de contaminacao desse mesmo prior.
+const MOTIVOS_NAO_SAO_ERRO_DE_DETECTOR = new Set([
+  "dado_entrada_errado", // legado
+  "NAO_FOI_AO_CLIENTE", "NAO_SAIU_DA_BASE", "DESATUALIZADO", "MUDOU_DE_ROTA",
+]);
 function contaComoSinalDeDetector(r: { status: string; motivo_falso_positivo: string | null }): boolean {
-  return !(r.status === "falso_positivo" && r.motivo_falso_positivo === "dado_entrada_errado");
+  return !(r.status === "falso_positivo" && r.motivo_falso_positivo !== null && MOTIVOS_NAO_SAO_ERRO_DE_DETECTOR.has(r.motivo_falso_positivo));
 }
 
 // Generico desde 26/07: precisa rodar sobre 2 formatos de linha diferentes

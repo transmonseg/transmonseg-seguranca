@@ -61,9 +61,13 @@ export async function resolverAlerta(id: string): Promise<ResultadoAcao> {
 // ver docs/superpowers/specs/2026-08-09-motivo-falso-positivo-design.md).
 // Coluna PROPRIA (nao dentro de contexto): STRIP_PESADO zera contexto no
 // mesmo update, guardar o motivo la o apagaria na mesma escrita.
+type MotivoFalsoPositivo =
+  | "detector_errado" | "dado_entrada_errado" // legado, so' leitura -- ver spec 2026-08-18
+  | "NAO_FOI_AO_CLIENTE" | "NAO_SAIU_DA_BASE" | "DESATUALIZADO" | "MUDOU_DE_ROTA";
+
 async function marcarFalsoPositivoComMotivo(
   id: string,
-  motivo: "detector_errado" | "dado_entrada_errado"
+  motivo: MotivoFalsoPositivo
 ): Promise<ResultadoAcao> {
   const admin = createAdminClient();
   await registrarCasosDesvioRevisao(admin, [id], "falso_positivo", "falso_individual", motivo);
@@ -76,16 +80,11 @@ async function marcarFalsoPositivoComMotivo(
   });
 }
 
-export async function marcarFalsoPositivo(id: string): Promise<ResultadoAcao> {
-  return marcarFalsoPositivoComMotivo(id, "detector_errado");
-}
-
-// Botao "Marcacao errada": o carro pode ate ter se afastado, mas o
-// endereco/marcacao de entrada estava errado e enganou o detector -- nao
-// deve contar contra a confianca calibrada dele (ver
-// recalibrar-desvio/route.ts, Task 3 deste plano).
-export async function marcarFalsoPositivoDadoErrado(id: string): Promise<ResultadoAcao> {
-  return marcarFalsoPositivoComMotivo(id, "dado_entrada_errado");
+export async function marcarFalsoComCategoria(
+  id: string,
+  categoria: "NAO_FOI_AO_CLIENTE" | "NAO_SAIU_DA_BASE" | "DESATUALIZADO" | "MUDOU_DE_ROTA"
+): Promise<ResultadoAcao> {
+  return marcarFalsoPositivoComMotivo(id, categoria);
 }
 
 // Resolve vários alertas de uma vez (botão "Resolver todos" do painel).

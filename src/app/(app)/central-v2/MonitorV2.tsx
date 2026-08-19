@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
-import { resolverAlerta, marcarFalsoPositivo, resolverVarios, limparVarios } from "../acoes-alertas";
+import { resolverAlerta, marcarFalsoComCategoria, resolverVarios, limparVarios } from "../acoes-alertas";
+import MenuMotivoFalso, { type CategoriaFalso } from "../components/MenuMotivoFalso";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeDetector, IDADE_MINIMA_ACAO_MASSA_MIN, elegivelParaAcaoMassa } from "@/lib/detectores";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
@@ -547,6 +548,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Motivo do alerta truncado (nowrap+ellipsis) fica ilegivel quando e longo —
   // toggle por card pra expandir/recolher o texto completo sob demanda.
   const [motivosExpandidos, setMotivosExpandidos] = useState<Set<string>>(new Set());
+  // So um menu de motivo de falso positivo pode estar aberto por vez em toda
+  // a lista (mesmo padrao de alertaAtivoId) -- string|null, nao Set/boolean
+  // por card.
+  const [menuFalsoAbertoId, setMenuFalsoAbertoId] = useState<string | null>(null);
   const toggleMotivoExpandido = useCallback((id: string) => {
     setMotivosExpandidos(prev => {
       const next = new Set(prev);
@@ -999,7 +1004,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     await resolverAlerta(id);
   }, []);
 
-  const handleFalso = useCallback(async (id: string) => {
+  const handleFalso = useCallback(async (id: string, categoria: CategoriaFalso) => {
     setAlertas(a => {
       const alvo = a.find(x => x.id === id);
       const restante = a.filter(x => x.id !== id);
@@ -1008,7 +1013,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       }
       return restante;
     });
-    await marcarFalsoPositivo(id);
+    await marcarFalsoComCategoria(id, categoria);
   }, []);
 
   // ── Map controls ─────────────────────────────────────────────────────
@@ -1487,13 +1492,21 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             <motion.button whileTap={{ scale: 0.92 }}
               onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
               className="v2-btn-tiny" style={tinyBtn(T.green)}>
-              Resolver
+              Correto
             </motion.button>
-            <motion.button whileTap={{ scale: 0.92 }}
-              onMouseDown={e => { e.stopPropagation(); handleFalso(a.id); }}
-              className="v2-btn-tiny" style={tinyBtn(T.muted)}>
-              Falso
-            </motion.button>
+            <div style={{ position: "relative" }}>
+              <motion.button whileTap={{ scale: 0.92 }}
+                onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === a.id ? null : a.id); }}
+                className="v2-btn-tiny" style={tinyBtn(T.muted)}>
+                Falso
+              </motion.button>
+              <MenuMotivoFalso
+                compacto
+                aberto={menuFalsoAbertoId === a.id}
+                onFechar={() => setMenuFalsoAbertoId(null)}
+                onEscolher={(categoria) => handleFalso(a.id, categoria)}
+              />
+            </div>
           </div>
         </div>
       </motion.div>

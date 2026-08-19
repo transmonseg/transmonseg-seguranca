@@ -1,7 +1,8 @@
 "use client";
 
 import { useTransition, useState } from "react";
-import { reconhecerAlerta, resolverAlerta, marcarFalsoPositivo } from "../acoes-alertas";
+import { reconhecerAlerta, resolverAlerta, marcarFalsoComCategoria } from "../acoes-alertas";
+import MenuMotivoFalso, { type CategoriaFalso } from "./MenuMotivoFalso";
 import CronometroSLA from "./CronometroSLA";
 
 type Acao = (id: string) => Promise<{ ok?: boolean; erro?: string }>;
@@ -32,6 +33,7 @@ export default function AcoesAlerta({
 }) {
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
+  const [menuFalsoAberto, setMenuFalsoAberto] = useState(false);
   const reconhecido = status === "reconhecido";
 
   const exec = (fn: Acao, sucesso = false) =>
@@ -70,15 +72,22 @@ export default function AcoesAlerta({
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <polyline points="20 6 9 17 4 12" />
           </svg>
-          Resolver
+          Correto
         </Btn>
-        <Btn onClick={() => exec(marcarFalsoPositivo, true)} pending={pending} cor="var(--text-muted)" titulo="Engano: silencia o tipo por 2h e ensina o sistema">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-          Falso positivo
-        </Btn>
+        <div style={{ position: "relative" }}>
+          <Btn onClick={() => setMenuFalsoAberto(v => !v)} pending={pending} cor="var(--text-muted)" titulo="Engano: silencia o tipo por 2h e ensina o sistema">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+            Falso
+          </Btn>
+          <MenuMotivoFalso
+            aberto={menuFalsoAberto}
+            onFechar={() => setMenuFalsoAberto(false)}
+            onEscolher={(categoria: CategoriaFalso) => exec(() => marcarFalsoComCategoria(id, categoria), true)}
+          />
+        </div>
         {pending && <span className="text-xs" style={{ color: "var(--text-dim)" }}>salvando...</span>}
       </div>
       {erro && <p className="text-xs mt-2" style={{ color: "var(--vermelho)" }}>{erro}</p>}

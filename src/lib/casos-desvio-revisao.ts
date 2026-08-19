@@ -45,7 +45,9 @@ export async function registrarCasosDesvioRevisao(
   // caso a caso ou clique pra desentupir a tela. Quem le pra medir/calibrar
   // filtra pelas origens individuais.
   origemAcao: "resolver_individual" | "falso_individual" | "resolver_massa",
-  motivoFalsoPositivo?: "detector_errado" | "dado_entrada_errado"
+  motivoFalsoPositivo?:
+    | "detector_errado" | "dado_entrada_errado"
+    | "NAO_FOI_AO_CLIENTE" | "NAO_SAIU_DA_BASE" | "DESATUALIZADO" | "MUDOU_DE_ROTA"
 ): Promise<void> {
   if (ids.length === 0) return;
   try {
