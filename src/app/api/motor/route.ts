@@ -2478,6 +2478,18 @@ export async function POST(request: Request) {
               ? { lat: anterior.lat, lng: anterior.lng }
               : null;
             let posicaoFoiCorrigida = false;
+            // Achado real 19/08: posicao_corrigida (booleano) nao distingue
+            // "gate nao satisfeito" (streak zerado, sem anterior, teto do
+            // ciclo estourado) de "tentou e a confianca ficou abaixo do
+            // piso" (quirk ja documentado 13/08, TTH-6G37) -- sem isso, um
+            // caso de falso positivo com correcao ausente exige reconstruir
+            // manualmente qual dos 2 motivos foi, toda vez. matchTentado=true
+            // so' quando o /match de fato rodou e devolveu confidence (com
+            // ou sem passar do piso); matchConfianca grava o valor bruto
+            // mesmo quando abaixo do piso, pra distinguir os 2 casos numa
+            // query so.
+            let matchTentado = false;
+            let matchConfianca: number | null = null;
 
             // Achado real 13/08 (revisao final, Importante): a correcao via
             // /match so' pode entrar em acao quando ja' existe um `anterior`
@@ -2513,6 +2525,10 @@ export async function POST(request: Request) {
                 // entao os dois timestamps divergem por segundos a mais.
                 pontosMatch.push({ lat: pos.lat, lng: pos.lng, timestamp: agora });
                 const corrigido = await corrigirPosicoesComMatch(pontosMatch);
+                if (corrigido) {
+                  matchTentado = true;
+                  matchConfianca = corrigido.confidence;
+                }
                 if (corrigido && corrigido.confidence >= LIMIAR_CONFIANCA_MATCH) {
                   posParaAvaliar = corrigido.atual;
                   anteriorParaAvaliar = corrigido.anterior;
@@ -2696,8 +2712,8 @@ export async function POST(request: Request) {
                 try {
                   await pool.query(
                     `INSERT INTO desvio_disparo_log
-                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, posicao_corrigida, corredor_confirmou, classe_viaria_confirmou)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                       (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, posicao_corrigida, corredor_confirmou, classe_viaria_confirmou, match_tentado, match_confianca)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
                     [
                       veiculo_id,
                       alertaDesvioV2.origemDesvio,
@@ -2717,6 +2733,8 @@ export async function POST(request: Request) {
                       posicaoFoiCorrigida,
                       corredorConfirmou,
                       classeViariaConfirmou,
+                      matchTentado,
+                      matchConfianca,
                     ]
                   );
                 } catch (errDisparoLog) {
