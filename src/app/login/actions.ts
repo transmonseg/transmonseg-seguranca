@@ -38,6 +38,12 @@ export async function cadastrar(_prev: EstadoAuth, formData: FormData): Promise<
     email,
     password: senha,
     email_confirm: true,
+    // role explicita (achado real 21/08, conta layriane*): o GoTrue
+    // self-hosted NAO preenche "authenticated" por padrao como o Supabase
+    // cloud fazia -- sem isso o usuario nasce com role vazia e o JWT de
+    // login sai com role:"", quebrando qualquer consulta PostgREST feita
+    // com a sessao do usuario.
+    role: "authenticated",
     user_metadata: { nome },
   });
   if (erroCriar) {
