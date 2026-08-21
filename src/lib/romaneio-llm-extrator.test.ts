@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { extrairRomaneioViaLLM } from "./romaneio-llm-extrator";
+import { extrairRomaneioViaLLM, LIMIAR_TEXTO_SO_CLOUD_CHARS } from "./romaneio-llm-extrator";
 
 const RESPOSTA_VALIDA = JSON.stringify({
   linhas: [
@@ -19,6 +19,24 @@ describe("extrairRomaneioViaLLM", () => {
       fonte: "ollama",
     });
     expect(chamarMistral).not.toHaveBeenCalled();
+  });
+
+  it("texto grande (> LIMIAR_TEXTO_SO_CLOUD_CHARS): pula o Ollama e vai direto pro Mistral (achado real 21/08, Escala do Pao -- qwen em CPU nunca termina 60+ linhas nos 35s)", async () => {
+    const chamarOllama = vi.fn();
+    const chamarMistral = vi.fn().mockResolvedValue(RESPOSTA_VALIDA);
+    const textoGrande = "x".repeat(LIMIAR_TEXTO_SO_CLOUD_CHARS + 1);
+    const resultado = await extrairRomaneioViaLLM(textoGrande, { chamarOllama, chamarMistral });
+    expect(chamarOllama).not.toHaveBeenCalled();
+    expect(resultado?.fonte).toBe("mistral");
+  });
+
+  it("texto no limite exato do limiar: ainda tenta o Ollama primeiro (cascata normal)", async () => {
+    const chamarOllama = vi.fn().mockResolvedValue(RESPOSTA_VALIDA);
+    const chamarMistral = vi.fn();
+    const textoLimite = "x".repeat(LIMIAR_TEXTO_SO_CLOUD_CHARS);
+    const resultado = await extrairRomaneioViaLLM(textoLimite, { chamarOllama, chamarMistral });
+    expect(chamarOllama).toHaveBeenCalledTimes(1);
+    expect(resultado?.fonte).toBe("ollama");
   });
 
   it("cai pro Mistral quando o Ollama local falha (rede/timeout)", async () => {

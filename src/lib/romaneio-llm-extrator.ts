@@ -99,17 +99,28 @@ export type ResultadoExtracaoLLM = {
   fonte: Provedor;
 };
 
+// Achado real 21/08 (Escala do Pao falhou em producao): documento com 60+
+// entregas gera 9k+ chars de JSON de saida -- o qwen2.5:7b em CPU nunca
+// termina isso dentro dos 35s (o timeout do Ollama sempre estoura), e o
+// tempo gasto esperando ele falhar comia a folga do fallback. Acima deste
+// limiar de texto, pula o Ollama direto e vai pro Mistral com o timeout
+// largo (ver MISTRAL_TIMEOUT_MS) -- documento pequeno continua tentando
+// local primeiro, mesma cascata de antes.
+export const LIMIAR_TEXTO_SO_CLOUD_CHARS = 4000;
+
 export async function extrairRomaneioViaLLM(
   textoCompleto: string,
   deps: Deps
 ): Promise<ResultadoExtracaoLLM | null> {
-  const local = await tentarExtrair(textoCompleto, deps.chamarOllama, "ollama");
-  // local pode ser um array VALIDO porem vazio ([]) quando o modelo local
-  // nao reconhece o documento mas ainda devolve {"linhas": []} -- [] e'
-  // truthy em JS, entao "if (local)" sozinho travaria aqui e nunca cairia
-  // pro Mistral (o fallback existe exatamente pra esse caso). So aceita o
-  // resultado local se tiver pelo menos uma linha extraida de verdade.
-  if (local && local.length > 0) return { linhas: local, fonte: "ollama" };
+  if (textoCompleto.length <= LIMIAR_TEXTO_SO_CLOUD_CHARS) {
+    const local = await tentarExtrair(textoCompleto, deps.chamarOllama, "ollama");
+    // local pode ser um array VALIDO porem vazio ([]) quando o modelo local
+    // nao reconhece o documento mas ainda devolve {"linhas": []} -- [] e'
+    // truthy em JS, entao "if (local)" sozinho travaria aqui e nunca cairia
+    // pro Mistral (o fallback existe exatamente pra esse caso). So aceita o
+    // resultado local se tiver pelo menos uma linha extraida de verdade.
+    if (local && local.length > 0) return { linhas: local, fonte: "ollama" };
+  }
   const cloud = await tentarExtrair(textoCompleto, deps.chamarMistral, "mistral");
   if (cloud) return { linhas: cloud, fonte: "mistral" };
   return null;
@@ -148,6 +159,17 @@ export async function chamarOllama(prompt: string): Promise<string> {
   return data.response;
 }
 
+// 90s (era 30s) -- achado real 21/08: a Escala do Pao de 20/08 (66 linhas)
+// levou 22,1s medidos na API real; um dia maior estourava os 30s e o upload
+// inteiro falhava ("Não consegui extrair..."). 90s da folga real e ainda
+// cabe no maxDuration=120 da rota de upload: caminho de texto grande pula o
+// Ollama (ver LIMIAR_TEXTO_SO_CLOUD_CHARS), e no caminho pequeno o pior
+// caso Ollama(35s)+Mistral(90s)=125s so acontece se o Ollama estourar o
+// timeout com um doc pequeno E o Mistral levar os 90s inteiros num doc
+// pequeno -- combinacao que nao ocorre na pratica (doc pequeno no Mistral
+// responde em poucos segundos).
+const MISTRAL_TIMEOUT_MS = 90000;
+
 export async function chamarMistral(prompt: string): Promise<string> {
   const chave = process.env.MISTRAL_API_KEY;
   if (!chave) throw new Error("MISTRAL_API_KEY nao configurada");
@@ -166,7 +188,7 @@ export async function chamarMistral(prompt: string): Promise<string> {
       response_format: { type: "json_object" },
       temperature: 0,
     }),
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(MISTRAL_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`Mistral respondeu ${res.status}`);
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };

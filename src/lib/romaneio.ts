@@ -30,6 +30,17 @@ export type LinhaRomaneio = {
   enderecoBruto: string;
 };
 
+// Placas com erro de digitacao NA FONTE (o proprio documento da Nutry Max
+// traz a placa errada, confirmado 20-21/08: "RGU-5G33" aparece todo dia no
+// romaneio deles, mas o carro real -- confirmado na API Unitrac -- e'
+// RQU-5G33; nao existe nenhum RGU-* na frota). Correcao fixa aplicada
+// DEPOIS da normalizacao de formato, chaveada pela placa ja normalizada.
+// So adicionar aqui erro CONFIRMADO contra a Unitrac (placa errada nao
+// existe na frota + placa certa existe e bate com a rota) -- nunca chute.
+const PLACA_CORRECOES_FONTE: Record<string, string> = {
+  "RGU-5G33": "RQU-5G33",
+};
+
 // Placa do romaneio vem sem hifen (ex. "TUL1C38"); o banco usa com hifen
 // (ex. "TUL-1C38", padrao Mercosul letra-letra-letra-numero-letra-numero-
 // numero). So mexe quando bate exatamente o formato esperado (7 chars, sem
@@ -37,8 +48,10 @@ export type LinhaRomaneio = {
 // inesperado.
 export function normalizarPlaca(placaBruta: string): string {
   const limpa = placaBruta.trim().toUpperCase();
-  if (limpa.includes("-") || limpa.length !== 7) return limpa;
-  return `${limpa.slice(0, 3)}-${limpa.slice(3)}`;
+  const normalizada = limpa.includes("-") || limpa.length !== 7
+    ? limpa
+    : `${limpa.slice(0, 3)}-${limpa.slice(3)}`;
+  return PLACA_CORRECOES_FONTE[normalizada] ?? normalizada;
 }
 
 // Data do romaneio vem do cabecalho impresso em CADA pagina (ex. "15/07/2026

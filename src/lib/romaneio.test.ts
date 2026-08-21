@@ -22,6 +22,13 @@ describe("normalizarPlaca", () => {
   it("tamanho diferente do esperado (7 chars sem hifen): mantem como esta", () => {
     expect(normalizarPlaca("AB123")).toBe("AB123");
   });
+  it("erro de digitacao na fonte (achado real 20-21/08, RGU-5G33 no romaneio da Nutry Max): corrige pra placa real confirmada na Unitrac", () => {
+    expect(normalizarPlaca("RGU-5G33")).toBe("RQU-5G33");
+    expect(normalizarPlaca("RGU5G33")).toBe("RQU-5G33");
+  });
+  it("placa parecida mas NAO mapeada na correcao: mantem como esta", () => {
+    expect(normalizarPlaca("RGU-5G34")).toBe("RGU-5G34");
+  });
 });
 
 describe("extrairDataRomaneio", () => {
