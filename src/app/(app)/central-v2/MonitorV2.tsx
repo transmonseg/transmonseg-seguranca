@@ -62,6 +62,7 @@ const NOME_TIPO: Record<string, string> = {
   parada_anomala: "Par. anômala", parada_longa: "Par. longa", parada_cliente: "Par. cliente",
   ignicao_noturna: "Ign. noturna", desvio: "Desvio em movimento", parada_fora_tapete: "Parada fora do esperado", excesso: "Excesso vel.",
   retorno_tardio: "Retorno tardio", aceleracao: "Acel. brusca", sem_comunicacao: "Sem comunicação",
+  parada_sem_marcacao: "Parada sem marcação",
 };
 function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 
@@ -70,12 +71,29 @@ function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 // movimento, achado 27/07), mas pro operador ela conta como desvio de rota --
 // mesma prioridade, mesmo nome, mesmo apito (ver TIPOS_NOTIFICAM_POR_CLIENTE).
 const TIPO_PRIORITY: Record<string, number> = {
-  desvio: 15, parada_fora_tapete: 15, panico: 12, saida_nao_autorizada: 10, jammer: 9,
+  desvio: 15, parada_fora_tapete: 15, parada_sem_marcacao: 14, panico: 12, saida_nao_autorizada: 10, jammer: 9,
   bau: 8, parada_cliente: 8, tiroteio: 7, parada_anomala: 6, ignicao_noturna: 5,
   retorno_tardio: 4, aceleracao: 3, favela: 2, parada_longa: 1,
 };
 function prioAlerta(a: { nivel: string; tipo: string }): number {
   return (a.nivel === "critico" ? 100 : 0) + (TIPO_PRIORITY[a.tipo] ?? 0);
+}
+
+// "Outros avisos": tipos de alto volume e baixo valor acionável (achado
+// real 20/08 -- favela+baseline_veiculo sao 67% do volume de alertas em
+// 14 dias com ~100% de taxa "correto", competindo por atencao com desvio
+// sem trazer decisao nova pro operador na maioria das vezes). Continuam
+// sendo detectados/salvos normalmente -- só saem do fluxo principal de
+// revisão, numa seção separada colapsada por padrão.
+const TIPOS_OUTROS_AVISOS = new Set(["favela", "baseline_veiculo"]);
+
+function separarOutrosAvisos<T extends { tipo: string }>(lista: T[]): { principais: T[]; outros: T[] } {
+  const principais: T[] = [];
+  const outros: T[] = [];
+  for (const a of lista) {
+    (TIPOS_OUTROS_AVISOS.has(a.tipo) ? outros : principais).push(a);
+  }
+  return { principais, outros };
 }
 
 // Tipos que disparam apito + flash de "novo" por cliente (cod_user_unitrac).
@@ -589,6 +607,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // (ex.: Benassi com 7 grupos + 8 tipos) enchiam a sidebar de pilulas antes
   // mesmo de chegar na lista de alertas.
   const [filtrosAbertos, setFiltrosAbertos] = useState(false);
+
+  // "Outros avisos" -- SEMPRE comeca fechado a cada carregamento (nao
+  // persiste em localStorage, ao contrario de filtrosAbertos): decisão
+  // deliberada pra nunca "vazar aberto" e voltar a competir por atencao
+  // com a lista principal (achado real 20/08, ver spec).
+  const [outrosAbertos, setOutrosAbertos] = useState(false);
 
   // "Ver apenas selecionados" — filtro manual por placa (Configurações), independente
   // dos grupos/tipos. modoSelecionados só entra em vigor quando o usuário confirma
@@ -1107,7 +1131,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   });
 
   // Ordena só por prioridade — seleção não move o card, só brilha no lugar
-  const alertasOrdenados = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
+  const alertasOrdenadosCompleto = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
+  const { principais: alertasOrdenados, outros: outrosAvisos } = separarOutrosAvisos(alertasOrdenadosCompleto);
 
   // Split view: sidebar mostra 2 secoes independentes (TODOS + SELECIONADOS)
   // em vez de 1 lista unica — mesma logica de vmTodos/vmSelecionados no mapa.
@@ -1124,10 +1149,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     }
     return true;
   });
-  const alertasOrdenadosSplitTodos = [...alertasFiltradosSplitBase].sort((a, b) => prioAlerta(b) - prioAlerta(a));
+  const alertasOrdenadosSplitTodosCompleto = [...alertasFiltradosSplitBase].sort((a, b) => prioAlerta(b) - prioAlerta(a));
+  const { principais: alertasOrdenadosSplitTodos, outros: outrosAvisosSplit } = separarOutrosAvisos(alertasOrdenadosSplitTodosCompleto);
   const alertasOrdenadosSplitSelecionados = veiculosSelecionados.size > 0
-    ? alertasOrdenadosSplitTodos.filter(a => veiculosSelecionados.has(a.cv))
-    : alertasOrdenadosSplitTodos;
+    ? alertasOrdenadosSplitTodosCompleto.filter(a => veiculosSelecionados.has(a.cv))
+    : alertasOrdenadosSplitTodosCompleto;
 
   // Resolve os alertas VISÍVEIS na aba atual (Crítico/Tudo), não só
   // os críticos — antes travava em nivel==="critico" e nao fazia nada nas
@@ -1384,6 +1410,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             }}>
               {nomeT(a.tipo)}
             </span>
+            {a.tipo === "parada_sem_marcacao" && (
+              <span style={{
+                fontSize: 8, fontWeight: 800, padding: "1px 5px", borderRadius: 4,
+                background: `${T.red}22`, color: T.red, letterSpacing: ".03em",
+              }}>
+                POSSÍVEL DESVIO
+              </span>
+            )}
             {(() => {
               const idade = corIdadeAlerta(a.desde, tema);
               return (
@@ -2464,6 +2498,37 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               {(splitView ? alertasOrdenadosSplitTodos : alertasOrdenados).map(a => renderCardAlerta(a, { painel: painel1 }))}
             </AnimatePresence>
           </div>
+
+          {(splitView ? outrosAvisosSplit : outrosAvisos).length > 0 && (
+            <div style={{ borderTop: `1px solid ${T.border}`, flexShrink: 0 }}>
+              <button onClick={() => setOutrosAbertos(v => !v)} style={{
+                display: "flex", alignItems: "center", gap: 6, width: "100%",
+                padding: "6px 8px", background: "transparent", border: "none",
+                cursor: "pointer", fontFamily: FONT_SANS,
+              }}>
+                <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: ".06em" }}>
+                  OUTROS AVISOS
+                </span>
+                <span style={{
+                  fontSize: 9, fontFamily: FONT_MONO, color: T.dim,
+                  background: `${T.dim}18`, borderRadius: 4, padding: "1px 5px",
+                }}>
+                  {(splitView ? outrosAvisosSplit : outrosAvisos).length}
+                </span>
+                <span style={{ marginLeft: "auto", fontSize: 9, color: T.dim }}>
+                  {outrosAbertos ? "▾" : "▸"}
+                </span>
+              </button>
+
+              {outrosAbertos && (
+                <div style={{ padding: "0 6px 8px", maxHeight: 320, overflowY: "auto" }}>
+                  <AnimatePresence initial={false}>
+                    {(splitView ? outrosAvisosSplit : outrosAvisos).map(a => renderCardAlerta(a, { painel: painel1 }))}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ============================================================

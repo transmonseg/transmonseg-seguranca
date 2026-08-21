@@ -868,8 +868,12 @@ export function detectarParadaSemMarcacao(ctx: CtxParadaSemMarcacao): Alerta | n
   if (!ctx.saiuDaFaixaAgora || !ctx.mesmoAlvoCodigo) return null;
   if (ctx.entregaConfirmada) return null;
   if (ctx.dwellSegundosAcumulados < PARADA_SEM_MARCACAO_DWELL_MINIMO_SEGUNDOS) return null;
+  // Achado real 20/08 (spec reduzir-ruido-e-melhorar-desvio): parada perto
+  // de destino conhecido sem confirmar entrega e' candidato real a desvio
+  // disfarçado de parada -- sobe pra critico pra ganhar destaque na tela
+  // (antes ficava em "atencao", perdendo pro resto da lista).
   return {
-    nivel: "atencao",
+    nivel: "critico",
     tipo: "parada_sem_marcacao",
     motivo: `Parou perto de um destino conhecido por ${Math.round(ctx.dwellSegundosAcumulados / 60)}min (fora do raio confirmado) e saiu sem confirmar entrega`,
     score: 40,

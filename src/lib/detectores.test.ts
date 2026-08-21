@@ -670,9 +670,9 @@ describe("detectarParadaSemMarcacao (achado real 28/07, cliente Nutry Max, caso 
     entregaConfirmada: false,
   };
 
-  it("saiu da faixa com dwell suficiente e sem confirmar entrega: dispara atencao", () => {
+  it("saiu da faixa com dwell suficiente e sem confirmar entrega: dispara critico (achado real 20/08 -- ver spec reduzir-ruido, este tipo agora conta como possivel desvio)", () => {
     const a = detectarParadaSemMarcacao(base);
-    expect(a?.nivel).toBe("atencao");
+    expect(a?.nivel).toBe("critico");
     expect(a?.tipo).toBe("parada_sem_marcacao");
     expect(a?.motivo).toContain("sem confirmar");
   });
