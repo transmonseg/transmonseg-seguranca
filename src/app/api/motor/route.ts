@@ -1876,7 +1876,36 @@ export async function POST(request: Request) {
           );
 
           if (candidatoParadaAnomala) {
-            estavEmMovimento = anterior != null && (anterior.velocidade ?? 0) >= 30;
+            // Achado real 21/08 (pedido da operadora: "9 minutos dá pra pegar
+            // um roubo?"): a versao antiga lia a velocidade do CICLO ANTERIOR
+            // (~1min atras) -- mas candidatoParadaAnomala exige paradoMin>=12,
+            // entao o ciclo anterior SEMPRE esta parado tambem e a condicao
+            // era impossivel por construcao: em 14 dias de producao, ZERO dos
+            // 1298 primeiro-disparos usou o limiar rapido de 12min (todos
+            // cairam nos 20min de "estrada"). O que a regra sempre quis saber
+            // e' se o carro vinha em movimento ANTES DA PARADA COMECAR --
+            // olha a velocidade maxima nos 10min anteriores a parado_desde.
+            // Medido no dia real 21/08: 43 de 92 disparos teriam vindo 8min
+            // mais cedo; ruido novo maximo ~16/dia na frota ANTES dos gates
+            // de POI/cliente/congestionamento (real bem menor). Falha da
+            // query = false (caminho conservador de 20min, comportamento
+            // identico ao de antes do fix).
+            if (parado_desde) {
+              try {
+                const inicioParada = new Date(parado_desde);
+                const janelaAntes = new Date(inicioParada.getTime() - 10 * 60_000);
+                const { rows: velAntes } = await pool.query<{ vmax: number | null }>(
+                  `SELECT max(velocidade) AS vmax FROM posicoes_historico
+                    WHERE veiculo_id = $1 AND criado_em >= $2 AND criado_em < $3`,
+                  [veiculo_id, janelaAntes.toISOString(), inicioParada.toISOString()]
+                );
+                estavEmMovimento = (velAntes[0]?.vmax ?? 0) >= 30;
+              } catch (errVelAntes) {
+                if (!erros.some((e) => e.includes("velocidade pre-parada"))) {
+                  erros.push(`Aviso: falha ao ler velocidade pre-parada: ${String(errVelAntes)}`);
+                }
+              }
+            }
             esMadrugada = horaSP >= 0 && horaSP < 5;
           }
           // POI consultado para parada anomala, saida nao autorizada parada,
