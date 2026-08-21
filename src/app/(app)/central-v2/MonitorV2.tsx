@@ -88,6 +88,15 @@ function prioAlerta(a: { nivel: string; tipo: string }): number {
 // revisão, numa seção separada colapsada por padrão.
 const TIPOS_OUTROS_AVISOS = new Set(["favela", "baseline_veiculo"]);
 
+// Achado real 20/08 (varredura de origem_acao): 29 dos 35 "corretos" de
+// desvio marcados num dia real vieram de clique em "Resolver todos" (lote),
+// só 6 de revisão individual de verdade -- sinal fraco pra calibração num
+// tipo que é o motivo do produto existir. desvio/parada_fora_tapete saem do
+// fluxo de resolução em massa: exigem clique individual (Correto/Falso) no
+// card. "Limpar avisos" continua valendo pra eles -- não afirma revisão
+// caso a caso, não alimenta calibração, não é o problema que isto resolve.
+const TIPOS_REVISAO_INDIVIDUAL = new Set(["desvio", "parada_fora_tapete"]);
+
 function separarOutrosAvisos<T extends { tipo: string }>(lista: T[]): { principais: T[]; outros: T[] } {
   const principais: T[] = [];
   const outros: T[] = [];
@@ -106,7 +115,10 @@ function separarOutrosAvisos<T extends { tipo: string }>(lista: T[]): { principa
 // PÂNICO é exceção de segurança e sempre notifica, em qualquer cliente —
 // não é negociável mesmo se não estiver nessa lista.
 const TIPOS_NOTIFICAM_POR_CLIENTE: Record<string, string[]> = {
-  "4096": ["desvio", "parada_fora_tapete"],  // Nutry: desvio de rota (movimento + parada fora do tapete, já mostrado na faixa do topo)
+  // parada_sem_marcacao adicionado 20/08 (achado real: virou crítico com
+  // badge "possível desvio", mas ficava mudo -- operador só notava se
+  // estivesse com a tela aberta na hora certa. Mesmo apito do desvio agora.
+  "4096": ["desvio", "parada_fora_tapete", "parada_sem_marcacao"],  // Nutry: desvio de rota (movimento + parada fora do tapete, já mostrado na faixa do topo) + parada sem marcação (possível desvio)
   "4586": ["parada_cliente"],  // Benassi: só parada de 1h30+ dentro do cliente
 };
 
@@ -1143,6 +1155,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     ? { principais: alertasOrdenadosCompleto, outros: [] as typeof alertasOrdenadosCompleto }
     : separarOutrosAvisos(alertasOrdenadosCompleto);
 
+  // "Resolver todos" nunca inclui desvio/parada_fora_tapete (ver
+  // TIPOS_REVISAO_INDIVIDUAL) -- exige clique individual por card pra esses.
+  const alertasResolviveisEmMassa = alertasOrdenados.filter(a => !TIPOS_REVISAO_INDIVIDUAL.has(a.tipo));
+
   // Split view: sidebar mostra 2 secoes independentes (TODOS + SELECIONADOS)
   // em vez de 1 lista unica — mesma logica de vmTodos/vmSelecionados no mapa.
   // Recalculado A PARTE de alertasFiltrados (que respeita modoSelecionados,
@@ -1172,7 +1188,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // os críticos — antes travava em nivel==="critico" e nao fazia nada nas
   // outras abas.
   const handleResolverTodos = useCallback(() => {
-    const alvos = alertasOrdenados;
+    const alvos = alertasResolviveisEmMassa;
     if (alvos.length === 0) return;
     setAvisoRecentes(null);
     setErroAcaoMassa(null);
@@ -1223,7 +1239,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       if (recentes > 0) setAvisoRecentes({ acao: "resolver", quantidade: recentes });
       setConfirmarResolver(false);
     });
-  }, [alertasOrdenados]);
+  }, [alertasResolviveisEmMassa]);
 
   // Limpa os alertas VISÍVEIS na aba atual (Crítico/Tudo) — so tira da tela,
   // SEM afirmar que foi revisado caso a caso (diferente de "Resolver todos":
@@ -2427,7 +2443,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               agiam sobre alertas que o operador nunca viu (dentro da seção
               colapsada), incluindo "Resolver todos" registrando veredito
               humano (resolver_massa) sobre alertas não revisados — exatamente
-              o problema que essa iniciativa inteira existe pra reduzir. */}
+              o problema que essa iniciativa inteira existe pra reduzir.
+              Achado real 20/08 (varredura de origem_acao, dia 19/08): 29 de
+              35 "corretos" de desvio vieram de "Resolver todos" em lote, só
+              6 de revisão individual -- "Resolver todos" agora usa
+              alertasResolviveisEmMassa (exclui desvio/parada_fora_tapete,
+              ver TIPOS_REVISAO_INDIVIDUAL), forçando clique individual por
+              card pra esse tipo. "Limpar avisos" continua sobre
+              alertasOrdenados inteiro -- nunca afirmou revisão caso a caso,
+              não é o alvo desta mudança. */}
           {alertasOrdenados.length > 0 && (
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
@@ -2466,14 +2490,16 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 </div>
               ) : (
                 <div style={{ display: "flex", gap: 5 }}>
-                  <button onClick={() => setConfirmarResolver(true)} style={{
-                    flex: 1, height: 26, borderRadius: 6,
-                    background: "transparent", border: `1px solid ${T.border}`,
-                    color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
-                  }}>
-                    {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasOrdenados.length})`
-                      : `Resolver todos (${alertasOrdenados.length})`}
-                  </button>
+                  {alertasResolviveisEmMassa.length > 0 && (
+                    <button onClick={() => setConfirmarResolver(true)} style={{
+                      flex: 1, height: 26, borderRadius: 6,
+                      background: "transparent", border: `1px solid ${T.border}`,
+                      color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
+                    }}>
+                      {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasResolviveisEmMassa.length})`
+                        : `Resolver todos (${alertasResolviveisEmMassa.length})`}
+                    </button>
+                  )}
                   <button onClick={() => setConfirmarLimpar(true)} style={{
                     flex: 1, height: 26, borderRadius: 6,
                     background: "transparent", border: `1px solid ${T.accent}66`,
