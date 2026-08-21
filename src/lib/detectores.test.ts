@@ -817,6 +817,11 @@ describe("arbitrarCandidatos (fusao de sinais corroborantes, 12/07)", () => {
     expect(a?.tipo).toBe("retorno_tardio");
   });
 
+  it("achado real 20/08 (spec reduzir-ruido-e-melhorar-desvio): parada_sem_marcacao (critico, score baixo) vence favela (atencao, score alto) -- critico sempre bate atencao independente do score", () => {
+    const a = arbitrarCandidatos([alertaBase("favela", 45, "atencao"), alertaBase("parada_sem_marcacao", 40, "critico")]);
+    expect(a?.tipo).toBe("parada_sem_marcacao");
+  });
+
   it("extras operacionais (retorno_tardio, parada_noturna, aceleracao) nao contam pro bonus de corroboracao", () => {
     const a = arbitrarCandidatos([alertaBase("desvio", 45), alertaBase("retorno_tardio", 40), alertaBase("aceleracao", 70)]);
     expect(a?.score).toBe(70); // maior score vence (aceleracao), sem bonus (so 1 tipo relevante presente: desvio)

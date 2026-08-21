@@ -63,6 +63,7 @@ const NOME_TIPO: Record<string, string> = {
   ignicao_noturna: "Ign. noturna", desvio: "Desvio em movimento", parada_fora_tapete: "Parada fora do esperado", excesso: "Excesso vel.",
   retorno_tardio: "Retorno tardio", aceleracao: "Acel. brusca", sem_comunicacao: "Sem comunicação",
   parada_sem_marcacao: "Parada sem marcação",
+  baseline_veiculo: "Anomalia de velocidade",
 };
 function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 
@@ -1132,7 +1133,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
   // Ordena só por prioridade — seleção não move o card, só brilha no lugar
   const alertasOrdenadosCompleto = [...alertasFiltrados].sort((a, b) => prioAlerta(b) - prioAlerta(a));
-  const { principais: alertasOrdenados, outros: outrosAvisos } = separarOutrosAvisos(alertasOrdenadosCompleto);
+  // Achado real 20/08 (revisão de branch inteira): quando o operador escolhe
+  // um chip de tipo explícito (filtroTipos), isso é uma decisão deliberada,
+  // não "ruído ambiente" -- não faz sentido separar em "Outros avisos" algo
+  // que o operador pediu explicitamente pra ver. Mesmo raciocínio já usado
+  // pra excluir a coluna SELECIONADOS do split view dessa separação (ver
+  // spec). filtroTipos.size > 0 pula a separação inteiramente.
+  const { principais: alertasOrdenados, outros: outrosAvisos } = filtroTipos.size > 0
+    ? { principais: alertasOrdenadosCompleto, outros: [] as typeof alertasOrdenadosCompleto }
+    : separarOutrosAvisos(alertasOrdenadosCompleto);
 
   // Split view: sidebar mostra 2 secoes independentes (TODOS + SELECIONADOS)
   // em vez de 1 lista unica — mesma logica de vmTodos/vmSelecionados no mapa.
@@ -1150,7 +1159,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     return true;
   });
   const alertasOrdenadosSplitTodosCompleto = [...alertasFiltradosSplitBase].sort((a, b) => prioAlerta(b) - prioAlerta(a));
-  const { principais: alertasOrdenadosSplitTodos, outros: outrosAvisosSplit } = separarOutrosAvisos(alertasOrdenadosSplitTodosCompleto);
+  // Mesmo raciocínio do bloco não-split acima: filtro de tipo explícito
+  // pula a separação "Outros avisos".
+  const { principais: alertasOrdenadosSplitTodos, outros: outrosAvisosSplit } = filtroTipos.size > 0
+    ? { principais: alertasOrdenadosSplitTodosCompleto, outros: [] as typeof alertasOrdenadosSplitTodosCompleto }
+    : separarOutrosAvisos(alertasOrdenadosSplitTodosCompleto);
   const alertasOrdenadosSplitSelecionados = veiculosSelecionados.size > 0
     ? alertasOrdenadosSplitTodosCompleto.filter(a => veiculosSelecionados.has(a.cv))
     : alertasOrdenadosSplitTodosCompleto;
@@ -1159,7 +1172,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // os críticos — antes travava em nivel==="critico" e nao fazia nada nas
   // outras abas.
   const handleResolverTodos = useCallback(() => {
-    const alvos = alertasFiltrados;
+    const alvos = alertasOrdenados;
     if (alvos.length === 0) return;
     setAvisoRecentes(null);
     setErroAcaoMassa(null);
@@ -1210,14 +1223,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       if (recentes > 0) setAvisoRecentes({ acao: "resolver", quantidade: recentes });
       setConfirmarResolver(false);
     });
-  }, [alertasFiltrados]);
+  }, [alertasOrdenados]);
 
   // Limpa os alertas VISÍVEIS na aba atual (Crítico/Tudo) — so tira da tela,
   // SEM afirmar que foi revisado caso a caso (diferente de "Resolver todos":
   // não chama registrarCasosDesvioRevisao, não alimenta calibração). Ver
   // limparVarios em acoes-alertas.ts.
   const handleLimparTodos = useCallback(() => {
-    const alvos = alertasFiltrados;
+    const alvos = alertasOrdenados;
     if (alvos.length === 0) return;
     setAvisoRecentes(null);
     setErroAcaoMassa(null);
@@ -1263,7 +1276,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       if (recentes > 0) setAvisoRecentes({ acao: "limpar", quantidade: recentes });
       setConfirmarLimpar(false);
     });
-  }, [alertasFiltrados]);
+  }, [alertasOrdenados]);
 
   // Desvios de rota — faixa dedicada no topo do mapa, sempre visivel independente
   // dos filtros da sidebar (vista/tipo). Ordenado do mais recente pro mais antigo.
@@ -2393,11 +2406,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           })()}
 
           {/* Resolver todos / Limpar avisos — os VISÍVEIS na aba atual
-              (Crítico/Tudo), sobre o MESMO conjunto (alertasFiltrados) em
+              (Crítico/Tudo), sobre o MESMO conjunto (alertasOrdenados) em
               QUALQUER modo de tela, inclusive split view -- pedido explicito
               do usuario 12/08 (antes sumiam em split view por ambiguidade
               conceitual entre TODOS/SELECIONADOS; a implementacao sempre foi
-              bem definida, agia sempre sobre alertasFiltrados, so a
+              bem definida, agia sempre sobre o mesmo conjunto, so a
               visibilidade que escondia). "Resolver todos" (resolverVarios)
               afirma veredito humano e alimenta a calibracao; "Limpar avisos"
               (limparVarios) so tira da tela, sem fingir revisao caso a caso
@@ -2405,8 +2418,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               todos" clicado em massa contaminava a leitura de "quantos
               confirmados de verdade". Cada botao tem seu proprio fluxo de
               confirmar/cancelar (confirmarResolver/confirmarLimpar), so um
-              ativo por vez. */}
-          {alertasFiltrados.length > 0 && (
+              ativo por vez.
+              Achado real 20/08 (revisão de branch inteira): usa
+              alertasOrdenados (pós-separação "Outros avisos"), NÃO
+              alertasFiltrados (pré-separação) -- deliberadamente exclui
+              favela/baseline_veiculo, que ficaram escondidos na seção
+              colapsada "Outros avisos". Antes desta correção, esses botões
+              agiam sobre alertas que o operador nunca viu (dentro da seção
+              colapsada), incluindo "Resolver todos" registrando veredito
+              humano (resolver_massa) sobre alertas não revisados — exatamente
+              o problema que essa iniciativa inteira existe pra reduzir. */}
+          {alertasOrdenados.length > 0 && (
             <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
                 <div style={{ display: "flex", gap: 5 }}>
@@ -2449,15 +2471,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                     background: "transparent", border: `1px solid ${T.border}`,
                     color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
                   }}>
-                    {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasFiltrados.length})`
-                      : `Resolver todos (${alertasFiltrados.length})`}
+                    {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasOrdenados.length})`
+                      : `Resolver todos (${alertasOrdenados.length})`}
                   </button>
                   <button onClick={() => setConfirmarLimpar(true)} style={{
                     flex: 1, height: 26, borderRadius: 6,
                     background: "transparent", border: `1px solid ${T.accent}66`,
                     color: T.accent, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
                   }}>
-                    {`Limpar avisos (${alertasFiltrados.length})`}
+                    {`Limpar avisos (${alertasOrdenados.length})`}
                   </button>
                 </div>
               )}
@@ -2483,7 +2505,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               nao 2 secoes empilhadas numa sidebar so). Cards sempre com
               detalhe completo (motivo/progresso/acoes) nas 2 colunas. */}
           <div style={{ flex: 1, overflowY: "auto", padding: "4px 6px 8px" }}>
-            {(splitView ? alertasOrdenadosSplitTodos : alertasOrdenados).length === 0 && (
+            {/* Achado real 20/08 (revisão de branch inteira): checar só a
+                lista principal aqui mentia quando "Outros avisos" tinha
+                conteúdo -- favela/baseline_veiculo são 67% do volume, então
+                "lista principal vazia mas Outros avisos cheio" é estado
+                rotineiro, não edge case. "Nenhum alerta ativo" só aparece
+                quando as DUAS listas (principal + outros avisos) estão
+                vazias. */}
+            {(splitView ? alertasOrdenadosSplitTodos : alertasOrdenados).length === 0 &&
+             (splitView ? outrosAvisosSplit : outrosAvisos).length === 0 && (
               <div style={{ padding: "28px 16px", textAlign: "center", color: T.dim, fontSize: 12 }}>
                 <div style={{ marginBottom: 6, opacity: 0.6 }}>
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ display: "inline-block" }}>
