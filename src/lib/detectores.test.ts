@@ -1111,4 +1111,11 @@ describe("deveSuprimirRedisparoParada (achado real 21/08: TUG-9D18 gerou 17 aler
       alertasTratadosDoTipo: [{ resolvidoEm: "nao-e-data" }],
     })).toBe(false);
   });
+
+  it("paradoDesde invalido (nao-e-data): NAO quebra, NAO suprime", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: "nao-e-data",
+      alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-21T12:15:00.000Z" }],
+    })).toBe(false);
+  });
 });

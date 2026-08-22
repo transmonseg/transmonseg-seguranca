@@ -1428,7 +1428,6 @@ export async function POST(request: Request) {
         .in("tipo", ["parada_anomala", "parada_longa"])
         .in("origem_acao", ORIGENS_TRATAMENTO_INDIVIDUAL)
         .not("operador_id", "is", null)
-        .not("resolvido_em", "is", null)
         .gte("resolvido_em", seisHorasAtras);
 
       // Chave: `${veiculo_id}:${tipo}` -> lista de tratamentos daquele tipo.

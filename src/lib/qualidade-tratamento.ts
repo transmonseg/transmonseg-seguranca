@@ -52,6 +52,15 @@ export function percentil90(nums: number[]): number | null {
 
 export type ResumoQualidade = {
   baldes: Record<string, number>;
+  // Correto vs falso ENTRE OS DE REVISAO INDIVIDUAL -- a metrica que o
+  // cliente mais cita ("taxa de acerto", spec Secao 1). Dentro do balde
+  // 'individual' so' existem 2 status possiveis por construcao do proprio
+  // SQL_BALDE (a CASE ja desvia 'limpo'/'ativo'/'reconhecido' antes de
+  // chegar em 'individual'): 'falso_positivo' -> falso, 'resolvido' ->
+  // correto. Validado contra dado real de 19/08 tipo desvio: 6
+  // corretos + 8 falsos = 14 individuais, todos da mesma operadora
+  // (Elloisy.Salles) -- ver scripts/validar-sql-balde.mjs.
+  individualCorretoFalso: { corretos: number; falsos: number };
   falsosPorMotivo: { motivo: string | null; n: number }[];
   porOperador: { operador: string; balde: string; n: number }[];
   latencia: { amostras: number; medianaMin: number | null; p90Min: number | null };
@@ -125,9 +134,17 @@ export async function apurarQualidade(
         AND desde >= now() - ($1::int * interval '1 day')
         AND ($2::text IS NULL OR tipo = $2::text)
         AND ($3::text IS NULL OR nivel = $3::text)`;
-    const [baldes, falsos, porOperador, latencia, serie] = await Promise.all([
+    const [baldes, corretoFalso, falsos, porOperador, latencia, serie] = await Promise.all([
       client.query<{ balde: string; n: string }>(
         `SELECT ${SQL_BALDE} AS balde, count(*)::text AS n ${filtroBase} GROUP BY 1`, params),
+      // Correto vs falso dentro de 'individual' (ver comentario do tipo
+      // ResumoQualidade acima). status='falso_positivo' -> falso, resto
+      // (so' 'resolvido' chega aqui) -> correto -- mesmo criterio que
+      // scripts/validar-sql-balde.mjs confere contra o dado real.
+      client.query<{ resultado: string; n: string }>(
+        `SELECT (CASE WHEN status = 'falso_positivo' THEN 'falso' ELSE 'correto' END) AS resultado,
+                count(*)::text AS n
+         ${filtroBase} AND ${SQL_BALDE} = 'individual' GROUP BY 1`, params),
       client.query<{ motivo: string | null; n: string }>(
         `SELECT motivo_falso_positivo AS motivo, count(*)::text AS n ${filtroBase} AND ${SQL_BALDE} = 'individual' GROUP BY 1`, params),
       client.query<{ operador: string; balde: string; n: string }>(
@@ -154,8 +171,13 @@ export async function apurarQualidade(
                 ${SQL_BALDE} AS balde, count(*)::text AS n ${filtroBase} GROUP BY 1, 2 ORDER BY 1`, params),
     ]);
     const minutos = latencia.rows.map((r) => Number(r.minutos)).filter((n) => Number.isFinite(n) && n >= 0);
+    const mapaCorretoFalso = Object.fromEntries(corretoFalso.rows.map((r) => [r.resultado, Number(r.n)]));
     return {
       baldes: Object.fromEntries(baldes.rows.map((r) => [r.balde, Number(r.n)])),
+      individualCorretoFalso: {
+        corretos: mapaCorretoFalso.correto ?? 0,
+        falsos: mapaCorretoFalso.falso ?? 0,
+      },
       falsosPorMotivo: falsos.rows.map((r) => ({ motivo: r.motivo, n: Number(r.n) })),
       porOperador: porOperador.rows.map((r) => ({ operador: r.operador, balde: r.balde, n: Number(r.n) })),
       latencia: { amostras: minutos.length, medianaMin: mediana(minutos), p90Min: percentil90(minutos) },

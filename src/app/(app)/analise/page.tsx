@@ -834,7 +834,47 @@ export default async function AnalisePage({
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div>
-            <h4 className="text-xs font-semibold mb-3" style={{ color: "var(--text-muted)" }}>Tempo até o tratamento (revisão individual)</h4>
+            <h4 className="text-xs font-semibold mb-3" style={{ color: "var(--text-muted)" }}>Correto vs falso (revisão individual)</h4>
+            {(() => {
+              const { corretos, falsos: falsosIndividuais } = qualidade.individualCorretoFalso;
+              const totalIndividual = corretos + falsosIndividuais;
+              if (totalIndividual === 0) {
+                return (
+                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>Nenhuma revisão individual no período.</p>
+                );
+              }
+              const taxaAcerto = Math.round((corretos / totalIndividual) * 100);
+              const maxCF = Math.max(corretos, falsosIndividuais, 1);
+              const linhas = [
+                { label: "Corretos", n: corretos, cor: "#22c55e" },
+                { label: "Falsos", n: falsosIndividuais, cor: "#ef4444" },
+              ];
+              return (
+                <>
+                  <p className="text-2xl font-bold tabular-nums leading-none mb-3" style={{ color: taxaAcerto >= 70 ? "#22c55e" : taxaAcerto >= 40 ? "#f59e0b" : "#ef4444" }}>
+                    {taxaAcerto}%<span className="text-xs font-normal ml-1.5" style={{ color: "var(--text-muted)" }}>de acerto</span>
+                  </p>
+                  <div className="space-y-3">
+                    {linhas.map((l) => {
+                      const pct = Math.round((l.n / maxCF) * 100);
+                      return (
+                        <div key={l.label}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs" style={{ color: "var(--text-muted)" }}>{l.label}</span>
+                            <span className="text-xs font-semibold tabular-nums" style={{ color: l.cor }}>{l.n}</span>
+                          </div>
+                          <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg)" }}>
+                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: l.cor }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
+
+            <h4 className="text-xs font-semibold mb-3 mt-6" style={{ color: "var(--text-muted)" }}>Tempo até o tratamento (revisão individual)</h4>
             {qualidade.latencia.amostras === 0 ? (
               <p className="text-xs" style={{ color: "var(--text-muted)" }}>Nenhuma revisão individual no período.</p>
             ) : (
@@ -908,6 +948,68 @@ export default async function AnalisePage({
               </table>
             )}
           </div>
+        </div>
+
+        <div className="mt-6">
+          <h4 className="text-xs font-semibold mb-3" style={{ color: "var(--text-muted)" }}>Tendência diária por balde</h4>
+          {(() => {
+            const BALDES_ORDEM: { chave: string; cor: string; label: string }[] = [
+              { chave: "individual", cor: "#22c55e", label: "Revisão individual" },
+              { chave: "massa", cor: "#f59e0b", label: "Ação em massa" },
+              { chave: "limpo", cor: "#0ea5e9", label: "Limpo" },
+              { chave: "auto", cor: "#64748b", label: "Auto-resolvido" },
+              { chave: "aberto", cor: "#ef4444", label: "Em aberto" },
+            ];
+            const porDia = new Map<string, Record<string, number>>();
+            for (const s of qualidade.serieDiaria) {
+              const e = porDia.get(s.dia) ?? {};
+              e[s.balde] = s.n;
+              porDia.set(s.dia, e);
+            }
+            const diasOrdenados = [...porDia.keys()].sort();
+            if (diasOrdenados.length === 0) {
+              return <p className="text-xs" style={{ color: "var(--text-muted)" }}>Sem série diária no período.</p>;
+            }
+            return (
+              <>
+                <div className="space-y-2">
+                  {diasOrdenados.map((dia) => {
+                    const contagens = porDia.get(dia)!;
+                    const totalDia = BALDES_ORDEM.reduce((s, b) => s + (contagens[b.chave] ?? 0), 0);
+                    const label = new Date(`${dia}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+                    return (
+                      <div key={dia} className="flex items-center gap-3">
+                        <span className="text-xs w-10 flex-shrink-0 tabular-nums" style={{ color: "var(--text-muted)" }}>{label}</span>
+                        <div className="flex-1 h-3 rounded-full overflow-hidden flex" style={{ backgroundColor: "var(--bg)" }}>
+                          {totalDia > 0 && BALDES_ORDEM.map((b) => {
+                            const n = contagens[b.chave] ?? 0;
+                            if (n === 0) return null;
+                            return (
+                              <div
+                                key={b.chave}
+                                title={`${b.label}: ${n}`}
+                                style={{ width: `${(n / totalDia) * 100}%`, backgroundColor: b.cor, height: "100%" }}
+                              />
+                            );
+                          })}
+                        </div>
+                        <span className="text-xs font-semibold tabular-nums w-8 text-right flex-shrink-0" style={{ color: "var(--text)" }}>
+                          {totalDia}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-wrap items-center gap-3 mt-3 text-xs" style={{ color: "var(--text-muted)" }}>
+                  {BALDES_ORDEM.map((b) => (
+                    <span key={b.chave} className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: b.cor }} /> {b.label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
         </div>
         </>
         )}
