@@ -152,4 +152,45 @@ describe("montarPontosDeRomaneio", () => {
     const resultado = montarPontosDeRomaneio(romaneio, unitrac);
     expect(resultado[0].feito).toBe(true);
   });
+
+  // Task 5 (22/08, task-5-brief.md): fallback pra coordenada da Unitrac
+  // quando o geocode da linha do romaneio falhou (lat/lng nulos).
+  it("linha sem coordenada + alvo Unitrac com a mesma NF e com coordenada: ponto entra com a coordenada da Unitrac", () => {
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: null, lng: null, presencaConfirmadaEm: null }];
+    const unitrac = [pontoUnitrac({ documento: "2272484", lat: -22.5, lng: -42.5 })];
+    const resultado = montarPontosDeRomaneio(romaneio, unitrac);
+    expect(resultado).toHaveLength(1);
+    expect(resultado[0]).toMatchObject({ lat: -22.5, lng: -42.5 });
+  });
+
+  it("linha sem coordenada + nenhum alvo com aquela NF: ponto nao entra no resultado", () => {
+    const romaneio = [{ nf: "9999999", clienteNome: "SEM ALVO", lat: null, lng: null, presencaConfirmadaEm: null }];
+    const resultado = montarPontosDeRomaneio(romaneio, []);
+    expect(resultado).toHaveLength(0);
+  });
+
+  it("linha com coordenada + alvo com coordenada diferente: vence a coordenada do romaneio", () => {
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: -21, lng: -41, presencaConfirmadaEm: null }];
+    const unitrac = [pontoUnitrac({ documento: "2272484", lat: -22.5, lng: -42.5 })];
+    const resultado = montarPontosDeRomaneio(romaneio, unitrac);
+    expect(resultado[0]).toMatchObject({ lat: -21, lng: -41 });
+  });
+
+  it("alvo Unitrac com NF que nao esta no romaneio: nao entra no resultado (protecao de recall -- nao virar uniao completa)", () => {
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: -21, lng: -41, presencaConfirmadaEm: null }];
+    const unitrac = [
+      pontoUnitrac({ documento: "2272484", lat: -21, lng: -41 }),
+      pontoUnitrac({ documento: "OUTRA-NF-FORA-DO-ROMANEIO", lat: -30, lng: -50 }),
+    ];
+    const resultado = montarPontosDeRomaneio(romaneio, unitrac);
+    expect(resultado).toHaveLength(1);
+    expect(resultado.some((p) => p.documento === "OUTRA-NF-FORA-DO-ROMANEIO")).toBe(false);
+  });
+
+  it("regra de feito continua valendo num ponto que veio por fallback de coordenada", () => {
+    const romaneio = [{ nf: "2272484", clienteNome: "X", lat: null, lng: null, presencaConfirmadaEm: null }];
+    const unitrac = [pontoUnitrac({ documento: "2272484", lat: -22.5, lng: -42.5, feito: true, situacao: 1 })];
+    const resultado = montarPontosDeRomaneio(romaneio, unitrac);
+    expect(resultado[0].feito).toBe(true);
+  });
 });

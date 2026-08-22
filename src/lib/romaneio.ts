@@ -109,8 +109,10 @@ export function parseRomaneio(textoCompleto: string): LinhaRomaneio[] {
 export type LinhaRomaneioGeocodificada = {
   nf: string;
   clienteNome: string;
-  lat: number;
-  lng: number;
+  // Nulos quando o geocode desta linha falhou (geocode_status <> 'ok') --
+  // ver fallback pra coordenada da Unitrac em montarPontosDeRomaneio abaixo.
+  lat: number | null;
+  lng: number | null;
   // Achado real 15/07 (depois da spec anterior): a coordenada errada da
   // Unitrac afeta a CONFIRMACAO dela propria -- se o raio dela ta centrado
   // no ponto errado, uma entrega feita de verdade no endereco certo nunca
@@ -130,29 +132,61 @@ export type LinhaRomaneioGeocodificada = {
 // naquele ciclo. NF sem alvo correspondente ainda (romaneio subiu antes da
 // Unitrac sincronizar aquela entrega) fica pendente por padrao -- nunca
 // assume "feito" sem confirmacao explicita da Unitrac.
+//
+// Fallback de coordenada por NF (pedido do usuario, 22/08, task-5-brief.md):
+// 0,76% das linhas do romaneio (315 de 41.167 nos ultimos 30 dias) tem
+// geocode_status <> 'ok' e por isso lat/lng nulos -- ANTES desta correcao, a
+// query em route.ts filtrava essas linhas fora e a NF inteira sumia da lista
+// de destinos do motor. E o mesmo modo de falha que este motor existe pra
+// corrigir, em escala menor: caminhao indo pra um destino real que o motor
+// nao enxerga -> "afastando de todos os pendentes" dispara -> falso
+// positivo. Como o alvo da Unitrac deste mesmo ciclo ja e casado por NF
+// (`alvo` abaixo) e traz coordenada propria, usamos ela SO quando a linha do
+// romaneio nao tem coordenada usavel.
+//
+// Por que so por NF, nunca a uniao completa dos alvos Unitrac: um alvo da
+// Unitrac cuja NF NAO esta no romaneio deste veiculo continua de fora.
+// avaliarAfastandoDeTudo so dispara quando o veiculo se afasta de TODOS os
+// pendentes -- cada destino a mais torna o alerta mais dificil de disparar.
+// A Unitrac e justamente a fonte que erra endereco nesses carros; um destino
+// fantasma dela esconderia desvio real. O fallback por NF e ganho puro
+// (preenche um ponto que ja sabiamos existir no romaneio); a uniao completa
+// trocaria falso positivo por falso negativo, o que a operacao nao aceita
+// (ver [[feedback_desvio_priorizar_recall]]). NF do romaneio sem coordenada
+// e sem alvo Unitrac correspondente continua fora -- nao ha de onde tirar
+// coordenada.
 export function montarPontosDeRomaneio(
   pontosRomaneio: LinhaRomaneioGeocodificada[],
   pontosUnitrac: PontoEntrega[]
 ): PontoEntrega[] {
   const porNf = new Map(pontosUnitrac.filter((p) => p.documento).map((p) => [p.documento as string, p]));
-  return pontosRomaneio.map((l) => {
-    const alvo = porNf.get(l.nf);
-    return {
-      lat: l.lat,
-      lng: l.lng,
-      raio: alvo?.raio ?? 50,
-      ordem: 0,
-      nome: l.clienteNome,
-      feito: (alvo?.feito ?? false) || l.presencaConfirmadaEm !== null,
-      situacao: alvo?.situacao ?? 0,
-      codigo: alvo?.codigo ?? null,
-      pontoCodigo: alvo?.pontoCodigo ?? null,
-      documento: l.nf,
-      identificador: alvo?.identificador ?? null,
-      dataInicio: alvo?.dataInicio ?? null,
-      dataRealizado: alvo?.dataRealizado ?? null,
-      observacoes: alvo?.observacoes ?? null,
-      rota: alvo?.rota ?? null,
-    } satisfies PontoEntrega;
-  });
+  return pontosRomaneio
+    .map((l) => {
+      const alvo = porNf.get(l.nf);
+      // Romaneio e a verdade quando ele sabe: so cai pro fallback da
+      // Unitrac quando a linha do romaneio nao trouxe coordenada usavel.
+      const temCoordenadaRomaneio = l.lat != null && l.lng != null;
+      const lat = temCoordenadaRomaneio ? l.lat : alvo?.lat ?? null;
+      const lng = temCoordenadaRomaneio ? l.lng : alvo?.lng ?? null;
+      if (lat == null || lng == null) return null;
+      const ponto: PontoEntrega = {
+        lat,
+        lng,
+        raio: alvo?.raio ?? 50,
+        ordem: 0,
+        nome: l.clienteNome,
+        feito: (alvo?.feito ?? false) || l.presencaConfirmadaEm !== null,
+        situacao: alvo?.situacao ?? 0,
+        codigo: alvo?.codigo ?? null,
+        pontoCodigo: alvo?.pontoCodigo ?? null,
+        documento: l.nf,
+        identificador: alvo?.identificador ?? null,
+        dataInicio: alvo?.dataInicio ?? null,
+        dataRealizado: alvo?.dataRealizado ?? null,
+        observacoes: alvo?.observacoes ?? null,
+        rota: alvo?.rota ?? null,
+      };
+      return ponto;
+    })
+    .filter((p): p is PontoEntrega => p !== null);
 }

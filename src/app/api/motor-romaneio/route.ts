@@ -91,8 +91,10 @@ type LinhaRomaneioPontoDb = {
   placa: string;
   nf: string;
   cliente_nome: string;
-  lat: number;
-  lng: number;
+  // Nulos quando o geocode desta linha falhou -- fallback pra coordenada da
+  // Unitrac fica por conta de montarPontosDeRomaneio (@/lib/romaneio).
+  lat: number | null;
+  lng: number | null;
   presenca_confirmada_em: string | null;
 };
 
@@ -129,13 +131,17 @@ export async function POST(request: Request) {
     const hoje = hojeSP();
 
     // Só veículos com romaneio utilizável de hoje (ver task-2-brief.md, Step 3).
+    // NÃO filtra por geocode_status/lat/lng aqui (removido na task-5, ver
+    // task-5-brief.md): uma NF cujo geocode falhou ainda entra na lista --
+    // montarPontosDeRomaneio (@/lib/romaneio) resolve a coordenada dela via
+    // fallback pelo alvo da Unitrac que casa por NF, ou descarta a linha se
+    // nem isso existir. Filtrar geocode_status aqui faria a NF sumir ANTES
+    // desse fallback rodar, reabrindo o buraco que esta task fecha.
     const { rows: linhasRomaneio } = await pool.query<LinhaRomaneioPontoDb>(
       `SELECT veiculo_id, placa, nf, cliente_nome, lat, lng, presenca_confirmada_em
          FROM romaneio_pontos
         WHERE romaneio_data = $1::date
           AND modo_teste = false
-          AND geocode_status = 'ok'
-          AND lat IS NOT NULL AND lng IS NOT NULL
           AND veiculo_id IS NOT NULL`,
       [hoje]
     );
@@ -376,9 +382,13 @@ export async function POST(request: Request) {
 
         // Step 2: monta os pontos (romaneio + status Unitrac) -- reusa
         // montarPontosDeRomaneio como está, regra de "feito" já embutida
-        // ((alvo?.feito ?? false) || presencaConfirmadaEm !== null).
+        // ((alvo?.feito ?? false) || presencaConfirmadaEm !== null). Nome
+        // sem "Geocodificadas" (task-5): desde que a query parou de filtrar
+        // geocode_status, algumas destas linhas não têm coordenada própria
+        // — a Unitrac pode preencher via fallback dentro da função, ou a
+        // linha ser descartada lá dentro.
         const linhasVeiculo = romaneioPorVeiculo.get(veiculoId) ?? [];
-        const pontosRomaneioGeocodificados: LinhaRomaneioGeocodificada[] = linhasVeiculo.map((l) => ({
+        const pontosRomaneioDoVeiculo: LinhaRomaneioGeocodificada[] = linhasVeiculo.map((l) => ({
           nf: l.nf,
           clienteNome: l.cliente_nome,
           lat: l.lat,
@@ -386,7 +396,7 @@ export async function POST(request: Request) {
           presencaConfirmadaEm: l.presenca_confirmada_em,
         }));
         const pontosUnitracVeiculo = pontosUnitracPorPlaca.get(info.placa) ?? [];
-        const pontos = montarPontosDeRomaneio(pontosRomaneioGeocodificados, pontosUnitracVeiculo);
+        const pontos = montarPontosDeRomaneio(pontosRomaneioDoVeiculo, pontosUnitracVeiculo);
 
         // Step 3: mesma regra de pendentes da Central pro Sinal A
         // (pontosVeiculoParaDesvio em route.ts): !pt.feito && temCoordenadaValida(pt).
