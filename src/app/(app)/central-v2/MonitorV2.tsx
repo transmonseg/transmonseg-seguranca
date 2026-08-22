@@ -50,6 +50,14 @@ interface Props {
   clienteAtivoId: string;
   veiculos: { placa: string; cv: string }[];
   alertasIniciais: AlertaEnriquecido[];
+  // Task 3 (motor-romaneio-paralelo): permite a tela /central-romaneio reusar
+  // este componente lendo de alertas_romaneio em vez de alertas. Default
+  // preserva EXATAMENTE o comportamento da Central — não passar estas props
+  // é o caminho atual e continua idêntico.
+  fonteAlertas?: "central" | "romaneio";
+  // Base do link do cliente-switcher (coluna esquerda da toolbar). Default
+  // "/central-v2" é o valor hardcoded que já existia (redireciona pra "/").
+  hrefBaseClientes?: string;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -532,7 +540,7 @@ function usePainelFoco(params: {
 }
 
 // ── Main Component ────────────────────────────────────────────────────
-export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais }: Props) {
+export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais, fonteAlertas = "central", hrefBaseClientes = "/central-v2" }: Props) {
   const [alertas, setAlertas] = useState<AlertaEnriquecido[]>(alertasIniciais);
   const alertasRef = useRef<AlertaEnriquecido[]>(alertasIniciais);
   const [veiculosMapa, setVeiculosMapa] = useState<VeiculoMapa[]>([]);
@@ -914,9 +922,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // pra bater mais perto do ritmo real do motor. Mais simples de manter,
   // sem precisar recriar o Realtime na nova stack.
   useEffect(() => {
+    const endpointAlertas = fonteAlertas === "romaneio" ? "/api/alertas-romaneio" : "/api/alertas";
     const poll = async () => {
       try {
-        const res = await fetch(`/api/alertas?cliente=${encodeURIComponent(cliente)}`);
+        const res = await fetch(`${endpointAlertas}?cliente=${encodeURIComponent(cliente)}`);
         if (!res.ok) return;
         const data: { alertas?: AlertaEnriquecido[] } = await res.json();
         const novos = data.alertas ?? [];
@@ -942,7 +951,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     poll();
     const t = setInterval(poll, 30_000);
     return () => clearInterval(t);
-  }, [cliente]);
+  }, [cliente, fonteAlertas]);
 
   useEffect(() => {
     const poll = async () => {
@@ -2005,7 +2014,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {clientes.map(c => {
             const active = c.cod === cliente;
             return (
-              <Link key={c.cod} href={`/central-v2?cliente=${encodeURIComponent(c.cod)}`}
+              <Link key={c.cod} href={`${hrefBaseClientes}?cliente=${encodeURIComponent(c.cod)}`}
                 style={{
                   padding: "4px 12px", borderRadius: 20,
                   fontSize: 11, fontWeight: 700, letterSpacing: ".06em",

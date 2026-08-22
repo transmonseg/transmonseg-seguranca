@@ -78,6 +78,13 @@ export default async function AppLayout({
             >
               Escala
             </Link>
+            <Link
+              href="/central-romaneio"
+              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
+            >
+              Central Romaneio
+            </Link>
           </nav>
 
           {/* Lado direito: relógio + ao vivo + operador */}
