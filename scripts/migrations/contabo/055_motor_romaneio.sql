@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS romaneio_desvio_estado (
   veiculo_id uuid PRIMARY KEY REFERENCES veiculos(id) ON DELETE CASCADE,
   afastando_streak int NOT NULL DEFAULT 0,
   rua_rara_streak int NOT NULL DEFAULT 0,
-  ultima_via_principal_em timestamptz,
-  saiu_parada_confirmada_em timestamptz,
+  ultima_via_principal_em timestamptz NULL,
+  saiu_parada_confirmada_em timestamptz NULL,
   atualizado_em timestamptz NOT NULL DEFAULT now()
 );
 
