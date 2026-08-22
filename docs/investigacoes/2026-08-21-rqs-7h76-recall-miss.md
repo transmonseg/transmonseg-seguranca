@@ -209,3 +209,71 @@ produção.
 - A distância usada na seção de limitação acima é linha reta (haversine), não a distância
   real de rua via OSRM que o motor de fato usa — serve como indicador direcional, não como
   reprodução exata do sinal.
+
+## Adendo (2026-08-22): interação com a mudança de 20/08 na revisão de desvio
+
+Contexto que não tinha ao escrever o corpo acima: em **20/08** (véspera deste caso) foi
+shipada `TIPOS_REVISAO_INDIVIDUAL = new Set(["desvio", "parada_fora_tapete"])`
+(`src/app/(app)/central-v2/MonitorV2.tsx:98`), usada para filtrar
+`alertasResolviveisEmMassa` (`MonitorV2.tsx:1160`) — o botão "Resolver todos" deixou de
+poder fechar alertas desses dois tipos. Motivo documentado no próprio arquivo
+(`MonitorV2.tsx:2447-2451`): em 19/08, 29 dos 35 desvios marcados "correto" vieram de
+cliques em lote e só 6 de revisão individual, contaminando a calibração. A partir de 20/08,
+`desvio` só pode ser tratado card a card.
+
+**Verifiquei a mecânica exata dos dois caminhos de escrita** (`src/app/(app)/acoes-alertas.ts`):
+- `resolverVarios` ("Resolver todos", linhas 91-149) grava sempre `status: "resolvido"`,
+  nunca `status: "falso_positivo"` — não existe um "falso positivo em massa".
+- `marcarFalsoPositivoComMotivo` (linhas 68-81, chamada pelo botão individual "Falso
+  positivo" de um card) grava `status: "falso_positivo"`, `origem_acao: "falso_individual"`.
+
+O silenciamento de 2h (`contaComoEventoDeSilenciamento` / `mapaTiposSilenciados`) dispara
+apenas para linhas com `status='falso_positivo'` (`route.ts:1432-1445`) — ou seja, **só o
+caminho individual pode acioná-lo; o antigo "Resolver todos" em lote nunca acionava**,
+porque nunca escreve esse status. Antes de 20/08, um desvio que um operador considerasse
+"não é nada" podia ser descartado via clique em massa sem tocar no silenciamento. Depois de
+20/08, esse mesmo julgamento só pode ser expresso via um dos dois botões individuais
+(Resolver ou Falso positivo) — e, quando o operador escolhe "Falso positivo" (o rótulo
+semanticamente certo para "isso não é um desvio real"), aciona o silenciamento de 2h.
+**A mudança que corrigiu a contaminação da calibração aumenta, como efeito colateral não
+previsto, a frequência do gatilho que causou o miss deste caso.**
+
+**O caso RQS-7H76 é a primeira manifestação observada dessa interação** — 1 dia depois do
+deploy de `TIPOS_REVISAO_INDIVIDUAL`. Confirmei com consulta direta ao banco que a linha do
+alerta `117ea208-3b55-4a24-9a10-f3ea68a05486` tem `origem_acao = 'falso_individual'`
+(não `resolver_massa`) — ou seja, o clique de 1min43s que silenciou o tipo `desvio` para
+este veículo só foi possível *porque* desvio já não podia mais ser fechado em lote naquele
+dia. Não tenho dado de antes de 20/08 para comparar taxa de silenciamento (a coluna
+`origem_acao` e a lógica de silenciamento já existiam antes; o que mudou foi só o volume
+que passa a percorrer o caminho individual) — então "primeira manifestação observada" é
+sobre este caso específico, não uma alegação de que o problema não existia antes.
+
+**Isso reforça a proposta original, não a reformula.** A Proposta 1 ("não confiar
+cegamente em dispensas muito rápidas") já mirava exatamente este mecanismo; o que muda é a
+urgência: a mudança de 20/08 empurra mais decisões de desvio para o único caminho que pode
+acionar o silenciamento, então o volume de exposição a esse risco tende a subir, não cair,
+depois da correção de calibração. As duas mudanças (a de 19-20/08 e o que está documentado
+aqui) puxam em direções opostas de um mesmo eixo — dado de calibração mais limpo vs. mais
+cegueira operacional de 2h — e isso não estava visível para quem decidiu a mudança de 20/08,
+porque não são a mesma pessoa nem o mesmo momento de decisão.
+
+**Trade-off explícito para quem for decidir:**
+- Encurtar ou condicionar a janela de 2h aumenta o risco de ruído repetido — exatamente o
+  problema que a Task 2 deste mesmo plano acabou de resolver para o tipo `parada`, via
+  cooldown por episódio (`deveSuprimirRedisparoParada`). Aplicar uma lógica equivalente a
+  `desvio` não é uma cópia direta: parada tem um "episódio" bem definido (`parado_desde`);
+  desvio, no sinal atual, não tem um conceito de episódio persistido além do streak
+  (que já reseta), então precisaria de desenho próprio.
+- Manter a janela como está aceita cegueira de 2h toda vez que um clique de "Falso
+  positivo" for apressado — e a mudança de 20/08 aumenta quantas vezes esse clique
+  acontece por não ter mais a válvula de escape do "Resolver todos" em lote.
+- Meio-termo possível, **como sugestão, não recomendação fechada**: silenciar só a partir
+  da 2ª ou 3ª marcação de falso_positivo do mesmo tipo+veículo dentro de uma janela curta
+  (exige repetição do julgamento antes de confiar nele), ou tornar a janela de silêncio
+  proporcional ao tempo que o operador levou entre o alerta aparecer e a decisão (um
+  clique em 1min43s pesa menos que um clique após 10min de análise). Nenhuma das duas foi
+  validada contra dado real — precisam do mesmo tratamento que os limiares de streak já
+  receberam (simulação de dia real antes de ir para produção).
+
+Nenhum código de produção foi alterado para produzir este adendo — apenas leitura de
+`MonitorV2.tsx`, `acoes-alertas.ts` e uma consulta de confirmação no banco de produção.
