@@ -30,6 +30,14 @@
 // correção de posição via OSRM /match foram adicionados, os alertas se
 // auto-resolvem quando o sinal para, e há uma checagem de idempotência por
 // leitura de GPS.
+//
+// Fix de produção 22/08 (mesmo dia, achado ao vivo): a checagem de
+// idempotência comparava datagps (relógio da Unitrac, deslocado ~3h pro
+// passado por um bug de fuso em parseDatagps da Central, ver comentário no
+// gate abaixo) contra atualizado_em (relógio real do Postgres) -- nunca
+// passava depois do primeiro ciclo, o motor parava de vez. Corrigido pra
+// comparar datagps-contra-datagps (nova coluna ultimo_datagps, migration
+// 056) -- mesmo offset dos dois lados, deixa de importar.
 
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -96,6 +104,7 @@ type EstadoAnterior = {
   ultima_via_principal_em: Date | null;
   saiu_parada_confirmada_em: Date | null;
   atualizado_em: Date | null;
+  ultimo_datagps: Date | null;
 };
 
 type AlertaAtivoRow = { id: string; tipo: string; nivel: "critico" | "atencao" };
@@ -189,10 +198,11 @@ export async function POST(request: Request) {
       ((posAtuaisRows ?? []) as PosAtual[]).map((p) => [p.veiculo_id, p])
     );
 
-    // Estado anterior -- tabela PRÓPRIA (romaneio_desvio_estado, migration 055),
-    // nunca desvio_estado da Central. atualizado_em entra pra idempotência (I3).
+    // Estado anterior -- tabela PRÓPRIA (romaneio_desvio_estado, migration 055
+    // + 056). ultimo_datagps entra pra idempotência (I3, revisado 22/08 --
+    // ver comentário no gate mais abaixo pro motivo de NÃO usar atualizado_em).
     const { rows: estadoRows } = await pool.query<{ veiculo_id: string } & EstadoAnterior>(
-      `SELECT veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, atualizado_em
+      `SELECT veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, atualizado_em, ultimo_datagps
          FROM romaneio_desvio_estado
         WHERE veiculo_id = ANY($1::uuid[])`,
       [veiculoIds]
@@ -320,18 +330,35 @@ export async function POST(request: Request) {
           ultima_via_principal_em: null,
           saiu_parada_confirmada_em: null,
           atualizado_em: null,
+          ultimo_datagps: null,
         };
 
-        // I3: idempotência por leitura de GPS -- sem isso, duas execuções
-        // sobre a MESMA leitura (drift entre disparos do cron) incrementam o
-        // streak duas vezes pelo mesmo movimento. atualizado_em é a última
-        // vez que ESTA rota processou este veículo; se o datagps da leitura
-        // atual já é <= esse instante, já avaliamos esta leitura antes --
-        // pula o veículo inteiro (nada mudou, nada novo pra escrever).
+        // I3 (revisado 22/08 -- achado real em produção, ver task-2-report.md):
+        // idempotência por leitura de GPS, mas comparando datagps-CONTRA-
+        // datagps, NUNCA datagps contra now()/atualizado_em. Motivo concreto:
+        // parseDatagps (src/app/api/motor/route.ts:226-237) grava o horário
+        // de Brasília que a Unitrac devolve com sufixo "Z" (UTC) -- isso
+        // desloca TODO datagps ~3h pro passado, sistematicamente (não é
+        // atraso real; a Unitrac responde ao vivo em segundos). Pra Central
+        // isso é inofensivo (ela usa atraso_min, nunca compara datagps com
+        // now()); comparando esse datagps deslocado contra now()/
+        // atualizado_em (relógio real do Postgres) essa checagem NUNCA
+        // passava depois do primeiro ciclo -- o motor pulava TODO veículo pra
+        // sempre (produção, 22/08). Guardando o ÚLTIMO datagps já processado
+        // (ultimo_datagps, migration 056) e comparando datagps-contra-datagps,
+        // o mesmo offset aparece dos dois lados e deixa de importar. NÃO
+        // "simplificar" isso de volta pra comparar com now()/atualizado_em --
+        // é exatamente o bug que já aconteceu uma vez. NÃO corrigir
+        // parseDatagps em vez disso: é função da Central, em produção, mudar
+        // o fuso do dado gravado lá é risco desnecessário pro que precisamos
+        // aqui. Pula só quando ultimo_datagps é conhecido E a leitura atual
+        // não é mais nova que ele; processa quando é mais nova ou quando
+        // ultimo_datagps ainda é null (nunca processado, ou posAtual.datagps
+        // ausente -- fail-open, nunca bloqueia por falta de dado).
         if (
           posAtual.datagps != null &&
-          estadoAnterior.atualizado_em != null &&
-          new Date(posAtual.datagps).getTime() <= estadoAnterior.atualizado_em.getTime()
+          estadoAnterior.ultimo_datagps != null &&
+          new Date(posAtual.datagps).getTime() <= estadoAnterior.ultimo_datagps.getTime()
         ) {
           continue;
         }
@@ -547,17 +574,23 @@ export async function POST(request: Request) {
         }
 
         // Step 8: grava estado (UPSERT por veiculo_id), tabela PRÓPRIA.
+        // ultimo_datagps grava o datagps DESTA leitura -- vira o marco de
+        // idempotência do próximo ciclo (ver comentário no gate acima).
+        // COALESCE evita regredir pra null quando posAtual.datagps veio
+        // ausente neste ciclo (mesmo padrão das outras colunas que só
+        // avançam quando o dado novo é conhecido).
         try {
           await pool.query(
-            `INSERT INTO romaneio_desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, atualizado_em)
-             VALUES ($1, $2, $3, $4, $5, now())
+            `INSERT INTO romaneio_desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, ultimo_datagps, atualizado_em)
+             VALUES ($1, $2, $3, $4, $5, $6, now())
              ON CONFLICT (veiculo_id) DO UPDATE SET
                afastando_streak = EXCLUDED.afastando_streak,
                rua_rara_streak = EXCLUDED.rua_rara_streak,
                ultima_via_principal_em = COALESCE(EXCLUDED.ultima_via_principal_em, romaneio_desvio_estado.ultima_via_principal_em),
                saiu_parada_confirmada_em = COALESCE(EXCLUDED.saiu_parada_confirmada_em, romaneio_desvio_estado.saiu_parada_confirmada_em),
+               ultimo_datagps = COALESCE(EXCLUDED.ultimo_datagps, romaneio_desvio_estado.ultimo_datagps),
                atualizado_em = now()`,
-            [veiculoId, afastandoStreakNovo, ruaRaraStreakNovo, ultimaViaPrincipalEmNova, saiuParadaConfirmadaEmNova]
+            [veiculoId, afastandoStreakNovo, ruaRaraStreakNovo, ultimaViaPrincipalEmNova, saiuParadaConfirmadaEmNova, posAtual.datagps]
           );
         } catch (errEstado) {
           erros.push(`Aviso: falha ao gravar romaneio_desvio_estado pro veiculo ${veiculoId}: ${String(errEstado)}`);
