@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { apurarQualidade } from "@/lib/qualidade-tratamento";
+import { apurarQualidade, type ResumoQualidade } from "@/lib/qualidade-tratamento";
 
 export const dynamic = "force-dynamic";
 
@@ -174,7 +174,20 @@ export default async function AnalisePage({
   // desnecessario. Nao entra no Promise.all acima porque respeita o
   // filtro de tipo (tipoFiltro), diferente das queries de admin que
   // trazem tudo e filtram depois em JS.
-  const qualidade = await apurarQualidade(dias, tipoFiltro);
+  //
+  // try/catch de proposito (achado de revisao): esta chamada introduz uma
+  // dependencia de rede nova nesta pagina -- conexao pg direta ao Postgres
+  // do Contabo, separada do caminho @supabase/ssr que o resto da pagina
+  // usa. Se essa conexao falhar (rede, timeout, credencial), so a secao de
+  // qualidade degrada (mostra estado vazio) -- as outras secoes, que ja
+  // buscaram seus dados via Supabase com sucesso, continuam renderizando
+  // normalmente em vez de derrubar a pagina inteira.
+  let qualidade: ResumoQualidade | null = null;
+  try {
+    qualidade = await apurarQualidade(dias, tipoFiltro);
+  } catch (e) {
+    console.error("[analise] apurarQualidade falhou:", e instanceof Error ? e.message : String(e));
+  }
 
   const todos = (atualRes.data ?? []) as unknown as AlertaRow[];
   const todosAnt = (antRes.data ?? []) as unknown as AlertaAnt[];
@@ -780,6 +793,12 @@ export default async function AnalisePage({
           Como os alertas do período foram tratados. Só &quot;revisão individual&quot; vale como veredito caso a caso.
         </p>
 
+        {!qualidade ? (
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+            Não foi possível carregar os dados de qualidade agora. As demais seções desta página continuam válidas.
+          </p>
+        ) : (
+        <>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
           {[
             { chave: "individual", label: "Revisão individual", cor: "#22c55e" },
@@ -874,6 +893,8 @@ export default async function AnalisePage({
             )}
           </div>
         </div>
+        </>
+        )}
       </div>
     </div>
   );

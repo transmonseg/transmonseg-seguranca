@@ -92,15 +92,14 @@ export async function apurarQualidade(dias: number, tipo: string | null): Promis
       client.query<{ motivo: string | null; n: string }>(
         `SELECT motivo_falso_positivo AS motivo, count(*)::text AS n ${filtroBase} AND ${SQL_BALDE} = 'individual' GROUP BY 1`, params),
       client.query<{ operador: string; balde: string; n: string }>(
+        // Sem prefixo "a." em SQL_BALDE de proposito: `operadores` (o) nao
+        // tem coluna com nome colidente (status/origem_acao/operador_id --
+        // ver scripts/migrations/contabo/001_schema_base.sql), entao nao ha
+        // ambiguidade no JOIN. Reusar ${SQL_BALDE} bare (em vez de uma copia
+        // manual com prefixo) evita uma TERCEIRA expressao da mesma regra
+        // que pudesse divergir silenciosamente da que o Step 8 valida.
         `SELECT coalesce(o.nome, 'sem operador') AS operador,
-                CASE
-                  WHEN a.status = 'limpo' THEN 'limpo'
-                  WHEN a.status IN ('ativo','reconhecido') THEN 'aberto'
-                  WHEN a.origem_acao IN ('resolver_individual','falso_individual') THEN 'individual'
-                  WHEN a.origem_acao = 'resolver_massa' THEN 'massa'
-                  WHEN a.operador_id IS NOT NULL THEN 'individual'
-                  ELSE 'auto'
-                END AS balde,
+                ${SQL_BALDE} AS balde,
                 count(*)::text AS n
          FROM alertas a LEFT JOIN operadores o ON o.id = a.operador_id
          WHERE a.modo_teste = false
