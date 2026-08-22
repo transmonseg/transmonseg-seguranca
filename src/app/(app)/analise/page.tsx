@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { apurarQualidade } from "@/lib/qualidade-tratamento";
 
 export const dynamic = "force-dynamic";
 
@@ -166,6 +167,14 @@ export default async function AnalisePage({
     // do usuario: "so quero saber qual login foi").
     admin.from("operadores").select("id, nome"),
   ]);
+
+  // Qualidade de tratamento (COMO os alertas foram tratados) usa a mesma
+  // agregacao SQL da rota /api/qualidade -- chamada direto aqui (Server
+  // Component) em vez de por fetch, evitando um round-trip HTTP
+  // desnecessario. Nao entra no Promise.all acima porque respeita o
+  // filtro de tipo (tipoFiltro), diferente das queries de admin que
+  // trazem tudo e filtram depois em JS.
+  const qualidade = await apurarQualidade(dias, tipoFiltro);
 
   const todos = (atualRes.data ?? []) as unknown as AlertaRow[];
   const todosAnt = (antRes.data ?? []) as unknown as AlertaAnt[];
@@ -756,6 +765,115 @@ export default async function AnalisePage({
             </table>
           </div>
         )}
+      </div>
+
+      {/* Qualidade de tratamento — COMO os alertas foram tratados.
+          Achado real 19-21/08: "resolvido" sozinho nao diz nada, porque
+          29 de 35 "corretos" de desvio vinham de clique em lote. Aqui o
+          que importa e' o balde "revisao individual". */}
+      <div
+        className="rounded-xl p-6"
+        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+      >
+        <h3 className="text-sm font-semibold mb-1">Qualidade do tratamento</h3>
+        <p className="text-xs mb-4" style={{ color: "var(--text-muted)" }}>
+          Como os alertas do período foram tratados. Só &quot;revisão individual&quot; vale como veredito caso a caso.
+        </p>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+          {[
+            { chave: "individual", label: "Revisão individual", cor: "#22c55e" },
+            { chave: "massa", label: "Ação em massa", cor: "#f59e0b" },
+            { chave: "limpo", label: "Limpo (sem revisão)", cor: "#0ea5e9" },
+            { chave: "auto", label: "Auto-resolvido", cor: "#64748b" },
+            { chave: "aberto", label: "Em aberto", cor: "#ef4444" },
+          ].map((b) => (
+            <div key={b.chave} className="rounded-xl p-4 flex flex-col" style={{ backgroundColor: "var(--bg)", border: "1px solid var(--border)" }}>
+              <p className="text-xs leading-tight" style={{ color: "var(--text-muted)", fontSize: "11px" }}>{b.label}</p>
+              <p className="text-2xl font-bold tabular-nums leading-none mt-1.5" style={{ color: b.cor }}>
+                {qualidade.baldes[b.chave] ?? 0}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div>
+            <h4 className="text-xs font-semibold mb-3" style={{ color: "var(--text-muted)" }}>Tempo até o tratamento (revisão individual)</h4>
+            {qualidade.latencia.amostras === 0 ? (
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>Nenhuma revisão individual no período.</p>
+            ) : (
+              <div className="flex gap-6">
+                <div>
+                  <p className="text-xs" style={{ color: "var(--text-muted)", fontSize: "11px" }}>Mediana</p>
+                  <p className="text-2xl font-bold tabular-nums leading-none mt-1" style={{ color: "var(--text)" }}>
+                    {Math.round(qualidade.latencia.medianaMin ?? 0)}<span className="text-sm font-normal"> min</span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs" style={{ color: "var(--text-muted)", fontSize: "11px" }}>P90</p>
+                  <p className="text-2xl font-bold tabular-nums leading-none mt-1" style={{ color: "var(--text)" }}>
+                    {Math.round(qualidade.latencia.p90Min ?? 0)}<span className="text-sm font-normal"> min</span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs" style={{ color: "var(--text-muted)", fontSize: "11px" }}>Amostras</p>
+                  <p className="text-2xl font-bold tabular-nums leading-none mt-1" style={{ color: "var(--text-dim)" }}>
+                    {qualidade.latencia.amostras}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <h4 className="text-xs font-semibold mb-3 mt-6" style={{ color: "var(--text-muted)" }}>Motivos de falso (revisão individual)</h4>
+            {qualidade.falsosPorMotivo.filter((f) => f.motivo).length === 0 ? (
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>Nenhum falso categorizado no período.</p>
+            ) : (
+              <div className="space-y-2">
+                {qualidade.falsosPorMotivo.filter((f) => f.motivo).sort((a, b) => b.n - a.n).map((f) => (
+                  <div key={f.motivo} className="flex items-center justify-between">
+                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>{f.motivo}</span>
+                    <span className="text-xs font-semibold tabular-nums" style={{ color: "var(--text)" }}>{f.n}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <h4 className="text-xs font-semibold mb-3" style={{ color: "var(--text-muted)" }}>Por operador</h4>
+            {qualidade.porOperador.length === 0 ? (
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>Nenhum tratamento no período.</p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr style={{ color: "var(--text-dim)" }}>
+                    <th className="text-left font-medium pb-2">Operador</th>
+                    <th className="text-right font-medium pb-2">Individual</th>
+                    <th className="text-right font-medium pb-2">Massa</th>
+                    <th className="text-right font-medium pb-2">Limpo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...new Set(qualidade.porOperador.map((p) => p.operador))]
+                    .filter((nome) => nome !== "sem operador")
+                    .map((nome) => {
+                      const doOperador = (balde: string) =>
+                        qualidade.porOperador.find((p) => p.operador === nome && p.balde === balde)?.n ?? 0;
+                      return (
+                        <tr key={nome} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td className="py-2" style={{ color: "var(--text)" }}>{nome}</td>
+                          <td className="py-2 text-right tabular-nums" style={{ color: "#22c55e" }}>{doOperador("individual")}</td>
+                          <td className="py-2 text-right tabular-nums" style={{ color: "#f59e0b" }}>{doOperador("massa")}</td>
+                          <td className="py-2 text-right tabular-nums" style={{ color: "#0ea5e9" }}>{doOperador("limpo")}</td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
