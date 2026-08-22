@@ -1092,3 +1092,29 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
 export function avaliar(p: PosicaoNormalizada, ctx: CtxAvaliacao): Alerta | null {
   return arbitrarCandidatos(montarCandidatosCore(p, ctx));
 }
+
+// Cooldown de re-disparo por EPISODIO de parada (achado real 21/08, pedido
+// explicito da operadora Natalia, repetido 3x no grupo: "Sistema repetindo
+// informacao para clientes que precisam ficar muito tempo parados. Tem a
+// possibilidade de avisar uma unica vez?"). Caso medido: TUG-9D18 gerou 17
+// alertas em 2h (7 parada_anomala + 10 parada_longa) pro MESMO episodio,
+// varios ja tratados pela operadora -- os detectores de parada reavaliam a
+// condicao a cada ciclo e, com o carro ainda parado, ela continua verdadeira.
+//
+// Um "episodio" e' identificado por parado_desde (ja calculado no motor a
+// cada ciclo): carro volta a andar -> parado_desde muda -> episodio novo,
+// sem cooldown residual. O cooldown e' POR TIPO: a escalacao
+// parada_anomala -> parada_longa (90min) continua avisando normalmente,
+// porque sao tipos diferentes com listas de tratados independentes.
+export function deveSuprimirRedisparoParada(ctx: {
+  paradoDesde: string | null;
+  alertasTratadosDoTipo: { resolvidoEm: string }[];
+}): boolean {
+  if (!ctx.paradoDesde) return false;
+  const inicioMs = new Date(ctx.paradoDesde).getTime();
+  if (!Number.isFinite(inicioMs)) return false;
+  return ctx.alertasTratadosDoTipo.some((a) => {
+    const tratadoMs = new Date(a.resolvidoEm).getTime();
+    return Number.isFinite(tratadoMs) && tratadoMs >= inicioMs;
+  });
+}

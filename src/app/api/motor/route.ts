@@ -40,6 +40,7 @@ import {
   temCoordenadaValida,
   contaComoEventoDeSilenciamento,
   BONUS_CORROBORACAO_POR_SINAL,
+  deveSuprimirRedisparoParada,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -1389,6 +1390,33 @@ export async function POST(request: Request) {
         const lista = mapaAlertasAbertos.get(ab.veiculo_id) ?? [];
         lista.push({ id: ab.id, tipo: ab.tipo, nivel: ab.nivel, motivo: ab.motivo, status: ab.status, contexto: ab.contexto, desde: ab.desde });
         mapaAlertasAbertos.set(ab.veiculo_id, lista);
+      }
+
+      // Alertas de PARADA ja tratados por um operador nas ultimas 6h --
+      // insumo do cooldown de re-disparo (ver deveSuprimirRedisparoParada
+      // em detectores.ts, achado real 21/08 caso TUG-9D18). Janela de 6h:
+      // cobre com folga o episodio de parada mais longo ja observado (2h)
+      // sem trazer o dia inteiro pra memoria. operador_id NOT NULL filtra
+      // auto-resolves do proprio motor (que nao sao decisao humana e nao
+      // devem calar o alerta seguinte).
+      const seisHorasAtras = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+      const { data: paradasTratadas } = await supabase
+        .from("alertas")
+        .select("tipo, veiculo_id, resolvido_em")
+        .eq("cliente_id", cliente.id)
+        .eq("modo_teste", false)
+        .in("tipo", ["parada_anomala", "parada_longa"])
+        .not("operador_id", "is", null)
+        .not("resolvido_em", "is", null)
+        .gte("resolvido_em", seisHorasAtras);
+
+      // Chave: `${veiculo_id}:${tipo}` -> lista de tratamentos daquele tipo.
+      const mapaParadasTratadas = new Map<string, { resolvidoEm: string }[]>();
+      for (const pt of paradasTratadas ?? []) {
+        const chave = `${pt.veiculo_id}:${pt.tipo}`;
+        const lista = mapaParadasTratadas.get(chave) ?? [];
+        lista.push({ resolvidoEm: pt.resolvido_em as string });
+        mapaParadasTratadas.set(chave, lista);
       }
 
       // BLOCKER 1 (revisao independente 27/07): esta query alimenta
@@ -3095,20 +3123,46 @@ export async function POST(request: Request) {
                 : alerta.tipo === "desvio"
                   ? contextoDesvioV2
                   : {};
-              if (!jaExiste) {
-                await supabase.from("alertas").insert({
-                  cliente_id,
-                  veiculo_id,
-                  nivel: alerta.nivel,
-                  tipo: alerta.tipo,
-                  motivo: alerta.motivo,
-                  score: alerta.score,
-                  status: "ativo",
-                  lat: pos.lat,
-                  lng: pos.lng,
-                  contexto: contextoAlerta,
-                  desde: agora.toISOString(),
+              // Cooldown de re-disparo (achado real 21/08, TUG-9D18: 17
+              // alertas em 2h pro mesmo episodio): so' vale pros 2 tipos de
+              // parada, e so' quando um operador JA tratou um alerta daquele
+              // tipo NESTE episodio (mesmo parado_desde). Qualquer outro
+              // tipo passa direto, comportamento identico ao de antes.
+              //
+              // Aninhado dentro de `if (!jaExiste)` (em vez de
+              // `if (!jaExiste && !suprimidoPorCooldown)` num unico nivel):
+              // um alerta ja TRATADO por operador tem status="resolvido",
+              // portanto NUNCA aparece em alertasAbertos/alertaExistente --
+              // exatamente o caso que suprimidoPorCooldown=true cobre. Um
+              // condicional plano cairia no `else if` seguinte com
+              // alertaExistente ainda undefined (TypeError ao acessar
+              // .nivel). Aninhar evita esse branch morto e preserva o
+              // `else if` de escalacao de nivel intocado pro caso jaExiste=true.
+              const ehTipoParadaComCooldown =
+                alerta.tipo === "parada_anomala" || alerta.tipo === "parada_longa";
+              const suprimidoPorCooldown =
+                ehTipoParadaComCooldown &&
+                deveSuprimirRedisparoParada({
+                  paradoDesde: parado_desde,
+                  alertasTratadosDoTipo: mapaParadasTratadas.get(`${veiculo_id}:${alerta.tipo}`) ?? [],
                 });
+
+              if (!jaExiste) {
+                if (!suprimidoPorCooldown) {
+                  await supabase.from("alertas").insert({
+                    cliente_id,
+                    veiculo_id,
+                    nivel: alerta.nivel,
+                    tipo: alerta.tipo,
+                    motivo: alerta.motivo,
+                    score: alerta.score,
+                    status: "ativo",
+                    lat: pos.lat,
+                    lng: pos.lng,
+                    contexto: contextoAlerta,
+                    desde: agora.toISOString(),
+                  });
+                }
               } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
                 // Achado real 22/07 (revisao final de whole-branch, sub-projeto
                 // C): o alerta FRACO de desvio (nivel atencao, teto de 300km)

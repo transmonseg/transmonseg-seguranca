@@ -36,6 +36,7 @@ import {
   formatarConfiabilidadeDetector,
   elegivelParaAcaoMassa,
   IDADE_MINIMA_ACAO_MASSA_MIN,
+  deveSuprimirRedisparoParada,
   type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
@@ -1055,5 +1056,59 @@ describe("formatarConfiabilidadeDetector (texto de confiabilidade histórica no 
 
   it("taxa 1 (100% falso positivo): retorna 100%", () => {
     expect(formatarConfiabilidadeDetector(1)).toBe("Histórico: 100% de falso positivo neste tipo de alerta");
+  });
+});
+
+describe("deveSuprimirRedisparoParada (achado real 21/08: TUG-9D18 gerou 17 alertas em 2h pro mesmo episodio de parada; pedido explicito da operadora Natalia)", () => {
+  it("mesmo episodio de parada e ja tratado por operador: SUPRIME", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: "2026-08-21T12:00:00.000Z",
+      alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-21T12:15:00.000Z" }],
+    })).toBe(true);
+  });
+
+  it("tratamento ANTERIOR ao inicio da parada (episodio novo): NAO suprime", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: "2026-08-21T14:00:00.000Z",
+      alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-21T12:15:00.000Z" }],
+    })).toBe(false);
+  });
+
+  it("nenhum alerta tratado do tipo: NAO suprime", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: "2026-08-21T12:00:00.000Z",
+      alertasTratadosDoTipo: [],
+    })).toBe(false);
+  });
+
+  it("veiculo nao esta parado (paradoDesde null): NAO suprime", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: null,
+      alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-21T12:15:00.000Z" }],
+    })).toBe(false);
+  });
+
+  it("tratamento exatamente no instante do inicio da parada: SUPRIME (>= e nao >)", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: "2026-08-21T12:00:00.000Z",
+      alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-21T12:00:00.000Z" }],
+    })).toBe(true);
+  });
+
+  it("varios tratados, so um do episodio atual: SUPRIME", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: "2026-08-21T12:00:00.000Z",
+      alertasTratadosDoTipo: [
+        { resolvidoEm: "2026-08-21T09:00:00.000Z" },
+        { resolvidoEm: "2026-08-21T12:30:00.000Z" },
+      ],
+    })).toBe(true);
+  });
+
+  it("data invalida no tratamento: ignora aquela entrada, NAO quebra", () => {
+    expect(deveSuprimirRedisparoParada({
+      paradoDesde: "2026-08-21T12:00:00.000Z",
+      alertasTratadosDoTipo: [{ resolvidoEm: "nao-e-data" }],
+    })).toBe(false);
   });
 });
