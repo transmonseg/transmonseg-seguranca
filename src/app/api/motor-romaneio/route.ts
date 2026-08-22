@@ -21,11 +21,20 @@
 // docs/superpowers/specs/2026-07-31-central-romaneio-paralela-design.md
 // (decisão original de isolar o romaneio da Central) e
 // .superpowers/sdd/2026-08-22-motor-romaneio-paralelo/ (task-2-brief.md).
+//
+// Revisão de 22/08 (task-2-report.md, "fix" section): base e pontos de
+// escala ENTRAM na lista de destinos do Sinal A (não são "fonte de ponto de
+// entrega" que esta task troca -- são a mesma composição da Central,
+// route.ts:1682-1690), o streak zera quando o ciclo é bloqueado (não
+// sobrevive indefinidamente), o gate de chegada (suspenderPorChegada) e a
+// correção de posição via OSRM /match foram adicionados, os alertas se
+// auto-resolvem quando o sinal para, e há uma checagem de idempotência por
+// leitura de GPS.
 
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
-import { haversineM, buscarAlvos, agruparPontosPorPlaca, type PontoEntrega } from "@/lib/unitrac";
+import { haversineM, buscarAlvos, agruparPontosPorPlaca, suspenderPorChegada, type PontoEntrega } from "@/lib/unitrac";
 import { temCoordenadaValida, BONUS_CORROBORACAO_POR_SINAL } from "@/lib/detectores";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
@@ -39,6 +48,7 @@ import {
   type ClasseViaria,
 } from "@/lib/classe-viaria-confirmacao";
 import { celulaDe, vizinhanca3x3 } from "@/lib/celulas";
+import { corrigirPosicoesComMatch, type ResultadoMatch } from "@/lib/osrm-match";
 
 // Função serverless -- pode levar tempo com OSRM/Unitrac, mesmo teto que a Central.
 export const maxDuration = 60;
@@ -51,6 +61,12 @@ const LIMIAR_MOVIMENTO_MINIMO_M = 50;
 // Mesmo limiar de "fresco" usado por normalizar() em lib/unitrac.ts (atraso
 // em minutos desde a última leitura de GPS aceita como válida).
 const LIMIAR_ATRASO_FRESCO_MIN = 60;
+// Mesmo piso de confiança do /match que a Central usa (route.ts:2551).
+const LIMIAR_CONFIANCA_MATCH = 0.5;
+// Mesmo teto de correções via /match por ciclo que a Central usa
+// (route.ts:99, constante local não exportada -- mesmo valor, orçamento de
+// custo/latência, não regra de desvio).
+const MAX_CORRECOES_MATCH_POR_CICLO = 40;
 
 function hojeSP(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
@@ -59,6 +75,8 @@ function hojeSP(): string {
 function criaPgPool() {
   return new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL), max: 3 });
 }
+
+type Ponto = { lat: number; lng: number };
 
 type LinhaRomaneioPontoDb = {
   veiculo_id: string;
@@ -77,7 +95,10 @@ type EstadoAnterior = {
   rua_rara_streak: number;
   ultima_via_principal_em: Date | null;
   saiu_parada_confirmada_em: Date | null;
+  atualizado_em: Date | null;
 };
+
+type AlertaAtivoRow = { id: string; tipo: string; nivel: "critico" | "atencao" };
 
 export async function POST(request: Request) {
   const chave = request.headers.get("x-motor-key");
@@ -91,6 +112,9 @@ export async function POST(request: Request) {
   const erros: string[] = [];
   let veiculosProcessados = 0;
   let alertasGerados = 0;
+  // Orçamento de correção via /match compartilhado pelo ciclo inteiro --
+  // mesmo padrão de contadorCorrecoesMatch em route.ts:548.
+  const contadorCorrecoesMatch = { valor: 0 };
 
   try {
     const hoje = hojeSP();
@@ -147,23 +171,28 @@ export async function POST(request: Request) {
       }
     }
 
-    // posicoes_atuais -- mesma fonte da Central, SOMENTE LEITURA.
+    // posicoes_atuais -- mesma fonte da Central, SOMENTE LEITURA. datagps
+    // entra pra idempotência (ver I3 do fix de 22/08): sem isso não dá pra
+    // saber se esta leitura já foi avaliada num ciclo anterior.
     const { data: posAtuaisRows, error: erroPosAtuais } = await admin
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, atraso_min")
+      .select("veiculo_id, lat, lng, velocidade, atraso_min, datagps")
       .in("veiculo_id", veiculoIds);
     if (erroPosAtuais) {
       erros.push(`Erro ao ler posicoes_atuais: ${erroPosAtuais.message}`);
     }
-    type PosAtual = { veiculo_id: string; lat: number | null; lng: number | null; velocidade: number | null; atraso_min: number | null };
+    type PosAtual = {
+      veiculo_id: string; lat: number | null; lng: number | null;
+      velocidade: number | null; atraso_min: number | null; datagps: string | null;
+    };
     const posAtualPorVeiculo = new Map<string, PosAtual>(
       ((posAtuaisRows ?? []) as PosAtual[]).map((p) => [p.veiculo_id, p])
     );
 
     // Estado anterior -- tabela PRÓPRIA (romaneio_desvio_estado, migration 055),
-    // nunca desvio_estado da Central.
+    // nunca desvio_estado da Central. atualizado_em entra pra idempotência (I3).
     const { rows: estadoRows } = await pool.query<{ veiculo_id: string } & EstadoAnterior>(
-      `SELECT veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em
+      `SELECT veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, atualizado_em
          FROM romaneio_desvio_estado
         WHERE veiculo_id = ANY($1::uuid[])`,
       [veiculoIds]
@@ -215,11 +244,13 @@ export async function POST(request: Request) {
       erros.push(`Aviso: falha ao classificar via em lote: ${String(errClasse)}`);
     }
 
-    // Bases do cliente (centróide) -- só pro gate de carência de base
-    // (LIMIAR_CARENCIA_BASE_M, mesmo limiar/constante da Central). Leitura
-    // direta do centróide via PostGIS -- não precisa da malha completa do
-    // polígono (basesCliente/pontoEmGeo/foraDaBase da Central), só distância.
-    const centroideBasePorCliente = new Map<string, { lat: number; lng: number }[]>();
+    // Bases do cliente (centróide) -- entram tanto no gate de carência de
+    // base (LIMIAR_CARENCIA_BASE_M) quanto na lista de destinos do Sinal A
+    // (ver C2 do fix de 22/08 -- mesma composição de route.ts:1682-1690:
+    // pendentes + bases + escala). Leitura direta do centróide via PostGIS
+    // -- não precisa da malha completa do polígono (basesCliente/pontoEmGeo/
+    // foraDaBase da Central), só distância/ponto.
+    const centroideBasePorCliente = new Map<string, Ponto[]>();
     if (clienteIdsUnicos.length > 0) {
       try {
         const { rows } = await pool.query<{ cliente_id: string; lat: number; lng: number }>(
@@ -237,32 +268,77 @@ export async function POST(request: Request) {
       }
     }
 
-    // Alertas ATIVOS de alertas_romaneio (dedup por tipo/veículo -- brief
-    // Step 3.9). 1 select batched pra frota deste ciclo, tabela PRÓPRIA.
+    // Pontos de escala de hoje (route.ts:1683-1691 inclui escala na lista de
+    // destinos do Sinal A -- não é ponto de entrega, é a mesma composição da
+    // Central, ver C2 do fix de 22/08).
+    const escalaPorPlaca = new Map<string, Ponto[]>();
+    try {
+      const { rows } = await pool.query<{ placa: string; lat: number; lng: number }>(
+        `SELECT placa, lat, lng FROM escala_pontos
+          WHERE escala_data = $1::date AND veiculo_id = ANY($2::uuid[])
+            AND lat IS NOT NULL AND lng IS NOT NULL`,
+        [hoje, veiculoIds]
+      );
+      for (const r of rows) {
+        const lista = escalaPorPlaca.get(r.placa) ?? [];
+        lista.push({ lat: r.lat, lng: r.lng });
+        escalaPorPlaca.set(r.placa, lista);
+      }
+    } catch (errEscala) {
+      erros.push(`Aviso: falha ao ler escala_pontos: ${String(errEscala)}`);
+    }
+
+    // Alertas ATIVOS de alertas_romaneio, tabela PRÓPRIA -- id/nivel entram
+    // pra poder resolver/escalar (ver I2 do fix de 22/08), não só deduplicar.
     const { data: alertasAtivosRows } = await admin
       .from("alertas_romaneio")
-      .select("veiculo_id, tipo")
+      .select("id, veiculo_id, tipo, nivel")
       .in("veiculo_id", veiculoIds)
       .eq("status", "ativo");
-    const alertaAtivoPorVeiculoTipo = new Set(
-      ((alertasAtivosRows ?? []) as { veiculo_id: string; tipo: string }[]).map((a) => `${a.veiculo_id}:${a.tipo}`)
-    );
+    const alertasAtivosPorVeiculo = new Map<string, AlertaAtivoRow[]>();
+    for (const a of (alertasAtivosRows ?? []) as (AlertaAtivoRow & { veiculo_id: string })[]) {
+      const lista = alertasAtivosPorVeiculo.get(a.veiculo_id) ?? [];
+      lista.push({ id: a.id, tipo: a.tipo, nivel: a.nivel });
+      alertasAtivosPorVeiculo.set(a.veiculo_id, lista);
+    }
 
     for (const veiculoId of veiculoIds) {
-      veiculosProcessados++;
       try {
         const info = veiculoInfoPorId.get(veiculoId);
         if (!info) continue;
 
-        // Step 1: posição atual e anterior -- mesma fonte da Central
-        // (posicoes_atuais / posicoes_historico), SOMENTE LEITURA.
+        // Step 1: posição atual -- mesma fonte da Central (posicoes_atuais), SOMENTE LEITURA.
         const posAtual = posAtualPorVeiculo.get(veiculoId);
         if (!posAtual || posAtual.lat == null || posAtual.lng == null) continue;
-        const fresco = posAtual.atraso_min != null && posAtual.atraso_min < LIMIAR_ATRASO_FRESCO_MIN;
-        if (!fresco) continue;
         const latAtual = posAtual.lat;
         const lngAtual = posAtual.lng;
+        const fresco = posAtual.atraso_min != null && posAtual.atraso_min < LIMIAR_ATRASO_FRESCO_MIN;
 
+        const estadoAnterior: EstadoAnterior = estadoPorVeiculo.get(veiculoId) ?? {
+          afastando_streak: 0,
+          rua_rara_streak: 0,
+          ultima_via_principal_em: null,
+          saiu_parada_confirmada_em: null,
+          atualizado_em: null,
+        };
+
+        // I3: idempotência por leitura de GPS -- sem isso, duas execuções
+        // sobre a MESMA leitura (drift entre disparos do cron) incrementam o
+        // streak duas vezes pelo mesmo movimento. atualizado_em é a última
+        // vez que ESTA rota processou este veículo; se o datagps da leitura
+        // atual já é <= esse instante, já avaliamos esta leitura antes --
+        // pula o veículo inteiro (nada mudou, nada novo pra escrever).
+        if (
+          posAtual.datagps != null &&
+          estadoAnterior.atualizado_em != null &&
+          new Date(posAtual.datagps).getTime() <= estadoAnterior.atualizado_em.getTime()
+        ) {
+          continue;
+        }
+
+        veiculosProcessados++;
+
+        // Posição anterior -- mesma fonte da Central (posicoes_historico), SOMENTE LEITURA.
         const { rows: anteriorRows } = await pool.query<{ lat: number; lng: number }>(
           `SELECT lat, lng FROM posicoes_historico
             WHERE veiculo_id = $1
@@ -289,20 +365,40 @@ export async function POST(request: Request) {
         // (pontosVeiculoParaDesvio em route.ts): !pt.feito && temCoordenadaValida(pt).
         const pendentes = pontos.filter((pt) => !pt.feito && temCoordenadaValida(pt));
 
-        // Step 4: distâncias reais aos destinos relevantes (mesmo filtro de
-        // 50km da Central -- destino muito distante não reflete
-        // comportamento local, ver LIMIAR_DESTINO_RELEVANTE_M em route.ts).
-        const destinosRelevantes = pendentes.filter(
+        // I1: gate de chegada (suspenderPorChegada, pura, @/lib/unitrac) --
+        // suspende a avaliação quando o veículo já está dentro do raio do
+        // pendente mais próximo (manobra/chegada, não desvio). Sem infra de
+        // "ponto seguro" (postos de gasolina) nesta rota -- mesmo argumento
+        // `false` que a Central usa em chegouEmDestinoConhecido (route.ts:1830).
+        let idxMaisProximoPendente = -1;
+        let distMaisProximoPendenteM = Infinity;
+        pendentes.forEach((pt, i) => {
+          const d = haversineM(latAtual, lngAtual, pt.lat, pt.lng);
+          if (d < distMaisProximoPendenteM) {
+            distMaisProximoPendenteM = d;
+            idxMaisProximoPendente = i;
+          }
+        });
+        const suspensoPorChegada =
+          idxMaisProximoPendente >= 0
+            ? suspenderPorChegada(distMaisProximoPendenteM, pendentes[idxMaisProximoPendente].raio, false)
+            : false;
+
+        // Step 4: destinos do Sinal A -- pendentes + bases + escala, MESMA
+        // composição da Central (route.ts:1682-1690). Base/escala não são
+        // "fonte de ponto de entrega" que esta task troca -- entram sempre,
+        // senão um caminhão voltando pra base com pendente aberto (situação
+        // permanente na Escala do Pão) se afasta de "tudo" e dispara.
+        const centroidesBase = centroideBasePorCliente.get(info.cliente_id) ?? [];
+        const escalaDoVeiculo = escalaPorPlaca.get(info.placa) ?? [];
+        const destinosBase: Ponto[] = [
+          ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
+          ...centroidesBase,
+          ...escalaDoVeiculo,
+        ];
+        const destinosRelevantes = destinosBase.filter(
           (d) => haversineM(latAtual, lngAtual, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M
         );
-
-        // Step 5: estado anterior (romaneio_desvio_estado).
-        const estadoAnterior: EstadoAnterior = estadoPorVeiculo.get(veiculoId) ?? {
-          afastando_streak: 0,
-          rua_rara_streak: 0,
-          ultima_via_principal_em: null,
-          saiu_parada_confirmada_em: null,
-        };
 
         // Gates que suspendem a avaliação -- mesmos da Central (brief Step 1):
         // ruído de GPS/OSRM parado ou quase parado nunca deve alimentar streak.
@@ -318,44 +414,78 @@ export async function POST(request: Request) {
         // Carência de base (LIMIAR_CARENCIA_BASE_M, importado de @/lib/desvio,
         // mesmo valor da Central) -- manobra de saída/permanência no pátio não
         // deve contar como "afastando de tudo".
-        const centroidesBase = centroideBasePorCliente.get(info.cliente_id) ?? [];
         const distBaseM = centroidesBase.length > 0
           ? Math.min(...centroidesBase.map((b) => haversineM(latAtual, lngAtual, b.lat, b.lng)))
           : null;
         const emCarenciaDeBase = distBaseM != null && distBaseM < LIMIAR_CARENCIA_BASE_M;
 
         // Classe viária atual -- classificação de dado (SELECT em lote acima),
-        // não é regra de desvio. Calculada sempre que a posição é fresca,
-        // igual à Central (independe dos gates acima).
+        // não é regra de desvio. Calculada só quando a posição é fresca,
+        // igual à Central (route.ts:2217).
         let classeViaAtual: ClasseViaria | null = null;
-        for (const cel of vizinhanca3x3(latAtual, lngAtual)) {
-          classeViaAtual = melhorClasse(classeViaAtual, classePorCelula.get(cel) ?? null);
+        if (fresco) {
+          for (const cel of vizinhanca3x3(latAtual, lngAtual)) {
+            classeViaAtual = melhorClasse(classeViaAtual, classePorCelula.get(cel) ?? null);
+          }
         }
         const ultimaViaPrincipalAnteriorEm = estadoAnterior.ultima_via_principal_em;
-        const ultimaViaPrincipalEmNova = classeViaAtual === "principal" ? agora : ultimaViaPrincipalAnteriorEm;
+        const ultimaViaPrincipalEmNova = fresco && classeViaAtual === "principal" ? agora : ultimaViaPrincipalAnteriorEm;
         // saiu_parada_confirmada_em: a Central deriva QUANDO marcar esta
         // transição (deveMarcarSaidaParadaConfirmada) a partir de colunas de
         // dwell/raio de posicoes_atuais (no_raio_dwell_segundos etc.) que
         // pertencem exclusivamente à Central e não estão no schema de
         // romaneio_desvio_estado (migration 055) -- não há como calcular essa
         // transição aqui sem reimplementar esse rastreio (fora do escopo desta
-        // task). Carrega o valor anterior indefinidamente, nunca seta um novo
-        // "agora": efeito é fail-open (a supressão "saiu de parada há pouco"
-        // nunca entra em ação nesta rota -- mais alertas, nunca menos, ver
+        // task, decisão revisada e mantida no fix de 22/08). Carrega o valor
+        // anterior indefinidamente, nunca seta um novo "agora": efeito é
+        // fail-open (a supressão "saiu de parada há pouco" nunca entra em
+        // ação nesta rota -- mais alertas, nunca menos, ver
         // [[feedback_desvio_priorizar_recall]]); a corroboração de queda de
         // classe viária continua funcionando normalmente.
         const saiuParadaConfirmadaEmNova = estadoAnterior.saiu_parada_confirmada_em;
 
-        let afastandoStreakNovo = estadoAnterior.afastando_streak;
-        let ruaRaraStreakNovo = estadoAnterior.rua_rara_streak;
+        // C1: streak SEMPRE começa zerado -- mesmo default da Central
+        // (route.ts:2418-2419). Só é restaurado ao valor anterior no branch
+        // específico de falha do OSRM /table logo abaixo (route.ts:2821-2824)
+        // -- qualquer outro motivo de bloqueio (não fresco, chegada, carência
+        // de base, parado, movimento insignificante, sem destino relevante)
+        // zera o streak, nunca deixa ele sobreviver ao ciclo bloqueado.
+        let afastandoStreakNovo = 0;
+        let ruaRaraStreakNovo = 0;
         let alerta: ReturnType<typeof montarAlertaDesvio> = null;
 
-        if (!paradoSemSeMover && !movimentoInsignificante && !emCarenciaDeBase && destinosRelevantes.length > 0) {
+        if (fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0) {
+          // M3: correção de posição via OSRM /match (route.ts:2551-2624) --
+          // só entra em ação quando já existe streak (afastandoStreak > 0) e
+          // existe pra matar o ruído de snap-to-road do achado de 13/08.
+          let posParaAvaliar: Ponto = { lat: latAtual, lng: lngAtual };
+          let anteriorParaAvaliar: Ponto | null = anterior ? { lat: anterior.lat, lng: anterior.lng } : null;
+          if (estadoAnterior.afastando_streak > 0 && anteriorParaAvaliar !== null && contadorCorrecoesMatch.valor < MAX_CORRECOES_MATCH_POR_CICLO) {
+            try {
+              const { rows: janelaRecente } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
+                `SELECT lat, lng, criado_em FROM posicoes_historico
+                  WHERE veiculo_id = $1 AND criado_em > now() - interval '5 minutes'
+                  ORDER BY criado_em ASC`,
+                [veiculoId]
+              );
+              const pontosMatch = janelaRecente.map((p) => ({ lat: p.lat, lng: p.lng, timestamp: p.criado_em }));
+              pontosMatch.push({ lat: latAtual, lng: lngAtual, timestamp: agora });
+              const corrigido: ResultadoMatch | null = await corrigirPosicoesComMatch(pontosMatch);
+              if (corrigido && corrigido.confidence >= LIMIAR_CONFIANCA_MATCH) {
+                posParaAvaliar = corrigido.atual;
+                anteriorParaAvaliar = corrigido.anterior;
+                contadorCorrecoesMatch.valor += 1;
+              }
+            } catch (errMatch) {
+              erros.push(`Aviso: falha ao corrigir posicao via /match pro veiculo ${veiculoId}: ${String(errMatch)}`);
+            }
+          }
+
           // Step 6: mesma sequência e mesmos argumentos que a Central usa.
-          const distAtuaisReais = await buscarDistanciasReais({ lat: latAtual, lng: lngAtual }, destinosRelevantes);
+          const distAtuaisReais = await buscarDistanciasReais(posParaAvaliar, destinosRelevantes);
           const distAnterioresReais =
-            anterior && distAtuaisReais
-              ? await buscarDistanciasReais({ lat: anterior.lat, lng: anterior.lng }, destinosRelevantes)
+            anteriorParaAvaliar && distAtuaisReais
+              ? await buscarDistanciasReais(anteriorParaAvaliar, destinosRelevantes)
               : null;
 
           if (distAtuaisReais && distAnterioresReais) {
@@ -406,6 +536,13 @@ export async function POST(request: Request) {
                 erros.push(`Aviso: falha ao avaliar classe viaria pro veiculo ${veiculoId}: ${String(errClasseViaria)}`);
               }
             }
+          } else {
+            // C1: falha pontual do OSRM /table (transiente) -- preserva o
+            // streak anterior em vez de zerar, mesmo comportamento de
+            // route.ts:2821-2824 (só este branch específico preserva; todo
+            // resto do gate acima zera).
+            afastandoStreakNovo = estadoAnterior.afastando_streak;
+            ruaRaraStreakNovo = estadoAnterior.rua_rara_streak;
           }
         }
 
@@ -426,12 +563,26 @@ export async function POST(request: Request) {
           erros.push(`Aviso: falha ao gravar romaneio_desvio_estado pro veiculo ${veiculoId}: ${String(errEstado)}`);
         }
 
-        // Step 9: se houve alerta, insere em alertas_romaneio (tabela
-        // PRÓPRIA) com o mesmo dedup por tipo/veículo que a Central faz --
-        // não cria duplicata se já existe um ativo do mesmo tipo pro mesmo veículo.
+        // Step 9: gerencia alertas_romaneio, tabela PRÓPRIA -- MESMO padrão
+        // de dedup + auto-resolve que a Central faz em `alertas`
+        // (route.ts:3083-3212, I2 do fix de 22/08): sem o resolve, o
+        // primeiro alerta de cada veículo fica ativo pra sempre e silencia
+        // o veículo em todos os dias seguintes.
+        const alertasAtivosVeiculo = alertasAtivosPorVeiculo.get(veiculoId) ?? [];
         if (alerta) {
-          const chaveDedup = `${veiculoId}:${alerta.tipo}`;
-          if (!alertaAtivoPorVeiculoTipo.has(chaveDedup)) {
+          const alertaExistente = alertasAtivosVeiculo.find((a) => a.tipo === alerta!.tipo);
+          const obsoletos = alertasAtivosVeiculo.filter((a) => a.tipo !== alerta!.tipo);
+          if (obsoletos.length > 0) {
+            const { error: erroResolveObsoletos } = await admin
+              .from("alertas_romaneio")
+              .update({ status: "resolvido", resolvido_em: agora.toISOString() })
+              .in("id", obsoletos.map((a) => a.id));
+            if (erroResolveObsoletos) {
+              erros.push(`Aviso: falha ao resolver alertas_romaneio obsoletos do veiculo ${veiculoId}: ${erroResolveObsoletos.message}`);
+            }
+          }
+
+          if (!alertaExistente) {
             const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
               cliente_id: info.cliente_id,
               veiculo_id: veiculoId,
@@ -449,8 +600,25 @@ export async function POST(request: Request) {
               erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
             } else {
               alertasGerados++;
-              alertaAtivoPorVeiculoTipo.add(chaveDedup);
             }
+          } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
+            const { error: erroEscalar } = await admin
+              .from("alertas_romaneio")
+              .update({ nivel: alerta.nivel, motivo: alerta.motivo, score: alerta.score })
+              .eq("id", alertaExistente.id);
+            if (erroEscalar) {
+              erros.push(`Aviso: falha ao escalar alertas_romaneio do veiculo ${veiculoId}: ${erroEscalar.message}`);
+            }
+          }
+        } else if (alertasAtivosVeiculo.length > 0) {
+          // Sem alerta neste ciclo -- resolve todos os ativos deste veículo
+          // (mesma lógica de route.ts:3206-3212).
+          const { error: erroResolveTodos } = await admin
+            .from("alertas_romaneio")
+            .update({ status: "resolvido", resolvido_em: agora.toISOString() })
+            .in("id", alertasAtivosVeiculo.map((a) => a.id));
+          if (erroResolveTodos) {
+            erros.push(`Aviso: falha ao resolver alertas_romaneio do veiculo ${veiculoId}: ${erroResolveTodos.message}`);
           }
         }
       } catch (errVeiculo) {
