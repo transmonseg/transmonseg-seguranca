@@ -62,13 +62,17 @@ export type ResumoQualidade = {
 // rodar no banco. Os dois precisam concordar -- o script de validacao com
 // dado real (Step 8 do plano) e' o que garante isso na pratica.
 //
-// QUEBRA DE SERIE 22/08 (achado Important da revisao final de integracao):
-// no mesmo branch que criou este painel, o motor passou a aplicar um
-// cooldown de re-disparo pra parada_anomala/parada_longa (ver
-// deveSuprimirRedisparoParada em detectores.ts + o filtro em
-// src/app/api/motor/route.ts, achado real TUG-9D18). A partir de 22/08,
-// alertas de parada duplicados pro mesmo episodio simplesmente deixam de
-// nascer. Efeito nestes baldes e na latencia, SO' pra esses dois tipos:
+// QUEBRA DE SERIE A PARTIR DO DEPLOY DO COOLDOWN (achado Important da
+// revisao final de integracao): no mesmo branch que criou este painel, o
+// motor passou a aplicar um cooldown de re-disparo pra
+// parada_anomala/parada_longa (ver deveSuprimirRedisparoParada em
+// detectores.ts + o filtro em src/app/api/motor/route.ts, achado real
+// TUG-9D18; implementado no commit de 22/08/2026, mas so' entra em vigor
+// quando for de fato deployado em producao -- deploy ainda pendente de
+// autorizacao humana no momento deste comentario, NAO usar 22/08/2026 como
+// a data real da quebra). A partir do deploy do cooldown, alertas de parada
+// duplicados pro mesmo episodio simplesmente deixam de nascer. Efeito
+// nestes baldes e na latencia, SO' pra esses dois tipos:
 //   - 'individual' cai -- nao porque a operacao revisou menos, mas porque
 //     chegou menos alerta duplicado pra revisar.
 //   - medianaMin/p90Min SOBEM -- a populacao de tratamentos baratos de
@@ -76,10 +80,12 @@ export type ResumoQualidade = {
 //     que o operador fechava rapido por ja conhecer o caso) some da
 //     amostra. Nos dados reais do TUG-9D18 havia varios desses
 //     (10:15:30->10:17:21, 10:18:01->10:20:33, 10:21:01->10:22:06). Um
-//     leitor comparando dias antes/depois de 22/08 pode ler isso como "a
-//     operacao ficou mais lenta", quando na verdade e' o cooldown fazendo
-//     o trabalho antes. Nao e' bug -- e' quebra de comparabilidade
-//     historica que precisa de nota na UI (ver /analise).
+//     leitor comparando dias antes/depois do deploy do cooldown pode ler
+//     isso como "a operacao ficou mais lenta", quando na verdade e' o
+//     cooldown fazendo o trabalho antes. Nao e' bug -- e' quebra de
+//     comparabilidade historica que precisa de nota na UI (ver /analise,
+//     que usa linguagem relativa -- "a partir do deploy do cooldown" --
+//     de proposito, pra nao cravar uma data que pode nao ser a real).
 export const SQL_BALDE = `
   CASE
     WHEN status = 'limpo' THEN 'limpo'

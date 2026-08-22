@@ -803,10 +803,10 @@ export default async function AnalisePage({
           nível e tipo, mas não o de status: os baldes abaixo já particionam por status.
         </p>
         <p className="text-xs mb-4" style={{ color: "var(--text-dim)" }}>
-          Quebra de série em 22/08/2026 pra &quot;Parada anômala&quot; e &quot;Parada longa&quot;: a partir dessa data o
-          motor passou a suprimir re-disparo do mesmo episódio de parada já tratado (cooldown, achado TUG-9D18).
-          Menos duplicata individual tratada e latência (mediana/P90) mais alta depois dessa data não significam
-          que a operação piorou — significam que o alerta duplicado deixou de nascer.
+          Quebra de série pra &quot;Parada anômala&quot; e &quot;Parada longa&quot; a partir do deploy do cooldown de
+          re-disparo (motor passa a suprimir alertas repetidos do mesmo episódio de parada já tratado, achado
+          TUG-9D18). Menos duplicata individual tratada e latência (mediana/P90) mais alta depois do deploy não
+          significam que a operação piorou — significam que o alerta duplicado deixou de nascer.
         </p>
 
         {!qualidade ? (
