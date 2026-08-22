@@ -61,6 +61,25 @@ export type ResumoQualidade = {
 // Mesma classificacao de classificarBalde (acima), expressa em SQL pra
 // rodar no banco. Os dois precisam concordar -- o script de validacao com
 // dado real (Step 8 do plano) e' o que garante isso na pratica.
+//
+// QUEBRA DE SERIE 22/08 (achado Important da revisao final de integracao):
+// no mesmo branch que criou este painel, o motor passou a aplicar um
+// cooldown de re-disparo pra parada_anomala/parada_longa (ver
+// deveSuprimirRedisparoParada em detectores.ts + o filtro em
+// src/app/api/motor/route.ts, achado real TUG-9D18). A partir de 22/08,
+// alertas de parada duplicados pro mesmo episodio simplesmente deixam de
+// nascer. Efeito nestes baldes e na latencia, SO' pra esses dois tipos:
+//   - 'individual' cai -- nao porque a operacao revisou menos, mas porque
+//     chegou menos alerta duplicado pra revisar.
+//   - medianaMin/p90Min SOBEM -- a populacao de tratamentos baratos de
+//     1-3min (a segunda, terceira... N-esima duplicata do mesmo episodio,
+//     que o operador fechava rapido por ja conhecer o caso) some da
+//     amostra. Nos dados reais do TUG-9D18 havia varios desses
+//     (10:15:30->10:17:21, 10:18:01->10:20:33, 10:21:01->10:22:06). Um
+//     leitor comparando dias antes/depois de 22/08 pode ler isso como "a
+//     operacao ficou mais lenta", quando na verdade e' o cooldown fazendo
+//     o trabalho antes. Nao e' bug -- e' quebra de comparabilidade
+//     historica que precisa de nota na UI (ver /analise).
 export const SQL_BALDE = `
   CASE
     WHEN status = 'limpo' THEN 'limpo'
@@ -76,16 +95,30 @@ export const SQL_BALDE = `
 // sobre um recorte truncado daria numero errado sem avisar. Compartilhada
 // entre a rota /api/qualidade e a pagina /analise (Server Component) pra
 // nao duplicar o SQL.
-export async function apurarQualidade(dias: number, tipo: string | null): Promise<ResumoQualidade> {
+//
+// Parametro `nivel` (22/08, achado Important da revisao final): a pagina
+// /analise tem chips clicaveis de nivel ("critico"/"atencao") que reescrevem
+// todas as outras secoes da tela -- sem propagar aqui, clicar no chip mudava
+// tudo MENOS esta secao, sem sinalizar a inconsistencia. `status` (a outra
+// dimensao de filtro da pagina) deliberadamente NAO entra aqui: os baldes
+// desta secao JA particionam por status por construcao (aberto/limpo/etc
+// sao, eles mesmos, status), entao aplicar um filtro de status por cima
+// zeraria baldes inteiros sem sentido -- ver nota na UI (/analise).
+export async function apurarQualidade(
+  dias: number,
+  tipo: string | null,
+  nivel: string | null = null
+): Promise<ResumoQualidade> {
   const client = new pg.Client({ ...configPoolContabo(process.env.DATABASE_URL) });
   await client.connect();
   try {
-    const params = [dias, tipo];
+    const params = [dias, tipo, nivel];
     const filtroBase = `
       FROM alertas
       WHERE modo_teste = false
         AND desde >= now() - ($1::int * interval '1 day')
-        AND ($2::text IS NULL OR tipo = $2::text)`;
+        AND ($2::text IS NULL OR tipo = $2::text)
+        AND ($3::text IS NULL OR nivel = $3::text)`;
     const [baldes, falsos, porOperador, latencia, serie] = await Promise.all([
       client.query<{ balde: string; n: string }>(
         `SELECT ${SQL_BALDE} AS balde, count(*)::text AS n ${filtroBase} GROUP BY 1`, params),
@@ -105,6 +138,7 @@ export async function apurarQualidade(dias: number, tipo: string | null): Promis
          WHERE a.modo_teste = false
            AND a.desde >= now() - ($1::int * interval '1 day')
            AND ($2::text IS NULL OR a.tipo = $2::text)
+           AND ($3::text IS NULL OR a.nivel = $3::text)
          GROUP BY 1, 2`, params),
       client.query<{ minutos: string }>(
         `SELECT (extract(epoch from (resolvido_em - desde)) / 60)::text AS minutos

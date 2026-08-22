@@ -1396,9 +1396,29 @@ export async function POST(request: Request) {
       // insumo do cooldown de re-disparo (ver deveSuprimirRedisparoParada
       // em detectores.ts, achado real 21/08 caso TUG-9D18). Janela de 6h:
       // cobre com folga o episodio de parada mais longo ja observado (2h)
-      // sem trazer o dia inteiro pra memoria. operador_id NOT NULL filtra
-      // auto-resolves do proprio motor (que nao sao decisao humana e nao
-      // devem calar o alerta seguinte).
+      // sem trazer o dia inteiro pra memoria.
+      //
+      // FIX 22/08 (achado Important da revisao final de integracao do
+      // branch qualidade-tratamento-e-cooldown): o filtro original (spec
+      // 2026-08-21-qualidade-tratamento-e-cooldown-design.md linha 47) era
+      // `operador_id IS NOT NULL`, escrito ANTES da Task 1 deste mesmo
+      // branch formalizar a distincao "veredito individual vs acao em
+      // massa" (ver classificarBalde em qualidade-tratamento.ts). Mas
+      // `limparVarios` e `resolverVarios` (acoes-alertas.ts, botoes
+      // "Limpar avisos"/"Resolver todos") TAMBEM gravam operador_id --
+      // entao um clique em lote armava o cooldown exatamente como uma
+      // revisao caso a caso, silenciando parada_anomala (detector
+      // ANTIROUBO, ver docstring dele) por uma dispensa que nunca olhou o
+      // caso individualmente. Nos dados reais do TUG-9D18, 3 dos 17 alertas
+      // foram limpar_massa, incluindo o primeiro (o que armaria o cooldown
+      // pela primeira vez). Divergindo deliberadamente da spec aqui:
+      // exigir origem_acao de revisao individual, nao so' presenca de
+      // operador_id. Custo medido: supressao do TUG-9D18 vai de 17->2 pra
+      // 17->3 (aceitavel, recall-first -- ver
+      // docs/investigacoes/2026-08-21-rqs-7h76-recall-miss.md pro caso real
+      // de recall-miss que motiva erring nesse sentido). operador_id
+      // mantido como filtro defensivo extra (nao troca o de origem_acao).
+      const ORIGENS_TRATAMENTO_INDIVIDUAL = ["resolver_individual", "falso_individual"];
       const seisHorasAtras = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
       const { data: paradasTratadas } = await supabase
         .from("alertas")
@@ -1406,6 +1426,7 @@ export async function POST(request: Request) {
         .eq("cliente_id", cliente.id)
         .eq("modo_teste", false)
         .in("tipo", ["parada_anomala", "parada_longa"])
+        .in("origem_acao", ORIGENS_TRATAMENTO_INDIVIDUAL)
         .not("operador_id", "is", null)
         .not("resolvido_em", "is", null)
         .gte("resolvido_em", seisHorasAtras);

@@ -171,9 +171,14 @@ export default async function AnalisePage({
   // Qualidade de tratamento (COMO os alertas foram tratados) usa a mesma
   // agregacao SQL da rota /api/qualidade -- chamada direto aqui (Server
   // Component) em vez de por fetch, evitando um round-trip HTTP
-  // desnecessario. Nao entra no Promise.all acima porque respeita o
-  // filtro de tipo (tipoFiltro), diferente das queries de admin que
-  // trazem tudo e filtram depois em JS.
+  // desnecessario. Nao entra no Promise.all acima porque respeita os
+  // filtros de tipo E nivel (tipoFiltro, nivelFiltro), diferente das
+  // queries de admin que trazem tudo e filtram depois em JS. `statusFiltro`
+  // deliberadamente NAO e' repassado (achado Important da revisao final,
+  // 22/08): os baldes desta secao ja particionam por status por construcao
+  // (aberto/limpo/individual/massa/auto derivam de status+origem_acao), um
+  // filtro de status por cima zeraria baldes inteiros sem avisar -- ver
+  // nota na propria secao.
   //
   // try/catch de proposito (achado de revisao): esta chamada introduz uma
   // dependencia de rede nova nesta pagina -- conexao pg direta ao Postgres
@@ -184,7 +189,7 @@ export default async function AnalisePage({
   // normalmente em vez de derrubar a pagina inteira.
   let qualidade: ResumoQualidade | null = null;
   try {
-    qualidade = await apurarQualidade(dias, tipoFiltro);
+    qualidade = await apurarQualidade(dias, tipoFiltro, nivelFiltro);
   } catch (e) {
     console.error("[analise] apurarQualidade falhou:", e instanceof Error ? e.message : String(e));
   }
@@ -789,8 +794,19 @@ export default async function AnalisePage({
         style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
       >
         <h3 className="text-sm font-semibold mb-1">Qualidade do tratamento</h3>
-        <p className="text-xs mb-4" style={{ color: "var(--text-muted)" }}>
+        <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>
           Como os alertas do período foram tratados. Só &quot;revisão individual&quot; vale como veredito caso a caso.
+        </p>
+        <p className="text-xs mb-1" style={{ color: "var(--text-dim)" }}>
+          Apurado direto no banco sobre o período inteiro (sem o teto de 2000 registros das seções acima — por
+          isso os totais aqui podem não bater com o &quot;Total de alertas&quot; do topo). Respeita os filtros de
+          nível e tipo, mas não o de status: os baldes abaixo já particionam por status.
+        </p>
+        <p className="text-xs mb-4" style={{ color: "var(--text-dim)" }}>
+          Quebra de série em 22/08/2026 pra &quot;Parada anômala&quot; e &quot;Parada longa&quot;: a partir dessa data o
+          motor passou a suprimir re-disparo do mesmo episódio de parada já tratado (cooldown, achado TUG-9D18).
+          Menos duplicata individual tratada e latência (mediana/P90) mais alta depois dessa data não significam
+          que a operação piorou — significam que o alerta duplicado deixou de nascer.
         </p>
 
         {!qualidade ? (
