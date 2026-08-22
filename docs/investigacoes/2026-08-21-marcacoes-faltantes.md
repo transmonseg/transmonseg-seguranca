@@ -145,3 +145,42 @@ então não é seguro cruzar contra o campo `codigo` do snapshot.
 - A hipótese de mismatch de placa (padrão estrutural) é a explicação mais coerente com o
   código e o sintoma observado, mas não foi verificada diretamente — fica como próximo
   passo recomendado, não como conclusão.
+
+## Adendo (2026-08-22) — causa raiz do padrão estrutural fechada
+
+Depois da entrega deste documento, uma investigação separada (controller) fechou a causa
+raiz do **padrão estrutural** (item 1 da Causa raiz acima) com dado próprio. Registro aqui
+sem reabrir o corpo do documento, que segue válido como estava.
+
+**Fato apurado**: em 21/08, no horário operacional, 82 veículos tinham romaneio carregado
+mas só 68 tiveram algum pendente no motor de desvio. **14 veículos com romaneio e ZERO
+pendentes o dia todo**: RBJ-7H78, RQU-1B50, RQU-5G33, RQU-6G55, RQV-7H50, RQV-8A12,
+TTG-0I17, TTI-6E49, TTK-8A87, TTL-5J17, TTM-5H23, TTY-1A57, TUM-1C79, TUS-1B06 — inclusive
+3 dos 4 casos do padrão estrutural deste documento (RQV-7H50, TTI-6E49, RQV-8A12; TTY-1A57
+não foi confirmado na mesma checagem).
+
+**Mecanismo real**: `pontosVeiculo` (a fonte de `pendentes`) é **sempre** Unitrac
+(`pontosPorPlacaFallback`) — decisão de produto de 31/07 (`route.ts:1548-1554`, spec
+`2026-07-31-central-romaneio-paralela-design.md`) reverteu o romaneio alimentar o motor de
+desvio da Central. Um veículo com romaneio mas **sem alvo na Unitrac** fica com zero
+pendentes por design atual, não por bug de join. **Isso não é a hipótese de mismatch de
+placa** que a Proposta de fix #2 deste documento propôs testar — é ausência genuína de
+alvo, confirmada por comparação direta romaneio-vs-Unitrac, não por divergência de string
+entre os dois endpoints da Unitrac. **A Proposta de fix #2 não se aplica aos 3 casos
+confirmados (RQV-7H50, TTI-6E49, RQV-8A12) — não vale gastar tempo testando esse
+mecanismo para eles.**
+
+**Decomposição dos 14**: 10 são carros da Escala do Pão (romaneio do Pão é um documento
+separado, que nunca entra na Unitrac) + 3 são placas sem rastreador cadastrado na Unitrac
+(RBJ-7H78, RQU-1B50, RQV-7H50) + 1 é typo de placa na fonte (RQU-5G33 ← RGU-5G33 no
+documento da Nutry).
+
+**Consequência prática**: o backfill da Escala do Pão feito em 21/08 populou a tela de
+romaneio, mas — por causa do mecanismo acima — não deu destinos ao motor de desvio. É por
+isso que esses carros "dão desvio mesmo", como a operadora Elloisy já tinha observado
+empiricamente no grupo ("Isso é carro do pão... pq eles vão dar desvio mesmo").
+
+**O que está pendente**: resolver isso é **decisão de produto** — reverter ou parametrizar
+a decisão de 31/07 pra que o romaneio volte a alimentar `pontosVeiculo`, pelo menos pros
+veículos sem alvo Unitrac —, não um fix técnico. Está pendente de decisão do usuário, não
+implementado.
