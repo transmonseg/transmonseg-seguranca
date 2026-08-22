@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import AlertaSonoro from "../components/AlertaSonoro";
-import { resolverAlerta, marcarFalsoComCategoria, resolverVarios, limparVarios } from "../acoes-alertas";
+import { resolverAlerta, marcarFalsoComCategoria, resolverVarios, limparVarios, type TabelaAlertas } from "../acoes-alertas";
 import MenuMotivoFalso, { type CategoriaFalso } from "../components/MenuMotivoFalso";
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeDetector, IDADE_MINIMA_ACAO_MASSA_MIN, elegivelParaAcaoMassa } from "@/lib/detectores";
@@ -541,6 +541,11 @@ function usePainelFoco(params: {
 
 // ── Main Component ────────────────────────────────────────────────────
 export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais, fonteAlertas = "central", hrefBaseClientes = "/central-v2" }: Props) {
+  // Fix pos-revisao (2026-08-22): as acoes de operador (Correto/Falso/Resolver
+  // todos/Limpar avisos) tem que escrever na MESMA tabela de onde o alerta
+  // veio -- senao viram no-op silencioso (ver acoes-alertas.ts). Constante,
+  // nao muda depois de montado (fonteAlertas vem de prop fixa por render).
+  const tabelaAlertas: TabelaAlertas = fonteAlertas === "romaneio" ? "alertas_romaneio" : "alertas";
   const [alertas, setAlertas] = useState<AlertaEnriquecido[]>(alertasIniciais);
   const alertasRef = useRef<AlertaEnriquecido[]>(alertasIniciais);
   const [veiculosMapa, setVeiculosMapa] = useState<VeiculoMapa[]>([]);
@@ -1047,8 +1052,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       }
       return restante;
     });
-    await resolverAlerta(id);
-  }, []);
+    await resolverAlerta(id, tabelaAlertas);
+  }, [tabelaAlertas]);
 
   const handleFalso = useCallback(async (id: string, categoria: CategoriaFalso) => {
     setAlertas(a => {
@@ -1059,8 +1064,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       }
       return restante;
     });
-    await marcarFalsoComCategoria(id, categoria);
-  }, []);
+    await marcarFalsoComCategoria(id, categoria, tabelaAlertas);
+  }, [tabelaAlertas]);
 
   // ── Map controls ─────────────────────────────────────────────────────
   const cmdZoom = useCallback((z: number) => {
@@ -1231,7 +1236,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         ));
         return restante;
       });
-      const resultado = await resolverVarios(elegiveis.map(a => a.id));
+      const resultado = await resolverVarios(elegiveis.map(a => a.id), tabelaAlertas);
       if (resultado.erro || !resultado.ok) {
         // Servidor nao confirmou -- devolve os alertas pra tela (senao
         // ficam invisiveis ate o proximo reload, dando a impressao de que
@@ -1248,7 +1253,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       if (recentes > 0) setAvisoRecentes({ acao: "resolver", quantidade: recentes });
       setConfirmarResolver(false);
     });
-  }, [alertasResolviveisEmMassa]);
+  }, [alertasResolviveisEmMassa, tabelaAlertas]);
 
   // Limpa os alertas VISÍVEIS na aba atual (Crítico/Tudo) — so tira da tela,
   // SEM afirmar que foi revisado caso a caso (diferente de "Resolver todos":
@@ -1284,7 +1289,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         ));
         return restante;
       });
-      const resultado = await limparVarios(elegiveis.map(a => a.id));
+      const resultado = await limparVarios(elegiveis.map(a => a.id), tabelaAlertas);
       if (resultado.erro || !resultado.ok) {
         // Mesmo raciocinio de handleResolverTodos: sem isso, sessao expirada
         // ou falha no banco fazia os alertas sumirem da tela sem realmente
@@ -1301,7 +1306,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       if (recentes > 0) setAvisoRecentes({ acao: "limpar", quantidade: recentes });
       setConfirmarLimpar(false);
     });
-  }, [alertasOrdenados]);
+  }, [alertasOrdenados, tabelaAlertas]);
 
   // Desvios de rota — faixa dedicada no topo do mapa, sempre visivel independente
   // dos filtros da sidebar (vista/tipo). Ordenado do mais recente pro mais antigo.
