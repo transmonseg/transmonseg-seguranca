@@ -56,6 +56,7 @@ import {
   type ClasseViaria,
 } from "@/lib/classe-viaria-confirmacao";
 import { celulaDe, vizinhanca3x3 } from "@/lib/celulas";
+import { datagpsPlausivelComoMarco } from "@/lib/motor-romaneio-estado";
 import { corrigirPosicoesComMatch, type ResultadoMatch } from "@/lib/osrm-match";
 
 // Função serverless -- pode levar tempo com OSRM/Unitrac, mesmo teto que a Central.
@@ -729,6 +730,18 @@ export async function POST(request: Request) {
         // COALESCE evita regredir pra null quando posAtual.datagps veio
         // ausente neste ciclo (mesmo padrão das outras colunas que só
         // avançam quando o dado novo é conhecido).
+        //
+        // datagpsPlausivelComoMarco (@/lib/motor-romaneio-estado, com teste
+        // unitário e o raciocínio numérico completo): a Central grava
+        // `parseDatagps(pos.datagps) ?? agora.toISOString()`
+        // (motor/route.ts:2982), então um payload da Unitrac sem datagps
+        // envenena posicoes_atuais.datagps com o UTC REAL, ~3h à frente de
+        // todos os outros valores da coluna. Guardar esse valor como marco
+        // travaria este veículo por ~3h (`datagps <= ultimo_datagps` a cada
+        // 30s), silenciosamente. O veículo é processado normalmente; só a
+        // leitura implausível não vira marco -- o marco antigo fica, e o
+        // COALESCE abaixo o preserva.
+        const datagpsMarco = datagpsPlausivelComoMarco(posAtual.datagps, agora) ? posAtual.datagps : null;
         try {
           await pool.query(
             `INSERT INTO romaneio_desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, ultimo_datagps, atualizado_em)
@@ -740,7 +753,7 @@ export async function POST(request: Request) {
                saiu_parada_confirmada_em = COALESCE(EXCLUDED.saiu_parada_confirmada_em, romaneio_desvio_estado.saiu_parada_confirmada_em),
                ultimo_datagps = COALESCE(EXCLUDED.ultimo_datagps, romaneio_desvio_estado.ultimo_datagps),
                atualizado_em = now()`,
-            [veiculoId, afastandoStreakNovo, ruaRaraStreakNovo, ultimaViaPrincipalEmNova, saiuParadaConfirmadaEmNova, posAtual.datagps]
+            [veiculoId, afastandoStreakNovo, ruaRaraStreakNovo, ultimaViaPrincipalEmNova, saiuParadaConfirmadaEmNova, datagpsMarco]
           );
         } catch (errEstado) {
           erros.push(`Aviso: falha ao gravar romaneio_desvio_estado pro veiculo ${veiculoId}: ${String(errEstado)}`);
