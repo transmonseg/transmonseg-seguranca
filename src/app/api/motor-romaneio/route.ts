@@ -980,9 +980,18 @@ export async function POST(request: Request) {
                 alertasGerados++;
               }
             } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
+              // contexto vai junto, igual à Central (route.ts:3195-3201):
+              // sem isso origem_desvio ficaria congelada no valor do alerta
+              // inicial quando a origem muda entre ele e a escalação -- e
+              // origem_desvio é insumo da comparação entre os pipelines.
               const { error: erroEscalar } = await admin
                 .from("alertas_romaneio")
-                .update({ nivel: alerta.nivel, motivo: alerta.motivo, score: alerta.score })
+                .update({
+                  nivel: alerta.nivel,
+                  motivo: alerta.motivo,
+                  score: alerta.score,
+                  contexto: { origem_desvio: alerta.origemDesvio },
+                })
                 .eq("id", alertaExistente.id);
               if (erroEscalar) {
                 erros.push(`Aviso: falha ao escalar alertas_romaneio do veiculo ${veiculoId}: ${erroEscalar.message}`);
