@@ -43,7 +43,7 @@ import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { haversineM, buscarAlvos, agruparPontosPorPlaca, suspenderPorChegada, type PontoEntrega } from "@/lib/unitrac";
-import { temCoordenadaValida, BONUS_CORROBORACAO_POR_SINAL } from "@/lib/detectores";
+import { temCoordenadaValida, BONUS_CORROBORACAO_POR_SINAL, TIPOS_NAO_GERENCIADOS } from "@/lib/detectores";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
@@ -109,7 +109,47 @@ type EstadoAnterior = {
   ultimo_datagps: Date | null;
 };
 
-type AlertaAtivoRow = { id: string; tipo: string; nivel: "critico" | "atencao" };
+type AlertaAtivoRow = {
+  id: string;
+  tipo: string;
+  nivel: "critico" | "atencao";
+  // Lido pra poder PRESERVAR o contexto existente ao marcar auto_resolvido
+  // (ver resolverPelaMaquina) -- sobrescrever com {"auto_resolvido":true}
+  // apagaria origem_desvio, que é o insumo da comparação entre os dois
+  // pipelines.
+  contexto: Record<string, unknown> | null;
+};
+
+// Fecha alertas_romaneio POR AÇÃO DA MÁQUINA, marcando contexto.auto_resolvido.
+// Mesma semântica do marcador que a Central usa (contexto.auto_expirado no cron
+// 'expirar-alertas-ativos-esquecidos', 002_retencao.sql; contexto.auto_resolvido
+// lido por contaComoEventoDeSilenciamento/contaComoRotuloHumano em
+// src/lib/detectores.ts:580-625): sem ele, uma contagem futura não distingue
+// "a máquina fechou" de "o operador clicou Resolver" -- e comparar os dois
+// pipelines por essa contagem é justamente o produto desta entrega.
+//
+// Update por linha (e não um único .in("id", ...)): o merge do contexto é
+// por linha, e o PostgREST não faz `contexto || '{...}'::jsonb` num update em
+// lote. Custo irrelevante -- hoje esta função nunca recebe nada (ver
+// TIPOS_NAO_GERENCIADOS no Step 9).
+async function resolverPelaMaquina(
+  admin: ReturnType<typeof createAdminClient>,
+  alertas: AlertaAtivoRow[],
+  agoraIso: string
+): Promise<string | null> {
+  for (const a of alertas) {
+    const { error } = await admin
+      .from("alertas_romaneio")
+      .update({
+        status: "resolvido",
+        resolvido_em: agoraIso,
+        contexto: { ...(a.contexto ?? {}), auto_resolvido: true },
+      })
+      .eq("id", a.id);
+    if (error) return error.message;
+  }
+  return null;
+}
 
 export async function POST(request: Request) {
   const chave = request.headers.get("x-motor-key");
@@ -304,18 +344,18 @@ export async function POST(request: Request) {
       erros.push(`Aviso: falha ao ler escala_pontos: ${String(errEscala)}`);
     }
 
-    // Alertas ATIVOS de alertas_romaneio, tabela PRÓPRIA -- id/nivel entram
+    // Alertas EM ABERTO de alertas_romaneio, tabela PRÓPRIA -- id/nivel entram
     // pra poder resolver/escalar (ver I2 do fix de 22/08), não só deduplicar.
-    const { data: alertasAtivosRows } = await admin
+    const { data: alertasAbertosRows } = await admin
       .from("alertas_romaneio")
-      .select("id, veiculo_id, tipo, nivel")
+      .select("id, veiculo_id, tipo, nivel, contexto")
       .in("veiculo_id", veiculoIds)
-      .eq("status", "ativo");
-    const alertasAtivosPorVeiculo = new Map<string, AlertaAtivoRow[]>();
-    for (const a of (alertasAtivosRows ?? []) as (AlertaAtivoRow & { veiculo_id: string })[]) {
-      const lista = alertasAtivosPorVeiculo.get(a.veiculo_id) ?? [];
-      lista.push({ id: a.id, tipo: a.tipo, nivel: a.nivel });
-      alertasAtivosPorVeiculo.set(a.veiculo_id, lista);
+      .in("status", ["ativo", "reconhecido"]);
+    const alertasAbertosPorVeiculo = new Map<string, AlertaAtivoRow[]>();
+    for (const a of (alertasAbertosRows ?? []) as (AlertaAtivoRow & { veiculo_id: string })[]) {
+      const lista = alertasAbertosPorVeiculo.get(a.veiculo_id) ?? [];
+      lista.push({ id: a.id, tipo: a.tipo, nivel: a.nivel, contexto: a.contexto });
+      alertasAbertosPorVeiculo.set(a.veiculo_id, lista);
     }
 
     for (const veiculoId of veiculoIds) {
@@ -608,20 +648,49 @@ export async function POST(request: Request) {
 
         // Step 9: gerencia alertas_romaneio, tabela PRÓPRIA -- MESMO padrão
         // de dedup + auto-resolve que a Central faz em `alertas`
-        // (route.ts:3083-3212, I2 do fix de 22/08): sem o resolve, o
-        // primeiro alerta de cada veículo fica ativo pra sempre e silencia
-        // o veículo em todos os dias seguintes.
-        const alertasAtivosVeiculo = alertasAtivosPorVeiculo.get(veiculoId) ?? [];
+        // (route.ts:3079-3212).
+        const alertasAbertosVeiculo = alertasAbertosPorVeiculo.get(veiculoId) ?? [];
+
+        // 🔴 O MOTOR NUNCA FECHA DESVIO. Mesmo filtro da Central
+        // (route.ts:3079-3081, TIPOS_NAO_GERENCIADOS importado de
+        // @/lib/detectores -- a MESMA lista, nunca uma cópia paralela):
+        // favela, desvio, bypass_entrega e parada_sem_marcacao só saem de
+        // 'ativo' por ação MANUAL do operador. É pedido explícito do
+        // usuário depois do incidente de 11/07 (churn da cerca virtual:
+        // alerta sumia e voltava com id/desde novos a cada ciclo, e
+        // 210+ desvios reais foram fechados sozinhos em 5 dias).
+        //
+        // Sem este filtro o pipeline novo repetia o 11/07 inteiro: como
+        // montarAlertaDesvio só produz tipo "desvio", 100% do conteúdo de
+        // alertas_romaneio era auto-fechável a cada ciclo, e QUALQUER gate
+        // do ciclo servia de gatilho (!fresco, suspensoPorChegada,
+        // emCarenciaDeBase, movimentoInsignificante, destinosRelevantes
+        // vazio, OSRM devolvendo null). Já aconteceu em produção: o único
+        // alerta que a entrega gerou (TTK-8A87, crítico, score 90) foi
+        // fechado pela máquina às 01:51:36 do dia 23/08 -- operador_id e
+        // origem_acao nulos, ou seja, não foi humano.
+        //
+        // CONSEQUÊNCIA DE HOJE, pra quem for "limpar código morto": como
+        // "desvio" é o ÚNICO tipo que esta tabela recebe, alertasGerenciados
+        // é SEMPRE vazio, e portanto os dois caminhos de resolve abaixo
+        // nunca executam. Isso é o comportamento CORRETO, não sobra. Os
+        // caminhos ficam porque um segundo tipo de alerta nesta tabela
+        // (parada_fora_tapete, por exemplo, que na Central é deliberadamente
+        // gerenciado) precisa deles no dia em que entrar. Quem fecha o que
+        // ninguém trata é o cron de 7 dias
+        // ('expirar-alertas-romaneio-ativos-esquecidos', migration 058),
+        // igual à Central.
+        const alertasGerenciados = alertasAbertosVeiculo.filter(
+          (a) => !TIPOS_NAO_GERENCIADOS.has(a.tipo)
+        );
+
         if (alerta) {
-          const alertaExistente = alertasAtivosVeiculo.find((a) => a.tipo === alerta!.tipo);
-          const obsoletos = alertasAtivosVeiculo.filter((a) => a.tipo !== alerta!.tipo);
+          const alertaExistente = alertasAbertosVeiculo.find((a) => a.tipo === alerta!.tipo);
+          const obsoletos = alertasGerenciados.filter((a) => a.tipo !== alerta!.tipo);
           if (obsoletos.length > 0) {
-            const { error: erroResolveObsoletos } = await admin
-              .from("alertas_romaneio")
-              .update({ status: "resolvido", resolvido_em: agora.toISOString() })
-              .in("id", obsoletos.map((a) => a.id));
+            const erroResolveObsoletos = await resolverPelaMaquina(admin, obsoletos, agora.toISOString());
             if (erroResolveObsoletos) {
-              erros.push(`Aviso: falha ao resolver alertas_romaneio obsoletos do veiculo ${veiculoId}: ${erroResolveObsoletos.message}`);
+              erros.push(`Aviso: falha ao resolver alertas_romaneio obsoletos do veiculo ${veiculoId}: ${erroResolveObsoletos}`);
             }
           }
 
@@ -653,15 +722,14 @@ export async function POST(request: Request) {
               erros.push(`Aviso: falha ao escalar alertas_romaneio do veiculo ${veiculoId}: ${erroEscalar.message}`);
             }
           }
-        } else if (alertasAtivosVeiculo.length > 0) {
-          // Sem alerta neste ciclo -- resolve todos os ativos deste veículo
-          // (mesma lógica de route.ts:3206-3212).
-          const { error: erroResolveTodos } = await admin
-            .from("alertas_romaneio")
-            .update({ status: "resolvido", resolvido_em: agora.toISOString() })
-            .in("id", alertasAtivosVeiculo.map((a) => a.id));
+        } else if (alertasGerenciados.length > 0) {
+          // Sem alerta neste ciclo -- resolve os GERENCIADOS em aberto deste
+          // veículo (mesma lógica de route.ts:3206-3212). Hoje: nunca entra
+          // aqui, porque desvio nunca é gerenciado -- ver o bloco de
+          // TIPOS_NAO_GERENCIADOS acima antes de considerar isto morto.
+          const erroResolveTodos = await resolverPelaMaquina(admin, alertasGerenciados, agora.toISOString());
           if (erroResolveTodos) {
-            erros.push(`Aviso: falha ao resolver alertas_romaneio do veiculo ${veiculoId}: ${erroResolveTodos.message}`);
+            erros.push(`Aviso: falha ao resolver alertas_romaneio do veiculo ${veiculoId}: ${erroResolveTodos}`);
           }
         }
       } catch (errVeiculo) {
