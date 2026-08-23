@@ -76,6 +76,32 @@ const LIMIAR_CONFIANCA_MATCH = 0.5;
 // custo/latência, não regra de desvio).
 const MAX_CORRECOES_MATCH_POR_CICLO = 40;
 
+// Trava de execução única deste ciclo -- MESMO mecanismo da Central
+// (motor/route.ts:497-528): lease com expiração por UPDATE atômico em
+// motor_lease. Motivo medido na Central (comentário dela em 247-264): sem
+// trava, dois ciclos sobrepostos leem o mesmo snapshot de alertas abertos,
+// ambos inserem, e o UPSERT de estado vira last-write-wins -- até 34
+// alertas de desvio por dia pro mesmo veículo. Esta rota tem exatamente a
+// mesma exposição: os 2 jobs de pg_cron (057) disparam no mesmo minuto (um
+// na hora exata, outro com pg_sleep(30)), então basta um ciclo passar de
+// 30s pra eles se sobreporem.
+//
+// NUNCA trocar por pg_try_advisory_lock: na Central o advisory lock ficava
+// preso por tempo indeterminado (64-88% dos ciclos pulados, achado de
+// 10-11/07).
+//
+// LINHA PRÓPRIA (id = 2, criada pela migration 058). A id = 1 é da Central
+// -- usar a mesma linha faria um motor bloquear o outro, e os dois PRECISAM
+// rodar ao mesmo tempo pros mesmos carros (o produto da entrega é comparar
+// os dois pipelines no mesmo dia).
+const MOTOR_ROMANEIO_LEASE_ID = 2;
+// 90s > maxDuration=60s: mesmo raciocínio (e mesmo número) da Central. O
+// lease tem que sobreviver ao ciclo mais longo possível -- se expirasse
+// antes, um ciclo ainda vivo perderia a trava e o disparo seguinte entraria
+// em paralelo com ele, que é exatamente o que a trava existe pra impedir. E
+// como é lease (não lock), um ciclo que morra no meio libera sozinho em 90s.
+const LEASE_EXPIRACAO_SQL = "90 seconds";
+
 function hojeSP(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
 }
@@ -159,6 +185,39 @@ export async function POST(request: Request) {
 
   const admin = createAdminClient();
   const pool = criaPgPool();
+
+  // Lease (ver MOTOR_ROMANEIO_LEASE_ID acima). Adquirido ANTES de qualquer
+  // leitura: o ciclo inteiro é uma sequência ler-decidir-escrever, e ler
+  // fora da trava já basta pra duas execuções verem o mesmo "zero alertas
+  // ativos" e inserirem duas vezes.
+  let leaseToken: string | null = null;
+  {
+    const lockClient = await pool.connect();
+    try {
+      const { rows: leaseRows } = await lockClient.query<{ token: string }>(
+        `update motor_lease
+            set expira_em = now() + interval '${LEASE_EXPIRACAO_SQL}',
+                token = gen_random_uuid(),
+                adquirido_em = now()
+          where id = $1 and expira_em < now()
+        returning token`,
+        [MOTOR_ROMANEIO_LEASE_ID]
+      );
+      leaseToken = leaseRows[0]?.token ?? null;
+    } finally {
+      lockClient.release();
+    }
+  }
+  if (!leaseToken) {
+    // Fecha o pool antes de sair, igual à Central (route.ts:522-528) -- sem
+    // isso cada ciclo pulado deixaria um pool de até 3 conexões pendurado.
+    await pool.end();
+    return Response.json({
+      pulado: true,
+      motivo: "ciclo anterior do motor-romaneio ainda em execucao",
+    });
+  }
+
   const agora = new Date();
   const erros: string[] = [];
   let veiculosProcessados = 0;
@@ -739,6 +798,20 @@ export async function POST(request: Request) {
 
     return Response.json({ veiculosProcessados, alertasGerados, erros });
   } finally {
+    // Libera o lease SÓ se ainda formos o dono (token confere) -- mesmo
+    // cuidado da Central (route.ts:4019-4033): um ciclo que passou de 90s e
+    // já perdeu o lease nunca pode derrubar o lease do sucessor.
+    try {
+      const pgLease = await pool.connect();
+      try {
+        await pgLease.query(
+          `update motor_lease set expira_em = now() where id = $1 and token = $2`,
+          [MOTOR_ROMANEIO_LEASE_ID, leaseToken]
+        );
+      } finally {
+        pgLease.release();
+      }
+    } catch { /* lease expira sozinho em 90s */ }
     await pool.end();
   }
 }
