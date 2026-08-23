@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, type LinhaRomaneio } from "@/lib/romaneio";
 import { extrairTextoPlanilha } from "@/lib/romaneio-planilha";
 import { extrairRomaneioViaLLM, chamarOllama, chamarMistral, type LinhaRomaneioExtraida } from "@/lib/romaneio-llm-extrator";
+import { normalizarOrigem } from "@/lib/romaneio-origem";
 
 // Ollama (ate 35s) + Mistral (ate 30s) rodam sequenciais e sincronos dentro
 // do POST no caminho generico/LLM -- pior caso ~65s. 120s da folga (mesmo
@@ -97,6 +98,12 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, erro: "Nenhum arquivo enviado." }, { status: 400 });
   }
   const modoTeste = formData.get("modoTeste") === "true";
+  // Origem do lote (romaneio principal x escala do Pao) -- ver migration 059.
+  // Campo vem do cliente, entao passa pela allowlist de normalizarOrigem:
+  // valor desconhecido nunca chega ao banco, cai no padrao 'romaneio', que
+  // e' tambem o comportamento de quem nao manda o campo (compatibilidade
+  // com qualquer chamada antiga).
+  const origem = normalizarOrigem(formData.get("origem"));
   const buffer = Buffer.from(await arquivo.arrayBuffer());
   const isPlanilha = ehPlanilha(arquivo.name);
 
@@ -189,6 +196,7 @@ export async function POST(request: Request) {
       geocode_status: "pendente",
       modo_teste: modoTeste,
       enviado_por: enviadoPor,
+      origem,
     };
   });
 
@@ -208,6 +216,7 @@ export async function POST(request: Request) {
     totalLinhas: linhasNormalizadas.length,
     placasNaoEncontradas,
     modoTeste,
+    origem,
     fonteExtracao,
   });
 }

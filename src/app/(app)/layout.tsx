@@ -1,4 +1,4 @@
-import Link from "next/link";
+import NavPrincipal from "./components/NavPrincipal";
 import RelogioAoVivo from "./components/RelogioAoVivo";
 import RomaneioStatusBadge from "./components/RomaneioStatusBadge";
 import { createClient } from "@/lib/supabase/server";
@@ -17,7 +17,14 @@ export default async function AppLayout({
       {/* ============================================================
           HEADER DE COMANDO
           ============================================================ */}
-      <header className="sticky top-0 z-50 border-b" style={{ borderColor: "var(--border)", backgroundColor: "var(--bg)" }}>
+      {/* z-[60], não mais z-50: a toolbar do MonitorV2 também é z-index 50 e
+          vem DEPOIS no DOM, então no empate ela ganhava. Enquanto o header
+          não tinha nada que descesse sobre a página isso era invisível; com o
+          menu da engrenagem, o primeiro item aparecia por baixo da toolbar
+          (reproduzido em print na Central, 23/08). Só 60: continua abaixo de
+          todas as camadas do MonitorV2 (badge 100, toasts 800, drawer 1000,
+          pânico 2000), que seguem cobrindo o header exatamente como hoje. */}
+      <header className="sticky top-0 z-[60] border-b" style={{ borderColor: "var(--border)", backgroundColor: "var(--bg)" }}>
         <div className="flex items-center justify-between px-6 py-2">
           {/* Lado esquerdo: logo + identidade */}
           <div className="flex items-center gap-4">
@@ -48,44 +55,10 @@ export default async function AppLayout({
             </div>
           </div>
 
-          {/* Navegacao discreta */}
-          <nav className="hidden sm:flex items-center gap-1" aria-label="Navegação principal">
-            <Link
-              href="/"
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
-            >
-              Central
-            </Link>
-            <Link
-              href="/analise"
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
-            >
-              Análise
-            </Link>
-            <Link
-              href="/romaneio"
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
-            >
-              Romaneio
-            </Link>
-            <Link
-              href="/escala"
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
-            >
-              Escala
-            </Link>
-            <Link
-              href="/central-romaneio"
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
-              style={{ color: "var(--text-muted)", border: "1px solid transparent" }}
-            >
-              Central Romaneio
-            </Link>
-          </nav>
+          {/* Navegacao: 2 abas + engrenagem (ver NavPrincipal -- client
+              component porque o menu precisa de estado; este layout continua
+              server por causa do await createClient() acima). */}
+          <NavPrincipal />
 
           {/* Lado direito: relógio + ao vivo + operador */}
           <div className="flex items-center gap-5">

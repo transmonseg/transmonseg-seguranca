@@ -49,6 +49,33 @@ describe("POST /api/romaneio/reverter", () => {
     expect(mockEq).toHaveBeenCalledWith("modo_teste", true);
   });
 
+  // ─── Reset por origem (migration 059). Regra que importa: `origem` e'
+  // opcional e, quando vem errada, e' 400 -- num DELETE, filtro ignorado
+  // apaga MAIS do que a tela pediu.
+
+  it("sem origem no corpo: nao filtra por origem (reset do dia inteiro, comportamento de antes)", async () => {
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao({ romaneioData: "2026-08-23" }));
+    expect(res.status).toBe(200);
+    expect(mockEq).not.toHaveBeenCalledWith("origem", expect.anything());
+  });
+
+  it("origem valida: escopa o delete tambem por origem", async () => {
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao({ romaneioData: "2026-08-23", origem: "escala_pao" }));
+    expect(res.status).toBe(200);
+    expect(mockEq).toHaveBeenCalledWith("romaneio_data", "2026-08-23");
+    expect(mockEq).toHaveBeenCalledWith("modo_teste", false);
+    expect(mockEq).toHaveBeenCalledWith("origem", "escala_pao");
+  });
+
+  it("origem fora da allowlist: 400 e NAO apaga nada", async () => {
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao({ romaneioData: "2026-08-23", origem: "tudo" }));
+    expect(res.status).toBe(400);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
   it("rejeita sem romaneioData", async () => {
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao({}));

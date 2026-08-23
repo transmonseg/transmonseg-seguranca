@@ -1,5 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import MonitorV2 from "../central-v2/MonitorV2";
+import GateRomaneio from "./GateRomaneio";
+import AvisoEscalaPao from "./AvisoEscalaPao";
 
 // Espelha src/app/(app)/page.tsx (a Central), mas lê alertas_romaneio em vez
 // de alertas — pipeline de detecção paralelo alimentado pelo romaneio (spec
@@ -12,6 +14,14 @@ interface Cliente { id: string; nome: string; cod_user_unitrac: string; }
 interface Veiculo { id: string; cliente_id: string; placa: string; cv: string; }
 interface PosicaoAtual { veiculo_id: string; lat: number | null; lng: number | null; velocidade: number; ignicao: boolean; atraso_min: number; local: string | null; }
 interface Alerta { id: string; cliente_id: string; veiculo_id: string; nivel: "critico" | "atencao"; tipo: string; motivo: string | null; desde: string; status: string; score: number | null; lat: number | null; lng: number | null; contexto: { rota_concluida?: unknown; progresso_destino?: { delta_m: number }; placar_sombra?: { placar: number; componentes: Record<string, number | boolean | string> }; calibracao?: { segmento: string | null; taxa_falso_positivo: number } } | null; }
+
+// Data de HOJE em São Paulo. NUNCA current_date do Postgres: o servidor roda
+// em CEST (UTC+2) e o Brasil é UTC-3 -- o dia do banco vira 5h antes do dia
+// brasileiro. Mesmo padrão do motor (api/motor-romaneio) e do
+// RomaneioStatusBadge.
+function hojeSP(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+}
 
 function ordemSeveridade(tipo: string): number {
   const t = tipo?.toLowerCase() ?? "";
@@ -31,14 +41,50 @@ export default async function CentralRomaneioPage({
 }) {
   const { cliente: clienteParam } = await searchParams;
   const supabase = createAdminClient();
+  const hoje = hojeSP();
 
-  const [{ data: clientesRaw }, { data: veiculosRaw }, { data: posicoesRaw }, { data: alertasRaw }] =
-    await Promise.all([
-      supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
-      supabase.from("veiculos").select("id, cliente_id, placa, cv"),
-      supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
-      supabase.from("alertas_romaneio").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").in("status", ["ativo", "reconhecido"]),
-    ]);
+  // ── Gate do dia ──────────────────────────────────────────────────────
+  // Pedido do usuário 23/08: entrar aqui sem o romaneio do dia mostra a tela
+  // de envio, não um mapa vazio. Critério IDÊNTICO ao que o motor usa pra
+  // decidir se tem o que processar (api/motor-romaneio/route.ts): mesma data
+  // de SP, modo_teste = false, veiculo_id NOT NULL. Se divergisse, a tela
+  // diria "tem romaneio" enquanto o motor não gera alerta nenhum.
+  const [
+    { data: clientesRaw },
+    { data: veiculosRaw },
+    { data: posicoesRaw },
+    { data: alertasRaw },
+    contagemComVeiculo,
+    contagemHoje,
+    contagemEscalaPao,
+  ] = await Promise.all([
+    supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
+    supabase.from("veiculos").select("id, cliente_id, placa, cv"),
+    supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
+    supabase.from("alertas_romaneio").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").in("status", ["ativo", "reconhecido"]),
+    supabase.from("romaneio_pontos").select("id", { count: "exact", head: true })
+      .eq("romaneio_data", hoje).eq("modo_teste", false).not("veiculo_id", "is", null),
+    supabase.from("romaneio_pontos").select("id", { count: "exact", head: true })
+      .eq("romaneio_data", hoje).eq("modo_teste", false),
+    // `origem` só existe a partir da migration 059 -- antes dela esta
+    // consulta devolve erro de coluna inexistente. Nesse caso a resposta
+    // honesta é "não dá pra saber", e um aviso que não dá pra sustentar não
+    // aparece (ver tratamento de erro logo abaixo).
+    supabase.from("romaneio_pontos").select("id", { count: "exact", head: true })
+      .eq("romaneio_data", hoje).eq("modo_teste", false).eq("origem", "escala_pao"),
+  ]);
+
+  // Falha de consulta abre o mapa (fail-open) em vez de mostrar o gate: um
+  // gate por erro de banco tirava do operador uma tela que ele já poderia
+  // estar usando. Sem romaneio o mapa só fica sem pontos de entrega.
+  const pontosComVeiculoHoje = contagemComVeiculo.error ? 1 : (contagemComVeiculo.count ?? 0);
+  const linhasHoje = contagemHoje.error ? 0 : (contagemHoje.count ?? 0);
+  const escalaPaoConhecida = !contagemEscalaPao.error;
+  const temEscalaPaoHoje = (contagemEscalaPao.count ?? 0) > 0;
+
+  if (pontosComVeiculoHoje === 0) {
+    return <GateRomaneio hoje={hoje} linhasHojeSemVeiculo={linhasHoje} />;
+  }
 
   const clientes: Cliente[] = clientesRaw ?? [];
   const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
@@ -78,7 +124,7 @@ export default async function CentralRomaneioPage({
     ...todosAlertas.filter(a => a.cliente_id === clienteAtivo.id && a.nivel === "atencao").map(enriquecer).sort((a, b) => ordemSeveridade(a.tipo) - ordemSeveridade(b.tipo)),
   ];
 
-  return (
+  const monitor = (
     <MonitorV2
       key={clienteAtivo.id}
       cliente={clienteAtivo.cod_user_unitrac}
@@ -89,5 +135,19 @@ export default async function CentralRomaneioPage({
       fonteAlertas="romaneio"
       hrefBaseClientes="/central-romaneio"
     />
+  );
+
+  // Sem aviso, o MonitorV2 continua sendo o filho direto do <main> (que é
+  // flex-1 min-h-0 overflow-y-auto) -- exatamente como antes. Com aviso, o
+  // wrapper h-full flex-col dá ao monitor um trilho de altura definida
+  // (flex-1 min-h-0), então o height:100% dele resolve contra a sobra da
+  // faixa em vez de estourar o <main> e criar scrollbar dupla.
+  if (!escalaPaoConhecida || temEscalaPaoHoje) return monitor;
+
+  return (
+    <div className="h-full flex flex-col">
+      <AvisoEscalaPao hoje={hoje} />
+      <div className="flex-1 min-h-0">{monitor}</div>
+    </div>
   );
 }

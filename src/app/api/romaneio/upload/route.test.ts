@@ -53,11 +53,16 @@ vi.mock("pdf-parse", () => ({
   },
 }));
 
-function criarRequisicao(nomeArquivo: string, conteudo = "conteudo") {
+function criarRequisicao(nomeArquivo: string, conteudo = "conteudo", campos: Record<string, string> = {}) {
   const formData = new FormData();
   const arquivo = new File([conteudo], nomeArquivo);
   formData.append("arquivo", arquivo);
+  for (const [chave, valor] of Object.entries(campos)) formData.append(chave, valor);
   return new Request("http://localhost/api/romaneio/upload", { method: "POST", body: formData });
+}
+
+function linhaRegexValida() {
+  return { placaBruta: "ABC1D23", motorista: "M", cargaDestinoCodigo: "1", cargaDestinoNome: "N", nf: "1", clienteCodigo: "C1", clienteNome: "Cliente", enderecoBruto: "Rua X" };
 }
 
 describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
@@ -207,6 +212,35 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
 
   // ─── Finding 6: extracao de texto (planilha corrompida / PDF invalido)
   // nao pode virar 500 opaco.
+
+  // ─── Origem do lote (migration 059): romaneio x escala do Pao deixaram de
+  // ser indistinguiveis no banco. O valor vem do CLIENTE, entao a allowlist
+  // e' o que impede string arbitraria de ser gravada.
+
+  it("origem 'escala_pao' e gravada em todas as linhas inseridas", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida(), { ...linhaRegexValida(), nf: "2" }]);
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("romaneio.pdf", "conteudo", { origem: "escala_pao" }));
+    expect(res.status).toBe(200);
+    const linhasInseridas = mockInsert.mock.calls[0][0];
+    expect(linhasInseridas).toHaveLength(2);
+    expect(linhasInseridas.every((l: { origem: string }) => l.origem === "escala_pao")).toBe(true);
+    expect((await res.json()).origem).toBe("escala_pao");
+  });
+
+  it("sem campo origem: grava 'romaneio' (comportamento de antes da coluna existir)", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
+    const { POST } = await import("./route");
+    await POST(criarRequisicao("romaneio.pdf"));
+    expect(mockInsert.mock.calls[0][0][0].origem).toBe("romaneio");
+  });
+
+  it("origem arbitraria vinda do cliente NUNCA chega ao banco: cai pro padrao", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
+    const { POST } = await import("./route");
+    await POST(criarRequisicao("romaneio.pdf", "conteudo", { origem: "'; drop table romaneio_pontos; --" }));
+    expect(mockInsert.mock.calls[0][0][0].origem).toBe("romaneio");
+  });
 
   it("planilha corrompida (XLSX.read lanca exception): 422 claro, nao 500", async () => {
     mockExtrairTextoPlanilha.mockImplementation(() => {
