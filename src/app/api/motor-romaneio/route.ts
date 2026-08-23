@@ -39,6 +39,18 @@
 // comparar datagps-contra-datagps (nova coluna ultimo_datagps, migration
 // 056) -- mesmo offset dos dois lados, deixa de importar.
 
+// Revisão final de 22/08 (task-6, findings da revisão ampla que olhou as
+// interações entre as partes). O que mudou aqui, tudo copiando a solução que
+// a Central já tinha pro mesmo problema: (1) o motor NUNCA fecha alerta de
+// desvio -- TIPOS_NAO_GERENCIADOS, com contexto.auto_resolvido no que sobrar
+// de auto-resolve; (2) lease de execução única em linha própria de
+// motor_lease (id=2), porque os 2 crons por minuto se sobrepõem; (3) timeout
+// de 20s na Unitrac; (4) datagps implausível não vira marco de idempotência;
+// (5) silenciamento de 2h depois de "falso positivo"; (6) dedup lê
+// ativo+reconhecido; (7) streak não atravessa o dia; (8) a posição anterior
+// é escolhida por corte de tempo, não por OFFSET. Migration 058 acompanha
+// (linha do lease + expiração/retenção de alertas_romaneio).
+
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
@@ -342,7 +354,7 @@ export async function POST(request: Request) {
     // saber se esta leitura já foi avaliada num ciclo anterior.
     const { data: posAtuaisRows, error: erroPosAtuais } = await admin
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, atraso_min, datagps")
+      .select("veiculo_id, lat, lng, velocidade, atraso_min, datagps, updated_at")
       .in("veiculo_id", veiculoIds);
     if (erroPosAtuais) {
       erros.push(`Erro ao ler posicoes_atuais: ${erroPosAtuais.message}`);
@@ -350,6 +362,10 @@ export async function POST(request: Request) {
     type PosAtual = {
       veiculo_id: string; lat: number | null; lng: number | null;
       velocidade: number | null; atraso_min: number | null; datagps: string | null;
+      // Quando a Central gravou ESTA leitura (relógio do Postgres). Usado só
+      // pra achar a posição ANTERIOR sem ambiguidade -- ver a query de
+      // `anterior` no loop.
+      updated_at: string | null;
     };
     const posAtualPorVeiculo = new Map<string, PosAtual>(
       ((posAtuaisRows ?? []) as PosAtual[]).map((p) => [p.veiculo_id, p])
@@ -581,13 +597,45 @@ export async function POST(request: Request) {
 
         veiculosProcessados++;
 
-        // Posição anterior -- mesma fonte da Central (posicoes_historico), SOMENTE LEITURA.
-        const { rows: anteriorRows } = await pool.query<{ lat: number; lng: number }>(
-          `SELECT lat, lng FROM posicoes_historico
-            WHERE veiculo_id = $1
-            ORDER BY criado_em DESC LIMIT 1 OFFSET 1`,
-          [veiculoId]
-        );
+        // Posição anterior -- mesma fonte da Central (posicoes_historico),
+        // SOMENTE LEITURA.
+        //
+        // O corte é `criado_em < posicoes_atuais.updated_at`, NÃO
+        // `OFFSET 1` (como era até 22/08). Motivo: a Central grava
+        // posicoes_atuais no meio do ciclo (route.ts:3222, updated_at =
+        // `agora` do ciclo dela) e só depois insere a MESMA leitura em
+        // posicoes_historico (route.ts:3327, criado_em = now() do momento do
+        // insert). Ou seja, a linha de histórico da leitura ATUAL sempre tem
+        // criado_em > updated_at, e a da leitura anterior sempre tem
+        // criado_em < updated_at. Com OFFSET 1 a janela medida dependia de o
+        // ciclo do romaneio ter caído antes ou depois desse insert: às vezes
+        // 30s (correto), às vezes 60s (dois ciclos), variando de leitura pra
+        // leitura -- e o Sinal A mede exatamente delta de distância nessa
+        // janela.
+        //
+        // Isto alinha a janela com a que a Central usa: ela compara a
+        // leitura nova contra o snapshot ANTERIOR de posicoes_atuais
+        // (route.ts:1488, mapaPosAtual lido no início do ciclo), que é
+        // precisamente a leitura que este SELECT devolve. Sem mecanismo
+        // novo, sem coluna nova, só com dado que já existe.
+        //
+        // Fallback pro OFFSET 1 se updated_at vier ausente (coluna é NOT
+        // NULL no schema; defensivo contra falha de leitura, não contra
+        // dado real).
+        const corteAnterior = posAtual.updated_at;
+        const { rows: anteriorRows } = corteAnterior
+          ? await pool.query<{ lat: number; lng: number }>(
+              `SELECT lat, lng FROM posicoes_historico
+                WHERE veiculo_id = $1 AND criado_em < $2
+                ORDER BY criado_em DESC LIMIT 1`,
+              [veiculoId, corteAnterior]
+            )
+          : await pool.query<{ lat: number; lng: number }>(
+              `SELECT lat, lng FROM posicoes_historico
+                WHERE veiculo_id = $1
+                ORDER BY criado_em DESC LIMIT 1 OFFSET 1`,
+              [veiculoId]
+            );
         const anterior = anteriorRows[0] ?? null;
 
         // Step 2: monta os pontos (romaneio + status Unitrac) -- reusa
