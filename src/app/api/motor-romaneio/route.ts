@@ -61,7 +61,7 @@ import {
   type ClasseViaria,
 } from "@/lib/classe-viaria-confirmacao";
 import { celulaDe, vizinhanca3x3 } from "@/lib/celulas";
-import { datagpsPlausivelComoMarco } from "@/lib/motor-romaneio-estado";
+import { dataSP, datagpsPlausivelComoMarco, estadoEhDeOutroDiaSP } from "@/lib/motor-romaneio-estado";
 import { corrigirPosicoesComMatch, type ResultadoMatch } from "@/lib/osrm-match";
 
 // Função serverless -- pode levar tempo com OSRM/Unitrac, mesmo teto que a Central.
@@ -112,8 +112,13 @@ const MOTOR_ROMANEIO_LEASE_ID = 2;
 // como é lease (não lock), um ciclo que morra no meio libera sozinho em 90s.
 const LEASE_EXPIRACAO_SQL = "90 seconds";
 
+// Data de HOJE em São Paulo. NUNCA trocar por current_date do Postgres: o
+// servidor roda em CEST (UTC+2) e o Brasil é UTC-3 -- o dia do banco vira 5h
+// antes do dia brasileiro. Implementação compartilhada com
+// estadoEhDeOutroDiaSP (@/lib/motor-romaneio-estado) pra que "o dia" seja
+// literalmente a mesma conta nos dois lugares.
 function hojeSP(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+  return dataSP(new Date());
 }
 
 function criaPgPool() {
@@ -513,7 +518,7 @@ export async function POST(request: Request) {
         const lngAtual = posAtual.lng;
         const fresco = posAtual.atraso_min != null && posAtual.atraso_min < LIMIAR_ATRASO_FRESCO_MIN;
 
-        const estadoAnterior: EstadoAnterior = estadoPorVeiculo.get(veiculoId) ?? {
+        const estadoGravado: EstadoAnterior = estadoPorVeiculo.get(veiculoId) ?? {
           afastando_streak: 0,
           rua_rara_streak: 0,
           ultima_via_principal_em: null,
@@ -521,6 +526,28 @@ export async function POST(request: Request) {
           atualizado_em: null,
           ultimo_datagps: null,
         };
+
+        // Estado que atravessou o dia -- streak NÃO sobrevive à virada.
+        // Esta rota retorna cedo quando não há romaneio do dia (fim de
+        // semana, feriado), então ninguém escreve e ninguém zera: um veículo
+        // que terminou a sexta com afastando_streak=1 voltaria na segunda
+        // com 1, e a PRIMEIRA leitura divergente já dispararia, com metade
+        // da evidência. A Central não tem mecanismo equivalente pra copiar
+        // (conferido: nada toca desvio_estado fora do motor) porque ela não
+        // precisa -- roda pra frota inteira em todo ciclo, 24/7, e qualquer
+        // ciclo bloqueado já zera o streak dela naturalmente.
+        //
+        // Só o streak. ultima_via_principal_em / saiu_parada_confirmada_em
+        // ficam: quem as consome já compara contra `agora` com janela de
+        // 10min/5min (avaliarQuedaClasseViaria e
+        // avaliarSaiuParadaConfirmadaRecentemente,
+        // @/lib/classe-viaria-confirmacao), então um valor de dias atrás já
+        // responde false sozinho -- zerá-las aqui não mudaria resultado
+        // nenhum e só apagaria histórico.
+        const estadoDeOutroDia = estadoEhDeOutroDiaSP(estadoGravado.atualizado_em, hoje);
+        const estadoAnterior: EstadoAnterior = estadoDeOutroDia
+          ? { ...estadoGravado, afastando_streak: 0, rua_rara_streak: 0 }
+          : estadoGravado;
 
         // I3 (revisado 22/08 -- achado real em produção, ver task-2-report.md):
         // idempotência por leitura de GPS, mas comparando datagps-CONTRA-
