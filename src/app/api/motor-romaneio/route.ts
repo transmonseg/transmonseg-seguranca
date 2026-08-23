@@ -42,7 +42,7 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
-import { haversineM, buscarAlvos, agruparPontosPorPlaca, suspenderPorChegada, type PontoEntrega } from "@/lib/unitrac";
+import { haversineM, agruparPontosPorPlaca, suspenderPorChegada, type AlvoUnitrac, type PontoEntrega } from "@/lib/unitrac";
 import { temCoordenadaValida, BONUS_CORROBORACAO_POR_SINAL, TIPOS_NAO_GERENCIADOS } from "@/lib/detectores";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
@@ -71,6 +71,10 @@ const LIMIAR_MOVIMENTO_MINIMO_M = 50;
 const LIMIAR_ATRASO_FRESCO_MIN = 60;
 // Mesmo piso de confiança do /match que a Central usa (route.ts:2551).
 const LIMIAR_CONFIANCA_MATCH = 0.5;
+// Mesmo timeout de Unitrac da Central (motor/route.ts:72). As falhas de rede
+// da Unitrac na Nutry Max são recorrentes o dia todo (comentário da Central
+// em 266-273).
+const TIMEOUT_UNITRAC_MS = 20_000;
 // Mesmo teto de correções via /match por ciclo que a Central usa
 // (route.ts:99, constante local não exportada -- mesmo valor, orçamento de
 // custo/latência, não regra de desvio).
@@ -108,6 +112,40 @@ function hojeSP(): string {
 
 function criaPgPool() {
   return new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL), max: 3 });
+}
+
+// buscarAlvos COM timeout -- cópia local do padrão da Central
+// (motor/route.ts:308-336, buscarAlvosComTimeout). A Central nunca usa a
+// função crua no motor, e por um motivo concreto: buscarAlvos de
+// @/lib/unitrac faz fetch SEM signal, então uma Unitrac que aceita a conexão
+// e não responde deixa o fetch pendurado até o headersTimeout default do
+// undici (~300s). Nesses 5 minutos o ciclo não termina, o
+// `finally { pool.end() }` não roda, e o cron dispara ~10 ciclos novos --
+// cada um também pendurado, cada um segurando seu pool. (Com o lease do
+// commit anterior os ciclos novos agora só pulam, mas o ciclo travado
+// continua segurando pool e lease até o undici desistir -- o timeout é o
+// que fecha esse buraco de verdade.)
+//
+// DELIBERADAMENTE local, não um fix em @/lib/unitrac: mudar buscarAlvos lá
+// afetaria TODOS os chamadores, inclusive a Central em produção -- mudança
+// de comportamento da Central, proibida nesta entrega. Mesmo argumento que a
+// Central usou pra reescrever o fetch inline em vez de mexer no módulo.
+async function buscarAlvosComTimeout(cvs: string[]): Promise<AlvoUnitrac[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_UNITRAC_MS);
+  try {
+    const res = await fetch("https://datalayer.portalunitrac.com/mapa_servicos/alvos", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(cvs),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`buscarAlvos HTTP ${res.status}`);
+    const data = (await res.json()) as { alvos?: AlvoUnitrac[] };
+    return data.alvos ?? [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type Ponto = { lat: number; lng: number };
@@ -278,7 +316,10 @@ export async function POST(request: Request) {
     let pontosUnitracPorPlaca = new Map<string, PontoEntrega[]>();
     if (cvsUnicos.length > 0) {
       try {
-        const alvos = await buscarAlvos(cvsUnicos);
+        // Com timeout de 20s (ver buscarAlvosComTimeout acima). O catch
+        // abaixo continua fail-open pró-recall: sem alvos, o ciclo segue só
+        // com o romaneio, tratando tudo como pendente.
+        const alvos = await buscarAlvosComTimeout(cvsUnicos);
         pontosUnitracPorPlaca = agruparPontosPorPlaca(alvos);
       } catch (errUnitrac) {
         erros.push(`Aviso: falha ao buscar alvos Unitrac (segue so com romaneio, tudo pendente): ${String(errUnitrac)}`);
