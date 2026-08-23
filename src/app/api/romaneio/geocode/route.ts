@@ -1,0 +1,190 @@
+// Rota HTTP isolada e SIDE-EFFECT-FREE (nunca escreve em nenhuma tabela)
+// que expoe a cascata de geocodificacao de endereco ja madura deste
+// projeto (CNEFE/IBGE + extrato OSM local + Google + Nominatim, com
+// resolucao de ponto de referencia por cidade/bairro pra descartar rua
+// homonima em municipio errado -- mesma cascata que
+// /api/romaneio/processar-geocode usa em producao) pro projeto IRMAO
+// "KPI transmonseg".
+//
+// Quem chama: o projeto KPI transmonseg, via HTTP local no mesmo VPS
+// (transmonseg-vps) -- os dois rodam como processos PM2 separados, repos
+// e node_modules independentes, sem import direto possivel. Ver
+// investigacao completa em
+// KPI transmonseg/.superpowers/sdd/2026-08-23-kpi-romaneio-nutrimax/task-3-report.md.
+// Do lado do KPI, ver src/lib/kpi-romaneio/geocode.ts.
+//
+// Por que essa rota existe (em vez de so' reusar processar-geocode): aquela
+// rota e' o motor de desvio em PRODUCAO (cron a cada 30s, reivindica e
+// GRAVA romaneio_pontos/romaneio_geocode_cache/pontos_aprendidos) -- nao
+// da pra chamar ela de fora sem herdar esse side-effect. Esta rota nova
+// reusa as MESMAS funcoes exportadas de src/lib/romaneio-geocode.ts e
+// src/lib/romaneio-geocode-local.ts (nenhum arquivo existente foi
+// alterado), so' que:
+//   - nunca escreve em romaneio_pontos, romaneio_geocode_cache,
+//     romaneio_cliente_codigo_geocode nem pontos_aprendidos (so' LE o
+//     cache de endereco/cidade/bairro pra acelerar/precisao quando ja
+//     existe, nunca grava);
+//   - nao tem nocao de veiculo/cliente_codigo (o cache write-once por
+//     cliente_codigo e' um conceito do pipeline de upload, nao faz
+//     sentido aqui);
+//   - responde SINCRONO num unico POST em lote, sem reivindicacao nem
+//     retomada entre invocacoes (nao ha nada persistido pra retomar).
+//
+// Protegida pelo mesmo header x-motor-key + MOTOR_SECRET que as outras
+// rotas internas deste projeto (motor, motor-romaneio, processar-geocode)
+// -- chamada servidor-a-servidor, nunca do browser.
+
+import { createAdminClient } from "@/lib/supabase/admin";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
+import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge } from "@/lib/romaneio-geocode-local";
+
+export const maxDuration = 60;
+
+// Mesmo throttle sequencial de processar-geocode/route.ts -- respeita a
+// politica real de 1 req/s do Nominatim publico, independente de quem
+// chama.
+const ESPERA_ENTRE_CHAMADAS_MS = 1100;
+
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Teto defensivo por chamada -- o chamador (KPI) tem timeout de 20s do lado
+// dele (ver GEOCODE_TIMEOUT_MS em geocode.ts la) calibrado pro tamanho
+// tipico de um romaneio Nutry Max (dezenas de enderecos/dia). Rejeitar
+// explicitamente acima disso (em vez de truncar em silencio) forca o
+// chamador a dividir em lotes menores se um dia precisar.
+const MAX_ENDERECOS_POR_CHAMADA = 300;
+
+export async function POST(request: Request) {
+  const chave = request.headers.get("x-motor-key");
+  if (!chave || chave !== process.env.MOTOR_SECRET) {
+    return Response.json({ erro: "nao autorizado" }, { status: 401 });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ erro: "corpo invalido, esperado JSON" }, { status: 400 });
+  }
+
+  const enderecos = (body as { enderecos?: unknown })?.enderecos;
+  if (!Array.isArray(enderecos) || !enderecos.every((e) => typeof e === "string")) {
+    return Response.json({ erro: "'enderecos' precisa ser um array de strings" }, { status: 400 });
+  }
+  if (enderecos.length > MAX_ENDERECOS_POR_CHAMADA) {
+    return Response.json({ erro: `no maximo ${MAX_ENDERECOS_POR_CHAMADA} enderecos por chamada` }, { status: 400 });
+  }
+  if (enderecos.length === 0) {
+    return Response.json({ resultados: [] });
+  }
+
+  const lista = enderecos as string[];
+  const admin = createAdminClient();
+
+  // Cache de endereco -- SO' LEITURA aqui (nunca upsert, ver comentario no
+  // topo do arquivo). Reaproveita o que o cron de producao ja resolveu,
+  // sem nunca escrever em cima.
+  const buscarCache = async (chaveNormalizada: string) => {
+    const { data } = await admin.from("romaneio_geocode_cache").select("lat, lng, fonte").eq("endereco_normalizado", chaveNormalizada).maybeSingle();
+    return data ?? null;
+  };
+  const salvarCacheNoop = async (): Promise<void> => {};
+
+  const geocodificarNominatimThrottled = async (enderecoBruto: string) => {
+    await esperar(ESPERA_ENTRE_CHAMADAS_MS);
+    return geocodificarNominatim(enderecoBruto);
+  };
+
+  // Pontos de referencia de cidade/bairro -- mesma tecnica de
+  // processar-geocode/route.ts (achado real 12/08: sem isso, rua homonima
+  // em cidade/municipio errado pode passar como candidato "unico"), so'
+  // que aqui SEM gravar no cache (so' le, se ja existir de um ciclo do
+  // cron de producao).
+  const cidadesUnicas = [...new Set(
+    lista.map((e) => extrairCidadeDoEndereco(e)).filter((c): c is string => c !== null).map(expandirCidadeTruncada)
+  )];
+  const pontosCidade = new Map<string, { lat: number; lng: number }>();
+  for (const cidade of cidadesUnicas) {
+    const chaveCidade = `CIDADE:${cidade.toUpperCase()}`;
+    const doCache = await buscarCache(chaveCidade);
+    if (doCache) {
+      pontosCidade.set(cidade, { lat: doCache.lat, lng: doCache.lng });
+      continue;
+    }
+    const ponto = await geocodificarNominatimThrottled(cidade);
+    if (ponto) pontosCidade.set(cidade, ponto);
+  }
+
+  const bairroCidadeUnicos = [...new Set(
+    lista
+      .map((e) => {
+        const bairro = extrairBairroDoEndereco(e);
+        const cidadeBruta = extrairCidadeDoEndereco(e);
+        const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
+        return bairro && cidade ? `${bairro}|${cidade}` : null;
+      })
+      .filter((x): x is string => x !== null)
+  )];
+  const pontosBairro = new Map<string, { lat: number; lng: number }>();
+  for (const chave of bairroCidadeUnicos) {
+    const [bairro, cidade] = chave.split("|");
+    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${cidade.toUpperCase()}`;
+    const doCache = await buscarCache(chaveCache);
+    if (doCache) {
+      pontosBairro.set(chave, { lat: doCache.lat, lng: doCache.lng });
+      continue;
+    }
+    const ponto = await geocodificarNominatimThrottled(`${bairro}, ${cidade}`);
+    if (ponto) pontosBairro.set(chave, ponto);
+  }
+
+  const buscarCandidatosPorNome = async (nomeNormalizado: string) => {
+    const { data } = await admin.from("vias_nomes").select("lat, lng").eq("nome_sem_conectores", nomeNormalizado);
+    return data ?? [];
+  };
+  const buscarCnefePorRuaNumero = async (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => {
+    let query = admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).limit(50);
+    if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
+    const { data } = await query;
+    return data ?? [];
+  };
+  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null) => {
+    let query = admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).limit(200);
+    if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
+    const { data } = await query;
+    return data ?? [];
+  };
+  const buscarCnefePorSimilaridade = async (nomeNormalizado: string, municipioCodigo: string | null) => {
+    const { data } = await admin.rpc("cnefe_buscar_por_similaridade", { termo: nomeNormalizado, limite: 5, filtro_municipio_codigo: municipioCodigo });
+    return data ?? [];
+  };
+
+  const resultados: ({ lat: number; lng: number } | null)[] = [];
+  for (const enderecoBruto of lista) {
+    const cidadeBruta = extrairCidadeDoEndereco(enderecoBruto);
+    const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
+    const bairro = extrairBairroDoEndereco(enderecoBruto);
+    const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
+    const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
+    const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
+
+    const geocode = await geocodificarEndereco(enderecoBruto, pontoReferencia, {
+      buscarCache,
+      salvarCache: salvarCacheNoop,
+      geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, municipioCodigo, {
+        buscarPorRuaNumero: buscarCnefePorRuaNumero,
+        buscarPorRua: buscarCnefePorRua,
+        buscarPorSimilaridade: buscarCnefePorSimilaridade,
+      }),
+      geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
+      geocodificarGoogle,
+      geocodificarNominatim: geocodificarNominatimThrottled,
+    });
+
+    resultados.push(geocode ? { lat: geocode.lat, lng: geocode.lng } : null);
+  }
+
+  return Response.json({ resultados });
+}
