@@ -270,9 +270,36 @@ export async function POST(request: Request) {
     }
   }
   if (!leaseToken) {
+    // Duas causas produzem EXATAMENTE o mesmo UPDATE de 0 linhas: (a) o
+    // ciclo anterior ainda está rodando -- normal, esperado; (b) a linha
+    // id=2 não existe porque a migration 058 nunca foi aplicada -- e aí o
+    // motor fica inerte PRA SEMPRE, 100% dos ciclos pulados. Sem distinguir
+    // as duas, (b) se disfarça de (a): HTTP 200, 'succeeded' no
+    // cron.job_run_details, nada em erros[], e um motivo que manda o
+    // investigador procurar um ciclo travado que não existe -- string
+    // indistinguível, ainda por cima, do `pulado` legítimo da Central que
+    // fica na mesma net._http_response. Uma query a mais, só neste caminho.
+    let leaseExiste = true;
+    try {
+      const { rows } = await pool.query(`select 1 from motor_lease where id = $1`, [
+        MOTOR_ROMANEIO_LEASE_ID,
+      ]);
+      leaseExiste = rows.length > 0;
+    } catch {
+      // Falha de leitura não é prova de ausência -- mantém o diagnóstico
+      // conservador (assume que a linha existe e o ciclo está só ocupado).
+    }
     // Fecha o pool antes de sair, igual à Central (route.ts:522-528) -- sem
     // isso cada ciclo pulado deixaria um pool de até 3 conexões pendurado.
     await pool.end();
+    if (!leaseExiste) {
+      const msg =
+        `CRITICO: a linha ${MOTOR_ROMANEIO_LEASE_ID} de motor_lease nao existe -- ` +
+        `a migration 058 (058_motor_romaneio_lease_e_retencao.sql) nao foi aplicada neste banco. ` +
+        `O motor-romaneio NAO esta rodando: todo ciclo e pulado por falta da linha de lease, nao por ciclo em andamento.`;
+      console.error(msg);
+      return Response.json({ pulado: true, motivo: msg });
+    }
     return Response.json({
       pulado: true,
       motivo: "ciclo anterior do motor-romaneio ainda em execucao",
