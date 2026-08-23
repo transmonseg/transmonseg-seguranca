@@ -934,9 +934,11 @@ export async function POST(request: Request) {
         // caminhos ficam porque um segundo tipo de alerta nesta tabela
         // (parada_fora_tapete, por exemplo, que na Central é deliberadamente
         // gerenciado) precisa deles no dia em que entrar. Quem fecha o que
-        // ninguém trata é o cron de 7 dias
-        // ('expirar-alertas-romaneio-ativos-esquecidos', migration 058),
-        // igual à Central.
+        // ninguém trata é o cron diário 'expirar-alertas-romaneio-do-dia-
+        // anterior' (migration 058) -- mesmo mecanismo da Central, mas com
+        // janela de 1 dia em vez dos 7 dela, porque ninguém trabalha a tela
+        // nova e um alerta preso cala o veículo na comparação (o motivo
+        // completo está na migration).
         const alertasGerenciados = alertasAbertosVeiculo.filter(
           (a) => !TIPOS_NAO_GERENCIADOS.has(a.tipo)
         );
