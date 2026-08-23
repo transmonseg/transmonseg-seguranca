@@ -43,7 +43,12 @@ import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { haversineM, agruparPontosPorPlaca, suspenderPorChegada, type AlvoUnitrac, type PontoEntrega } from "@/lib/unitrac";
-import { temCoordenadaValida, BONUS_CORROBORACAO_POR_SINAL, TIPOS_NAO_GERENCIADOS } from "@/lib/detectores";
+import {
+  temCoordenadaValida,
+  BONUS_CORROBORACAO_POR_SINAL,
+  TIPOS_NAO_GERENCIADOS,
+  contaComoEventoDeSilenciamento,
+} from "@/lib/detectores";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
@@ -459,6 +464,43 @@ export async function POST(request: Request) {
       alertasAbertosPorVeiculo.set(a.veiculo_id, lista);
     }
 
+    // Tipos SILENCIADOS por 2h depois de um "falso positivo" marcado pelo
+    // operador -- mesmo mecanismo da Central (motor/route.ts:1452-1466 e
+    // 3086-3088). Sem isso: o operador marca falso, o status sai de 'ativo',
+    // 30s depois alertaExistente é undefined e o motor insere o MESMO alerta
+    // de novo, e repete a cada ciclo enquanto o streak ≥ 2 -- é o padrão que
+    // a Central precisou combater no caso TUG-9D18 (17 alertas em 2h pro
+    // mesmo episódio).
+    //
+    // contaComoEventoDeSilenciamento (@/lib/detectores) filtra o que NÃO é
+    // decisão humana: um fechamento da máquina reusa o mesmo status e
+    // silenciaria o tipo sem ninguém ter julgado nada (ver o marcador
+    // contexto.auto_resolvido no Step 9).
+    //
+    // SEM filtro de modo_teste aqui: alertas_romaneio não tem essa coluna
+    // (migration 055) -- ao contrário de `alertas`, onde a Central filtra.
+    // Copiar o predicado da Central sem conferir estouraria em runtime, e
+    // nem tsc nem eslint pegam coluna inexistente em query.
+    const desde2h = new Date(agora.getTime() - 2 * 60 * 60 * 1000).toISOString();
+    const tiposSilenciadosPorVeiculo = new Map<string, Set<string>>();
+    {
+      const { data: falsosRecentes, error: erroFalsos } = await admin
+        .from("alertas_romaneio")
+        .select("tipo, veiculo_id, contexto")
+        .in("veiculo_id", veiculoIds)
+        .eq("status", "falso_positivo")
+        .gte("resolvido_em", desde2h);
+      if (erroFalsos) {
+        erros.push(`Aviso: falha ao ler falsos positivos recentes de alertas_romaneio: ${erroFalsos.message}`);
+      }
+      for (const fp of (falsosRecentes ?? []) as { tipo: string; veiculo_id: string; contexto: unknown }[]) {
+        if (!contaComoEventoDeSilenciamento(fp.contexto)) continue;
+        const set = tiposSilenciadosPorVeiculo.get(fp.veiculo_id) ?? new Set<string>();
+        set.add(fp.tipo);
+        tiposSilenciadosPorVeiculo.set(fp.veiculo_id, set);
+      }
+    }
+
     for (const veiculoId of veiculoIds) {
       try {
         const info = veiculoInfoPorId.get(veiculoId);
@@ -799,40 +841,50 @@ export async function POST(request: Request) {
 
         if (alerta) {
           const alertaExistente = alertasAbertosVeiculo.find((a) => a.tipo === alerta!.tipo);
-          const obsoletos = alertasGerenciados.filter((a) => a.tipo !== alerta!.tipo);
-          if (obsoletos.length > 0) {
-            const erroResolveObsoletos = await resolverPelaMaquina(admin, obsoletos, agora.toISOString());
-            if (erroResolveObsoletos) {
-              erros.push(`Aviso: falha ao resolver alertas_romaneio obsoletos do veiculo ${veiculoId}: ${erroResolveObsoletos}`);
-            }
-          }
+          // Silenciamento de 2h (ver tiposSilenciadosPorVeiculo acima) --
+          // mesma estrutura da Central (route.ts:3086-3088): quando o tipo
+          // está silenciado NADA acontece pro veículo neste ciclo, nem
+          // insert nem resolve de obsoletos (a Central não resolve
+          // silenciado de propósito, pra preservar o contexto enquanto o
+          // operador investiga).
+          const silenciado = tiposSilenciadosPorVeiculo.get(veiculoId)?.has(alerta.tipo) ?? false;
 
-          if (!alertaExistente) {
-            const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
-              cliente_id: info.cliente_id,
-              veiculo_id: veiculoId,
-              nivel: alerta.nivel,
-              tipo: alerta.tipo,
-              motivo: alerta.motivo,
-              score: alerta.score,
-              status: "ativo",
-              lat: latAtual,
-              lng: lngAtual,
-              contexto: { origem_desvio: alerta.origemDesvio },
-              desde: agora.toISOString(),
-            });
-            if (erroInsert) {
-              erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
-            } else {
-              alertasGerados++;
+          if (!silenciado) {
+            const obsoletos = alertasGerenciados.filter((a) => a.tipo !== alerta!.tipo);
+            if (obsoletos.length > 0) {
+              const erroResolveObsoletos = await resolverPelaMaquina(admin, obsoletos, agora.toISOString());
+              if (erroResolveObsoletos) {
+                erros.push(`Aviso: falha ao resolver alertas_romaneio obsoletos do veiculo ${veiculoId}: ${erroResolveObsoletos}`);
+              }
             }
-          } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
-            const { error: erroEscalar } = await admin
-              .from("alertas_romaneio")
-              .update({ nivel: alerta.nivel, motivo: alerta.motivo, score: alerta.score })
-              .eq("id", alertaExistente.id);
-            if (erroEscalar) {
-              erros.push(`Aviso: falha ao escalar alertas_romaneio do veiculo ${veiculoId}: ${erroEscalar.message}`);
+
+            if (!alertaExistente) {
+              const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
+                cliente_id: info.cliente_id,
+                veiculo_id: veiculoId,
+                nivel: alerta.nivel,
+                tipo: alerta.tipo,
+                motivo: alerta.motivo,
+                score: alerta.score,
+                status: "ativo",
+                lat: latAtual,
+                lng: lngAtual,
+                contexto: { origem_desvio: alerta.origemDesvio },
+                desde: agora.toISOString(),
+              });
+              if (erroInsert) {
+                erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
+              } else {
+                alertasGerados++;
+              }
+            } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
+              const { error: erroEscalar } = await admin
+                .from("alertas_romaneio")
+                .update({ nivel: alerta.nivel, motivo: alerta.motivo, score: alerta.score })
+                .eq("id", alertaExistente.id);
+              if (erroEscalar) {
+                erros.push(`Aviso: falha ao escalar alertas_romaneio do veiculo ${veiculoId}: ${erroEscalar.message}`);
+              }
             }
           }
         } else if (alertasGerenciados.length > 0) {
