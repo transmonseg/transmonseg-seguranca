@@ -958,19 +958,38 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     return () => clearInterval(t);
   }, [cliente, fonteAlertas]);
 
+  // Mapa: a fonte do alerta que colore o marcador acompanha a fonte da tela
+  // (?fonte=romaneio em /central-romaneio). Sem isso, o mapa da tela nova
+  // mostrava o veredito da CENTRAL — carro marcado pela Central colorido sem
+  // card correspondente na lista, e alerta que só o pipeline novo viu sem
+  // colorir nada, numa tela cujo propósito é justamente comparar as duas
+  // fontes.
   useEffect(() => {
+    const qsFonte = fonteAlertas === "romaneio" ? "&fonte=romaneio" : "";
     const poll = async () => {
       try {
-        const res = await fetch(`/api/mapa?cliente=${encodeURIComponent(cliente)}`);
+        const res = await fetch(`/api/mapa?cliente=${encodeURIComponent(cliente)}${qsFonte}`);
         if (!res.ok) return;
         const data: { veiculos?: VeiculoMapa[] } = await res.json();
-        setVeiculosMapa(data.veiculos ?? []);
+        const vs = data.veiculos ?? [];
+        // `nivel` vem de posicoes_atuais, escrito SÓ pelo motor da Central
+        // (tabela somente-leitura pra este pipeline — nunca escrever lá).
+        // corVeiculo (MapaLeafletV2) pinta de vermelho/amarelo por `nivel`
+        // OU por `tipo`, então na tela do romaneio o `nivel` da Central
+        // reintroduziria exatamente o veredito que acabamos de trocar — e
+        // desfaria, no poll seguinte, o feedback otimista de
+        // handleResolver/handleFalso (que zera nivel/tipo do marcador).
+        // Descartado aqui, no cliente: `nivel` só alimenta cor e zIndex do
+        // marcador, nada mais (conferido em MapaLeafletV2:137-138, 987,
+        // 1016), então `tipo` — que agora vem de alertas_romaneio — passa a
+        // ser a ÚNICA fonte de cor nesta tela.
+        setVeiculosMapa(fonteAlertas === "romaneio" ? vs.map(v => ({ ...v, nivel: null })) : vs);
       } catch { /* ignore */ }
     };
     poll();
     const t = setInterval(poll, 30_000);
     return () => clearInterval(t);
-  }, [cliente]);
+  }, [cliente, fonteAlertas]);
 
   // Grupos de frota Unitrac (gvc/gvn) — fetcha uma vez por cliente
   useEffect(() => {

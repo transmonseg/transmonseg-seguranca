@@ -27,9 +27,54 @@ const cachePorCliente = new Map<string, CacheEntry>();
 // Posições/veículos: o motor grava 1x por minuto, então um cache curtinho
 // (10s) faz N telas que buscam no mesmo tick do motor compartilharem UMA
 // query — é o que permite muitas telas abertas sem multiplicar egress.
+//
+// ATENÇÃO: a chave deste cache é `${clienteId}:${fonte}`, NÃO só o cliente
+// (ver FONTES_ALERTA abaixo). O payload passou a depender da fonte de
+// alerta, e com chave só por cliente as duas telas (/central-v2 e
+// /central-romaneio) envenenariam o cache uma da outra — cada uma passaria a
+// mostrar os alertas da outra de forma intermitente, por 10s, dependendo de
+// quem pollou primeiro. Bug praticamente irreproduzível de propósito.
 type VeiculosCacheEntry = { veiculos: unknown[]; expiraEm: number };
 const VEICULOS_CACHE_MS = 10_000;
 const veiculosCachePorCliente = new Map<string, VeiculosCacheEntry>();
+
+// De qual pipeline vem o alerta que COLORE o veículo no mapa.
+//
+// - "central" (DEFAULT, comportamento histórico intocado): tabela `alertas`,
+//   escrita por /api/motor.
+// - "romaneio": tabela `alertas_romaneio`, escrita por /api/motor-romaneio
+//   (pipeline paralelo alimentado pelo romaneio). A tela /central-romaneio
+//   existe pra comparar as duas fontes; enquanto o mapa dela mostrava a
+//   `alertas`, metade da tela mostrava a fonte errada — carro marcado pela
+//   Central aparecia colorido sem card na lista, e o alerta que só o
+//   pipeline novo viu não coloria nada.
+//
+// alertas_romaneio NÃO TEM a coluna modo_teste (migration 055) — por isso o
+// predicado `a.modo_teste = false` existe só no ramo da Central. Copiar a
+// query inteira sem conferir coluna por coluna estouraria em runtime: nem
+// tsc nem eslint enxergam SQL (foi assim que um bug de `geom` quase passou
+// nesta mesma entrega).
+const FONTES_ALERTA = {
+  central: `
+    left join lateral (
+      select a.tipo
+      from alertas a
+      where a.veiculo_id = v.id
+        and a.status in ('ativo', 'reconhecido')
+        and a.modo_teste = false
+      order by (a.nivel = 'critico') desc, a.tipo
+      limit 1
+    ) al on true`,
+  romaneio: `
+    left join lateral (
+      select a.tipo
+      from alertas_romaneio a
+      where a.veiculo_id = v.id
+        and a.status in ('ativo', 'reconhecido')
+      order by (a.nivel = 'critico') desc, a.tipo
+      limit 1
+    ) al on true`,
+} as const;
 
 export async function GET(request: Request) {
   // Posições de frota são dado sensível: exige operador logado.
@@ -41,6 +86,10 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente") || "4096";
+  // Default = "central": qualquer chamador que não passe `fonte` (o mapa da
+  // Central, o MapaMonitor antigo, o heat) continua com o comportamento
+  // exato de antes.
+  const fonte: keyof typeof FONTES_ALERTA = searchParams.get("fonte") === "romaneio" ? "romaneio" : "central";
 
   const client = await pool.connect();
 
@@ -57,7 +106,8 @@ export async function GET(request: Request) {
     // LEFT JOIN LATERAL busca o tipo do alerta ativo de maior prioridade por veiculo.
     // Prioridade: critico antes de atencao; dentro do mesmo nivel, ordem alfabetica (estavel).
     // Veiculos sem alerta retornam tipo = null. Cache curto (ver VEICULOS_CACHE_MS).
-    let veiculosCache = veiculosCachePorCliente.get(clienteId);
+    const chaveCacheVeiculos = `${clienteId}:${fonte}`;
+    let veiculosCache = veiculosCachePorCliente.get(chaveCacheVeiculos);
     if (!veiculosCache || veiculosCache.expiraEm <= Date.now()) {
       const veiculosRows = (
         await client.query<{ cv: string }>(
@@ -72,21 +122,13 @@ export async function GET(request: Request) {
                   ) as tem_romaneio_hoje
            from posicoes_atuais p
            join veiculos v on v.id = p.veiculo_id
-           left join lateral (
-             select a.tipo
-             from alertas a
-             where a.veiculo_id = v.id
-               and a.status in ('ativo', 'reconhecido')
-               and a.modo_teste = false
-             order by (a.nivel = 'critico') desc, a.tipo
-             limit 1
-           ) al on true
+           ${FONTES_ALERTA[fonte]}
            where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`,
           [clienteId, dataHojeSP]
         )
       ).rows;
       veiculosCache = { veiculos: veiculosRows, expiraEm: Date.now() + VEICULOS_CACHE_MS };
-      veiculosCachePorCliente.set(clienteId, veiculosCache);
+      veiculosCachePorCliente.set(chaveCacheVeiculos, veiculosCache);
     }
     const veiculos = veiculosCache.veiculos;
 
