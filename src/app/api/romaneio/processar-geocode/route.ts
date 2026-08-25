@@ -46,7 +46,7 @@ export async function POST(request: Request) {
   const expiraAntesDe = new Date(Date.now() - REIVINDICACAO_EXPIRA_MIN * 60_000).toISOString();
   const { data: candidatos, error: erroCandidatos } = await admin
     .from("romaneio_pontos")
-    .select("id, endereco_bruto, veiculo_id, placa, nf, cliente_codigo")
+    .select("id, endereco_bruto, veiculo_id, placa, nf, cliente_codigo, romaneio_data")
     .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
     .order("criado_em", { ascending: true })
     .limit(LOTE_POR_INVOCACAO);
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
   // toda vez sem nada pendente, sempre retornava antes de chegar la. Agora
   // so pula o processamento principal (pendentes = []), sem `return`, pra
   // sempre chegar no fallback.
-  let pendentes: { id: string; endereco_bruto: string; veiculo_id: string | null; placa: string; nf: string; cliente_codigo: string | null }[] = [];
+  let pendentes: { id: string; endereco_bruto: string; veiculo_id: string | null; placa: string; nf: string; cliente_codigo: string | null; romaneio_data: string }[] = [];
 
   if (candidatos && candidatos.length > 0) {
     // Reivindica ANTES de processar. Achado real 27/07 (pego em teste ao
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       .update({ geocode_status: "processando", geocode_reivindicado_em: new Date().toISOString() })
       .in("id", idsCandidatos)
       .or(`geocode_status.eq.pendente,and(geocode_status.eq.processando,geocode_reivindicado_em.lt.${expiraAntesDe})`)
-      .select("id, endereco_bruto, veiculo_id, placa, nf, cliente_codigo");
+      .select("id, endereco_bruto, veiculo_id, placa, nf, cliente_codigo, romaneio_data");
 
     if (erroReivindicar) {
       console.error(`Erro ao reivindicar romaneio_pontos: ${erroReivindicar.message}`);
@@ -261,7 +261,7 @@ export async function POST(request: Request) {
 
   let ok = 0;
   let falhou = 0;
-  const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" }[] = [];
+  const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe"; romaneio_data: string }[] = [];
 
   let doCacheClienteCodigo = 0;
 
@@ -324,7 +324,7 @@ export async function POST(request: Request) {
       // antigo, nao uma geocodificacao fresca, nao faz sentido competir
       // com a Unitrac de novo pra corrigir pontos_aprendidos.
       if (linha.veiculo_id && !viaCacheClienteCodigo && (geocode.fonte === "google" || geocode.fonte === "nominatim" || geocode.fonte === "local" || geocode.fonte === "cnefe")) {
-        geocodificadosOk.push({ id: linha.id, veiculo_id: linha.veiculo_id, placa: linha.placa, nf: linha.nf, lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte });
+        geocodificadosOk.push({ id: linha.id, veiculo_id: linha.veiculo_id, placa: linha.placa, nf: linha.nf, lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, romaneio_data: linha.romaneio_data });
       }
     } else {
       falhou++;
@@ -401,11 +401,19 @@ export async function POST(request: Request) {
           const entregaFeitaUnitrac = alvo.alvosituacaoservico !== 0;
           let entregaConfirmada = entregaFeitaUnitrac;
           if (!entregaConfirmada) {
+            // Achado real 25/08: sem filtrar por dia, presenca de QUALQUER
+            // dia passado (ex: visita de 08/11) contava como "confirmado"
+            // pra autorizar sobrescrever pontos_aprendidos com o endereco
+            // geocodificado HOJE -- isso nao prova que o endereco de hoje
+            // esta certo, so' que o cliente foi visitado alguma vez. So' a
+            // presenca do PROPRIO dia deste romaneio prova que a entrega
+            // aconteceu on'de o romaneio de hoje diz que ela aconteceu.
             const { data: presenca } = await admin
               .from("entregas_presenca")
               .select("dia")
               .eq("cliente_id", clienteId)
               .eq("ponto_codigo", alvo.pontocodigo)
+              .eq("dia", linha.romaneio_data)
               .limit(1)
               .maybeSingle();
             entregaConfirmada = presenca !== null;

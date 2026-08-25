@@ -126,7 +126,10 @@ const TIPOS_NOTIFICAM_POR_CLIENTE: Record<string, string[]> = {
   // parada_sem_marcacao adicionado 20/08 (achado real: virou crítico com
   // badge "possível desvio", mas ficava mudo -- operador só notava se
   // estivesse com a tela aberta na hora certa. Mesmo apito do desvio agora.
-  "4096": ["desvio", "parada_fora_tapete", "parada_sem_marcacao"],  // Nutry: desvio de rota (movimento + parada fora do tapete, já mostrado na faixa do topo) + parada sem marcação (possível desvio)
+  // parada_anomala adicionado 25/08 -- pedido explícito do cliente no grupo
+  // ("parada anomala e parada suspeita, tem que ir para aba do desvio"):
+  // esses cards viviam fora da aba DESVIOS e mudos, cliente queria os dois.
+  "4096": ["desvio", "parada_fora_tapete", "parada_sem_marcacao", "parada_anomala"],  // Nutry: desvio de rota (movimento + parada fora do tapete, já mostrado na faixa do topo) + parada sem marcação (possível desvio) + parada anômala/suspeita
   "4586": ["parada_cliente"],  // Benassi: só parada de 1h30+ dentro do cliente
 };
 
