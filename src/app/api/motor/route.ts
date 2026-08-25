@@ -3197,13 +3197,27 @@ export async function POST(request: Request) {
                   alertasTratadosDoTipo: mapaParadasTratadas.get(`${veiculo_id}:${alerta.tipo}`) ?? [],
                 });
               // Achado real 25/08 -- ver deveSuprimirRedisparoDesvio (detectores.ts).
+              const ultimoTratamentoDesvio = mapaDesviosTratados.get(veiculo_id) ?? null;
               const suprimidoPorCooldownDesvio =
                 alerta.tipo === "desvio" &&
                 deveSuprimirRedisparoDesvio({
                   agoraMs: agora.getTime(),
-                  ultimoTratamento: mapaDesviosTratados.get(veiculo_id) ?? null,
+                  ultimoTratamento: ultimoTratamentoDesvio,
                 });
               const suprimidoPorCooldown = suprimidoPorCooldownParada || suprimidoPorCooldownDesvio;
+
+              // DIAGNOSTICO TEMPORARIO (25/08, investigacao ativa: cooldown de
+              // desvio confirmado falhando em producao com dado real -- 3
+              // casos onde a mesma query, re-executada manualmente, ACHA a
+              // resolucao dentro da janela, mas o cooldown em runtime nao
+              // suprimiu. Objetivo: capturar o estado exato no momento da
+              // decisao pra achar a causa raiz real, sem chutar. Remover
+              // depois de confirmado o bug real.
+              if (alerta.tipo === "desvio" && !jaExiste) {
+                console.log(
+                  `[DIAG-COOLDOWN-DESVIO] veiculo_id=${veiculo_id} cliente_id=${cliente_id} agora=${agora.toISOString()} mapaDesviosTratadosSize=${mapaDesviosTratados.size} ultimoTratamento=${JSON.stringify(ultimoTratamentoDesvio)} suprimido=${suprimidoPorCooldownDesvio}`
+                );
+              }
 
               if (!jaExiste) {
                 if (!suprimidoPorCooldown) {
