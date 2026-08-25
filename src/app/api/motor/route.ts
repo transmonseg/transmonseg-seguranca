@@ -3197,7 +3197,44 @@ export async function POST(request: Request) {
                   alertasTratadosDoTipo: mapaParadasTratadas.get(`${veiculo_id}:${alerta.tipo}`) ?? [],
                 });
               // Achado real 25/08 -- ver deveSuprimirRedisparoDesvio (detectores.ts).
-              const ultimoTratamentoDesvio = mapaDesviosTratados.get(veiculo_id) ?? null;
+              //
+              // Achado real 25/08 (investigacao com log de diagnostico, 3
+              // casos confirmados com dado real: TOS-0H81 gap de 10.5min,
+              // RQP-2G33 gap de 8seg, RBG-5G18 gap de 74seg): re-executar a
+              // MESMA query que monta mapaDesviosTratados, na hora, acha a
+              // resolucao corretamente dentro da janela nos 3 casos -- ou
+              // seja, o snapshot batch (calculado 1x por cliente, no topo do
+              // ciclo, antes do processamento concorrente de TODOS os
+              // veiculos via Promise.allSettled) fica desatualizado por
+              // tempo suficiente pra perder uma resolucao humana que
+              // aconteceu DEPOIS do snapshot mas ANTES deste veiculo
+              // especifico ser avaliado. Elimina a categoria inteira do
+              // problema (nao so o mecanismo exato de por que o snapshot
+              // envelhece) consultando fresco, so' pra este veiculo, na hora
+              // exata da decisao -- custo extra e' 1 query pontual, so'
+              // quando ha um desvio NOVO pra considerar (nao todo veiculo,
+              // todo ciclo).
+              let ultimoTratamentoDesvio: { resolvidoEm: string } | null = null;
+              if (alerta.tipo === "desvio" && !jaExiste) {
+                const trintaMinAtrasFresco = new Date(agora.getTime() - 30 * 60 * 1000).toISOString();
+                try {
+                  const { rows: tratamentoFresco } = await pool.query<{ resolvido_em: string }>(
+                    `SELECT resolvido_em FROM alertas
+                      WHERE veiculo_id = $1 AND cliente_id = $2 AND modo_teste = false
+                        AND tipo = 'desvio'
+                        AND origem_acao IN ('resolver_individual','falso_individual')
+                        AND operador_id IS NOT NULL
+                        AND resolvido_em >= $3
+                      ORDER BY resolvido_em DESC LIMIT 1`,
+                    [veiculo_id, cliente_id, trintaMinAtrasFresco]
+                  );
+                  if (tratamentoFresco[0]) {
+                    ultimoTratamentoDesvio = { resolvidoEm: tratamentoFresco[0].resolvido_em };
+                  }
+                } catch (errCooldownFresco) {
+                  erros.push(`Aviso: falha ao consultar cooldown fresco de desvio pro veiculo ${veiculo_id}: ${String(errCooldownFresco)}`);
+                }
+              }
               const suprimidoPorCooldownDesvio =
                 alerta.tipo === "desvio" &&
                 deveSuprimirRedisparoDesvio({
@@ -3205,19 +3242,6 @@ export async function POST(request: Request) {
                   ultimoTratamento: ultimoTratamentoDesvio,
                 });
               const suprimidoPorCooldown = suprimidoPorCooldownParada || suprimidoPorCooldownDesvio;
-
-              // DIAGNOSTICO TEMPORARIO (25/08, investigacao ativa: cooldown de
-              // desvio confirmado falhando em producao com dado real -- 3
-              // casos onde a mesma query, re-executada manualmente, ACHA a
-              // resolucao dentro da janela, mas o cooldown em runtime nao
-              // suprimiu. Objetivo: capturar o estado exato no momento da
-              // decisao pra achar a causa raiz real, sem chutar. Remover
-              // depois de confirmado o bug real.
-              if (alerta.tipo === "desvio" && !jaExiste) {
-                console.log(
-                  `[DIAG-COOLDOWN-DESVIO] veiculo_id=${veiculo_id} cliente_id=${cliente_id} agora=${agora.toISOString()} mapaDesviosTratadosSize=${mapaDesviosTratados.size} ultimoTratamento=${JSON.stringify(ultimoTratamentoDesvio)} suprimido=${suprimidoPorCooldownDesvio}`
-                );
-              }
 
               if (!jaExiste) {
                 if (!suprimidoPorCooldown) {
