@@ -108,11 +108,26 @@ export type ResultadoExtracaoLLM = {
 // local primeiro, mesma cascata de antes.
 export const LIMIAR_TEXTO_SO_CLOUD_CHARS = 4000;
 
+// Achado real 25/08: Ollama (qwen2.5:7b) ficou preso a cada 12-16min, 400-
+// 500% CPU, por 6h+ seguidas no mesmo dia (watchdog de systemd confirmou
+// >24 reinicios só nessa janela) -- a VPS compartilhada (3 apps Next.js +
+// Postgres + PostgREST + GoTrue + este proprio processo) nao aguenta o
+// modelo local de forma confiavel. Nao e' mais so' "documento grande demora
+// muito" (21/08) -- e' "o modelo local trava sozinho, com qualquer entrada,
+// boa parte do tempo", derrubando a responsividade da VPS inteira junto
+// (nao so' desta rota). Ollama DESLIGADO (systemctl stop) e o cascata
+// pulando ele de proposito -- Mistral sozinho ja' validado confiavel (18-23s
+// mesmo em documento de 60+ entregas, ver scripts/gerar-nutrimax-real-
+// arquivo.ts do repo do KPI pro mesmo teste do lado da Nutry Max). Reverter
+// exigiria re-validar que a VPS aguenta o modelo local de verdade primeiro
+// -- nao só religar o systemd unit.
+const OLLAMA_DESATIVADO = true;
+
 export async function extrairRomaneioViaLLM(
   textoCompleto: string,
   deps: Deps
 ): Promise<ResultadoExtracaoLLM | null> {
-  if (textoCompleto.length <= LIMIAR_TEXTO_SO_CLOUD_CHARS) {
+  if (!OLLAMA_DESATIVADO && textoCompleto.length <= LIMIAR_TEXTO_SO_CLOUD_CHARS) {
     const local = await tentarExtrair(textoCompleto, deps.chamarOllama, "ollama");
     // local pode ser um array VALIDO porem vazio ([]) quando o modelo local
     // nao reconhece o documento mas ainda devolve {"linhas": []} -- [] e'

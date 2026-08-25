@@ -1118,3 +1118,39 @@ export function deveSuprimirRedisparoParada(ctx: {
     return Number.isFinite(tratadoMs) && tratadoMs >= inicioMs;
   });
 }
+
+// Achado real 25/08 (grupo "DESVIO DE ROTA": "Sistema está repetindo
+// alertas de desvios depois de limpar, geralmente depois de 15 minutos dá
+// o mesmo desvio já limpo"). Confirmado no banco: RQU-0B47 reabriu alerta
+// tipo=desvio 9x num dia, algumas vezes a MENOS DE 1 MINUTO da resolução
+// anterior. Causa: o cooldown acima (deveSuprimirRedisparoParada) só cobre
+// parada_anomala/parada_longa -- desvio nunca teve nenhum, e o
+// silenciamento de 2h existente (mapaTiposSilenciados) só conta
+// status='falso_positivo', nunca 'resolvido' ("Correto" na UI).
+//
+// Desvio NÃO tem um equivalente limpo a parado_desde (o streak em
+// avaliarAfastandoDeTudo DECAI 1 por leitura não-divergente em vez de
+// zerar -- ver comentário lá -- então não existe um "início de episódio"
+// discreto pra comparar). Em vez de um cooldown por episódio, este é por
+// TEMPO fixo desde o último tratamento humano individual (mesmo critério
+// de origem_acao de deveSuprimirRedisparoParada: só resolver_individual/
+// falso_individual conta, nunca ação em massa -- ver comentário no motor
+// sobre o caso TUG-9D18 que motivou essa exigência). Cobre 'resolvido' E
+// 'falso_positivo' -- marcar "Correto" é tão válido quanto "Falso" pra
+// dizer "já vi isso, não me avisa de novo por um tempinho".
+//
+// Janela curta (15min, não as 2h do silenciamento de falso_positivo) de
+// propósito -- prioriza recall (ver [[feedback_desvio_priorizar_recall]]):
+// um desvio genuinamente ainda em andamento deve voltar a aparecer logo,
+// não ficar escondido por horas só porque foi visto uma vez.
+export const JANELA_COOLDOWN_DESVIO_MS = 15 * 60 * 1000;
+
+export function deveSuprimirRedisparoDesvio(ctx: {
+  agoraMs: number;
+  ultimoTratamento: { resolvidoEm: string } | null;
+}): boolean {
+  if (!ctx.ultimoTratamento) return false;
+  const tratadoMs = new Date(ctx.ultimoTratamento.resolvidoEm).getTime();
+  if (!Number.isFinite(tratadoMs)) return false;
+  return ctx.agoraMs - tratadoMs < JANELA_COOLDOWN_DESVIO_MS;
+}

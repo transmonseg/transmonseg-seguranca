@@ -41,6 +41,7 @@ import {
   contaComoEventoDeSilenciamento,
   BONUS_CORROBORACAO_POR_SINAL,
   deveSuprimirRedisparoParada,
+  deveSuprimirRedisparoDesvio,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -1437,6 +1438,35 @@ export async function POST(request: Request) {
         const lista = mapaParadasTratadas.get(chave) ?? [];
         lista.push({ resolvidoEm: pt.resolvido_em as string });
         mapaParadasTratadas.set(chave, lista);
+      }
+
+      // Cooldown de re-disparo pra DESVIO (achado real 25/08, ver
+      // deveSuprimirRedisparoDesvio em detectores.ts -- RQU-0B47 reabriu 9x
+      // num dia, algumas vezes a <1min da resolucao anterior). Mesmo
+      // criterio de origem_acao individual do cooldown de parada acima, mas
+      // janela de lookback mais curta (30min e' folga suficiente pra um
+      // cooldown de 15min -- nao precisa de 6h como parada, que usa
+      // parado_desde pra achar o tratamento certo dentre varios episodios
+      // antigos; aqui e' sempre "o ultimo tratamento", ponto).
+      const trintaMinAtras = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const { data: desviosTratados } = await supabase
+        .from("alertas")
+        .select("veiculo_id, resolvido_em")
+        .eq("cliente_id", cliente.id)
+        .eq("modo_teste", false)
+        .eq("tipo", "desvio")
+        .in("origem_acao", ORIGENS_TRATAMENTO_INDIVIDUAL)
+        .not("operador_id", "is", null)
+        .gte("resolvido_em", trintaMinAtras);
+
+      // Chave: veiculo_id -> tratamento mais recente (so' importa o ultimo
+      // pra decidir se ainda esta dentro da janela de cooldown).
+      const mapaDesviosTratados = new Map<string, { resolvidoEm: string }>();
+      for (const dt of desviosTratados ?? []) {
+        const atual = mapaDesviosTratados.get(dt.veiculo_id);
+        if (!atual || dt.resolvido_em > atual.resolvidoEm) {
+          mapaDesviosTratados.set(dt.veiculo_id, { resolvidoEm: dt.resolvido_em as string });
+        }
       }
 
       // BLOCKER 1 (revisao independente 27/07): esta query alimenta
@@ -3160,12 +3190,20 @@ export async function POST(request: Request) {
               // `else if` de escalacao de nivel intocado pro caso jaExiste=true.
               const ehTipoParadaComCooldown =
                 alerta.tipo === "parada_anomala" || alerta.tipo === "parada_longa";
-              const suprimidoPorCooldown =
+              const suprimidoPorCooldownParada =
                 ehTipoParadaComCooldown &&
                 deveSuprimirRedisparoParada({
                   paradoDesde: parado_desde,
                   alertasTratadosDoTipo: mapaParadasTratadas.get(`${veiculo_id}:${alerta.tipo}`) ?? [],
                 });
+              // Achado real 25/08 -- ver deveSuprimirRedisparoDesvio (detectores.ts).
+              const suprimidoPorCooldownDesvio =
+                alerta.tipo === "desvio" &&
+                deveSuprimirRedisparoDesvio({
+                  agoraMs: agora.getTime(),
+                  ultimoTratamento: mapaDesviosTratados.get(veiculo_id) ?? null,
+                });
+              const suprimidoPorCooldown = suprimidoPorCooldownParada || suprimidoPorCooldownDesvio;
 
               if (!jaExiste) {
                 if (!suprimidoPorCooldown) {
