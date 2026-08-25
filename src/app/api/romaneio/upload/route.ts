@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, type LinhaRomaneio } from "@/lib/romaneio";
+import { parseRomaneioTabular, extrairDataTabular } from "@/lib/romaneio-tabular";
 import { extrairTextoPlanilha } from "@/lib/romaneio-planilha";
 import { extrairRomaneioViaLLM, chamarOllama, chamarMistral, type LinhaRomaneioExtraida } from "@/lib/romaneio-llm-extrator";
 import { normalizarOrigem } from "@/lib/romaneio-origem";
@@ -130,13 +131,24 @@ export async function POST(request: Request) {
   }
 
   // Planilha nunca tem regex dedicado (nao existe romaneio Excel da Nutry
-  // Max hoje) -- so PDF tenta o regex primeiro. Regex que nao reconhece o
-  // formato devolve 0 linhas, cai pro extrator via IA.
+  // Max hoje) -- so PDF tenta os regex primeiro. Nenhum regex reconhecer o
+  // formato cai pro extrator via IA.
   const linhasRegex = isPlanilha ? [] : parseRomaneio(texto);
+  // Achado real 24-25/08 ("Escala do Pao"/"Programacao Congelado" -- mesmo
+  // documento, nomes diferentes quase todo dia): formato tabular por carro,
+  // 100% consistente entre arquivos de dias diferentes (ver romaneio-
+  // tabular.ts) -- so' tentado quando o regex da Nutry Max NAO bateu (os
+  // dois formatos sao mutuamente exclusivos por construcao: um exige
+  // "PLACA/MOTORISTA:" em texto corrido, o outro exige linha "CARRO" em
+  // tabela). Reconhecido = nunca mais precisa de LLM pra esse documento --
+  // zero custo, zero risco de timeout/infra (Ollama/Mistral), determinismo
+  // total. null = formato nao reconhecido, cai pro caminho via IA como
+  // antes.
+  const linhasTabular = isPlanilha || linhasRegex.length > 0 ? null : parseRomaneioTabular(texto);
 
   let linhasNormalizadas: LinhaNormalizada[];
   let romaneioData: string;
-  let fonteExtracao: "regex" | "ollama" | "mistral";
+  let fonteExtracao: "regex" | "regex_tabular" | "ollama" | "mistral";
 
   if (linhasRegex.length > 0) {
     // Nutry Max via regex -- caminho vivo/testado do unico cliente em
@@ -149,6 +161,21 @@ export async function POST(request: Request) {
     romaneioData = data;
     linhasNormalizadas = normalizarLinhasRegex(linhasRegex);
     fonteExtracao = "regex";
+  } else if (linhasTabular && linhasTabular.length > 0) {
+    // Escala do Pao / Programacao Congelado -- data vem do cabecalho
+    // "DATA\t<dd/mm/yyyy>" proprio desse formato (SEM horario, por isso um
+    // extrator dedicado -- extrairDataRomaneio exigiria HH:MM e nunca
+    // bateria aqui). Sem esse cabecalho e' formato inesperado -- 422 em vez
+    // de arriscar data errada (mesma politica do caminho regex da Nutry
+    // Max, ao contrario do caminho generico via IA que tem fallback pra
+    // "hoje").
+    const data = extrairDataTabular(texto);
+    if (!data) {
+      return Response.json({ ok: false, erro: "Não consegui achar a data no cabeçalho do arquivo. Confirma que é o romaneio certo." }, { status: 422 });
+    }
+    romaneioData = data;
+    linhasNormalizadas = normalizarLinhasLLM(linhasTabular);
+    fonteExtracao = "regex_tabular";
   } else {
     // Planilha OU PDF de formato desconhecido -- caminho generico via IA.
     // So' 422 se as LINHAS DE ENTREGA nao saem (esse e' o unico bloqueio

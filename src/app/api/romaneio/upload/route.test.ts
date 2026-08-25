@@ -20,6 +20,13 @@ vi.mock("@/lib/romaneio-planilha", () => ({
   extrairTextoPlanilha: mockExtrairTextoPlanilha,
 }));
 
+const mockParseRomaneioTabular = vi.fn();
+const mockExtrairDataTabular = vi.fn();
+vi.mock("@/lib/romaneio-tabular", () => ({
+  parseRomaneioTabular: mockParseRomaneioTabular,
+  extrairDataTabular: mockExtrairDataTabular,
+}));
+
 const mockExtrairRomaneioViaLLM = vi.fn();
 vi.mock("@/lib/romaneio-llm-extrator", () => ({
   extrairRomaneioViaLLM: mockExtrairRomaneioViaLLM,
@@ -99,6 +106,78 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     expect(mockExtrairRomaneioViaLLM).toHaveBeenCalledTimes(1);
     const body = await res.json();
     expect(body.fonteExtracao).toBe("ollama");
+  });
+
+  // ─── Achado real 24-25/08: "Escala do Pao"/"Programacao Congelado" --
+  // formato tabular por carro, agora com parser deterministico proprio
+  // (romaneio-tabular.ts), tentado ANTES do caminho generico via IA.
+
+  it("PDF tabular (Escala do Pao): usa parseRomaneioTabular, NAO chama o extrator LLM", async () => {
+    mockParseRomaneio.mockReturnValue([]);
+    mockParseRomaneioTabular.mockReturnValue([
+      { placaBruta: "ABC1D23", nf: "1", clienteNome: "Cliente", enderecoBruto: "Rua X, Bairro Y" },
+    ]);
+    mockExtrairDataTabular.mockReturnValue("2026-08-25");
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("escala-do-pao.pdf"));
+    expect(res.status).toBe(200);
+    expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
+    expect(mockInsert).toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.fonteExtracao).toBe("regex_tabular");
+    expect(body.romaneioData).toBe("2026-08-25");
+  });
+
+  it("PDF tabular sem data no cabecalho: 422, nao cai pro LLM (mesma politica estrita do regex Nutry Max)", async () => {
+    mockParseRomaneio.mockReturnValue([]);
+    mockParseRomaneioTabular.mockReturnValue([
+      { placaBruta: "ABC1D23", nf: "1", clienteNome: "Cliente", enderecoBruto: "Rua X" },
+    ]);
+    mockExtrairDataTabular.mockReturnValue(null);
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("escala-do-pao.pdf"));
+    expect(res.status).toBe(422);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
+  });
+
+  it("parseRomaneioTabular devolve null (formato nao reconhecido): cai pro extrator LLM normalmente", async () => {
+    mockParseRomaneio.mockReturnValue([]);
+    mockParseRomaneioTabular.mockReturnValue(null);
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "mistral",
+    });
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("romaneio-desconhecido.pdf"));
+    expect(res.status).toBe(200);
+    expect(mockExtrairRomaneioViaLLM).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.fonteExtracao).toBe("mistral");
+  });
+
+  it("parseRomaneioTabular devolve array vazio (CARRO reconhecido mas 0 entregas): cai pro extrator LLM, nao 422 direto", async () => {
+    mockParseRomaneio.mockReturnValue([]);
+    mockParseRomaneioTabular.mockReturnValue([]);
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "mistral",
+    });
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("escala-do-pao-vazia.pdf"));
+    expect(res.status).toBe(200);
+    expect(mockExtrairRomaneioViaLLM).toHaveBeenCalledTimes(1);
+  });
+
+  it("Excel: nunca tenta o parser tabular (so' PDF)", async () => {
+    mockExtrairTextoPlanilha.mockReturnValue("TEXTO DA PLANILHA");
+    mockExtrairRomaneioViaLLM.mockResolvedValue({
+      linhas: [{ placaBruta: "XYZ9W88", enderecoBruto: "Av Brasil, 500", clienteNome: "Loja X" }],
+      fonte: "mistral",
+    });
+    const { POST } = await import("./route");
+    await POST(criarRequisicao("romaneio.xlsx"));
+    expect(mockParseRomaneioTabular).not.toHaveBeenCalled();
   });
 
   it("Excel: nunca chama parseRomaneio, vai direto pro extrator LLM", async () => {
