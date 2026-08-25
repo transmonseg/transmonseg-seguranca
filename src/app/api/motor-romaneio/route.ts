@@ -554,6 +554,24 @@ export async function POST(request: Request) {
         const info = veiculoInfoPorId.get(veiculoId);
         if (!info) continue;
 
+        // Achado real 24/08 (usuário + investigação
+        // docs/investigacoes/2026-08-21-marcacoes-faltantes.md, adendo "causa
+        // raiz do padrão estrutural"): esta rota existe pra veículos SEM alvo
+        // na Unitrac (propósito original, ver comentário de topo do arquivo:
+        // "14 veículos tinham romaneio mas ZERO alvo na Unitrac") -- mas
+        // processava TODO veículo com romaneio hoje, mesmo os que a Central
+        // já cobre bem via Unitrac. Medido em produção no mesmo dia: 70% da
+        // frota com romaneio (31/44) disparando "desvio" aqui, quase o
+        // "flood" que já tinha sido corrigido no motor antigo (streak=1 ->
+        // streak=2, ver desvio.ts). Causa: o "já entregue" desta rota depende
+        // de casar NF por aproximação contra a Unitrac
+        // (montarPontosDeRomaneio), bem mais ruidoso que o status ao vivo que
+        // a Central usa -- avaliar de novo aqui um veículo que a Central já
+        // cobre não soma sinal, só duplica alerta. Pula todo veículo que TEM
+        // pelo menos um alvo Unitrac hoje.
+        const pontosUnitracVeiculo = pontosUnitracPorPlaca.get(info.placa) ?? [];
+        if (pontosUnitracVeiculo.length > 0) continue;
+
         // Step 1: posição atual -- mesma fonte da Central (posicoes_atuais), SOMENTE LEITURA.
         const posAtual = posAtualPorVeiculo.get(veiculoId);
         if (!posAtual || posAtual.lat == null || posAtual.lng == null) continue;
@@ -680,7 +698,10 @@ export async function POST(request: Request) {
           lng: l.lng,
           presencaConfirmadaEm: l.presenca_confirmada_em,
         }));
-        const pontosUnitracVeiculo = pontosUnitracPorPlaca.get(info.placa) ?? [];
+        // pontosUnitracVeiculo já foi calculado acima (Step 0, gate de
+        // escopo) -- sempre [] neste ponto, já que veículo com alvo Unitrac
+        // é pulado antes de chegar aqui. Mantido explícito no argumento
+        // (não hardcoded []) pra não esconder a dependência real da função.
         const pontos = montarPontosDeRomaneio(pontosRomaneioDoVeiculo, pontosUnitracVeiculo);
 
         // Step 3: mesma regra de pendentes da Central pro Sinal A
