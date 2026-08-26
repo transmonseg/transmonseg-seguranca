@@ -107,6 +107,53 @@ export function calcularKmContinuo(posicoes: Posicao[]): number | null {
   return metros / 1000
 }
 
+// Mesmo raio ja validado do lado do KPI (RAIO_ENTREGA_METROS em
+// kpi-romaneio/constants.ts, usado por montarVisitas.ts).
+const RAIO_ENTREGA_M = 300;
+
+type PontoEntrega = { id: string; lat: number; lng: number };
+type VisitaPonto = { id: string; chegada: string | null; saida: string | null };
+
+/** Achado real 25/08 (mesma investigacao das duas funcoes acima):
+ *  montarVisitas.ts (KPI) casa cada PARADA da Unitrac (ja clusterizada,
+ *  opaca) com o ponto de entrega geocodificado mais proximo -- inclui
+ *  logica extra so' pra evitar "roubar" a visita de um ponto vizinho
+ *  quando 2 enderecos ficam perto. Aqui inverte: cada ponto de entrega
+ *  ja' TEM sua propria coordenada, entao checa direto se o veiculo
+ *  esteve dentro do raio DAQUELE ponto especifico -- sem competir por
+ *  cluster nenhum, sem "roubo" possivel (2 pontos proximos podem os 2
+ *  genuinamente detectar a mesma janela de posicao, o que faz sentido se
+ *  as 2 entregas aconteceram na mesma parada fisica).
+ *
+ *  Pra cada ponto: acha todos os blocos contiguos de leituras dentro do
+ *  raio, fica com o de MAIOR duracao (mesmo criterio de desempate que
+ *  montarVisitas.ts ja usava pra escolher entre paradas concorrentes).
+ *  Ponto nunca visitado (raio nunca cruzado no dia) -- chegada/saida
+ *  ficam null, nunca inventa. */
+export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]): VisitaPonto[] {
+  return pontos.map((pt) => {
+    type Bloco = { inicio: string; fim: string; durMs: number };
+    const blocos: Bloco[] = [];
+    let atual: { inicio: string; fim: string } | null = null;
+
+    for (const p of posicoes) {
+      const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= RAIO_ENTREGA_M;
+      if (dentro) {
+        if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em };
+        else atual.fim = p.criado_em;
+      } else if (atual) {
+        blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() });
+        atual = null;
+      }
+    }
+    if (atual) blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() });
+
+    if (blocos.length === 0) return { id: pt.id, chegada: null, saida: null };
+    const maior = blocos.reduce((a, b) => (b.durMs > a.durMs ? b : a));
+    return { id: pt.id, chegada: maior.inicio, saida: maior.fim };
+  });
+}
+
 function normPlaca(p: string): string {
   return p.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
@@ -124,7 +171,17 @@ export async function POST(request: Request) {
     return Response.json({ erro: "corpo invalido, esperado JSON" }, { status: 400 });
   }
 
-  const { placas, data } = body as { placas?: unknown; data?: unknown };
+  const { placas, data, pontosPorPlaca: pontosPorPlacaBruto } = body as {
+    placas?: unknown;
+    data?: unknown;
+    // Opcional (achado real 25/08, extensao pra CHEGADA/SAIDA NA LOJA):
+    // { [placa]: {id, lat, lng}[] } -- id e' o identificador que o
+    // chamador quer de volta (KPI usa o numero da NF). Placa ausente
+    // deste mapa simplesmente nao recebe `visitas` na resposta (mesmo
+    // fail-open das outras rotas: sem pontos, sem visitas, resto do
+    // resultado nao e' afetado).
+    pontosPorPlaca?: unknown;
+  };
   if (!Array.isArray(placas) || !placas.every((p) => typeof p === "string")) {
     return Response.json({ erro: "'placas' precisa ser um array de strings" }, { status: 400 });
   }
@@ -136,6 +193,24 @@ export async function POST(request: Request) {
   }
   if (placas.length === 0) {
     return Response.json({ resultados: [] });
+  }
+
+  const pontosPorPlaca = new Map<string, PontoEntrega[]>();
+  if (pontosPorPlacaBruto !== undefined) {
+    if (typeof pontosPorPlacaBruto !== "object" || pontosPorPlacaBruto === null) {
+      return Response.json({ erro: "'pontosPorPlaca' precisa ser um objeto" }, { status: 400 });
+    }
+    for (const [placaChave, pontosBrutos] of Object.entries(pontosPorPlacaBruto as Record<string, unknown>)) {
+      if (!Array.isArray(pontosBrutos)) continue;
+      const pontosValidos = pontosBrutos.filter(
+        (p): p is PontoEntrega =>
+          typeof p === "object" && p !== null &&
+          typeof (p as PontoEntrega).id === "string" &&
+          typeof (p as PontoEntrega).lat === "number" &&
+          typeof (p as PontoEntrega).lng === "number",
+      );
+      if (pontosValidos.length > 0) pontosPorPlaca.set(normPlaca(placaChave), pontosValidos);
+    }
   }
 
   // Brasil nao observa horario de verao -- offset fixo -03:00, sem
@@ -182,9 +257,16 @@ export async function POST(request: Request) {
     }
   }
 
-  const resultados: { placa: string; saidaBase: string | null; chegadaBase: string | null; kmPercorrido: number | null }[] = [];
+  const resultados: {
+    placa: string;
+    saidaBase: string | null;
+    chegadaBase: string | null;
+    kmPercorrido: number | null;
+    visitas?: VisitaPonto[];
+  }[] = [];
   for (const placaBruta of placas) {
-    const v = veiculoPorPlacaNorm.get(normPlaca(placaBruta));
+    const placaNorm = normPlaca(placaBruta);
+    const v = veiculoPorPlacaNorm.get(placaNorm);
     if (!v) {
       resultados.push({ placa: placaBruta, saidaBase: null, chegadaBase: null, kmPercorrido: null });
       continue;
@@ -204,7 +286,9 @@ export async function POST(request: Request) {
     const posicoes = (posicoesRows ?? []) as Posicao[];
     const { saidaBase, chegadaBase } = acharSaidaEChegadaBase(posicoes, basesCentro);
     const kmPercorrido = calcularKmContinuo(posicoes);
-    resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido });
+    const pontos = pontosPorPlaca.get(placaNorm);
+    const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos) : undefined;
+    resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido, ...(visitas ? { visitas } : {}) });
   }
 
   return Response.json({ resultados });
