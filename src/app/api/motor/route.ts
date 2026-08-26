@@ -212,6 +212,21 @@ const cacheContagemTapetePorCliente = new Map<string, ContagemTapeteCache>();
 const ENTREGA_PRESENCA_ATIVA = true;
 const ENTREGA_PRESENCA_MIN_SEG = 120;
 
+// Achado real 26/08 (grupo DESVIO DE ROTA, caso RBJ-2J67 "parada anômala
+// falsa, veículo no cliente"): pontosVeiculo/noCliente aqui é SEMPRE
+// Unitrac (achado 31/07 acima, "a Central NAO PODE MAIS ser afetada pelo
+// romaneio") -- cliente cujo ponto existe no romaneio mas não tem alvo
+// correspondente na Unitrac nunca conta como noCliente pra este motor, e
+// os detectores de parada "anômala" disparam falso todo santo dia pra
+// esse gap. Decisão do usuário (26/08): Central continua 100% Unitrac
+// (não mistura romaneio no cálculo de noCliente, decisão de 31/07
+// mantida) -- mas pro cliente coberto por motor-romaneio PARALELO (fonte
+// de verdade pra ele), os detectores de parada que dependem de noCliente
+// (ParadaLonga/ParadaAnomala/ParadaForaTapete, ver montarCandidatosCore em
+// detectores.ts) ficam desligados aqui, evitando ruído que o
+// motor-romaneio já resolve corretamente com o dado certo.
+const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096"]); // Nutry Max
+
 // Log de snapshot de pendentes por ciclo -- ver
 // docs/superpowers/specs/2026-08-09-snapshot-pendentes-log-design.md.
 // Achado real 09/08: investigacao de 3 misses reportados no grupo bateu
@@ -2426,6 +2441,7 @@ export async function POST(request: Request) {
                   jaParedoNoCicloAnterior,
                   rumoBase,
                   distBaseM,
+                  usaMotorRomaneioParalelo: CLIENTES_COM_MOTOR_ROMANEIO_PARALELO.has(cliente.cod_user_unitrac),
                 })
             // jammer continua valendo mesmo com atraso > 60min (caso que
             // montarCandidatosCore() nao cobre, ja que so roda com fresco).

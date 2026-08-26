@@ -1016,6 +1016,21 @@ export type CtxAvaliacao = {
   temPOIProximo?: boolean;
   jaParedoNoCicloAnterior?: boolean;
   vizinhosParados?: number;
+  // Achado real 26/08 (grupo DESVIO DE ROTA, caso RBJ-2J67 "parada anômala
+  // falsa, veículo no cliente"): noCliente aqui é SEMPRE Unitrac (achado
+  // 31/07, ver comentário "a Central NAO PODE MAIS ser afetada pelo
+  // romaneio" em route.ts) -- cliente cujo ponto existe no romaneio mas
+  // não tem alvo correspondente na Unitrac nunca aparece como noCliente
+  // pra esse motor, então os detectores de parada "anômala" (que dependem
+  // de noCliente pra saber que NÃO é um cliente legítimo) disparam falso
+  // toda vez que esse gap acontece. Decisão do usuário: Central continua
+  // 100% Unitrac (não mistura romaneio aqui, decisão de 31/07 mantida) --
+  // mas pra cliente com motor-romaneio paralelo rodando (fonte de verdade
+  // dele), os detectores de parada abaixo (que SÓ fazem sentido quando
+  // Central tem visão completa dos clientes via Unitrac) ficam desligados
+  // aqui, evitando ruído duplicado/conflitante com o que o motor-romaneio
+  // já resolve corretamente pra esse cliente.
+  usaMotorRomaneioParalelo?: boolean;
 };
 
 // Monta a lista CRUA de candidatos dos detectores "core" (sem arbitrar).
@@ -1047,16 +1062,18 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
       emOperacao: ctx.emOperacao,
       noCliente: ctx.noCliente,
     }),
-    detectarParadaLonga({
-      paradoMin: ctx.paradoMin,
-      emOperacao: ctx.emOperacao,
-      foraDaBase: ctx.foraDaBase,
-      noCliente: ctx.noCliente,
-      temPOIProximo: ctx.temPOIProximo,
-      entregasFeitas: ctx.entregasFeitas,
-      entregasTotal: ctx.entregasTotal,
-    }),
-    ctx.estavEmMovimento !== undefined
+    ctx.usaMotorRomaneioParalelo
+      ? null
+      : detectarParadaLonga({
+          paradoMin: ctx.paradoMin,
+          emOperacao: ctx.emOperacao,
+          foraDaBase: ctx.foraDaBase,
+          noCliente: ctx.noCliente,
+          temPOIProximo: ctx.temPOIProximo,
+          entregasFeitas: ctx.entregasFeitas,
+          entregasTotal: ctx.entregasTotal,
+        }),
+    ctx.estavEmMovimento !== undefined && !ctx.usaMotorRomaneioParalelo
       ? detectarParadaAnomala({
           paradoMin: ctx.paradoMin,
           emOperacao: ctx.emOperacao,
@@ -1070,16 +1087,18 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           vizinhosParados: ctx.vizinhosParados ?? 0,
         })
       : null,
-    detectarParadaForaTapete({
-      paradoMin: ctx.paradoMin,
-      emOperacao: ctx.emOperacao,
-      foraDaBase: ctx.foraDaBase,
-      noCliente: ctx.noCliente ?? false,
-      dentroTapete: ctx.dentroTapete ?? null,
-      temPOIProximo: ctx.temPOIProximo ?? false,
-      vizinhosParados: ctx.vizinhosParados ?? 0,
-      riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
-    }),
+    ctx.usaMotorRomaneioParalelo
+      ? null
+      : detectarParadaForaTapete({
+          paradoMin: ctx.paradoMin,
+          emOperacao: ctx.emOperacao,
+          foraDaBase: ctx.foraDaBase,
+          noCliente: ctx.noCliente ?? false,
+          dentroTapete: ctx.dentroTapete ?? null,
+          temPOIProximo: ctx.temPOIProximo ?? false,
+          vizinhosParados: ctx.vizinhosParados ?? 0,
+          riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
+        }),
     detectarTiroteioProximo(p, {
       distTiroteioM: ctx.distTiroteioM ?? null,
       tiroteioIdadeMin: ctx.tiroteioIdadeMin ?? null,

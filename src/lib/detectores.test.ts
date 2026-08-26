@@ -473,6 +473,52 @@ describe("montarCandidatosCore (candidatos crus, sem arbitrar -- extraido no fix
     const candidatos = montarCandidatosCore(p, ctx);
     expect(candidatos.some((c) => c.tipo === "desvio")).toBe(false);
   });
+
+  describe("usaMotorRomaneioParalelo (achado real 26/08, caso RBJ-2J67 'parada anômala falsa, veículo no cliente')", () => {
+    // Achado real: noCliente aqui é sempre Unitrac (decisão 31/07) -- cliente
+    // sem alvo correspondente na Unitrac nunca conta como noCliente, e os
+    // detectores de parada abaixo disparam falso. Decisão do usuário 26/08:
+    // pra cliente com motor-romaneio paralelo (fonte de verdade dele), esses
+    // detectores ficam desligados no motor principal -- Central continua
+    // 100% Unitrac (nunca mistura romaneio no cálculo em si).
+    it("parada_longa/parada_anomala/parada_fora_tapete NÃO disparam quando usaMotorRomaneioParalelo=true, mesmo com todas as condições de disparo satisfeitas", () => {
+      const ctx = {
+        ...ctxOp,
+        paradoMin: 30,
+        noCliente: false,
+        estavEmMovimento: true,
+        jaParedoNoCicloAnterior: true,
+        dentroTapete: false,
+        usaMotorRomaneioParalelo: true,
+      };
+      const p = posicaoBase({ velocidade: 0 });
+      const candidatos = montarCandidatosCore(p, ctx);
+      expect(candidatos.some((c) => c.tipo === "parada_longa")).toBe(false);
+      expect(candidatos.some((c) => c.tipo === "parada_anomala")).toBe(false);
+      expect(candidatos.some((c) => c.tipo === "parada_fora_tapete")).toBe(false);
+    });
+
+    it("mesmas condições, usaMotorRomaneioParalelo=false (ou ausente): dispara normalmente (sem regressão pros clientes sem motor-romaneio)", () => {
+      const ctx = {
+        ...ctxOp,
+        paradoMin: 30,
+        noCliente: false,
+        estavEmMovimento: true,
+        jaParedoNoCicloAnterior: true,
+        dentroTapete: false,
+      };
+      const p = posicaoBase({ velocidade: 0 });
+      const candidatos = montarCandidatosCore(p, ctx);
+      expect(candidatos.some((c) => c.tipo === "parada_anomala")).toBe(true);
+    });
+
+    it("outros detectores core (panico, jammer, excesso, saida_nao_autorizada) continuam avaliados normalmente mesmo com usaMotorRomaneioParalelo=true", () => {
+      const ctx = { ...ctxOp, usaMotorRomaneioParalelo: true };
+      const p = posicaoBase({ panico: true });
+      const candidatos = montarCandidatosCore(p, ctx);
+      expect(candidatos.some((c) => c.tipo === "panico")).toBe(true);
+    });
+  });
 });
 
 describe("TIPOS_NAO_GERENCIADOS (achado real 27/07, revisao adversarial, caso TTK-4D14)", () => {
