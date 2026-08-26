@@ -182,6 +182,16 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
     expect(r).toEqual(candidatos[1]);
   });
 
+  it("achado real 26/08: MULTIPLOS candidatos SEM ponto de cidade -- rejeitado, nao aceita cego o primeiro (mesma logica de geocodificarLocal)", async () => {
+    const candidatos = [
+      { lat: -22.9, lng: -43.2 },
+      { lat: -21.06, lng: -41.97 },
+    ];
+    const deps = mockDeps({ buscarPorRua: async () => candidatos });
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
+    expect(r).toBeNull();
+  });
+
   // Achado real 12/08 (romaneio de hoje, casos SEPETIBA/CAMPOS -- erro de
   // ate 270km por rua homonima em cidade errada): filtro de municipio na
   // query em si, nao so proximidade depois. Ver
@@ -260,6 +270,16 @@ describe("geocodificarLocal", () => {
     ];
     const buscar = vi.fn().mockResolvedValue(candidatos);
     const r = await geocodificarLocal("RUA X, 10 - BAIRRO, CIDADE - *", pontoCidade, buscar);
+    expect(r).toBeNull();
+  });
+
+  it("achado real 26/08 (RBJ-2J67): MULTIPLOS candidatos SEM ponto de cidade (cidade truncada na origem, pontoCidade nao resolveu) -- rejeitado, nao aceita cego o primeiro da lista", async () => {
+    const candidatos = [
+      { lat: -22.9, lng: -43.2 }, // RJ capital -- errado, mas seria o "primeiro" aceito cego antes deste fix
+      { lat: -21.55, lng: -42.18 }, // Santo Antonio de Padua -- o certo, mas nao ha como saber qual e' sem pontoCidade
+    ];
+    const buscar = vi.fn().mockResolvedValue(candidatos);
+    const r = await geocodificarLocal("AVENIDA GETULIO VARGAS, 60 - SAO FELIX, CIDADE - LOJA 04", null, buscar);
     expect(r).toBeNull();
   });
 });

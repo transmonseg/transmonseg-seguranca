@@ -30,12 +30,23 @@ const DISTANCIA_MAX_MATCH_LOCAL_M = 30_000; // 30km -- nome bateu, mas e outra r
 // ciclo. Checar sempre que ha ponto de cidade disponivel pega esse caso;
 // SEM ponto de cidade, nao ha nada pra comparar, entao o candidato unico
 // passa direto como antes.
+//
+// Achado real 26/08 (RBJ-2J67, grupo DESVIO DE ROTA): cidade truncada na
+// origem do romaneio ("SANTO ANTONIO D" em vez de "SANTO ANTONIO DE
+// PADUA") impediu a resolucao de pontoCidade -- com pontoCidade null e
+// MULTIPLOS candidatos (rua comum, repetida em varias cidades), o
+// primeiro da lista passava direto sem NENHUMA checagem, foi parar a
+// +200km da rota real (Rio de Janeiro capital). Sem pontoCidade e com
+// ambiguidade real (mais de 1 candidato), nao ha como saber qual e' o
+// certo -- devolve null em vez de arriscar. Candidato UNICO sem
+// pontoCidade continua passando direto (nao muda, nada pra comparar
+// mesmo, ver teste "um candidato, sem ponto de cidade").
 function escolherCandidatoMaisProximo(
   candidatos: { lat: number; lng: number }[],
   pontoCidade: { lat: number; lng: number } | null
 ): { lat: number; lng: number } | null {
   if (candidatos.length === 0) return null;
-  if (!pontoCidade) return candidatos[0];
+  if (!pontoCidade) return candidatos.length === 1 ? candidatos[0] : null;
 
   let melhor = candidatos[0];
   let menorDist = haversineM(pontoCidade.lat, pontoCidade.lng, melhor.lat, melhor.lng);
