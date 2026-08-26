@@ -1077,7 +1077,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     await resolverAlerta(id, tabelaAlertas);
   }, [tabelaAlertas]);
 
-  const handleFalso = useCallback(async (id: string, categoria: CategoriaFalso) => {
+  const handleFalso = useCallback(async (id: string, categoria: CategoriaFalso, detalhe: string) => {
     setAlertas(a => {
       const alvo = a.find(x => x.id === id);
       const restante = a.filter(x => x.id !== id);
@@ -1086,7 +1086,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       }
       return restante;
     });
-    await marcarFalsoComCategoria(id, categoria, tabelaAlertas);
+    await marcarFalsoComCategoria(id, categoria, tabelaAlertas, detalhe);
   }, [tabelaAlertas]);
 
   // ── Map controls ─────────────────────────────────────────────────────
@@ -1603,7 +1603,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 compacto
                 aberto={menuFalsoAbertoId === a.id}
                 onFechar={() => setMenuFalsoAbertoId(null)}
-                onEscolher={(categoria) => handleFalso(a.id, categoria)}
+                onEscolher={(categoria, detalhe) => handleFalso(a.id, categoria, detalhe)}
               />
             </div>
           </div>

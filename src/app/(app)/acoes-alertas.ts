@@ -89,7 +89,14 @@ type MotivoFalsoPositivo =
 async function marcarFalsoPositivoComMotivo(
   id: string,
   motivo: MotivoFalsoPositivo,
-  tabela: TabelaAlertas = "alertas"
+  tabela: TabelaAlertas = "alertas",
+  // Pedido do time (grupo DESVIO DE ROTA, 26/08): a categoria fixa nem
+  // sempre cobre o caso real -- texto livre OPCIONAL do operador, coluna
+  // PROPRIA (motivo_falso_positivo_detalhe, ver migration 060) pra nao
+  // tocar no enum estruturado que alimenta a calibração automática
+  // (registrarCasosDesvioRevisao/recalibrar-desvio continuam recebendo só
+  // a categoria, nunca o texto livre).
+  detalhe?: string
 ): Promise<ResultadoAcao> {
   const admin = createAdminClient();
   // Mesmo raciocínio de resolverAlerta acima: só alimenta calibração quando
@@ -97,11 +104,13 @@ async function marcarFalsoPositivoComMotivo(
   if (tabela === "alertas") {
     await registrarCasosDesvioRevisao(admin, [id], "falso_positivo", "falso_individual", motivo);
   }
+  const detalheLimpo = detalhe?.trim();
   return atualizar(id, {
     status: "falso_positivo",
     resolvido_em: new Date().toISOString(),
     origem_acao: "falso_individual",
     motivo_falso_positivo: motivo,
+    motivo_falso_positivo_detalhe: detalheLimpo ? detalheLimpo : null,
     ...stripPesado(tabela),
   }, tabela);
 }
@@ -109,9 +118,10 @@ async function marcarFalsoPositivoComMotivo(
 export async function marcarFalsoComCategoria(
   id: string,
   categoria: "NAO_FOI_AO_CLIENTE" | "NAO_SAIU_DA_BASE" | "DESATUALIZADO" | "MUDOU_DE_ROTA",
-  tabela: TabelaAlertas = "alertas"
+  tabela: TabelaAlertas = "alertas",
+  detalhe?: string
 ): Promise<ResultadoAcao> {
-  return marcarFalsoPositivoComMotivo(id, categoria, tabela);
+  return marcarFalsoPositivoComMotivo(id, categoria, tabela, detalhe);
 }
 
 // Resolve vários alertas de uma vez (botão "Resolver todos" do painel).
