@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { acharSaidaEChegadaBase } from "./route";
+import { acharSaidaEChegadaBase, calcularKmContinuo } from "./route";
 
 const BASE = { lat: -22.816007, lng: -43.277827 };
 // ~50km da base -- claramente fora do raio de 500m.
@@ -71,5 +71,37 @@ describe("acharSaidaEChegadaBase", () => {
     const r = acharSaidaEChegadaBase(posicoes, [BASE, campos]);
     expect(r.saidaBase).toBe("2026-08-25T09:00:00.000Z");
     expect(r.chegadaBase).toBe("2026-08-25T21:00:00.000Z");
+  });
+});
+
+describe("calcularKmContinuo", () => {
+  it("soma haversine entre CADA leitura consecutiva, nao so entre paradas -- pega o trajeto real entre elas", () => {
+    // ~111km por grau de latitude no equador (aprox) -- 3 pontos em linha
+    // reta na mesma longitude, 0.1 grau de latitude entre cada um.
+    const posicoes = [
+      { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T09:00:00.000Z" },
+      { lat: -22.1, lng: -43.0, criado_em: "2026-08-25T09:01:00.000Z" },
+      { lat: -22.2, lng: -43.0, criado_em: "2026-08-25T09:02:00.000Z" },
+    ];
+    const km = calcularKmContinuo(posicoes);
+    expect(km).not.toBeNull();
+    expect(km!).toBeGreaterThan(20);
+    expect(km!).toBeLessThan(24);
+  });
+
+  it("menos de 2 posicoes: null, nao zero (sem dado != km zero)", () => {
+    expect(calcularKmContinuo([])).toBeNull();
+    expect(calcularKmContinuo([{ lat: -22, lng: -43, criado_em: "2026-08-25T09:00:00.000Z" }])).toBeNull();
+  });
+
+  it("veiculo parado o dia inteiro (mesma posicao repetida): km fica proximo de zero, nao inventa distancia", () => {
+    const posicoes = Array.from({ length: 10 }, (_, i) => ({
+      lat: -22.816007,
+      lng: -43.277827,
+      criado_em: `2026-08-25T09:0${i}:00.000Z`,
+    }));
+    const km = calcularKmContinuo(posicoes);
+    expect(km).not.toBeNull();
+    expect(km!).toBeLessThan(0.01);
   });
 });

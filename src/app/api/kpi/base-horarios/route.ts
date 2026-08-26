@@ -6,18 +6,22 @@
 // "por que HTTP e nao import direto").
 //
 // Por que essa rota existe (achado real 25/08, KPI Nutry Max): o KPI
-// calculava SAIDA CD/CHEGADA CD a partir do feed de "paradas" da propria
-// Unitrac (/mapa_servicos/stops), que ja vem PRE-AGREGADO pela Unitrac com
-// heuristica propria e opaca -- reclusterizar isso do lado do KPI (com um
-// limiar de duracao minima pra distinguir "parada real" de "blip de
-// transito") criava uma classe inteira de casos ambiguos (parada curta
-// mas real vs blip, cluster que devolve fim_real menor que o esperado,
-// etc -- ver commit da correcao de 25/08 em
-// KPI transmonseg/src/lib/unitrac-api/consolida.ts). Este projeto ja tem
-// dado MELHOR pro mesmo proposito: posicao continua real (lat/lng a cada
-// ~30-40s, o dia inteiro) que o motor de desvio ja usa em producao --
-// da pra detectar a entrada/saida da base por CRUZAMENTO DE GEOFENCE
-// direto no dado bruto, sem nenhuma heuristica de cluster/duracao minima.
+// calculava SAIDA CD/CHEGADA CD e KM PERCORRIDO a partir do feed de
+// "paradas" da propria Unitrac (/mapa_servicos/stops), que ja vem
+// PRE-AGREGADO pela Unitrac com heuristica propria e opaca --
+// reclusterizar isso do lado do KPI (com um limiar de duracao minima pra
+// distinguir "parada real" de "blip de transito") criava uma classe
+// inteira de casos ambiguos (parada curta mas real vs blip, cluster que
+// devolve fim_real menor que o esperado, etc -- ver commit da correcao de
+// 25/08 em KPI transmonseg/src/lib/unitrac-api/consolida.ts), e o
+// KM PERCORRIDO (so' soma reta ENTRE paradas) subestimava o trajeto real
+// em ~45% (140km vs 203km reais, mesmo veiculo/dia -- ver
+// calcularKmContinuo abaixo). Este projeto ja tem dado MELHOR pro mesmo
+// proposito: posicao continua real (lat/lng a cada ~30-40s, o dia
+// inteiro) que o motor de desvio ja usa em producao -- da pra detectar a
+// entrada/saida da base por CRUZAMENTO DE GEOFENCE direto no dado bruto
+// (sem heuristica de cluster/duracao minima) e somar o km real percorrido
+// ponto a ponto, sem pular trecho nenhum.
 //
 // Protegida pelo mesmo header x-motor-key + MOTOR_SECRET das outras rotas
 // internas deste projeto -- chamada servidor-a-servidor, nunca do browser.
@@ -83,6 +87,24 @@ export function acharSaidaEChegadaBase(
   }
 
   return { saidaBase, chegadaBase };
+}
+
+/** Achado real 25/08 (dado real RBI-0J25): o KM PERCORRIDO do lado do KPI
+ *  soma distancia em linha reta so' ENTRE as paradas da Unitrac (~20-30
+ *  pontos no dia) -- pula todo o trajeto real entre elas. Comparando os
+ *  dois pro mesmo veiculo/dia: 140.2km (so' paradas) vs 203.4km (posicao
+ *  continua, ~2100 pontos) -- 45% de subestimativa. Soma haversine entre
+ *  TODA leitura consecutiva do dia (~30-40s de cadencia) fica muito mais
+ *  perto do km real rodado (ainda uma leve subestimativa em curva fechada
+ *  dentro de uma unica janela de ~40s, mas ordens de grandeza melhor que
+ *  pular o trajeto inteiro entre paradas distantes). */
+export function calcularKmContinuo(posicoes: Posicao[]): number | null {
+  if (posicoes.length < 2) return null
+  let metros = 0
+  for (let i = 1; i < posicoes.length; i++) {
+    metros += haversineM(posicoes[i - 1].lat, posicoes[i - 1].lng, posicoes[i].lat, posicoes[i].lng)
+  }
+  return metros / 1000
 }
 
 function normPlaca(p: string): string {
@@ -160,11 +182,11 @@ export async function POST(request: Request) {
     }
   }
 
-  const resultados: { placa: string; saidaBase: string | null; chegadaBase: string | null }[] = [];
+  const resultados: { placa: string; saidaBase: string | null; chegadaBase: string | null; kmPercorrido: number | null }[] = [];
   for (const placaBruta of placas) {
     const v = veiculoPorPlacaNorm.get(normPlaca(placaBruta));
     if (!v) {
-      resultados.push({ placa: placaBruta, saidaBase: null, chegadaBase: null });
+      resultados.push({ placa: placaBruta, saidaBase: null, chegadaBase: null, kmPercorrido: null });
       continue;
     }
     const basesCentro = basesPorCliente.get(v.cliente_id) ?? [];
@@ -176,11 +198,13 @@ export async function POST(request: Request) {
       .lt("criado_em", fimUTC.toISOString())
       .order("criado_em", { ascending: true });
     if (erroPosicoes) {
-      resultados.push({ placa: placaBruta, saidaBase: null, chegadaBase: null });
+      resultados.push({ placa: placaBruta, saidaBase: null, chegadaBase: null, kmPercorrido: null });
       continue;
     }
-    const { saidaBase, chegadaBase } = acharSaidaEChegadaBase((posicoesRows ?? []) as Posicao[], basesCentro);
-    resultados.push({ placa: placaBruta, saidaBase, chegadaBase });
+    const posicoes = (posicoesRows ?? []) as Posicao[];
+    const { saidaBase, chegadaBase } = acharSaidaEChegadaBase(posicoes, basesCentro);
+    const kmPercorrido = calcularKmContinuo(posicoes);
+    resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido });
   }
 
   return Response.json({ resultados });
