@@ -137,6 +137,62 @@ describe("expandirCidadeTruncada", () => {
   it("nao bate com nenhum municipio do RJ: mantem como veio", () => {
     expect(expandirCidadeTruncada("CIDADE INVENTADA QUE NAO EXISTE")).toBe("CIDADE INVENTADA QUE NAO EXISTE");
   });
+
+  // Os casos abaixo NAO sao hipoteticos: sao os 157 valores distintos que o
+  // campo de cidade assumiu de verdade em romaneio_pontos nos ultimos 30
+  // dias (auditoria de 27/08, 49.535 linhas). Contagem real entre
+  // parenteses em cada assercao.
+  describe("truncamentos REAIS do dado de producao (auditoria 27/08, ultimos 30 dias)", () => {
+    it("todo truncamento de 15 caracteres que aparece de verdade ja expandia por prefixo -- inclusive SANTO ANTONIO D, o caso que motivou o plano", () => {
+      expect(expandirCidadeTruncada("SANTO ANTONIO D")).toBe("Santo Antônio de Pádua"); // 325
+      expect(expandirCidadeTruncada("SANTO ANTÔNIO D")).toBe("Santo Antônio de Pádua"); // 3
+      expect(expandirCidadeTruncada("CAMPOS DOS GOYT")).toBe("Campos dos Goytacazes"); // 2229
+      expect(expandirCidadeTruncada("ARMACAO DOS BUZ")).toBe("Armação dos Búzios"); // 595
+      expect(expandirCidadeTruncada("SAO JOAO DA BAR")).toBe("São João da Barra"); // 395
+      expect(expandirCidadeTruncada("CASIMIRO DE ABR")).toBe("Casimiro de Abreu"); // 381
+      expect(expandirCidadeTruncada("SAO JOAO DE MER")).toBe("São João de Meriti"); // 337
+      expect(expandirCidadeTruncada("CACHOEIRAS DE M")).toBe("Cachoeiras de Macacu"); // 286
+      expect(expandirCidadeTruncada("SAO FRANCISCO D")).toBe("São Francisco de Itabapoana"); // 242
+      expect(expandirCidadeTruncada("SAO JOSE DO VAL")).toBe("São José do Vale do Rio Preto"); // 204
+      expect(expandirCidadeTruncada("BOM JESUS DO IT")).toBe("Bom Jesus do Itabapoana"); // 119
+      expect(expandirCidadeTruncada("ENGENHEIRO PAUL")).toBe("Engenheiro Paulo de Frontin"); // 77
+      expect(expandirCidadeTruncada("CONCEICAO DE MA")).toBe("Conceição de Macabu"); // 74
+      expect(expandirCidadeTruncada("TRAJANO DE MORA")).toBe("Trajano de Moraes"); // 67
+      expect(expandirCidadeTruncada("COMENDADOR LEVY")).toBe("Comendador Levy Gasparian"); // 63
+      expect(expandirCidadeTruncada("SAO SEBASTIAO D")).toBe("São Sebastião do Alto"); // 24
+    });
+
+    it("municipio com hifen sem o hifen: VARRE SAI -> Varre-Sai (127 linhas, o maior volume nao resolvido)", () => {
+      expect(expandirCidadeTruncada("VARRE SAI")).toBe("Varre-Sai");
+    });
+
+    it("hifen do separador grudado no nome (endereco terminado em ' -' com sufixo vazio): limpa e resolve", () => {
+      expect(expandirCidadeTruncada("ANGRA DOS REIS -")).toBe("Angra dos Reis"); // 81
+      expect(expandirCidadeTruncada("RIO DE JANEIRO -")).toBe("Rio de Janeiro"); // 56
+      expect(expandirCidadeTruncada("GUAPIMIRIM -")).toBe("Guapimirim"); // 1
+      expect(expandirCidadeTruncada("NOVA IGUACU -")).toBe("Nova Iguaçu"); // 1
+    });
+
+    it("nome corrompido pela origem (nao so cortado): resolve pela tabela de aliases", () => {
+      // Sem isso a linha ia pro CNEFE/OSM sem municipio nem pontoCidade e
+      // casou o bairro homonimo Manguinhos do Rio capital, ~160km errado.
+      expect(expandirCidadeTruncada("ARMAÇO DOS BZIO")).toBe("Armação dos Búzios"); // 4
+      expect(expandirCidadeTruncada("ARMACAO BUZIOS")).toBe("Armação dos Búzios"); // 6
+      expect(expandirCidadeTruncada("PARATY")).toBe("Parati"); // 2
+      expect(expandirCidadeTruncada("CAMPOS DOS GOIT")).toBe("Campos dos Goytacazes"); // 1
+      expect(expandirCidadeTruncada("PATY DE ALFERE")).toBe("Paty do Alferes"); // 1
+    });
+
+    it("toda cidade expandida acima resolve codigo IBGE (o que habilita o filtro de municipio no CNEFE)", () => {
+      for (const bruta of ["VARRE SAI", "ANGRA DOS REIS -", "ARMAÇO DOS BZIO", "PARATY", "CAMPOS DOS GOIT", "PATY DE ALFERE", "SANTO ANTONIO D"]) {
+        expect(municipioCodigoIbge(expandirCidadeTruncada(bruta)), bruta).not.toBeNull();
+      }
+    });
+
+    it("cidade de OUTRO estado que aparece no dado real continua sem expandir (nao inventa municipio do RJ)", () => {
+      expect(expandirCidadeTruncada("ALEM PARAIBA")).toBe("ALEM PARAIBA"); // MG, 2 linhas
+    });
+  });
 });
 
 describe("montarEnderecoParaGeocode", () => {

@@ -82,11 +82,78 @@ const MUNICIPIOS_RJ_NORMALIZADOS = MUNICIPIOS_RJ.map(semAcentoMaiusculo);
 // arriscar). O achado real (15 caracteres) fica bem acima disso.
 const EXPANSAO_CIDADE_PREFIXO_MINIMO = 10;
 
+// Auditoria 27/08 sobre o dado REAL (todos os romaneio_pontos dos ultimos
+// 30 dias, 49.535 linhas / 157 valores distintos no campo de cidade): o
+// match por PREFIXO ja resolve TODO truncamento de 15 caracteres que
+// aparece de verdade -- inclusive "SANTO ANTONIO D" -> "Santo Antônio de
+// Pádua", o caso que motivou este plano (325 linhas em 30 dias), que
+// portanto NAO precisava de entrada nova. O que o prefixo NAO pegava, e
+// esta tabela pega, sao as variantes em que o PDF de origem corrompe o
+// nome em vez de so corta-lo (letra trocada/acentuada comida). Chaves na
+// forma normalizada (sem acento, CAIXA ALTA, sem ruido de separador),
+// contagem de linhas dos ultimos 30 dias entre parenteses.
+const ALIASES_CIDADE: Record<string, string> = {
+  // Grafia turistica corrente; o IBGE (e MUNICIPIOS_RJ) usa "Parati". (2)
+  "PARATY": "Parati",
+  // "ARMAÇÃO DOS BÚZIOS" perdendo o "DOS" (6) e perdendo as vogais
+  // acentuadas -- "ARMAÇO DOS BZIO" (4). Este segundo e' o caso mais
+  // grave achado na auditoria: sem cidade resolvida nao ha pontoCidade
+  // nem municipioCodigo, e o endereco "RUA FLORES DE MAIO, 8200 -
+  // MANGUINHOS, ARMAÇO DOS BZIO" caiu no bairro HOMONIMO Manguinhos do
+  // Rio de Janeiro capital (-22.859149, -43.452133), ~160km do Manguinhos
+  // de Búzios que era o destino real.
+  "ARMACAO BUZIOS": "Armação dos Búzios",
+  "ARMACO DOS BZIO": "Armação dos Búzios",
+  // Truncado em 15 E com "GOYT" grafado "GOIT" -- o prefixo nao bate. (1)
+  "CAMPOS DOS GOIT": "Campos dos Goytacazes",
+  // "Paty do Alferes" grafado com "DE" no lugar do "DO". (1)
+  "PATY DE ALFERE": "Paty do Alferes",
+};
+
+// Ruido de separador nas pontas do campo de cidade. Achado real da
+// auditoria 27/08: 139 linhas em 30 dias vem com o hifen do separador
+// grudado no nome ("ANGRA DOS REIS -", "RIO DE JANEIRO -", "GUAPIMIRIM -",
+// "NOVA IGUACU -"), porque o endereco termina em " -" com o sufixo de
+// complemento VAZIO -- o split(" - ") de extrairCidadeDoEndereco precisa
+// do espaco DEPOIS do hifen pra cortar, e ele nao existe. Sem essa
+// limpeza, cidade valida e comum nao batia com a lista de municipios: nao
+// resolvia pontoCidade nem municipioCodigo, e a linha ia pro CNEFE/OSM
+// sem NENHUM filtro de municipio e sem validacao de distancia.
+function limparRuidoDeSeparador(s: string): string {
+  return s.replace(/^[\s\-.,;/]+|[\s\-.,;/]+$/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Hifen tratado como espaco nos DOIS lados da comparacao -- achado real da
+// auditoria 27/08: "VARRE SAI" (127 linhas em 30 dias, o maior volume
+// entre os nao resolvidos) e' o municipio "Varre-Sai" sem o hifen. E curto
+// demais (9 caracteres) pra passar pelo piso de prefixo, entao so um match
+// exato hifen-insensivel resolve. Nenhum outro municipio do RJ tem hifen,
+// entao a comparacao nao cria ambiguidade nova.
+function chaveSemHifen(s: string): string {
+  return s.replace(/-/g, " ").replace(/\s+/g, " ").trim();
+}
+
+const MUNICIPIOS_RJ_CHAVES = MUNICIPIOS_RJ_NORMALIZADOS.map(chaveSemHifen);
+
 export function expandirCidadeTruncada(cidade: string): string {
   const normalizada = semAcentoMaiusculo(cidade);
+  // Bateu exato do jeito que veio: devolve o ORIGINAL, preservando o case
+  // (comportamento de sempre, do qual municipioCodigoIbge depende -- ver
+  // comentario dele mais abaixo).
   if (MUNICIPIOS_RJ_NORMALIZADOS.includes(normalizada)) return cidade;
-  if (normalizada.length < EXPANSAO_CIDADE_PREFIXO_MINIMO) return cidade;
-  const candidatos = MUNICIPIOS_RJ.filter((_, i) => MUNICIPIOS_RJ_NORMALIZADOS[i].startsWith(normalizada));
+
+  const limpa = limparRuidoDeSeparador(normalizada);
+  if (!limpa) return cidade;
+
+  const alias = ALIASES_CIDADE[limpa];
+  if (alias) return alias;
+
+  const chave = chaveSemHifen(limpa);
+  const idxExato = MUNICIPIOS_RJ_CHAVES.indexOf(chave);
+  if (idxExato !== -1) return MUNICIPIOS_RJ[idxExato];
+
+  if (chave.length < EXPANSAO_CIDADE_PREFIXO_MINIMO) return cidade;
+  const candidatos = MUNICIPIOS_RJ.filter((_, i) => MUNICIPIOS_RJ_CHAVES[i].startsWith(chave));
   return candidatos.length === 1 ? candidatos[0] : cidade;
 }
 
