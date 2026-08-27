@@ -487,7 +487,23 @@ async function resolverPelaMaquina(
   return null;
 }
 
+// Piso pra gritar no log que o ciclo está perto de estourar maxDuration=60s.
+// 45s = 75% do orçamento. Motivo de existir (achado da revisão da task B2):
+// desde a B2 o loop por veículo processa a frota INTEIRA (~30% -> 100%), é
+// sequencial com `await` por veículo (SELECT de posição anterior, Overpass e
+// velocidade pré-parada pros candidatos a parada), e se ele estourar os 60s a
+// Vercel mata a função no meio -- os veículos do FIM do loop ficam sem
+// avaliação NENHUMA, sem erro, sem linha em erros[], sem resposta. Falso
+// negativo silencioso, que é o pior erro possível neste domínio
+// ([[feedback_desvio_priorizar_recall]]). Um ciclo morto assim nem chega a
+// responder, então o número que importa é a TENDÊNCIA dos ciclos saudáveis:
+// este aviso é o que faz alguém olhar antes de o primeiro ciclo morrer.
+const LIMIAR_AVISO_DURACAO_MS = 45_000;
+
 export async function POST(request: Request) {
+  // Marco de duração do ciclo -- tomado ANTES do lease, porque a espera de
+  // conexão do pool também consome o orçamento de maxDuration.
+  const inicioCicloMs = Date.now();
   const chave = request.headers.get("x-motor-key");
   if (!chave || chave !== process.env.MOTOR_SECRET) {
     return Response.json({ erro: "nao autorizado" }, { status: 401 });
@@ -559,6 +575,31 @@ export async function POST(request: Request) {
   const erros: string[] = [];
   let veiculosProcessados = 0;
   let alertasGerados = 0;
+  // Quantos veículos o loop TINHA pra percorrer neste ciclo. Junto com
+  // veiculosProcessados e duracaoMs, é o mínimo pra distinguir "ciclo saudável
+  // que pulou veículo por regra" (sem posição fresca, idempotência de datagps)
+  // de "ciclo ficando caro" -- ver LIMIAR_AVISO_DURACAO_MS.
+  let veiculosComRomaneio = 0;
+
+  // Fecha o ciclo sempre pelo mesmo lugar, pra que TODA resposta de ciclo
+  // executado carregue as 3 métricas (e o aviso de duração saia uma vez só).
+  function respostaDoCiclo() {
+    const duracaoMs = Date.now() - inicioCicloMs;
+    if (duracaoMs >= LIMIAR_AVISO_DURACAO_MS) {
+      console.warn(
+        `Aviso: ciclo do motor-romaneio levou ${duracaoMs}ms (>= ${LIMIAR_AVISO_DURACAO_MS}ms) ` +
+          `processando ${veiculosProcessados}/${veiculosComRomaneio} veiculos -- maxDuration e' 60000ms. ` +
+          `Se estourar, a funcao morre no meio do loop e os veiculos do fim ficam sem avaliacao nenhuma.`
+      );
+    }
+    return Response.json({
+      veiculosProcessados,
+      veiculosComRomaneio,
+      alertasGerados,
+      duracaoMs,
+      erros,
+    });
+  }
   // Orçamento de correção via /match compartilhado pelo ciclo inteiro --
   // mesmo padrão de contadorCorrecoesMatch em route.ts:548.
   const contadorCorrecoesMatch = { valor: 0 };
@@ -583,7 +624,7 @@ export async function POST(request: Request) {
     );
 
     if (linhasRomaneio.length === 0) {
-      return Response.json({ veiculosProcessados: 0, alertasGerados: 0, erros });
+      return respostaDoCiclo();
     }
 
     const romaneioPorVeiculo = new Map<string, LinhaRomaneioPontoDb[]>();
@@ -593,6 +634,7 @@ export async function POST(request: Request) {
       romaneioPorVeiculo.set(l.veiculo_id, lista);
     }
     const veiculoIds = [...romaneioPorVeiculo.keys()];
+    veiculosComRomaneio = veiculoIds.length;
 
     const { data: veiculosData, error: erroVeiculos } = await admin
       .from("veiculos")
@@ -1802,7 +1844,7 @@ export async function POST(request: Request) {
       }
     }
 
-    return Response.json({ veiculosProcessados, alertasGerados, erros });
+    return respostaDoCiclo();
   } finally {
     // Libera o lease SÓ se ainda formos o dono (token confere) -- mesmo
     // cuidado da Central (route.ts:4019-4033): um ciclo que passou de 90s e
