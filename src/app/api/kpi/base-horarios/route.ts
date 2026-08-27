@@ -97,12 +97,30 @@ export function acharSaidaEChegadaBase(
  *  TODA leitura consecutiva do dia (~30-40s de cadencia) fica muito mais
  *  perto do km real rodado (ainda uma leve subestimativa em curva fechada
  *  dentro de uma unica janela de ~40s, mas ordens de grandeza melhor que
- *  pular o trajeto inteiro entre paradas distantes). */
+ *  pular o trajeto inteiro entre paradas distantes).
+ *
+ *  Achado real 27/08 (grupo KPI AJUSTES, "quilometragem de cada carro
+ *  está errada"): investigando RBI-0J25 do dia, o MAIOR salto entre duas
+ *  leituras consecutivas era 13.71km em 40 segundos -- ~1234 km/h,
+ *  fisicamente impossivel pra um caminhao de entrega. E' glitch de GPS
+ *  (leitura pontual errada), nao movimento real -- a soma ingenua tratava
+ *  isso como km rodado de verdade. So' os 5 maiores saltos do dia somavam
+ *  quase 46km "fantasma" num total de ~200km (>20% inflado). Segmento
+ *  cuja velocidade implicita excede VELOCIDADE_MAX_PLAUSIVEL_KMH e'
+ *  descartado (nao soma, nao interpola) -- mesma filosofia de "nunca
+ *  inventa dado" ja usada no resto do arquivo: melhor subestimar um
+ *  trecho raro do que inflar todo santo dia com teleporte de GPS. */
+const VELOCIDADE_MAX_PLAUSIVEL_KMH = 150
+
 export function calcularKmContinuo(posicoes: Posicao[]): number | null {
   if (posicoes.length < 2) return null
   let metros = 0
   for (let i = 1; i < posicoes.length; i++) {
-    metros += haversineM(posicoes[i - 1].lat, posicoes[i - 1].lng, posicoes[i].lat, posicoes[i].lng)
+    const distanciaM = haversineM(posicoes[i - 1].lat, posicoes[i - 1].lng, posicoes[i].lat, posicoes[i].lng)
+    const horas = (new Date(posicoes[i].criado_em).getTime() - new Date(posicoes[i - 1].criado_em).getTime()) / 3_600_000
+    const velocidadeKmh = horas > 0 ? (distanciaM / 1000) / horas : Infinity
+    if (velocidadeKmh > VELOCIDADE_MAX_PLAUSIVEL_KMH) continue
+    metros += distanciaM
   }
   return metros / 1000
 }

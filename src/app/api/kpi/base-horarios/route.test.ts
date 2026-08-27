@@ -77,11 +77,13 @@ describe("acharSaidaEChegadaBase", () => {
 describe("calcularKmContinuo", () => {
   it("soma haversine entre CADA leitura consecutiva, nao so entre paradas -- pega o trajeto real entre elas", () => {
     // ~111km por grau de latitude no equador (aprox) -- 3 pontos em linha
-    // reta na mesma longitude, 0.1 grau de latitude entre cada um.
+    // reta na mesma longitude, 0.1 grau de latitude entre cada um. 8min
+    // entre leituras (nao 1min) -- ~83km/h, velocidade plausivel pro
+    // filtro de glitch (ver describe "filtro de velocidade..." abaixo).
     const posicoes = [
       { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T09:00:00.000Z" },
-      { lat: -22.1, lng: -43.0, criado_em: "2026-08-25T09:01:00.000Z" },
-      { lat: -22.2, lng: -43.0, criado_em: "2026-08-25T09:02:00.000Z" },
+      { lat: -22.1, lng: -43.0, criado_em: "2026-08-25T09:08:00.000Z" },
+      { lat: -22.2, lng: -43.0, criado_em: "2026-08-25T09:16:00.000Z" },
     ];
     const km = calcularKmContinuo(posicoes);
     expect(km).not.toBeNull();
@@ -103,6 +105,44 @@ describe("calcularKmContinuo", () => {
     const km = calcularKmContinuo(posicoes);
     expect(km).not.toBeNull();
     expect(km!).toBeLessThan(0.01);
+  });
+
+  describe("filtro de velocidade plausivel (achado real 27/08, grupo KPI AJUSTES: 'quilometragem de cada carro está errada')", () => {
+    it("salto fisicamente impossivel (13.71km em 40s, ~1234km/h -- caso real RBI-0J25) e descartado, nao soma ao km", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T18:17:27.821Z" },
+        { lat: -22.1233, lng: -43.0, criado_em: "2026-08-25T18:18:08.228Z" }, // ~13.71km depois, 40s
+      ];
+      const km = calcularKmContinuo(posicoes);
+      expect(km).not.toBeNull();
+      expect(km!).toBeLessThan(0.01); // descartado, nao os ~13.71km do salto
+    });
+
+    it("mesma distancia, tempo suficiente pra ser plausivel: soma normal (nao descarta deslocamento real por rodovia)", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T18:00:00.000Z" },
+        { lat: -22.1233, lng: -43.0, criado_em: "2026-08-25T18:10:00.000Z" }, // ~13.71km em 10min = ~82km/h
+      ];
+      const km = calcularKmContinuo(posicoes);
+      expect(km).not.toBeNull();
+      expect(km!).toBeGreaterThan(13);
+      expect(km!).toBeLessThan(14);
+    });
+
+    it("um salto descartado no meio da rota nao derruba os segmentos plausiveis antes/depois", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T09:00:00.000Z" },
+        { lat: -22.05, lng: -43.0, criado_em: "2026-08-25T09:08:00.000Z" }, // ~5.55km em 8min, plausivel
+        { lat: -22.1733, lng: -43.0, criado_em: "2026-08-25T09:08:40.000Z" }, // salto de glitch, 40s depois
+        { lat: -22.2233, lng: -43.0, criado_em: "2026-08-25T09:16:40.000Z" }, // ~5.55km em 8min de volta a plausivel
+      ];
+      const km = calcularKmContinuo(posicoes);
+      expect(km).not.toBeNull();
+      // Só os 2 segmentos plausíveis (~5.55km cada, ~11.1km total) -- o
+      // salto de glitch no meio (~13.7km) não entra na soma.
+      expect(km!).toBeGreaterThan(10);
+      expect(km!).toBeLessThan(12.5);
+    });
   });
 });
 
