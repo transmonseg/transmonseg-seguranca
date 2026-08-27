@@ -197,10 +197,12 @@ const BASE_BTN: React.CSSProperties = {
   fontFamily: FONT_SANS,
 };
 
-function tinyBtn(color: string): React.CSSProperties {
+function tinyBtn(color: string, opts?: { borderAlpha?: string; bgAlpha?: string }): React.CSSProperties {
+  const borderAlpha = opts?.borderAlpha ?? "28";
+  const bgAlpha = opts?.bgAlpha ?? "10";
   return {
     height: 22, padding: "0 8px", borderRadius: 5,
-    border: `1px solid ${color}28`, background: `${color}10`,
+    border: `1px solid ${color}${borderAlpha}`, background: `${color}${bgAlpha}`,
     cursor: "pointer", fontSize: 10, fontWeight: 700, color,
     fontFamily: FONT_SANS,
   };
@@ -1627,13 +1629,13 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </motion.button>
             <motion.button whileTap={{ scale: 0.92 }}
               onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
-              className="v2-btn-tiny" style={tinyBtn(T.green)}>
+              className="v2-btn-tiny" style={tinyBtn(T.green, { borderAlpha: "55", bgAlpha: "22" })}>
               Correto
             </motion.button>
             <div style={{ position: "relative" }}>
               <motion.button whileTap={{ scale: 0.92 }}
                 onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === a.id ? null : a.id); }}
-                className="v2-btn-tiny" style={tinyBtn(T.muted)}>
+                className="v2-btn-tiny" style={tinyBtn(T.yellow, { borderAlpha: "40", bgAlpha: "18" })}>
                 Falso
               </motion.button>
               <MenuMotivoFalso
@@ -1670,7 +1672,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         display: "flex", justifyContent: "center", zIndex: Z.toasts, pointerEvents: "none",
       }}>
         <div style={{
-          display: "flex", flexWrap: "wrap", justifyContent: "center", gap: opts.compacto ? 4 : 6,
+          display: "flex", flexWrap: "wrap", justifyContent: "center", gap: opts.compacto ? 6 : 8,
           maxWidth: "calc(100% - 24px)", maxHeight: 150, overflowY: "auto", padding: 2,
           pointerEvents: "auto",
         }}>
@@ -1723,15 +1725,16 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             <button
               onClick={opts.onToggleMostrarTodos}
               style={{
-                ...BASE_BTN, flexShrink: 0, padding: pad, borderRadius: 8,
+                ...BASE_BTN, flexShrink: 0, padding: pad, borderRadius: 8, gap: 4,
                 background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
-                backdropFilter: "blur(6px)", border: `1px solid ${T.border}`,
+                backdropFilter: "blur(6px)", border: `1px dashed ${T.border}`,
                 boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
                 fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
               }}
               title="Mostrar todos os desvios ativos"
             >
               +{desvios.length - opts.maxChips}
+              <span aria-hidden style={{ fontSize: 10 }}>⌄</span>
             </button>
           )}
           {opts.mostrarTodos && desvios.length > opts.maxChips && (
@@ -2218,7 +2221,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 overflow: "hidden",
               }}>
                 <div style={{ padding: "10px 14px 6px", fontSize: 9, color: T.dim, letterSpacing: ".1em", fontWeight: 700 }}>
-                  CONFIGURACOES
+                  CONFIGURAÇÕES
                 </div>
                 <div style={{ padding: "4px 8px 8px" }}>
                   <div style={{ fontSize: 10, color: T.muted, padding: "2px 6px 6px", fontWeight: 600, letterSpacing: ".05em" }}>
@@ -2344,7 +2347,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             display: "flex", alignItems: "center", gap: 0,
             borderBottom: `1px solid ${T.border}`, flexShrink: 0,
           }}>
-            <div style={{ flex: 1, padding: "9px 12px", borderRight: `1px solid ${T.border}` }}>
+            <div style={{
+              flex: 1, padding: "9px 12px", borderRight: `1px solid ${T.border}`,
+              background: nCriticos > 0 ? `${T.red}12` : "transparent",
+            }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: nCriticos > 0 ? T.red : T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
                 {nCriticos}
               </div>
