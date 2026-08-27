@@ -216,6 +216,58 @@ Esta fase precisa do próprio spec+plano detalhado quando for priorizada — 11 
 
 ---
 
+## Fase 2C — Jammer 20-30min + repetição de alerta (investigada 27/08, 2 bugs reais confirmados)
+
+**Origem:** duas queixas reais do grupo (26-27/08): Natália perguntou sobre atraso de 20-30min no
+jammer; mensagem separada "Sistema repetindo o veículo mesmo após concluir se é correto". Investigado
+caso a caso contra o banco real (26-27/08), zero escrita.
+
+### Jammer 20-30min — NÃO é bug, é limiar por design
+`src/lib/detectores.ts:174-180`: `JAMMER_ATENCAO_MIN = 30`. O alerta só nasce quando o GPS já está
+30min sem atualizar — não existe aviso entre 0-30min. Confirmado em 3 casos reais (RQV-9B26,
+KRB-2J76, TML-3B11): degradação real começa, e ~30min depois (não antes) o alerta aparece — a
+inserção em si é rápida (&lt;1 ciclo). **Não mexer no limiar sem medir custo de falso positivo primeiro**
+(existe pra não alarmar em túnel/vão de prédio). O badge de GPS defasado (Task 2B.3, já em produção,
+`>=10min`) já ataca o pedido real ("identificar a desatualização em tempo real") sem inflar alerta.
+
+### Achado A (CRÍTICO, corrigir) — jammer nunca teve cooldown de re-disparo
+`detectarJammer` não passa por nenhum mecanismo de supressão — resolver individualmente não impede
+nada, o próximo ciclo de 30s reinsere. Evidência: 49 redisparos após `resolver_individual` (26-27/08),
+43 em menos de 15min; `RQU-4B93` teve 25 alertas de jammer em 64min hoje. 176 alertas/dia pra 25
+veículos. Bate literalmente com a queixa "não só esse veículo que está repetindo". Jammer é sinal de
+possível sequestro (correlação alta com roubo de carga, ver histórico do projeto) — prioridade alta.
+
+**Fix:** incluir `jammer` no mesmo mecanismo de cooldown por episódio que os tipos de parada já usam
+(`deveSuprimirRedisparoParada`/`TIPOS_PARADA_COM_COOLDOWN`, `motor/route.ts`) — resolver individual ou
+marcar falso já deveria silenciar por um período, hoje não silencia nada.
+
+### Achado B (real, mas precisa diagnóstico antes de fix) — cooldown de 15min do desvio vaza
+14 de 50 casos (26-27/08) tiveram o alerta de `desvio` reaberto DENTRO dos 15min do cooldown mesmo
+após `resolver_individual` — gaps de 1s a 13min, não é race de sub-segundo. A query do cooldown
+(`motor/route.ts:3243-3252`) foi replicada manualmente contra o banco no instante exato desses casos
+e devolveu o dado certo — ou seja, não é bug de lógica da query, é algo intermitente na EXECUÇÃO.
+Hipótese não confirmada: a query falha às vezes (pool `max: 3`, `Promise.allSettled` de toda a frota)
+e o erro cai em `erros.push(...)` (`motor/route.ts:3257`) — que só existe na resposta HTTP, que o
+`pg_net` descarta em 5s. **Esse erro é hoje estruturalmente invisível** (não tem log, não tem tabela).
+
+**Fix nesta fase:** só adicionar visibilidade real (log/tabela pro erro do catch), NÃO tentar
+consertar a causa às cegas — mesma disciplina já usada neste projeto (achar dado antes de mexer).
+Com o log em produção por alguns dias, aí sim decide o fix real.
+
+### Achado C (gap de design, sem impacto medido ainda) — Central Romaneio sem cooldown de desvio
+`motor-romaneio/route.ts` importa `deveSuprimirRedisparoParada` mas não o equivalente pra desvio —
+"Resolver/correto" num desvio da Central Romaneio não suprime nada, só "Falso" (2h). Hoje só 2
+redisparos em 26-27/08 (gap mínimo 84min, sem impacto real ainda), mas o buraco existe e vai aparecer
+conforme a Central Romaneio ganhar volume de desvio de verdade. Registrado, sem ação imediata.
+
+### Explicação pro time (não é bug, é comportamento intencional documentado)
+Se o alerta foi fechado por "Limpar avisos"/"Resolver todos" (ação em massa, 165+86 casos em
+26-27/08 — o MAIOR volume de todos), repetir é esperado por design: ação em massa nunca silencia
+(decisão de 22/08, evita coerção de motorista). Só o clique individual (Correto/Falso no card) trata
+de verdade. Vale comunicar isso ao time junto com os fixes.
+
+---
+
 ## Ordem de execução recomendada
 
 1. **Fase 1** e **Fase A** em paralelo (urgente, esta semana — Fase 1 fecha buraco de recall real em produção; Fase A é UX pura, sem risco pro motor, pode andar ao mesmo tempo)
