@@ -21,6 +21,31 @@ const REIVINDICACAO_EXPIRA_MIN = 5;
 // velocidade (esperaria 1,1s por linha mesmo sem chamar rede nenhuma).
 const ESPERA_ENTRE_CHAMADAS_MS = 1100;
 
+// Item 5 da blindagem de geocodificacao (27/08) -- ver migration
+// contabo/061 pro racional completo. Resumo: a fase de fallback Unitrac (no
+// fim deste arquivo) roda a cada 30s sobre TODOS os 'falhou' historicos e
+// nunca desistia -- as 397 linhas 'falhou' de hoje eram consultadas e
+// descartadas 2.880 vezes por dia, pra sempre, e ainda ocupavam o orcamento
+// de 30 linhas por ciclo que uma falha NOVA (com chance real de resolver)
+// precisaria.
+//
+// 10 tentativas: teto do intervalo proposto no plano (5-10). O custo de
+// tentar de novo e' baixo (a linha entra numa consulta que ja acontece de
+// qualquer jeito) e o custo de desistir cedo demais e' alto -- e' uma
+// entrega ficando sem coordenada, e o produto e' deteccao de desvio de
+// rota.
+const MAX_TENTATIVAS_FALLBACK_UNITRAC = 10;
+// Espacamento minimo entre tentativas da MESMA linha. Sem isso o contador
+// seria inutil: com a fila curta, todas as linhas sao tentadas a cada ciclo
+// de 30s e as 10 tentativas se esgotariam em 5 MINUTOS -- antes de a
+// entrega do dia acontecer, que e' justamente quando o alvo da Unitrac
+// aparece. 30 min x 10 tentativas cobre ~5 horas, uma janela que abrange o
+// dia de entrega.
+const ESPERA_ENTRE_RETENTATIVAS_MIN = 30;
+// Estado TERMINAL: nao inventa coordenada, so' para de retentar sozinho.
+// Dai pra frente e' revisao manual.
+const STATUS_SEM_COORDENADA = "sem_coordenada_confirmada";
+
 function esperar(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -350,14 +375,48 @@ export async function POST(request: Request) {
   // bem menor. Roda sobre TODOS os falhou historicos (nao so o lote de
   // hoje), limitado por ciclo pra nao estourar o orcamento de tempo.
   const LOTE_FALLBACK_UNITRAC = 30;
-  const { data: semGeocode } = await admin
+  const tentavelAntesDe = new Date(Date.now() - ESPERA_ENTRE_RETENTATIVAS_MIN * 60_000).toISOString();
+  // Consulta nova (com limite de tentativas) com degradacao pra antiga --
+  // ver migration contabo/061. Enquanto a migration nao estiver aplicada,
+  // as colunas nao existem e o PostgREST devolve erro; nesse caso a rota
+  // volta ao comportamento de hoje (retentar sem limite) em vez de parar de
+  // fazer o fallback por completo. Mesmo padrao ja usado pra coluna
+  // `origem` em romaneio/status/route.ts.
+  type LinhaFallback = { id: string; nf: string; placa: string; veiculo_id: string | null; geocode_tentativas?: number | null };
+  let tentativasDisponivel = true;
+  let semGeocode: LinhaFallback[] | null = null;
+
+  const comLimite = await admin
     .from("romaneio_pontos")
-    .select("id, nf, placa, veiculo_id")
+    .select("id, nf, placa, veiculo_id, geocode_tentativas")
     .eq("geocode_status", "falhou")
     .not("veiculo_id", "is", null)
+    .lt("geocode_tentativas", MAX_TENTATIVAS_FALLBACK_UNITRAC)
+    .or(`geocode_ultima_tentativa_em.is.null,geocode_ultima_tentativa_em.lt.${tentavelAntesDe}`)
+    // Sem ORDER BY (comportamento antigo) o `limit` pegava sempre o mesmo
+    // punhado de linhas velhas e uma falha NOVA -- a unica com chance real
+    // de resolver, porque o alvo da Unitrac ainda existe hoje -- podia
+    // nunca ser tentada. Menos tentativas primeiro, e entre iguais a que
+    // esperou mais.
+    .order("geocode_tentativas", { ascending: true })
+    .order("geocode_ultima_tentativa_em", { ascending: true, nullsFirst: true })
     .limit(LOTE_FALLBACK_UNITRAC);
 
+  if (comLimite.error) {
+    tentativasDisponivel = false;
+    const semLimite = await admin
+      .from("romaneio_pontos")
+      .select("id, nf, placa, veiculo_id")
+      .eq("geocode_status", "falhou")
+      .not("veiculo_id", "is", null)
+      .limit(LOTE_FALLBACK_UNITRAC);
+    semGeocode = semLimite.data as LinhaFallback[] | null;
+  } else {
+    semGeocode = comLimite.data as LinhaFallback[] | null;
+  }
+
   let fallbackUnitrac = 0;
+  let esgotaramTentativas = 0;
   let corrigidosViaRomaneio = 0;
 
   const veiculoIdsTodos = [
@@ -385,7 +444,37 @@ export async function POST(request: Request) {
               .from("romaneio_pontos")
               .update({ lat: alvo.pontolatitude, lng: alvo.pontolongitude, geocode_status: "ok" })
               .eq("id", linha.id);
-            if (!erroFallback) fallbackUnitrac++;
+            if (!erroFallback) {
+              fallbackUnitrac++;
+              continue;
+            }
+          }
+
+          // Nao resolveu nesta tentativa. Conta a tentativa e, esgotado o
+          // limite, para de retentar automaticamente (ver migration
+          // contabo/061). Nao inventa coordenada: STATUS_SEM_COORDENADA e'
+          // terminal e pede revisao manual. Enquanto a migration nao
+          // estiver aplicada, mantem o comportamento antigo (sem contador,
+          // retenta pra sempre) em vez de arriscar update em coluna
+          // inexistente.
+          if (!tentativasDisponivel) continue;
+          const tentativas = (linha.geocode_tentativas ?? 0) + 1;
+          const esgotou = tentativas >= MAX_TENTATIVAS_FALLBACK_UNITRAC;
+          const { error: erroTentativa } = await admin
+            .from("romaneio_pontos")
+            .update({
+              geocode_tentativas: tentativas,
+              geocode_ultima_tentativa_em: new Date().toISOString(),
+              ...(esgotou ? { geocode_status: STATUS_SEM_COORDENADA } : {}),
+            })
+            .eq("id", linha.id);
+          if (erroTentativa) {
+            console.warn(`Aviso: erro ao contar tentativa de geocode do ponto ${linha.id}: ${erroTentativa.message}`);
+          } else if (esgotou) {
+            esgotaramTentativas++;
+            console.warn(
+              `Aviso: ponto de romaneio ${linha.id} (placa=${linha.placa} nf=${linha.nf}) esgotou ${MAX_TENTATIVAS_FALLBACK_UNITRAC} tentativas de geocode -- marcado como ${STATUS_SEM_COORDENADA}, precisa de revisao manual (nao sera mais reprocessado automaticamente)`
+            );
           }
         }
 
@@ -449,5 +538,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio });
+  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, limiteTentativasAtivo: tentativasDisponivel });
 }

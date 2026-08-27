@@ -49,7 +49,20 @@ export async function GET(request: Request) {
   }
 
   const linhas = (resposta.data ?? []) as unknown as LinhaStatus[];
-  const contagens = { total: linhas.length, geocodadosOk: 0, falhou: 0, pendente: 0 };
+  // semCoordenadaConfirmada (item 5 da blindagem de 27/08, ver migration
+  // contabo/061): estado TERMINAL, a linha esgotou as tentativas de geocode
+  // e nao sera mais reprocessada sozinha -- precisa de revisao manual.
+  //
+  // E' contado em `falhou` E aqui, de proposito -- SUBCONJUNTO de falhou,
+  // nao categoria irma. Duas razoes: (1) a linha de fato falhou, e a
+  // separacao interessa e' pra saber que ninguem mais vai tentar; (2) os
+  // dois consumidores da rota calculam "processadas = geocodadosOk +
+  // falhou" pra decidir se ainda ha trabalho em andamento (ver
+  // romaneio/page.tsx e central-romaneio/GateRomaneio.tsx) -- fora dessa
+  // soma, a tela ficaria pra sempre dizendo "geocodificando em segundo
+  // plano" por causa de linhas que justamente pararam de ser processadas.
+  // Cair no `else` (pendente) seria pior ainda: e' o oposto da verdade.
+  const contagens = { total: linhas.length, geocodadosOk: 0, falhou: 0, pendente: 0, semCoordenadaConfirmada: 0 };
   // Linha antiga (origem null) entra so' no total: nao sabemos de onde veio
   // e inventar 'romaneio' pra ela seria afirmar sobre o passado uma coisa
   // que o banco nao registrou (ver migration 059).
@@ -61,6 +74,7 @@ export async function GET(request: Request) {
   for (const l of linhas) {
     if (l.geocode_status === "ok") contagens.geocodadosOk++;
     else if (l.geocode_status === "falhou") contagens.falhou++;
+    else if (l.geocode_status === "sem_coordenada_confirmada") { contagens.falhou++; contagens.semCoordenadaConfirmada++; }
     else contagens.pendente++;
 
     if (l.origem === "romaneio" || l.origem === "escala_pao") porOrigem[l.origem]++;
