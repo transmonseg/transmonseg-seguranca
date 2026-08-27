@@ -49,6 +49,12 @@ describe("extrairCidadeDoEndereco", () => {
   it("achado real (cliente EMPORIO VALLEJU): romaneio sem cidade nenhuma ('RUA ,NUM, BAIRRO', sem ' - ') -- nao inventa cidade a partir do bairro", () => {
     expect(extrairCidadeDoEndereco("ESTRADA UNIAO E INDUSTRIA ,7046, NOGUEIRA")).toBeNull();
   });
+
+  it("achado real (cliente MINIMERCADO BOA UNIAO, Tres Rios): virgula extra DENTRO do numero (dois lotes) nao desloca a contagem de segmentos", () => {
+    // Ancora no primeiro ' - ', nao em posicao de virgula -- "85, 87" antes
+    // do ' - ' nao muda onde a cidade esta.
+    expect(extrairCidadeDoEndereco("R EDUARDO SANTOS LARA, 85, 87 - BOA UNIAO, TRES RIOS - *")).toBe("TRES RIOS");
+  });
 });
 
 describe("normalizarNomeRua", () => {
@@ -129,6 +135,10 @@ describe("extrairBairroDoEndereco", () => {
 
   it("achado real (cliente EMPORIO VALLEJU): sem ' - ', o bairro e' o ultimo segmento inteiro", () => {
     expect(extrairBairroDoEndereco("ESTRADA UNIAO E INDUSTRIA ,7046, NOGUEIRA")).toBe("NOGUEIRA");
+  });
+
+  it("achado real (cliente MINIMERCADO BOA UNIAO, Tres Rios): virgula extra DENTRO do numero nao rouba o bairro pra 'cidade - sufixo'", () => {
+    expect(extrairBairroDoEndereco("R EDUARDO SANTOS LARA, 85, 87 - BOA UNIAO, TRES RIOS - *")).toBe("BOA UNIAO");
   });
 });
 
