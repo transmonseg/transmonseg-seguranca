@@ -98,13 +98,27 @@ Disciplina já estabelecida neste projeto — nunca aceitar mudança no motor se
 
 ---
 
-## Fase 2 — Diagnóstico de latência (investigação, sem mexer em código ainda)
+## Fase 2 — Diagnóstico de latência — CONCLUÍDA (27/08, investigação pura, zero escrita)
 
-**Objetivo:** descobrir se os 8-77min relatados no WhatsApp (26-27/08) são latência de DETECÇÃO real ou outra coisa (ação em massa fechando alerta antes de revisão, tempo entre desvio começar de fato e o streak confirmar, operador não estar olhando a tela).
+**Veredito confirmado com dado real (26/08, 5 casos citados no grupo, 4 identificados com confiança): é a TERCEIRA vez que esse padrão de queixa se dissolve em percepção/processo, não latência de detecção.**
 
-**Método:** pegar 3-4 casos concretos das mensagens do grupo (placas com timestamp citado, ex. "7h76 Desvio correto, com 77 minutos de atraso") e reconstruir a timeline exata via `alertas`, `desvio_disparo_log`, `posicoes_historico` — comparando (a) quando o veículo realmente começou a se desviar (posição real), (b) quando o alerta foi criado no banco, (c) quando/se foi resolvido/limpo, (d) quando o operador reportou no WhatsApp. Isso já foi feito 2x nesse projeto pro mesmo tipo de queixa (09/08, 18/08) e nas duas vezes NÃO era latência de detecção — não repetir o erro de mexer em parâmetro sem esse dado.
+Fatos estruturais medidos:
+- Insert do alerta no banco: **36-60s** em todos os tipos (rápido, não é o gargalo).
+- Cadência de posição por veículo: **p50 67s / p90 93s / p99 122s** — piso real do rastreador, não do pg_cron (30s).
+- Delta real de detecção nos casos investigados: **1,5 a 8min** (dentro do esperado pelo streak de 2 leituras + limiar de 12min da parada, ambos por design).
+- Tempo até o operador tratar o alerta (`limpar_massa`): **mediana 22min, p90 76min** — é aqui que os 8-77min relatados batem.
 
-**Só depois desse diagnóstico**, decidir se cabe: reduzir `LIMIAR_STREAK_AFASTANDO`, trocar pg_cron por `LISTEN/NOTIFY` (ver pesquisa abaixo), ou é um problema de processo/visibilidade do operador, não de código.
+Caso mais didático: **RQS-7H76 "77 minutos de atraso"** — o alerta de `parada_anomala` disparou corretamente aos 12min (09:30:31); ficou 64min aberto sem tratamento; o "77 minutos" citado é literalmente o TEXTO do motivo do alerta ("Parada suspeita de 1h17min", a duração do evento) lido pelo operador quase 1h depois — não é o sistema atrasando, é a UI mostrando duração do evento em vez de "detectado há X min" e ninguém ter olhado a tela a tempo.
+
+**Decisão tomada com base no dado: NÃO seguir para "trocar pg_cron por LISTEN/NOTIFY"** — ganho máximo de ~30s sobre um piso de 2-4min imposto pelo tracker, sem relação com os atrasos relatados. **NÃO mexer em `LIMIAR_STREAK_AFASTANDO`** — baixar pra 1 ganha ~70s ao custo direto de mais falso positivo, contra a diretriz de recall do projeto.
+
+**O que o dado sustenta como próximo passo real (novo backlog, não estava no plano original):**
+1. **Mostrar idade/hora de detecção no card do alerta** ("detectado 09:30 · aberto há 64min"), separado da duração do evento que já aparece no `motivo` — ataca a causa raiz nº1 (confusão entre "atraso do sistema" e "duração do evento"), barato de implementar.
+2. **Destacar visualmente alerta velho sem tratamento** (ex: a partir de 10min de idade) — ataca a causa raiz nº2 (mediana de 22min, p90 76min até alguém agir).
+3. **Monitorar `atraso_min` por veículo e sinalizar GPS defasado** (13,5% dos fixes de 26/08 chegaram com ≥10min de atraso, concentrado nalguns veículos específicos tipo TML-3B11/UBF-5G32/KNZ-5B07) — é a única latência tecnicamente real encontrada, vem da Unitrac na origem, hoje invisível pro operador.
+4. Caso TTD-7H14 específico: avaliar se o streak deveria tolerar paradas curtas sem zerar (afastamento intermitente quebra a sequência) — reduziria o delta de 8min pra ~3min nesse padrão específico. É mudança de lógica de detecção, precisa shadow mode, não é ajuste de parâmetro — não fazer sem validação.
+
+Relatório completo (5 casos, evidência de banco caso a caso) fica no ledger desta fase, `.superpowers/sdd/...` (workspace de sessão, não versionado).
 
 ---
 
