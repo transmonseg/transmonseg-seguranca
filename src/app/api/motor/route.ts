@@ -887,7 +887,7 @@ export async function POST(request: Request) {
     // docs/superpowers/specs/2026-07-15-presenca-confirmada-romaneio-design.md.
     // Coleta candidatos durante o loop, grava em lote no fim do ciclo (mesmo
     // padrao de amostrasBaselineCiclo acima).
-    const presencaConfirmadaCiclo: { veiculo_id: string; nf: string }[] = [];
+    const presencaConfirmadaCiclo: { veiculo_id: string; nf: string; lat: number; lng: number }[] = [];
     // Parada no local conta como entregue (usuario, 01/08) -- coletado por
     // veiculo, gravado em UM insert no fim do ciclo (ver ENTREGA_PRESENCA_ATIVA).
     const presencaEntregaCiclo: {
@@ -2184,8 +2184,22 @@ export async function POST(request: Request) {
           // afetando a propria confirmacao. Idempotente na escrita (WHERE
           // presenca_confirmada_em IS NULL no flush) -- pode coletar o
           // mesmo par repetidas vezes sem problema.
+          //
+          // lat/lng do alvo (achado real 27/08, auditoria "tempo em loja"):
+          // comparando 4 casos reais do dia contra a API de alvos da
+          // Unitrac, o alvo dela batia com a posicao real do caminhao
+          // (~15-40m de diferenca) enquanto o geocode do NOSSO romaneio
+          // errava de 3km a 144km pro MESMO documento -- endereco de texto
+          // mal formatado/rua homonima em outra cidade, o de sempre. O
+          // caminhao parado dentro do raio do alvo por >=120s E' a prova
+          // de campo mais forte que existe (mesma filosofia ja usada em
+          // corrigirComPontoAprendido/deveCorrigirComRomaneio pra so
+          // corrigir apos confirmacao real) -- guarda a coordenada do alvo
+          // aqui pra sobrescrever o geocode ruim no flush, ANTES que
+          // qualquer coisa (mapa, KPI "tempo em loja") use o endereco
+          // errado pra esse NF.
           if (romaneioDoVeiculo && romaneioDoVeiculo.length > 0 && alvoNoRaioAgora?.documento && noRaioDwellSegundos >= BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS) {
-            presencaConfirmadaCiclo.push({ veiculo_id, nf: alvoNoRaioAgora.documento });
+            presencaConfirmadaCiclo.push({ veiculo_id, nf: alvoNoRaioAgora.documento, lat: alvoNoRaioAgora.lat, lng: alvoNoRaioAgora.lng });
           }
 
           // Parada no local conta como entregue (usuario, 01/08 -- ver
@@ -3605,14 +3619,22 @@ export async function POST(request: Request) {
     // veiculo+NF antes de gravar (o mesmo par pode ter sido coletado em
     // varios veiculos/ciclos seguidos enquanto o dwell continua acima do
     // limiar). Idempotente (WHERE presenca_confirmada_em IS NULL).
+    //
+    // Grava tambem lat/lng do alvo (achado real 27/08, ver comentario no
+    // coletor acima) na MESMA linha/write -- sobrescreve o geocode do
+    // romaneio pela coordenada que acabou de ser PROVADA certa por uma
+    // parada real de >=120s dentro do raio dela. So na primeira
+    // confirmacao (mesmo WHERE presenca_confirmada_em IS NULL de sempre):
+    // nao fica reescrevendo lat/lng em todo ciclo de um ponto ja
+    // confirmado.
     if (presencaConfirmadaCiclo.length > 0) {
       const paresUnicos = [...new Map(presencaConfirmadaCiclo.map((p) => [`${p.veiculo_id}:${p.nf}`, p])).values()];
       const resultadosPresenca = await Promise.allSettled(
         paresUnicos.map((p) =>
           pool.query(
-            `update romaneio_pontos set presenca_confirmada_em = now()
+            `update romaneio_pontos set presenca_confirmada_em = now(), lat = $4, lng = $5
              where veiculo_id = $1 and nf = $2 and romaneio_data = $3 and presenca_confirmada_em is null`,
-            [p.veiculo_id, p.nf, dataHojeSP]
+            [p.veiculo_id, p.nf, dataHojeSP, p.lat, p.lng]
           )
         )
       );
