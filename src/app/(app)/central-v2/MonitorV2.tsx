@@ -14,6 +14,7 @@ import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./
 import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
 import SplitDivider from "./SplitDivider";
 import { TIPOS_ABA_DESVIOS, TIPOS_REVISAO_INDIVIDUAL } from "./tipos-alerta";
+import { delayEntradaEscalonada } from "@/lib/stagger";
 import { motion, AnimatePresence } from "framer-motion";
 
 const MapaLeafletV2 = dynamic(() => import("./MapaLeafletV2"), { ssr: false });
@@ -1440,9 +1441,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // ou painel2 correto — cada painel tem sua propria selecao (usePainelFoco).
   const renderCardAlerta = (
     a: AlertaEnriquecido,
-    opts: { painel: ReturnType<typeof usePainelFoco> }
+    opts: { painel: ReturnType<typeof usePainelFoco>; index?: number }
   ) => {
     const painel = opts.painel;
+    // Stagger pequeno por posicao na lista, com teto pra nao atrasar
+    // demais quando ha' muitos alertas. So' tem efeito real na entrada
+    // de itens novos: AnimatePresence initial={false} ja suprime a
+    // animacao de entrada no primeiro carregamento da pagina.
+    const atrasoEntrada = delayEntradaEscalonada(opts.index ?? 0);
     const cor = a.nivel === "critico" ? T.red : T.yellow;
     const ativo = painel.alertaAtivoId === a.id;
     const doCarro = painel.cvSelecionado === a.cv;
@@ -1457,7 +1463,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         initial={{ opacity: 0, y: -6, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
-        transition={{ type: "spring", stiffness: 500, damping: 34 }}
+        transition={{ type: "spring", stiffness: 500, damping: 34, delay: atrasoEntrada }}
         onClick={focar}
         className="v2-alert-card"
         style={{
@@ -2618,7 +2624,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </div>
             )}
             <AnimatePresence initial={false}>
-              {(splitView ? alertasOrdenadosSplitTodos : alertasOrdenados).map(a => renderCardAlerta(a, { painel: painel1 }))}
+              {(splitView ? alertasOrdenadosSplitTodos : alertasOrdenados).map((a, i) => renderCardAlerta(a, { painel: painel1, index: i }))}
             </AnimatePresence>
           </div>
 
@@ -2646,7 +2652,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               {outrosAbertos && (
                 <div style={{ padding: "0 6px 8px", maxHeight: 320, overflowY: "auto" }}>
                   <AnimatePresence initial={false}>
-                    {(splitView ? outrosAvisosSplit : outrosAvisos).map(a => renderCardAlerta(a, { painel: painel1 }))}
+                    {(splitView ? outrosAvisosSplit : outrosAvisos).map((a, i) => renderCardAlerta(a, { painel: painel1, index: i }))}
                   </AnimatePresence>
                 </div>
               )}
@@ -2881,7 +2887,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 </div>
               )}
               <AnimatePresence initial={false}>
-                {alertasOrdenadosSplitSelecionados.map(a => renderCardAlerta(a, { painel: painel2 }))}
+                {alertasOrdenadosSplitSelecionados.map((a, i) => renderCardAlerta(a, { painel: painel2, index: i }))}
               </AnimatePresence>
             </div>
           </div>
@@ -3117,6 +3123,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         @keyframes pulsarPanico {
           0%, 100% { box-shadow: 0 0 0 0 #ef444438; }
           50%       { box-shadow: 0 0 0 12px #ef444406; }
+        }
+        .v2-btn, .v2-btn-tiny, .v2-drawer-btn, .v2-alert-card {
+          transition: opacity 180ms ease, filter 180ms ease;
         }
         .v2-btn:hover { opacity: 0.72; }
         .v2-btn-tiny:hover { filter: brightness(1.18); }
