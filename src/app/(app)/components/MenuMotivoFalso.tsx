@@ -23,11 +23,20 @@ export default function MenuMotivoFalso({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [detalhe, setDetalhe] = useState("");
-  // Zera o texto ao fechar (nao ao abrir, pra nao chamar setState de dentro
-  // de um effect) -- toda saida passa por aqui, entao a proxima abertura ja
-  // comeca limpa. Nunca deve sobrar detalhe de um alerta anterior grudado
-  // num alerta diferente.
-  const fechar = () => { setDetalhe(""); onFechar(); };
+  // Categoria fica so selecionada (estado local) ate o operador clicar em
+  // "Confirmar Falso" -- clicar numa categoria nao dispara mais onEscolher
+  // na hora (fluxo de 2 passos: selecionar -> confirmar).
+  const [selecionada, setSelecionada] = useState<CategoriaFalso | null>(null);
+  // Zera texto e selecao ao fechar (nao ao abrir, pra nao chamar setState de
+  // dentro de um effect) -- toda saida passa por aqui, entao a proxima
+  // abertura ja comeca limpa. Nunca deve sobrar detalhe/selecao de um alerta
+  // anterior grudado num alerta diferente.
+  const fechar = () => { setDetalhe(""); setSelecionada(null); onFechar(); };
+  const confirmar = () => {
+    if (!selecionada) return;
+    onEscolher(selecionada, detalhe);
+    fechar();
+  };
   useEffect(() => {
     if (!aberto) return;
     const onClickFora = (e: MouseEvent) => {
@@ -46,20 +55,25 @@ export default function MenuMotivoFalso({
       boxShadow: "0 8px 24px rgba(0,0,0,0.25)", padding: 6, minWidth: compacto ? 200 : 260,
       display: "flex", flexDirection: "column", gap: 3,
     }}>
-      {CATEGORIAS_FALSO.map(c => (
-        <button key={c.valor} type="button"
-          onClick={() => { onEscolher(c.valor, detalhe); fechar(); }}
-          style={{
-            textAlign: "left", padding: "6px 8px", borderRadius: 6, border: "none",
-            background: "transparent", cursor: "pointer",
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = "var(--border-subtle)"; }}
-          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-        >
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{c.label}</div>
-          {!compacto && <div style={{ fontSize: 10.5, color: "var(--text-muted)" }}>{c.apoio}</div>}
-        </button>
-      ))}
+      {CATEGORIAS_FALSO.map(c => {
+        const ativa = selecionada === c.valor;
+        return (
+          <button key={c.valor} type="button"
+            aria-pressed={ativa}
+            onClick={() => setSelecionada(c.valor)}
+            style={{
+              textAlign: "left", padding: "6px 8px", borderRadius: 6,
+              border: ativa ? "1px solid var(--accent)" : "1px solid transparent",
+              background: ativa ? "var(--border-subtle)" : "transparent", cursor: "pointer",
+            }}
+            onMouseEnter={e => { if (!ativa) e.currentTarget.style.background = "var(--border-subtle)"; }}
+            onMouseLeave={e => { if (!ativa) e.currentTarget.style.background = "transparent"; }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{c.label}</div>
+            {!compacto && <div style={{ fontSize: 10.5, color: "var(--text-muted)" }}>{c.apoio}</div>}
+          </button>
+        );
+      })}
       <div style={{ borderTop: "1px solid var(--border)", marginTop: 3, paddingTop: 5 }}>
         <textarea
           value={detalhe}
@@ -73,6 +87,19 @@ export default function MenuMotivoFalso({
             color: "var(--text)", fontFamily: "inherit", boxSizing: "border-box",
           }}
         />
+        <button type="button"
+          onClick={confirmar}
+          disabled={!selecionada}
+          style={{
+            width: "100%", marginTop: 5, padding: "6px 8px", borderRadius: 6,
+            border: "none", fontSize: 11.5, fontWeight: 600,
+            background: selecionada ? "var(--accent)" : "var(--border-subtle)",
+            color: selecionada ? "var(--accent-fg, #fff)" : "var(--text-muted)",
+            cursor: selecionada ? "pointer" : "not-allowed",
+          }}
+        >
+          Confirmar Falso
+        </button>
       </div>
     </div>
   );
