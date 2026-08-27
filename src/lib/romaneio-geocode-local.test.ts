@@ -55,6 +55,12 @@ describe("extrairCidadeDoEndereco", () => {
     // do ' - ' nao muda onde a cidade esta.
     expect(extrairCidadeDoEndereco("R EDUARDO SANTOS LARA, 85, 87 - BOA UNIAO, TRES RIOS - *")).toBe("TRES RIOS");
   });
+
+  it("achado real (fonte CNEFE, auditoria 27/08): nome da RUA com ' - ' embutido (faixa de numeracao do IBGE) nao e' confundido com o separador rua/bairro", () => {
+    expect(extrairCidadeDoEndereco("ROD RJ 186 - KM 19, S/N - ARE, ITAPERUNA - CRUZAMENTO")).toBe("ITAPERUNA");
+    expect(extrairCidadeDoEndereco("RUA ARISTIDES FALCAO - LOTE 32, S/N - BOA VISTA, CACHOEIRAS DE M - *")).toBe("CACHOEIRAS DE M");
+    expect(extrairCidadeDoEndereco("RUA PEREIRA NUNES - DE 212 AO FIM - LADO, 388 - VILA ISABEL, RIO DE JANEIRO - SALADEIRA MIX ORIGINAL")).toBe("RIO DE JANEIRO");
+  });
 });
 
 describe("normalizarNomeRua", () => {
@@ -139,6 +145,11 @@ describe("extrairBairroDoEndereco", () => {
 
   it("achado real (cliente MINIMERCADO BOA UNIAO, Tres Rios): virgula extra DENTRO do numero nao rouba o bairro pra 'cidade - sufixo'", () => {
     expect(extrairBairroDoEndereco("R EDUARDO SANTOS LARA, 85, 87 - BOA UNIAO, TRES RIOS - *")).toBe("BOA UNIAO");
+  });
+
+  it("achado real (fonte CNEFE, auditoria 27/08): nome da RUA com ' - ' embutido nao e' confundido com o separador rua/bairro", () => {
+    expect(extrairBairroDoEndereco("ROD RJ 186 - KM 19, S/N - ARE, ITAPERUNA - CRUZAMENTO")).toBe("ARE");
+    expect(extrairBairroDoEndereco("RUA PEREIRA NUNES - DE 212 AO FIM - LADO, 388 - VILA ISABEL, RIO DE JANEIRO - SALADEIRA MIX ORIGINAL")).toBe("VILA ISABEL");
   });
 });
 

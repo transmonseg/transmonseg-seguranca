@@ -10,19 +10,30 @@ export function extrairRuaDoEndereco(enderecoBruto: string): string {
   return enderecoBruto.slice(0, idx).trim();
 }
 
-// Ambas as funcoes abaixo ancoram no PRIMEIRO " - " do endereco (fim do
-// trecho "<RUA>, <NUMERO>"), nao em contagem de posicao de virgula --
-// achado real (cliente MINIMERCADO BOA UNIAO, Tres Rios, auditoria 27/08
-// sobre os ultimos 30 dias): quando o NUMERO em si tem virgula (ex:
-// "R EDUARDO SANTOS LARA, 85, 87 - BOA UNIAO, TRES RIOS - *", dois lotes
-// no mesmo endereco), contar "cidade = 3o segmento" quebra igual "cidade =
-// ultimo segmento" quebrava antes (ver historico deste arquivo) -- o
-// numero de virgulas antes do " - " que separa rua/bairro nao e' fixo.
-// Ancorar no separador real (" - ") em vez de posicao de virgula resolve
-// os dois casos (virgula no numero E virgula no sufixo) com a MESMA
-// logica, sem sensibilidade a quantos "," aparecem antes dele.
+// Ambas as funcoes abaixo ancoram no PRIMEIRO " - " que aparece DEPOIS da
+// PRIMEIRA virgula (fim do trecho "<RUA>, <NUMERO>"), nao em contagem de
+// posicao de virgula -- achado real (cliente MINIMERCADO BOA UNIAO, Tres
+// Rios, auditoria 27/08 sobre os ultimos 30 dias): quando o NUMERO em si
+// tem virgula (ex: "R EDUARDO SANTOS LARA, 85, 87 - BOA UNIAO, TRES RIOS -
+// *", dois lotes no mesmo endereco), contar "cidade = 3o segmento" quebra
+// igual "cidade = ultimo segmento" quebrava antes (ver historico deste
+// arquivo) -- o numero de virgulas antes do " - " que separa rua/bairro
+// nao e' fixo. Ancorar no separador real resolve os dois casos (virgula no
+// numero E virgula no sufixo) com a MESMA logica.
+//
+// Achado real 2 (mesma auditoria, fonte CNEFE): o proprio nome da RUA as
+// vezes tem " - " embutido (faixa de numeracao oficial do IBGE, ex. "RUA
+// PEREIRA NUNES - DE 212 AO FIM - LADO", "ROD RJ 186 - KM 19") -- ancorar
+// no PRIMEIRO " - " do endereco inteiro (sem levar em conta a virgula)
+// pegava esse traço de dentro do nome da rua, nao o que separa
+// numero/bairro. Buscar o " - " a partir da primeira virgula (nao do
+// inicio da string) pula qualquer traço que apareça ANTES dela, que so
+// pode ser parte do nome da rua (o numero, por definicao, vem logo depois
+// da 1a virgula).
 export function extrairCidadeDoEndereco(enderecoBruto: string): string | null {
-  const idxTraco = enderecoBruto.indexOf(" - ");
+  const idxVirgula = enderecoBruto.indexOf(",");
+  if (idxVirgula === -1) return null;
+  const idxTraco = enderecoBruto.indexOf(" - ", idxVirgula);
   // Achado real (cliente EMPORIO VALLEJU): o romaneio as vezes omite a
   // cidade por completo -- "RUA ,NUMERO, BAIRRO", sem " - " nenhum -- em
   // vez do formato normal "RUA, NUM - BAIRRO, CIDADE - SUFIXO". Sem essa
@@ -44,11 +55,14 @@ export function extrairNumeroDoEndereco(enderecoBruto: string): string | null {
 }
 
 export function extrairBairroDoEndereco(enderecoBruto: string): string | null {
-  const idxTraco = enderecoBruto.indexOf(" - ");
+  const idxVirgula = enderecoBruto.indexOf(",");
+  if (idxVirgula === -1) return null;
+  const idxTraco = enderecoBruto.indexOf(" - ", idxVirgula);
   if (idxTraco === -1) {
     // Mesma variante sem cidade do achado EMPORIO VALLEJU (ver
-    // extrairCidadeDoEndereco): sem " - " nenhum, o bairro de verdade e' o
-    // ultimo segmento inteiro (unico dado de localizacao real que sobra).
+    // extrairCidadeDoEndereco): sem " - " depois da 1a virgula, o bairro de
+    // verdade e' o ultimo segmento inteiro (unico dado de localizacao real
+    // que sobra).
     const partes = enderecoBruto.split(",");
     if (partes.length < 3) return null;
     return partes[partes.length - 1].trim() || null;
