@@ -122,6 +122,52 @@ Relatório completo (5 casos, evidência de banco caso a caso) fica no ledger de
 
 ---
 
+## Fase 2B — UX de latência percebida (detalhada 27/08, REVISADA 27/08 após achado crítico)
+
+**A v1 desta seção estava errada — revisão independente achou antes de qualquer código ser escrito.** Eu tinha investigado só `CardAlertaCritico.tsx` (confirmado código morto, sem importador em `src`) e concluído que a lógica de idade do alerta "não existia" no card real. **Errado**: ela existe, ao vivo, dentro do próprio `MonitorV2.tsx` — só não olhei longe o bastante no mesmo arquivo. Registrando aqui pra não repetir: antes de dizer "isso não existe", grep pelo NOME DA FUNÇÃO (`tempoAtras`, `corIdade`, etc.) no arquivo inteiro, não só no componente óbvio.
+
+**O que já está no ar (desde 13/08, achado real de um alerta parado 19h sem revisão entre 92 ativos):**
+- `MonitorV2.tsx:143-148` `tempoAtras(desde)` — formata `Xmin`/`Xh`/`Xd`.
+- `MonitorV2.tsx:163-170` `corIdadeAlerta(desde, tema)` — **limiares pedidos pelo usuário em 13/08**: 3h = atenção (amarelo), 8h+ = crítico (vermelho), canal de cor separado do tipo/nível do alerta de propósito.
+- Renderizado em `:1487-1494` (card da sidebar) e `:1671-1672` (chip sobre o mapa) — `{idade.cor && "⏱ "}{tempoAtras(a.desde)}`: quando o alerta é recente (`idade.cor === ""`), aparece só o número solto (ex: `12min`), **sem ícone, sem rótulo, sem tooltip** — é exatamente essa ambiguidade que gerou o caso RQS-7H76 (via texto de `motivo`, não desse indicador, mas o problema de fundo — número sem contexto — é o mesmo).
+- GPS defasado (item 3 do backlog) **também já tem sinal parcial**: `MapaLeafletV2.tsx:220` muda o ícone do veículo no mapa a partir de 60min sem comunicação; `MonitorV2.tsx:2128-2135` já tem botões de filtro COMM 10min/30min/60min na barra principal; painel de detalhe (`:1808-1809`) já destaca em amarelo acima de 30min.
+
+**Trabalho real desta fase, então, é MUITO menor do que a v1 supunha — é calibração e rótulo, não construção:**
+
+### Task 2B.1 — Dar contexto ao número que já aparece no card (`tempoAtras`)
+
+**Files:** `src/app/(app)/central-v2/MonitorV2.tsx:1486-1496` (card da sidebar) e `:1671-1672` (chip do mapa).
+
+Hoje, quando `idade.cor === ""` (alerta recente, caso normal), o span renderiza só `12min` — nem o ⏱ aparece (só aparece quando já está velho). Mudança mínima, sem risco de overflow (o texto em si não cresce, só ganha ícone + tooltip):
+1. Sempre renderizar o ⏱ (tirar a condição `idade.cor &&` antes do ícone) — sinaliza visualmente "isto é um relógio", mesmo quando novo.
+2. Sempre setar o `title` (tooltip on-hover), não só quando `idade.cor` existe — hoje o `title` só existe pra alerta velho ("Parado sem revisao ha' muito tempo"). Pra alerta recente, `title` pode virar algo como `"Detectado há {tempoAtras(a.desde)}"` — deixa explícito que é a idade da DETECÇÃO, sem competir por espaço com o `motivo` (que pode ter a duração do evento embutida, tipo "Parada suspeita de 1h17min" — os dois números continuam visualmente separados, um é tooltip, outro é texto do card).
+
+Testar nos 3 layouts que apertam espaço: card normal, card com badge extra (`parada_sem_marcacao` tem "POSSÍVEL DESVIO" ao lado, `:1478-1485`), e modo compacto/split view (`:1666`, `:1110-1113`) — confirmar que não estoura.
+
+### Task 2B.2 — Recalibrar os limiares de destaque — **PERGUNTA AO USUÁRIO, não decisão de código**
+
+Os limiares atuais (3h atenção / 8h crítico, `MonitorV2.tsx:163-164`) foram **pedidos explicitamente pelo usuário em 13/08** — não são um valor arbitrário pra "consertar". A Fase 2 mediu mediana de 22min / p90 76min até tratamento, o que sugere um limiar bem mais baixo faria mais sentido pro problema de hoje — mas mudar isso é reabrir uma decisão de produto dele, não um ajuste técnico.
+
+**Antes de codar**: perguntar ao usuário se quer recalibrar. Se sim, valor sugerido pelo dado da Fase 2 (não decidido, só ponto de partida pra conversa): ~30min pra atenção (logo acima da mediana, pega a cauda sem pintar mais da metade dos alertas em fluxo normal — 10min pintaria a maioria, destruindo o próprio propósito do destaque) / manter ou ajustar o crítico. Se o usuário preferir manter 3h/8h, esta task fecha sem mudança de código nenhuma.
+
+### Task 2B.3 — Badge de GPS defasado na lista/card de alerta (o gap real, depois do inventário completo)
+
+Com o inventário completo (mapa a 60min, filtro COMM 10/30/60min, painel de detalhe a 30min), **o gap real é**: não existe indicador de GPS defasado dentro do CARD/LISTA de alertas em si (só no mapa e no painel de detalhe de um veículo já selecionado) — e o limiar visual do mapa (60min) é 6x mais alto que o achado da Fase 2 (13,5% dos fixes de 26/08 com ≥10min de atraso).
+
+**Decisão de design já tomada (não reabrir na implementação):** não vira novo tipo em `alertas`/`alertas_romaneio` — confirmado que existe máquina real de calibração/silenciamento (`motor/route.ts:137-140`, `:3138-3142`, `:1418-1500`; `motor-romaneio/route.ts:1818-1850`) que um tipo novo ativaria sem necessidade, já que isso é sinal de qualidade de dado, não risco de desvio.
+
+**Files:** `src/app/(app)/central-v2/MonitorV2.tsx` — adicionar um badge pequeno no card do alerta (reaproveitar `atraso_min` do veículo dono do alerta, já disponível em `veiculosMapa`) quando `atraso_min >= 10`. Não precisa reconstruir nada do mapa/filtro/painel de detalhe, que já cobrem seus próprios contextos.
+
+### Critério de aceite (as 3 tasks)
+- **Task 2B.1**: `npx vitest run` (adicionar teste pra `tempoAtras`/`corIdadeAlerta` em `MonitorV2.test.ts` — hoje ZERO teste apesar de estarem em produção desde 13/08, é a task certa pra cobrir isso), `npx tsc --noEmit`, `npm run build` limpos. Verificação manual/print nos 3 contextos de espaço apertado.
+- **Task 2B.2**: só entra em execução depois da resposta do usuário. Se ele topar recalibrar, mesmo critério de teste da 2B.1 aplicado aos novos valores.
+- **Task 2B.3**: badge aparece só quando `atraso_min >= 10` pro veículo do alerta, sem afetar o filtro/mapa/painel existentes (testar que os 3 continuam com seus limiares próprios intactos).
+
+### Ordem sugerida
+2B.1 primeiro (menor risco, maior clareza imediata). 2B.2 fica bloqueada até o usuário responder a pergunta de recalibração. 2B.3 é independente, pode rodar em paralelo com 2B.1.
+
+---
+
 ## Fase 3 — Terminar a blindagem de geocodificação do romaneio + camada de CEP
 
 **Objetivo:** antes de confiar 100% no romaneio como fonte única (Fase 4), garantir que a geocodificação dele é confiável — hoje só o item 1 dos 5 do plano de blindagem (26/08) está feito.
