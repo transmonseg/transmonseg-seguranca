@@ -249,19 +249,49 @@ describe("avaliarParadasRomaneio", () => {
 // inteiro deixava ~70% da frota sem detector de parada NENHUM nos dois
 // pipelines. Estes testes travam as duas pontas da separacao.
 describe("decidirEscopoDoVeiculo", () => {
+  // 4096 = Nutry Max, o unico cod_user_unitrac em
+  // CLIENTES_COM_MOTOR_ROMANEIO_PARALELO (@/lib/config-clientes) -- a mesma
+  // lista que DESLIGA os 3 detectores de parada na Central Unitrac.
+  const NUTRY = "4096";
+
   it("veiculo SEM alvo Unitrac: avalia desvio E paradas (comportamento historico, nao mudou)", () => {
-    expect(decidirEscopoDoVeiculo(0)).toEqual({ avaliaDesvio: true, avaliaParadas: true });
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: NUTRY }))
+      .toEqual({ avaliaDesvio: true, avaliaParadas: true });
   });
 
-  it("CASO DA TASK: veiculo COM alvo Unitrac avalia paradas, mas NUNCA desvio", () => {
-    expect(decidirEscopoDoVeiculo(1)).toEqual({ avaliaDesvio: false, avaliaParadas: true });
-    expect(decidirEscopoDoVeiculo(37)).toEqual({ avaliaDesvio: false, avaliaParadas: true });
+  it("CASO DA TASK B2: veiculo COM alvo Unitrac avalia paradas, mas NUNCA desvio", () => {
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 1, codUserUnitrac: NUTRY }))
+      .toEqual({ avaliaDesvio: false, avaliaParadas: true });
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 37, codUserUnitrac: NUTRY }))
+      .toEqual({ avaliaDesvio: false, avaliaParadas: true });
   });
 
-  it("paradas rodam pra frota inteira -- nao existe entrada que desligue avaliaParadas", () => {
+  it("ter alvo Unitrac NUNCA desliga as paradas -- so o desvio (regressao da B2)", () => {
     for (const n of [0, 1, 2, 5, 100]) {
-      expect(decidirEscopoDoVeiculo(n).avaliaParadas).toBe(true);
+      expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: n, codUserUnitrac: NUTRY }).avaliaParadas).toBe(true);
     }
+  });
+
+  // ─── Achado I5 da revisao final de branch (27/08) ───
+  it("cliente FORA da lista: paradas DESLIGADAS aqui (a Central Unitrac cobre)", () => {
+    // Sem este corte, o dia em que um segundo cliente ganhar romaneio os 3
+    // detectores rodam em DOBRO pra ele: a Central Unitrac cobre normalmente
+    // (nao desligou nada, porque ele nao esta na lista) e esta rota tambem.
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "4586" }))
+      .toEqual({ avaliaDesvio: true, avaliaParadas: false });
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 3, codUserUnitrac: "9999" }))
+      .toEqual({ avaliaDesvio: false, avaliaParadas: false });
+  });
+
+  it("cliente sem cod_user_unitrac cadastrado: paradas desligadas (fail-safe contra duplicata)", () => {
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: null }).avaliaParadas).toBe(false);
+  });
+
+  it("o gate de parada NAO mexe no gate de desvio, e vice-versa", () => {
+    // Os dois efeitos sao independentes de proposito: desvio depende so de
+    // alvo Unitrac, parada depende so do cliente.
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "outro" }).avaliaDesvio).toBe(true);
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 9, codUserUnitrac: NUTRY }).avaliaParadas).toBe(true);
   });
 });
 
@@ -312,7 +342,7 @@ describe("B2 fim-a-fim (composicao das regras puras)", () => {
   ];
 
   it("veiculo COM alvo Unitrac parado longe do romaneio: os 3 detectores avaliam e disparam, desvio nao roda", () => {
-    const escopo = decidirEscopoDoVeiculo(alvosUnitrac.length);
+    const escopo = decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: alvosUnitrac.length, codUserUnitrac: "4096" });
     expect(escopo.avaliaDesvio).toBe(false);
     expect(escopo.avaliaParadas).toBe(true);
 
@@ -338,7 +368,8 @@ describe("B2 fim-a-fim (composicao das regras puras)", () => {
   });
 
   it("veiculo SEM alvo Unitrac: continua avaliando desvio E paradas, sem regressao", () => {
-    expect(decidirEscopoDoVeiculo(0)).toEqual({ avaliaDesvio: true, avaliaParadas: true });
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "4096" }))
+      .toEqual({ avaliaDesvio: true, avaliaParadas: true });
     // Antes da B2 a rota passava `pontosUnitracVeiculo`, que pra ESTE veiculo
     // ja' era [] na pratica -- ou seja, pra ele o argumento literal e' o
     // mesmo dado de sempre e nada mudou.

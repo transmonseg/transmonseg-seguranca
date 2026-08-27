@@ -45,6 +45,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
+import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO } from "@/lib/config-clientes";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import {
   melhorClasse,
@@ -225,7 +226,12 @@ const ENTREGA_PRESENCA_MIN_SEG = 120;
 // (ParadaLonga/ParadaAnomala/ParadaForaTapete, ver montarCandidatosCore em
 // detectores.ts) ficam desligados aqui, evitando ruído que o
 // motor-romaneio já resolve corretamente com o dado certo.
-const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096"]); // Nutry Max
+//
+// A constante em si vive em @/lib/config-clientes desde a revisão final de
+// branch de 27/08 -- a Central Romaneio precisa da MESMA lista pra decidir
+// quais clientes ela cobre, e duas cópias em arquivos diferentes é como o
+// desalinhamento (cliente coberto duas vezes, ou nenhuma) entraria sem
+// ninguém notar. Comportamento aqui inalterado.
 
 // Log de snapshot de pendentes por ciclo -- ver
 // docs/superpowers/specs/2026-08-09-snapshot-pendentes-log-design.md.

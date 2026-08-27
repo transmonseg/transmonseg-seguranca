@@ -78,6 +78,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
+import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO } from "@/lib/config-clientes";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
@@ -308,16 +309,36 @@ export function deveResolverAlertaGerenciado(ctx: {
 // ([[feedback_desvio_priorizar_recall]]).
 //
 // Daí a separação em dois efeitos: `avaliaDesvio` carrega a proteção de 24/08
-// intacta, `avaliaParadas` é sempre true. Não existe entrada que desligue as
-// paradas -- se um dia precisar existir, será por outra regra, nunca por
-// "tem alvo Unitrac".
-export function decidirEscopoDoVeiculo(qtdAlvosUnitracDoVeiculo: number): {
+// intacta, `avaliaParadas` NÃO depende de alvo Unitrac -- nunca dependeu e não
+// pode depender.
+//
+// O que `avaliaParadas` depende (revisão final de branch, 27/08, achado I5):
+// o cliente do veículo estar em CLIENTES_COM_MOTOR_ROMANEIO_PARALELO
+// (@/lib/config-clientes) -- a MESMA lista que a Central Unitrac usa pra
+// DESLIGAR os 3 detectores de parada. As duas pontas leem a mesma constante de
+// propósito: exatamente um dos dois pipelines cobre cada cliente. Sem este
+// gate a Central Romaneio avaliava parada pra TODO veículo com romaneio no
+// dia; hoje só a Nutry Max (4096) tem romaneio, então não há duplicata na
+// prática, mas no dia em que qualquer outro cliente ganhar romaneio os 3
+// detectores rodariam em DOBRO pra ele (Unitrac cobre + Romaneio cobre) --
+// alerta duplicado na tela do operador, sem nenhum aviso.
+//
+// `codUserUnitrac` null/ausente (cliente sem cod_user_unitrac cadastrado) =>
+// paradas desligadas aqui: esse cliente não está na lista, logo a Central
+// Unitrac NÃO desligou nada pra ele e continua cobrindo normalmente. Fail-safe
+// contra duplicata, nunca contra recall.
+export function decidirEscopoDoVeiculo(ctx: {
+  qtdAlvosUnitracDoVeiculo: number;
+  codUserUnitrac: string | null;
+}): {
   avaliaDesvio: boolean;
   avaliaParadas: boolean;
 } {
   return {
-    avaliaDesvio: qtdAlvosUnitracDoVeiculo === 0,
-    avaliaParadas: true,
+    avaliaDesvio: ctx.qtdAlvosUnitracDoVeiculo === 0,
+    avaliaParadas:
+      ctx.codUserUnitrac !== null &&
+      CLIENTES_COM_MOTOR_ROMANEIO_PARALELO.has(ctx.codUserUnitrac),
   };
 }
 
@@ -487,17 +508,26 @@ async function resolverPelaMaquina(
   return null;
 }
 
-// Piso pra gritar no log que o ciclo está perto de estourar maxDuration=60s.
-// 45s = 75% do orçamento. Motivo de existir (achado da revisão da task B2):
-// desde a B2 o loop por veículo processa a frota INTEIRA (~30% -> 100%), é
-// sequencial com `await` por veículo (SELECT de posição anterior, Overpass e
-// velocidade pré-parada pros candidatos a parada), e se ele estourar os 60s a
-// Vercel mata a função no meio -- os veículos do FIM do loop ficam sem
-// avaliação NENHUMA, sem erro, sem linha em erros[], sem resposta. Falso
-// negativo silencioso, que é o pior erro possível neste domínio
-// ([[feedback_desvio_priorizar_recall]]). Um ciclo morto assim nem chega a
-// responder, então o número que importa é a TENDÊNCIA dos ciclos saudáveis:
-// este aviso é o que faz alguém olhar antes de o primeiro ciclo morrer.
+// Piso pra gritar no log que o ciclo está demorando demais: 45s, metade do
+// lease de 90s (LEASE_EXPIRACAO_SQL) e 1,5x a cadência do cron (30s).
+//
+// Motivo de existir (achado da revisão da task B2): desde a B2 o loop por
+// veículo processa a frota INTEIRA (~30% -> 100%), é sequencial com `await`
+// por veículo (SELECT de posição anterior, Overpass e velocidade pré-parada
+// pros candidatos a parada). O risco NÃO é a execução ser cortada no meio:
+// produção é PM2 self-hosted no Contabo (ver DEPLOY.md), não há timeout de
+// função serverless matando o ciclo -- `maxDuration = 60` acima é resíduo do
+// deploy antigo na Vercel e não tem efeito no runtime atual.
+//
+// O risco real é de CADÊNCIA: enquanto este ciclo roda ele segura o lease, e
+// todo tick de 30s que cair dentro dessa janela não pega o lease e é pulado
+// inteiro. Um ciclo de 45s já come um tick; um de 90s+ estoura o lease e abre
+// a porta pra dois ciclos concorrentes. O efeito é latência de detecção (um
+// desvio/parada real leva minutos em vez de segundos pra virar alerta) --
+// falso negativo temporário, o erro caro neste domínio
+// ([[feedback_desvio_priorizar_recall]]). O número que importa é a TENDÊNCIA
+// dos ciclos: este aviso é o que faz alguém olhar antes de a cadência
+// degradar de verdade.
 const LIMIAR_AVISO_DURACAO_MS = 45_000;
 
 export async function POST(request: Request) {
@@ -588,8 +618,9 @@ export async function POST(request: Request) {
     if (duracaoMs >= LIMIAR_AVISO_DURACAO_MS) {
       console.warn(
         `Aviso: ciclo do motor-romaneio levou ${duracaoMs}ms (>= ${LIMIAR_AVISO_DURACAO_MS}ms) ` +
-          `processando ${veiculosProcessados}/${veiculosComRomaneio} veiculos -- maxDuration e' 60000ms. ` +
-          `Se estourar, a funcao morre no meio do loop e os veiculos do fim ficam sem avaliacao nenhuma.`
+          `processando ${veiculosProcessados}/${veiculosComRomaneio} veiculos -- o lease e' de ${LEASE_EXPIRACAO_SQL} ` +
+          `e o cron bate a cada 30s. Ciclo longo segura o lease e faz o proximo tick ser pulado: ` +
+          `latencia de deteccao, nao corte de execucao (producao e' PM2, sem timeout de funcao).`
       );
     }
     return Response.json({
@@ -713,6 +744,33 @@ export async function POST(request: Request) {
     // veículos, que continuam sendo processados por /api/motor pros outros
     // detectores) -- esta rota não precisa (nem deve) escrever nela de novo.
     const clienteIdsUnicos = [...new Set([...veiculoInfoPorId.values()].map((v) => v.cliente_id))];
+
+    // cod_user_unitrac por cliente -- é a chave de
+    // CLIENTES_COM_MOTOR_ROMANEIO_PARALELO (@/lib/config-clientes), que decide
+    // se ESTA rota é a responsável pelos 3 detectores de parada deste cliente
+    // (ver decidirEscopoDoVeiculo). `veiculos` só guarda o cliente_id (uuid),
+    // daí o join manual.
+    //
+    // Falha aqui derruba o ciclo (mesmo tratamento da leitura de `veiculos`
+    // logo acima): sem esta lista não dá pra decidir escopo de parada sem
+    // errar pra um dos dois lados (calar detector real, ou duplicar alerta com
+    // a Central Unitrac). O cron roda a cada 30s -- um ciclo perdido custa
+    // meio minuto de latência, uma decisão errada em cima de dado ausente
+    // custa alerta perdido ou flood.
+    const codUserUnitracPorCliente = new Map<string, string | null>();
+    if (clienteIdsUnicos.length > 0) {
+      const { data: clientesData, error: erroClientes } = await admin
+        .from("clientes")
+        .select("id, cod_user_unitrac")
+        .in("id", clienteIdsUnicos);
+      if (erroClientes) {
+        return Response.json({ erro: `falha ao ler clientes: ${erroClientes.message}` }, { status: 500 });
+      }
+      for (const c of (clientesData ?? []) as { id: string; cod_user_unitrac: string | null }[]) {
+        codUserUnitracPorCliente.set(c.id, c.cod_user_unitrac ?? null);
+      }
+    }
+
     const freqCelulaPorCliente = new Map<string, Map<string, number>>();
     if (clienteIdsUnicos.length > 0) {
       try {
@@ -1121,8 +1179,18 @@ export async function POST(request: Request) {
         // Central Unitrac está com eles desligados pro cliente inteiro por
         // flag e não há o que duplicar. O `continue` antigo deixava ~70% da
         // frota sem detector de parada em nenhum dos dois pipelines.
+        //
+        // ATUALIZADO 27/08 (revisão final de branch, achado I5): `avaliaParadas`
+        // agora depende do cliente estar em CLIENTES_COM_MOTOR_ROMANEIO_PARALELO
+        // -- a mesma lista que desliga os 3 detectores na Central Unitrac. Hoje
+        // (só Nutry Max com romaneio) o efeito prático é zero; o gate existe pro
+        // dia em que um segundo cliente ganhar romaneio e os 3 detectores
+        // passarem a rodar nos DOIS pipelines pra ele.
         const pontosUnitracVeiculo = pontosUnitracPorPlaca.get(info.placa) ?? [];
-        const { avaliaDesvio } = decidirEscopoDoVeiculo(pontosUnitracVeiculo.length);
+        const { avaliaDesvio, avaliaParadas } = decidirEscopoDoVeiculo({
+          qtdAlvosUnitracDoVeiculo: pontosUnitracVeiculo.length,
+          codUserUnitrac: codUserUnitracPorCliente.get(info.cliente_id) ?? null,
+        });
 
         // Step 1: posição atual -- mesma fonte da Central (posicoes_atuais), SOMENTE LEITURA.
         const posAtual = posAtualPorVeiculo.get(veiculoId);
@@ -1382,7 +1450,12 @@ export async function POST(request: Request) {
         let podeFecharParadas = false;
         let podeFecharForaTapete = false;
 
-        if (fresco && posAtual.velocidade !== 0 && posAtual.velocidade != null) {
+        // `avaliaParadas` false (cliente que a Central Unitrac cobre, ver
+        // decidirEscopoDoVeiculo) => os dois blocos abaixo não rodam E as duas
+        // flags de podeFechar ficam false: esta rota não abre nem FECHA alerta
+        // de parada de um cliente que não é dela. Fechar seria pior que não
+        // abrir -- apagaria da tela um alerta que o outro pipeline abriu.
+        if (avaliaParadas && fresco && posAtual.velocidade !== 0 && posAtual.velocidade != null) {
           // Veículo em movimento com leitura fresca: nenhum dos 3 detectores
           // pode valer (todos exigem parada). É o caminho normal de fechamento
           // -- o carro voltou a andar, o alerta de parada morreu.
@@ -1390,7 +1463,7 @@ export async function POST(request: Request) {
           podeFecharForaTapete = true;
         }
 
-        if (fresco && posAtual.velocidade === 0 && paradoDesdeVeiculo) {
+        if (avaliaParadas && fresco && posAtual.velocidade === 0 && paradoDesdeVeiculo) {
           const inicioMs = new Date(paradoDesdeVeiculo).getTime();
           if (Number.isFinite(inicioMs)) {
             paradoMinVeiculo = Math.round((agora.getTime() - inicioMs) / 60000);
