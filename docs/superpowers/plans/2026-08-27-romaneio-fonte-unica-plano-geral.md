@@ -175,6 +175,29 @@ Com o inventário completo (mapa a 60min, filtro COMM 10/30/60min, painel de det
 - Completar itens 2-5 de `docs/superpowers/specs/2026-08-26-blindagem-geocodificacao-romaneio-design.md` (auditar truncamento de cidade, investigar tier OSM local, logar geocodificação sem cidade, parar reprocessamento infinito de `pendente`).
 - **Novo, da pesquisa de tecnologia**: adicionar camada de CEP como fonte primária quando o romaneio trouxer CEP (nem sempre traz, confirmar com o cliente — ele já perguntou sobre isso). Pipeline sugerido: `libpostal` normaliza o texto livre → se tiver CEP válido, resolve via base local (dataset tipo OpenCEP/`banco-ceps`, sem depender de API terceira) → só cai pro geocoder (Google/Nominatim/OSM local) atual quando não há CEP ou ele falha. Isso é aditivo ao pipeline existente, não substitui.
 
+**STATUS (27/08, itens 2/4/5 + achado extra): COMPLETA e deployada.** Ver
+`.superpowers/sdd/2026-08-27-romaneio-fonte-unica-plano-geral/task-fase3-report.md` pro relatório
+completo. Resumo:
+- Item 2: premissa do brief estava errada (truncamento já funcionava), mas achou 9 formas reais de
+  corrupção/truncamento não cobertas (286 linhas/30d) + achado extra fora do escopo (cidade é o
+  TERCEIRO segmento do endereço, não o último — erro real de ~137km corrigido).
+- Item 3 (condicional, achou): cache de âncora de cidade (`romaneio_geocode_cache`, chaves
+  `CIDADE:*`) tinha 53/178 entradas fora do bounding box do RJ (ex: Natividade/TO em vez de
+  Natividade/RJ, ~1500km) — a régua de validação de distância estava envenenada em produção. Fix
+  qualifica cidade reconhecida do RJ com ", RJ, Brasil" na busca E na chave de cache.
+- Item 4: log de aviso quando geocodificação local/CNEFE resolve sem ponto de cidade (sem
+  bloquear nada).
+- Item 5: reprocessamento infinito não estava onde o plano supunha (não é `pendente`, é o fallback
+  Unitrac sobre linhas `falhou`, sem `ORDER BY`, retentando pra sempre). Limite de 10 tentativas
+  espaçadas 30min, migration `061` aplicada em produção.
+- **Ação de dado em produção (fora do código, decisão do controller 27/08):** as 53 entradas de
+  cache envenenadas foram apagadas (auto-reconstroem); migration `061` aplicada.
+- **Pendências ainda abertas:** coordenadas já gravadas erradas em `romaneio_pontos` (Búzios
+  ~160km, Rio das Ostras ~137km) não foram corrigidas — precisa de reprocessamento dirigido;
+  `romaneio_cliente_codigo_geocode` (write-once) auditada só contra erro interestadual (0/8056),
+  não contra erro intra-RJ; caso RBJ-2J67 original sem causa raiz 100% fechada.
+- Camada de CEP (item novo desta fase, não do plano de blindagem original) **não foi iniciada**.
+
 ---
 
 ## Fase 4 — Central Romaneio com paridade total de detectores (a mudança estrutural grande)
