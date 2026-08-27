@@ -13,6 +13,7 @@ import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
 import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
 import SplitDivider from "./SplitDivider";
+import { TIPOS_ABA_DESVIOS, TIPOS_REVISAO_INDIVIDUAL } from "./tipos-alerta";
 import { motion, AnimatePresence } from "framer-motion";
 
 const MapaLeafletV2 = dynamic(() => import("./MapaLeafletV2"), { ssr: false });
@@ -96,14 +97,10 @@ function prioAlerta(a: { nivel: string; tipo: string }): number {
 // revisão, numa seção separada colapsada por padrão.
 const TIPOS_OUTROS_AVISOS = new Set(["favela", "baseline_veiculo"]);
 
-// Achado real 20/08 (varredura de origem_acao): 29 dos 35 "corretos" de
-// desvio marcados num dia real vieram de clique em "Resolver todos" (lote),
-// só 6 de revisão individual de verdade -- sinal fraco pra calibração num
-// tipo que é o motivo do produto existir. desvio/parada_fora_tapete saem do
-// fluxo de resolução em massa: exigem clique individual (Correto/Falso) no
-// card. "Limpar avisos" continua valendo pra eles -- não afirma revisão
-// caso a caso, não alimenta calibração, não é o problema que isto resolve.
-const TIPOS_REVISAO_INDIVIDUAL = new Set(["desvio", "parada_fora_tapete"]);
+// TIPOS_REVISAO_INDIVIDUAL vive em ./tipos-alerta (importado no topo) desde a
+// revisão final de branch de 27/08 -- ver lá os dois motivos (qualidade de
+// calibração + cooldown de re-disparo) e por que parada_anomala/parada_longa
+// entraram na lista.
 
 function separarOutrosAvisos<T extends { tipo: string }>(lista: T[]): { principais: T[]; outros: T[] } {
   const principais: T[] = [];
@@ -138,12 +135,9 @@ const TIPOS_NOTIFICAM_POR_CLIENTE: Record<string, string[]> = {
 // chamada "foco") só aparecia se o cliente estivesse mapeado em
 // LABEL_FOCO_POR_CLIENTE/TIPOS_NOTIFICAM_POR_CLIENTE -- falha silenciosa:
 // cliente novo sem entrada nesses Records nunca ganhava a aba, sem aviso
-// nenhum. Pedido explícito do cliente no grupo (26/08): desvio + parada
-// anômala têm que estar juntos numa aba que sempre existe.
-// Tipos fixos, não mais o array por cliente (TIPOS_NOTIFICAM_POR_CLIENTE
-// misturava parada_fora_tapete/parada_sem_marcacao pra Nutry, que aqui NÃO
-// entram mais -- continuam visíveis só em "TUDO").
-const TIPOS_ABA_DESVIOS = ["desvio", "parada_anomala"];
+// nenhum. TIPOS_ABA_DESVIOS vive em ./tipos-alerta (importado no topo) desde a
+// revisão final de branch de 27/08, pra que MonitorV2.test.ts leia a MESMA
+// lista em vez de uma cópia.
 const LABEL_ABA_DESVIOS = "DESVIOS";
 
 function tempoAtras(desde: string): string {
@@ -1195,8 +1189,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     ? { principais: alertasOrdenadosCompleto, outros: [] as typeof alertasOrdenadosCompleto }
     : separarOutrosAvisos(alertasOrdenadosCompleto);
 
-  // "Resolver todos" nunca inclui desvio/parada_fora_tapete (ver
-  // TIPOS_REVISAO_INDIVIDUAL) -- exige clique individual por card pra esses.
+  // "Resolver todos" nunca inclui desvio nem os 3 tipos de parada (ver
+  // TIPOS_REVISAO_INDIVIDUAL em ./tipos-alerta) -- exige clique individual por
+  // card pra esses, que é a única origem_acao que arma o cooldown de
+  // re-disparo nos motores.
   const alertasResolviveisEmMassa = alertasOrdenados.filter(a => !TIPOS_REVISAO_INDIVIDUAL.has(a.tipo));
 
   // Split view: sidebar mostra 2 secoes independentes (TODOS + SELECIONADOS)
@@ -2489,7 +2485,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               Achado real 20/08 (varredura de origem_acao, dia 19/08): 29 de
               35 "corretos" de desvio vieram de "Resolver todos" em lote, só
               6 de revisão individual -- "Resolver todos" agora usa
-              alertasResolviveisEmMassa (exclui desvio/parada_fora_tapete,
+              alertasResolviveisEmMassa (exclui desvio + os 3 tipos de parada,
               ver TIPOS_REVISAO_INDIVIDUAL), forçando clique individual por
               card pra esse tipo. "Limpar avisos" continua sobre
               alertasOrdenados inteiro -- nunca afirmou revisão caso a caso,
