@@ -112,6 +112,33 @@ export function acharSaidaEChegadaBase(
  *  trecho raro do que inflar todo santo dia com teleporte de GPS. */
 const VELOCIDADE_MAX_PLAUSIVEL_KMH = 150
 
+/** Achado real 27/08 (usuario, grupo KPI AJUSTES): calcularKmContinuo
+ *  estava recebendo TODAS as posicoes do dia (00h-24h), nao so' as da
+ *  rota -- somava tambem manobra/deriva de GPS de ANTES de sair da base
+ *  (parado no patio de madrugada) e, principalmente, de DEPOIS de ja ter
+ *  voltado (descarga, manobra, motor ligado no patio por horas ate o fim
+ *  do dia). O usuario apontou a correcao certa: o km da rota e' so' entre
+ *  a saida e a chegada na base, que este arquivo ja calcula em
+ *  acharSaidaEChegadaBase. Sem saidaBase (nunca saiu no dia -- ex: folga,
+ *  veiculo parado), devolve o dia inteiro sem filtro: nao ha janela de
+ *  rota pra recortar, e o dado bruto de um veiculo parado ja fica proximo
+ *  de zero km por si so (ver teste "veiculo parado o dia inteiro").
+ *  Chegada nula (rota em andamento, ainda nao voltou) recorta so' o
+ *  inicio -- soma ate a ultima leitura disponivel. */
+export function filtrarJanelaRota(
+  posicoes: Posicao[],
+  saidaBase: string | null,
+  chegadaBase: string | null,
+): Posicao[] {
+  if (!saidaBase) return posicoes
+  const inicio = new Date(saidaBase).getTime()
+  const fim = chegadaBase ? new Date(chegadaBase).getTime() : Infinity
+  return posicoes.filter((p) => {
+    const t = new Date(p.criado_em).getTime()
+    return t >= inicio && t <= fim
+  })
+}
+
 export function calcularKmContinuo(posicoes: Posicao[]): number | null {
   if (posicoes.length < 2) return null
   let metros = 0
@@ -317,7 +344,7 @@ export async function POST(request: Request) {
     }
     const posicoes = (posicoesRows ?? []) as Posicao[];
     const { saidaBase, chegadaBase } = acharSaidaEChegadaBase(posicoes, basesCentro);
-    const kmPercorrido = calcularKmContinuo(posicoes);
+    const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const pontos = pontosPorPlaca.get(placaNorm);
     const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos) : undefined;
     resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido, ...(visitas ? { visitas } : {}) });

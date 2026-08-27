@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { acharSaidaEChegadaBase, calcularKmContinuo, acharVisitasPorPonto } from "./route";
+import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto } from "./route";
 
 const BASE = { lat: -22.816007, lng: -43.277827 };
 // ~50km da base -- claramente fora do raio de 500m.
@@ -143,6 +143,57 @@ describe("calcularKmContinuo", () => {
       expect(km!).toBeGreaterThan(10);
       expect(km!).toBeLessThan(12.5);
     });
+  });
+});
+
+describe("filtrarJanelaRota (achado real 27/08, usuario: km deve ser so' saida->chegada, nao o dia inteiro)", () => {
+  it("recorta posicoes de antes da saida e de depois da chegada -- so' sobra a janela da rota", () => {
+    const posicoes = [
+      { lat: -22.816, lng: -43.2778, criado_em: "2026-08-25T06:00:00.000Z" }, // antes de sair (patio)
+      { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T09:00:00.000Z" }, // dentro da rota
+      { lat: -22.1, lng: -43.0, criado_em: "2026-08-25T12:00:00.000Z" }, // dentro da rota
+      { lat: -22.816, lng: -43.2778, criado_em: "2026-08-25T20:00:00.000Z" }, // depois de voltar (patio)
+    ];
+    const r = filtrarJanelaRota(posicoes, "2026-08-25T09:00:00.000Z", "2026-08-25T12:00:00.000Z");
+    expect(r).toEqual([posicoes[1], posicoes[2]]);
+  });
+
+  it("chegada nula (rota em andamento): recorta so' o inicio, mantem ate a ultima leitura", () => {
+    const posicoes = [
+      { lat: -22.816, lng: -43.2778, criado_em: "2026-08-25T06:00:00.000Z" },
+      { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T09:00:00.000Z" },
+      { lat: -22.1, lng: -43.0, criado_em: "2026-08-25T12:00:00.000Z" },
+    ];
+    const r = filtrarJanelaRota(posicoes, "2026-08-25T09:00:00.000Z", null);
+    expect(r).toEqual([posicoes[1], posicoes[2]]);
+  });
+
+  it("sem saida (nunca saiu da base no dia): devolve tudo sem filtrar -- nao ha janela de rota", () => {
+    const posicoes = [
+      { lat: -22.816, lng: -43.2778, criado_em: "2026-08-25T06:00:00.000Z" },
+      { lat: -22.816, lng: -43.2778, criado_em: "2026-08-25T12:00:00.000Z" },
+    ];
+    expect(filtrarJanelaRota(posicoes, null, null)).toEqual(posicoes);
+  });
+
+  it("caso real: km cai quando recorta patio pos-chegada com deriva de GPS (achado 27/08)", () => {
+    const posicoes = [
+      { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T09:00:00.000Z" }, // saida
+      { lat: -22.1, lng: -43.0, criado_em: "2026-08-25T09:08:00.000Z" }, // rota real, ~11.1km
+      { lat: -22.1, lng: -43.0, criado_em: "2026-08-25T12:00:00.000Z" }, // chegada de volta
+      // apos a chegada: 6h de deriva/manobra no patio, "andando" 50m a cada leitura
+      ...Array.from({ length: 20 }, (_, i) => ({
+        lat: -22.1 + i * 0.0005,
+        lng: -43.0,
+        criado_em: `2026-08-25T${String(13 + Math.floor(i / 4)).padStart(2, "0")}:${String((i % 4) * 15).padStart(2, "0")}:00.000Z`,
+      })),
+    ];
+    const janela = filtrarJanelaRota(posicoes, "2026-08-25T09:00:00.000Z", "2026-08-25T12:00:00.000Z");
+    const kmComJanela = calcularKmContinuo(janela)!;
+    const kmSemJanela = calcularKmContinuo(posicoes)!;
+    expect(kmComJanela).toBeGreaterThan(10);
+    expect(kmComJanela).toBeLessThan(12);
+    expect(kmSemJanela).toBeGreaterThan(kmComJanela);
   });
 });
 
