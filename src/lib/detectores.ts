@@ -1162,6 +1162,14 @@ export function deveSuprimirRedisparoParada(ctx: {
 // propósito -- prioriza recall (ver [[feedback_desvio_priorizar_recall]]):
 // um desvio genuinamente ainda em andamento deve voltar a aparecer logo,
 // não ficar escondido por horas só porque foi visto uma vez.
+//
+// Reusada TAL QUAL pelo jammer desde 27/08 (achado real: 49 re-disparos de
+// jammer apos resolver_individual em 26-27/08, 43 deles em menos de 15min --
+// detectarJammer nao passava por nenhum mecanismo de supressao). A funcao e'
+// generica apesar do nome: so compara agoraMs contra o ultimo tratamento
+// humano, nao olha tipo nenhum. Jammer entra aqui (e nao no cooldown por
+// episodio da parada) porque tambem e' condicao CONTINUA, sem parado_desde
+// equivalente. Ver o wiring em src/app/api/motor/route.ts (bloco do cooldown).
 export const JANELA_COOLDOWN_DESVIO_MS = 15 * 60 * 1000;
 
 export function deveSuprimirRedisparoDesvio(ctx: {

@@ -37,6 +37,8 @@ import {
   elegivelParaAcaoMassa,
   IDADE_MINIMA_ACAO_MASSA_MIN,
   deveSuprimirRedisparoParada,
+  deveSuprimirRedisparoDesvio,
+  JANELA_COOLDOWN_DESVIO_MS,
   type Alerta,
 } from "./detectores";
 import type { PosicaoNormalizada } from "./unitrac";
@@ -1162,6 +1164,125 @@ describe("deveSuprimirRedisparoParada (achado real 21/08: TUG-9D18 gerou 17 aler
     expect(deveSuprimirRedisparoParada({
       paradoDesde: "nao-e-data",
       alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-21T12:15:00.000Z" }],
+    })).toBe(false);
+  });
+});
+
+// Cooldown temporal de 15min: usado pelo DESVIO (achado real 25/08) e, desde
+// 27/08, tambem pelo JAMMER (achado real: detectarJammer nao passava por
+// nenhuma supressao de re-disparo -- 49 re-disparos apos resolver_individual
+// em 26-27/08, 43 em menos de 15min; RQU-4B93 com 25 alertas em 64min).
+// A funcao e' generica: so compara agoraMs contra o ultimo tratamento humano.
+describe("deveSuprimirRedisparoDesvio (cooldown temporal de 15min, compartilhado desvio+jammer)", () => {
+  const AGORA = new Date("2026-08-27T12:00:00.000Z").getTime();
+
+  it("nunca tratado (ultimoTratamento null): NAO suprime", () => {
+    expect(deveSuprimirRedisparoDesvio({
+      agoraMs: AGORA,
+      ultimoTratamento: null,
+    })).toBe(false);
+  });
+
+  it("tratado ha 5min (dentro da janela): SUPRIME", () => {
+    expect(deveSuprimirRedisparoDesvio({
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: new Date(AGORA - 5 * 60 * 1000).toISOString() },
+    })).toBe(true);
+  });
+
+  it("tratado ha 20min (fora da janela): NAO suprime -- desvio/jammer real volta a aparecer", () => {
+    expect(deveSuprimirRedisparoDesvio({
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: new Date(AGORA - 20 * 60 * 1000).toISOString() },
+    })).toBe(false);
+  });
+
+  it("tratado exatamente no limite da janela (15min): NAO suprime (< e nao <=)", () => {
+    expect(deveSuprimirRedisparoDesvio({
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: new Date(AGORA - JANELA_COOLDOWN_DESVIO_MS).toISOString() },
+    })).toBe(false);
+  });
+
+  it("data invalida no tratamento: NAO quebra, NAO suprime (erra pro lado de alertar)", () => {
+    expect(deveSuprimirRedisparoDesvio({
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: "nao-e-data" },
+    })).toBe(false);
+  });
+});
+
+// Achado A (27/08): JAMMER resolvido individualmente ha menos de 15min nao
+// pode ser reinserido no ciclo seguinte (30s depois). Este teste reproduz o
+// wiring do motor (route.ts, bloco do cooldown) com a mesma decisao que o
+// motor toma pra alerta.tipo === "jammer": consulta o ultimo tratamento
+// humano individual dos ultimos 30min e passa pro cooldown temporal.
+describe("cooldown de re-disparo do JAMMER (achado real 27/08: RQU-4B93 com 25 alertas em 64min)", () => {
+  // Espelha exatamente o calculo do motor:
+  //   suprimidoPorCooldownJammer = alerta.tipo === "jammer" && deveSuprimirRedisparoDesvio(...)
+  function suprimidoPorCooldownJammer(args: {
+    tipoAlerta: string;
+    agoraMs: number;
+    ultimoTratamento: { resolvidoEm: string } | null;
+  }): boolean {
+    return (
+      args.tipoAlerta === "jammer" &&
+      deveSuprimirRedisparoDesvio({
+        agoraMs: args.agoraMs,
+        ultimoTratamento: args.ultimoTratamento,
+      })
+    );
+  }
+
+  const AGORA = new Date("2026-08-27T12:00:00.000Z").getTime();
+  // Proximo ciclo do motor: 30s depois do tratamento do operador.
+  const RESOLVIDO_30S_ATRAS = new Date(AGORA - 30 * 1000).toISOString();
+
+  it("jammer resolvido individualmente ha 30s: proximo ciclo NAO reinsere o alerta", () => {
+    expect(suprimidoPorCooldownJammer({
+      tipoAlerta: "jammer",
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: RESOLVIDO_30S_ATRAS },
+    })).toBe(true);
+  });
+
+  it("jammer tratado ha 14min59s: ainda suprime (a janela inteira e' coberta)", () => {
+    expect(suprimidoPorCooldownJammer({
+      tipoAlerta: "jammer",
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: new Date(AGORA - (15 * 60 * 1000 - 1000)).toISOString() },
+    })).toBe(true);
+  });
+
+  it("jammer tratado ha 16min: VOLTA a alertar -- recall > precisao, jammer real nao pode sumir", () => {
+    expect(suprimidoPorCooldownJammer({
+      tipoAlerta: "jammer",
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: new Date(AGORA - 16 * 60 * 1000).toISOString() },
+    })).toBe(false);
+  });
+
+  it("jammer nunca tratado por operador: NAO suprime (comportamento de antes preservado)", () => {
+    expect(suprimidoPorCooldownJammer({
+      tipoAlerta: "jammer",
+      agoraMs: AGORA,
+      ultimoTratamento: null,
+    })).toBe(false);
+  });
+
+  it("outro tipo (panico) com tratamento recente: cooldown de jammer NAO se aplica", () => {
+    expect(suprimidoPorCooldownJammer({
+      tipoAlerta: "panico",
+      agoraMs: AGORA,
+      ultimoTratamento: { resolvidoEm: RESOLVIDO_30S_ATRAS },
+    })).toBe(false);
+  });
+
+  it("falha na query fresca (ultimoTratamento null por erro): NAO suprime -- fallback erra pro lado de alertar", () => {
+    expect(suprimidoPorCooldownJammer({
+      tipoAlerta: "jammer",
+      agoraMs: AGORA,
+      ultimoTratamento: null,
     })).toBe(false);
   });
 });

@@ -3236,34 +3236,63 @@ export async function POST(request: Request) {
               // exata da decisao -- custo extra e' 1 query pontual, so'
               // quando ha um desvio NOVO pra considerar (nao todo veiculo,
               // todo ciclo).
-              let ultimoTratamentoDesvio: { resolvidoEm: string } | null = null;
-              if (alerta.tipo === "desvio" && !jaExiste) {
+              //
+              // Achado real 27/08 (investigacao com dado real de 26-27/08):
+              // detectarJammer NAO passava por NENHUM mecanismo de supressao
+              // de re-disparo -- resolver um jammer individualmente nao
+              // impedia nada, o proximo ciclo (30s) reinseria. Medido: 49
+              // re-disparos apos resolver_individual em 26-27/08 (43 deles em
+              // menos de 15min); RQU-4B93 com 25 alertas de jammer em 64min.
+              // Jammer, igual desvio, e uma condicao CONTINUA (atraso de GPS
+              // com ignicao ligada), sem "inicio de episodio" discreto tipo o
+              // parado_desde da parada -- por isso reusa o cooldown por TEMPO
+              // do desvio (deveSuprimirRedisparoDesvio, generica: so compara
+              // agoraMs contra o ultimo tratamento humano, nao olha tipo),
+              // nao o cooldown por episodio da parada.
+              //
+              // Query fresca por veiculo pros DOIS tipos (mesma query
+              // parametrizada por tipo, em vez de duas copias): jammer nao
+              // tem -- nem precisa de -- um snapshot batch tipo
+              // mapaDesviosTratados, que so existe pro desvio porque e
+              // reusado noutro lugar (mapaTiposSilenciados). Aqui, so a
+              // consulta fresca na hora exata da decisao.
+              const ehTipoComCooldownTemporal =
+                alerta.tipo === "desvio" || alerta.tipo === "jammer";
+              let ultimoTratamentoTemporal: { resolvidoEm: string } | null = null;
+              if (ehTipoComCooldownTemporal && !jaExiste) {
                 const trintaMinAtrasFresco = new Date(agora.getTime() - 30 * 60 * 1000).toISOString();
                 try {
                   const { rows: tratamentoFresco } = await pool.query<{ resolvido_em: string }>(
                     `SELECT resolvido_em FROM alertas
                       WHERE veiculo_id = $1 AND cliente_id = $2 AND modo_teste = false
-                        AND tipo = 'desvio'
+                        AND tipo = $4
                         AND origem_acao IN ('resolver_individual','falso_individual')
                         AND operador_id IS NOT NULL
                         AND resolvido_em >= $3
                       ORDER BY resolvido_em DESC LIMIT 1`,
-                    [veiculo_id, cliente_id, trintaMinAtrasFresco]
+                    [veiculo_id, cliente_id, trintaMinAtrasFresco, alerta.tipo]
                   );
                   if (tratamentoFresco[0]) {
-                    ultimoTratamentoDesvio = { resolvidoEm: tratamentoFresco[0].resolvido_em };
+                    ultimoTratamentoTemporal = { resolvidoEm: tratamentoFresco[0].resolvido_em };
                   }
                 } catch (errCooldownFresco) {
-                  erros.push(`Aviso: falha ao consultar cooldown fresco de desvio pro veiculo ${veiculo_id}: ${String(errCooldownFresco)}`);
+                  erros.push(`Aviso: falha ao consultar cooldown fresco de ${alerta.tipo} pro veiculo ${veiculo_id}: ${String(errCooldownFresco)}`);
                 }
               }
               const suprimidoPorCooldownDesvio =
                 alerta.tipo === "desvio" &&
                 deveSuprimirRedisparoDesvio({
                   agoraMs: agora.getTime(),
-                  ultimoTratamento: ultimoTratamentoDesvio,
+                  ultimoTratamento: ultimoTratamentoTemporal,
                 });
-              const suprimidoPorCooldown = suprimidoPorCooldownParada || suprimidoPorCooldownDesvio;
+              const suprimidoPorCooldownJammer =
+                alerta.tipo === "jammer" &&
+                deveSuprimirRedisparoDesvio({
+                  agoraMs: agora.getTime(),
+                  ultimoTratamento: ultimoTratamentoTemporal,
+                });
+              const suprimidoPorCooldown =
+                suprimidoPorCooldownParada || suprimidoPorCooldownDesvio || suprimidoPorCooldownJammer;
 
               if (!jaExiste) {
                 if (!suprimidoPorCooldown) {
