@@ -503,7 +503,7 @@ export async function POST(request: Request) {
     // saber se esta leitura já foi avaliada num ciclo anterior.
     const { data: posAtuaisRows, error: erroPosAtuais } = await admin
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, atraso_min, datagps, updated_at")
+      .select("veiculo_id, lat, lng, velocidade, atraso_min, datagps, updated_at, parado_desde")
       .in("veiculo_id", veiculoIds);
     if (erroPosAtuais) {
       erros.push(`Erro ao ler posicoes_atuais: ${erroPosAtuais.message}`);
@@ -511,6 +511,13 @@ export async function POST(request: Request) {
     type PosAtual = {
       veiculo_id: string; lat: number | null; lng: number | null;
       velocidade: number | null; atraso_min: number | null; datagps: string | null;
+      // Início do episódio de parada, calculado e gravado pela Central a cada
+      // ciclo (motor/route.ts:1559-1575) -- SOMENTE LEITURA aqui. É a única
+      // fonte de "há quanto tempo este veículo está parado" que existe hoje;
+      // esta rota não mantém acumulador próprio. Null (veículo em movimento,
+      // ou Central ainda não escreveu) => paradoMin fica 0 e nenhum detector
+      // de parada dispara -- nunca inventa tempo parado.
+      parado_desde: string | null;
       // Quando a Central gravou ESTA leitura (relógio do Postgres). Usado só
       // pra achar a posição ANTERIOR sem ambiguidade -- ver a query de
       // `anterior` no loop.
@@ -598,6 +605,234 @@ export async function POST(request: Request) {
       } catch (errBases) {
         erros.push(`Aviso: falha ao ler bases: ${String(errBases)}`);
       }
+    }
+
+    // ─── Insumos dos 3 detectores de parada (task B1) ────────────────────
+    // Tudo abaixo é LEITURA de tabela própria do cliente/da Central -- nada
+    // aqui é marcação/alvo da Unitrac (o único dado da Unitrac que a Central
+    // Romaneio usa continua sendo o rastro em posicoes_atuais).
+
+    // foraDaBase de VERDADE (point-in-polygon contra o perímetro real da
+    // base), não distância ao centróide -- mesma pergunta que a Central faz
+    // com pontoEmGeo (route.ts:1581). Batch único pra todo o ciclo. Falha de
+    // leitura => ninguém fica marcado como "dentro", ou seja, foraDaBase=true
+    // pra todos: MESMO fail-open da Central ("sem bases = foraDaBase=true
+    // para todos", route.ts:660) e o lado certo do erro pro nosso domínio
+    // (alerta a mais, nunca desvio real perdido).
+    const veiculosDentroDeBase = new Set<string>();
+    {
+      const idsComPos: string[] = [];
+      const latsPos: number[] = [];
+      const lngsPos: number[] = [];
+      for (const p of posAtualPorVeiculo.values()) {
+        if (p.lat != null && p.lng != null) {
+          idsComPos.push(p.veiculo_id);
+          latsPos.push(p.lat);
+          lngsPos.push(p.lng);
+        }
+      }
+      if (idsComPos.length > 0) {
+        try {
+          const { rows } = await pool.query<{ veiculo_id: string }>(
+            `SELECT DISTINCT p.veiculo_id
+               FROM unnest($1::uuid[], $2::float8[], $3::float8[]) AS p(veiculo_id, lat, lng)
+               JOIN veiculos v ON v.id = p.veiculo_id
+               JOIN bases b ON b.cliente_id = v.cliente_id
+              WHERE ST_Contains(b.geom::geometry, ST_SetSRID(ST_MakePoint(p.lng, p.lat), 4326))`,
+            [idsComPos, latsPos, lngsPos]
+          );
+          for (const r of rows) veiculosDentroDeBase.add(r.veiculo_id);
+        } catch (errBase) {
+          erros.push(`Aviso: falha ao checar veiculo dentro de base (segue como fora da base): ${String(errBase)}`);
+        }
+      }
+    }
+
+    // Tapete do cliente (corredor_celulas, tabela da Central, SOMENTE
+    // LEITURA) -- alimenta dentroTapete de detectarParadaForaTapete. Mesma
+    // mecânica da Central: contagem total por cliente pro piso
+    // TAPETE_MIN_CELULAS + só as células candidatas (a mesma vizinhança 3x3
+    // já montada acima pra vias_celulas), nunca o tapete inteiro.
+    const contagemTapetePorCliente = new Map<string, number>();
+    const celulasTapetePorCliente = new Map<string, Set<string>>();
+    if (clienteIdsUnicos.length > 0) {
+      try {
+        const { rows } = await pool.query<{ cliente_id: string; n: string }>(
+          `SELECT cliente_id, count(*)::bigint AS n FROM corredor_celulas
+            WHERE cliente_id = ANY($1::uuid[]) GROUP BY cliente_id`,
+          [clienteIdsUnicos]
+        );
+        for (const r of rows) contagemTapetePorCliente.set(r.cliente_id, Number(r.n));
+
+        const candidatasTapete = new Set<string>();
+        for (const p of posAtualPorVeiculo.values()) {
+          if (p.lat != null && p.lng != null) {
+            for (const c of vizinhanca3x3(p.lat, p.lng)) candidatasTapete.add(c);
+          }
+        }
+        if (candidatasTapete.size > 0) {
+          const { rows: rowsCel } = await pool.query<{ cliente_id: string; celula: string }>(
+            `SELECT cliente_id, celula FROM corredor_celulas
+              WHERE cliente_id = ANY($1::uuid[]) AND celula = ANY($2::text[])`,
+            [clienteIdsUnicos, [...candidatasTapete]]
+          );
+          for (const r of rowsCel) {
+            const set = celulasTapetePorCliente.get(r.cliente_id) ?? new Set<string>();
+            set.add(r.celula);
+            celulasTapetePorCliente.set(r.cliente_id, set);
+          }
+        }
+      } catch (errTapete) {
+        // Sem tapete => dentroTapete fica null => parada_fora_tapete não
+        // dispara (mesma cautela de cold-start da Central). Os outros 2
+        // detectores seguem normalmente.
+        erros.push(`Aviso: falha ao ler corredor_celulas (parada_fora_tapete fica inativa neste ciclo): ${String(errTapete)}`);
+      }
+    }
+
+    // Cooldown de re-disparo por episódio de parada (achado real 21/08 na
+    // Central, caso TUG-9D18: 17 alertas em 2h pro MESMO episódio). Sem isto,
+    // um caminhão legitimamente parado por horas reabre parada_longa/
+    // parada_anomala a cada ciclo de 30s assim que o operador resolve -- o
+    // silenciamento de 2h que esta rota já tem só conta 'falso_positivo',
+    // nunca 'resolvido'. Só tratamento INDIVIDUAL arma o cooldown (ação em
+    // massa não olhou o caso), mesmo critério de route.ts:1437-1447.
+    const paradasTratadasPorVeiculoTipo = new Map<string, { resolvidoEm: string }[]>();
+    {
+      const desdeLookback = new Date(agora.getTime() - LOOKBACK_PARADAS_TRATADAS_MS).toISOString();
+      const { data: paradasTratadas, error: erroTratadas } = await admin
+        .from("alertas_romaneio")
+        .select("tipo, veiculo_id, resolvido_em")
+        .in("veiculo_id", veiculoIds)
+        .in("tipo", [...TIPOS_PARADA_COM_COOLDOWN])
+        .in("origem_acao", ORIGENS_TRATAMENTO_INDIVIDUAL)
+        .not("operador_id", "is", null)
+        .gte("resolvido_em", desdeLookback);
+      if (erroTratadas) {
+        erros.push(`Aviso: falha ao ler paradas ja tratadas (cooldown inativo neste ciclo): ${erroTratadas.message}`);
+      }
+      for (const pt of (paradasTratadas ?? []) as { tipo: string; veiculo_id: string; resolvido_em: string }[]) {
+        const chave = `${pt.veiculo_id}:${pt.tipo}`;
+        const lista = paradasTratadasPorVeiculoTipo.get(chave) ?? [];
+        lista.push({ resolvidoEm: pt.resolvido_em });
+        paradasTratadasPorVeiculoTipo.set(chave, lista);
+      }
+    }
+
+    // Posições PARADAS da frota destes clientes (congestionamento) e score de
+    // risco de área -- os dois só interessam quando existe candidato a parada
+    // neste ciclo, então são carregados sob demanda (memoizados), não em todo
+    // ciclo. Num ciclo sem ninguém parado fora do cliente, custo zero.
+    let paradosFrotaCache: { lat: number; lng: number }[] | null = null;
+    async function paradosDaFrota(): Promise<{ lat: number; lng: number }[]> {
+      if (paradosFrotaCache) return paradosFrotaCache;
+      try {
+        const { rows } = await pool.query<{ lat: number; lng: number }>(
+          `SELECT p.lat, p.lng FROM posicoes_atuais p
+             JOIN veiculos v ON v.id = p.veiculo_id
+            WHERE v.cliente_id = ANY($1::uuid[]) AND p.velocidade = 0
+              AND p.atraso_min <= $2 AND p.lat IS NOT NULL AND p.lng IS NOT NULL`,
+          [clienteIdsUnicos, LIMIAR_ATRASO_FRESCO_MIN]
+        );
+        paradosFrotaCache = rows;
+      } catch (errParados) {
+        // Sem a lista, vizinhosParados fica 0 => nenhuma supressão por
+        // congestionamento => mais alerta, nunca menos.
+        erros.push(`Aviso: falha ao ler paradas da frota (congestionamento nao suprime neste ciclo): ${String(errParados)}`);
+        paradosFrotaCache = [];
+      }
+      return paradosFrotaCache;
+    }
+
+    // Score de risco de área por veículo -- MESMA query batch e MESMA função
+    // pura (calcularRiscoArea) da Central (route.ts:966-1032). Só decide o
+    // NÍVEL de parada_fora_tapete (crítico vs atenção), nunca se o alerta
+    // sai. Falha graciosa em qualquer camada => risco 0 => nível 'atencao'.
+    let riscoCache: Map<string, number> | null = null;
+    async function riscoAreaPorVeiculo(): Promise<Map<string, number>> {
+      if (riscoCache) return riscoCache;
+      const mapa = new Map<string, number>();
+      try {
+        let tiroteios: Tiroteio[] = [];
+        try {
+          tiroteios = (await buscarTiroteiosRJ(1)).filter((t) => t.recente && !t.acaoPolicial);
+        } catch { /* sem tiroteio: camada não soma */ }
+        const rouboPorCisp = new Map<string, number>();
+        try {
+          const dados = await obterRouboCarga();
+          for (const item of dados?.ranking ?? []) rouboPorCisp.set(item.cisp, item.total);
+        } catch { /* sem ISP: camada fica null */ }
+        let perfilHorario: number[] = new Array(24).fill(1);
+        try {
+          perfilHorario = await obterPerfilHorario();
+        } catch { /* neutro */ }
+        const horaSP = parseInt(
+          new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false }).format(agora),
+          10
+        );
+
+        const { rows } = await pool.query<{
+          veiculo_id: string; em_favela: boolean; cisp: string | null;
+          em_corredor_risco: boolean; em_area_risco_cliente: boolean;
+        }>(
+          `WITH cisp AS (
+             SELECT p.veiculo_id, g.meta->>'cisp' as cisp
+             FROM posicoes_atuais p
+             JOIN geofences g ON g.tipo = 'cisp' AND ST_Intersects(g.geom, p.geom)
+             WHERE p.veiculo_id = ANY($1::uuid[])
+           ),
+           corredor AS (
+             SELECT DISTINCT p.veiculo_id
+             FROM posicoes_atuais p
+             JOIN geofences g ON g.tipo = 'risco' AND ST_DWithin(g.geom, p.geom, 250)
+             WHERE p.veiculo_id = ANY($1::uuid[])
+           ),
+           area_cliente AS (
+             SELECT DISTINCT p.veiculo_id
+             FROM posicoes_atuais p
+             JOIN veiculos v ON v.id = p.veiculo_id
+             JOIN geofences g ON g.tipo = 'area_risco_cliente' AND g.cliente_id = v.cliente_id AND ST_Intersects(g.geom, p.geom)
+             WHERE p.veiculo_id = ANY($1::uuid[])
+           )
+           SELECT
+             p.veiculo_id,
+             EXISTS (SELECT 1 FROM geofences g WHERE g.tipo = 'favela' AND ST_Intersects(g.geom, p.geom)) AS em_favela,
+             cisp.cisp,
+             (corredor.veiculo_id IS NOT NULL) AS em_corredor_risco,
+             (area_cliente.veiculo_id IS NOT NULL) AS em_area_risco_cliente
+           FROM posicoes_atuais p
+           LEFT JOIN cisp ON cisp.veiculo_id = p.veiculo_id
+           LEFT JOIN corredor ON corredor.veiculo_id = p.veiculo_id
+           LEFT JOIN area_cliente ON area_cliente.veiculo_id = p.veiculo_id
+           WHERE p.veiculo_id = ANY($1::uuid[])`,
+          [veiculoIds]
+        );
+        for (const r of rows) {
+          const pos = posAtualPorVeiculo.get(r.veiculo_id);
+          let distTiroteioM: number | null = null;
+          if (pos?.lat != null && pos.lng != null) {
+            for (const t of tiroteios) {
+              const d = haversineM(pos.lat, pos.lng, t.lat, t.lng);
+              if (distTiroteioM === null || d < distTiroteioM) distTiroteioM = d;
+            }
+          }
+          mapa.set(
+            r.veiculo_id,
+            calcularRiscoArea({
+              emFavela: r.em_favela,
+              tiroteioRecentePertoM: distTiroteioM,
+              rouboCargaCispTotal: r.cisp ? rouboPorCisp.get(r.cisp) ?? 0 : null,
+              emCorredorRodoviaRisco: r.em_corredor_risco,
+              emAreaRiscoCliente: r.em_area_risco_cliente,
+              fatorHorario: perfilHorario[horaSP] ?? 1,
+            })
+          );
+        }
+      } catch (errRisco) {
+        erros.push(`Aviso: score de risco de area indisponivel neste ciclo: ${String(errRisco)}`);
+      }
+      riscoCache = mapa;
+      return mapa;
     }
 
     // Pontos de escala de hoje (route.ts:1683-1691 inclui escala na lista de
@@ -789,16 +1024,22 @@ export async function POST(request: Request) {
         // Fallback pro OFFSET 1 se updated_at vier ausente (coluna é NOT
         // NULL no schema; defensivo contra falha de leitura, não contra
         // dado real).
+        //
+        // velocidade entra junto (task B1): jaParedoNoCicloAnterior (anti-pisca
+        // de detectarParadaAnomala) precisa saber se a leitura anterior também
+        // estava com velocidade 0 no MESMO ponto -- mesma checagem da Central
+        // (route.ts:1956-1961), que lá lê do snapshot anterior de
+        // posicoes_atuais e aqui vem desta mesma leitura anterior.
         const corteAnterior = posAtual.updated_at;
         const { rows: anteriorRows } = corteAnterior
-          ? await pool.query<{ lat: number; lng: number }>(
-              `SELECT lat, lng FROM posicoes_historico
+          ? await pool.query<{ lat: number; lng: number; velocidade: number | null }>(
+              `SELECT lat, lng, velocidade FROM posicoes_historico
                 WHERE veiculo_id = $1 AND criado_em < $2
                 ORDER BY criado_em DESC LIMIT 1`,
               [veiculoId, corteAnterior]
             )
-          : await pool.query<{ lat: number; lng: number }>(
-              `SELECT lat, lng FROM posicoes_historico
+          : await pool.query<{ lat: number; lng: number; velocidade: number | null }>(
+              `SELECT lat, lng, velocidade FROM posicoes_historico
                 WHERE veiculo_id = $1
                 ORDER BY criado_em DESC LIMIT 1 OFFSET 1`,
               [veiculoId]
@@ -883,6 +1124,132 @@ export async function POST(request: Request) {
           ? Math.min(...centroidesBase.map((b) => haversineM(latAtual, lngAtual, b.lat, b.lng)))
           : null;
         const emCarenciaDeBase = distBaseM != null && distBaseM < LIMIAR_CARENCIA_BASE_M;
+
+        // ─── Detectores de parada (task B1, 27/08) ─────────────────────────
+        // Buraco de segurança REAL que este bloco fecha: desde 26/08 a Nutry
+        // Max ficou SEM nenhum detector de parada anômala. Na Central Unitrac
+        // os 3 foram desligados por flag (CLIENTES_COM_MOTOR_ROMANEIO_PARALELO,
+        // motor/route.ts) porque lá o `noCliente` só reconhece alvo da
+        // Unitrac e disparava com o caminhão parado NO cliente; aqui eles
+        // nunca tinham sido implementados. A flag continua como está (fora do
+        // escopo desta task) -- quem cobre este cliente agora é esta rota.
+        //
+        // Independente do gate do Sinal A logo abaixo: um veículo parado nunca
+        // passa naquele gate (paradoSemSeMover/movimentoInsignificante), que é
+        // exatamente o motivo de os detectores de parada existirem.
+        const noCliente = calcularNoClienteRomaneio(
+          { lat: latAtual, lng: lngAtual, velocidade: posAtual.velocidade },
+          pontos
+        );
+        const alertasParada: Alerta[] = [];
+        let paradoMinVeiculo = 0;
+        let dentroTapeteVeiculo: boolean | null = null;
+        let riscoAreaVeiculo = 0;
+        const paradoDesdeVeiculo = posAtual.parado_desde;
+
+        if (fresco && posAtual.velocidade === 0 && paradoDesdeVeiculo) {
+          const inicioMs = new Date(paradoDesdeVeiculo).getTime();
+          if (Number.isFinite(inicioMs)) {
+            paradoMinVeiculo = Math.round((agora.getTime() - inicioMs) / 60000);
+          }
+          const emOperacao = emHorarioOperacao(agora);
+          const foraDaBase = !veiculosDentroDeBase.has(veiculoId);
+
+          // Pré-condição comum aos 3 detectores (eles a re-checam por dentro;
+          // aqui ela só evita pagar POI/Overpass e as queries de contexto
+          // quando nenhum deles poderia disparar). PARADA_FORA_TAPETE_MIN (3min)
+          // é o menor piso dos 3.
+          const candidatoParada =
+            emOperacao && foraDaBase && !noCliente && paradoMinVeiculo >= PARADA_FORA_TAPETE_MIN;
+
+          if (candidatoParada) {
+            const contagemTapete = contagemTapetePorCliente.get(info.cliente_id) ?? 0;
+            if (contagemTapete >= TAPETE_MIN_CELULAS) {
+              const celulasCliente = celulasTapetePorCliente.get(info.cliente_id) ?? new Set<string>();
+              dentroTapeteVeiculo = vizinhanca3x3(latAtual, lngAtual).some((c) => celulasCliente.has(c));
+            }
+
+            // Só os 2 gatilhos reais consultam POI/congestionamento -- mesma
+            // economia da Central (route.ts:2006 e 2024).
+            const candidatoAnomala = paradoMinVeiculo >= 12 && paradoMinVeiculo < 90;
+            const candidatoForaTapete = dentroTapeteVeiculo === false;
+            const candidatoLonga = paradoMinVeiculo >= 90;
+
+            let temPOI = false;
+            if (candidatoAnomala || candidatoForaTapete || candidatoLonga) {
+              try {
+                temPOI = await temPOIProximo(latAtual, lngAtual, pool);
+              } catch {
+                // Overpass fora do ar: assume POI presente (mesma decisão da
+                // Central, route.ts:2010-2016) -- prefere não inundar a
+                // operação com falso positivo em massa durante instabilidade.
+                temPOI = true;
+                if (!erros.some((e) => e.includes("Overpass"))) {
+                  erros.push("Aviso: Overpass indisponivel neste ciclo, POI assumido presente");
+                }
+              }
+            }
+
+            let vizinhosParados = 0;
+            if (candidatoAnomala || candidatoForaTapete) {
+              const parados = await paradosDaFrota();
+              let dentro = 0;
+              for (const q of parados) {
+                if (haversineM(latAtual, lngAtual, q.lat, q.lng) <= RAIO_CONGESTION_M) dentro++;
+              }
+              vizinhosParados = Math.max(0, dentro - 1); // exclui o próprio veículo
+            }
+
+            if (candidatoForaTapete) {
+              riscoAreaVeiculo = (await riscoAreaPorVeiculo()).get(veiculoId) ?? 0;
+            }
+
+            // estavEmMovimento: velocidade máxima nos 10min ANTES do início da
+            // parada (não do ciclo anterior) -- fix real de 21/08 na Central
+            // (route.ts:1971-2001): com paradoMin>=12 o ciclo anterior está
+            // sempre parado também, e a condição era impossível por construção.
+            // Falha da query => false => cai no limiar conservador de 20min.
+            let estavEmMovimento = false;
+            if (candidatoAnomala) {
+              try {
+                const inicioParada = new Date(paradoDesdeVeiculo);
+                const janelaAntes = new Date(inicioParada.getTime() - 10 * 60_000);
+                const { rows: velAntes } = await pool.query<{ vmax: number | null }>(
+                  `SELECT max(velocidade) AS vmax FROM posicoes_historico
+                    WHERE veiculo_id = $1 AND criado_em >= $2 AND criado_em < $3`,
+                  [veiculoId, janelaAntes.toISOString(), inicioParada.toISOString()]
+                );
+                estavEmMovimento = (velAntes[0]?.vmax ?? 0) >= 30;
+              } catch (errVelAntes) {
+                if (!erros.some((e) => e.includes("velocidade pre-parada"))) {
+                  erros.push(`Aviso: falha ao ler velocidade pre-parada: ${String(errVelAntes)}`);
+                }
+              }
+            }
+
+            const horaSPAgora = parseInt(
+              new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false }).format(agora),
+              10
+            );
+
+            alertasParada.push(
+              ...avaliarParadasRomaneio({
+                paradoMin: paradoMinVeiculo,
+                emOperacao,
+                foraDaBase,
+                noCliente,
+                estavEmMovimento,
+                esMadrugada: horaSPAgora >= 0 && horaSPAgora < 5,
+                temPOIProximo: temPOI,
+                jaParedoNoCicloAnterior:
+                  anterior != null && anterior.velocidade === 0 && mesmoPonto,
+                vizinhosParados,
+                dentroTapete: dentroTapeteVeiculo,
+                riscoAreaAtual: riscoAreaVeiculo,
+              })
+            );
+          }
+        }
 
         // Classe viária atual -- classificação de dado (SELECT em lote acima),
         // não é regra de desvio. Calculada só quando a posição é fresca,
@@ -1070,13 +1437,12 @@ export async function POST(request: Request) {
         // fechado pela máquina às 01:51:36 do dia 23/08 -- operador_id e
         // origem_acao nulos, ou seja, não foi humano.
         //
-        // CONSEQUÊNCIA DE HOJE, pra quem for "limpar código morto": como
-        // "desvio" é o ÚNICO tipo que esta tabela recebe, alertasGerenciados
-        // é SEMPRE vazio, e portanto os dois caminhos de resolve abaixo
-        // nunca executam. Isso é o comportamento CORRETO, não sobra. Os
-        // caminhos ficam porque um segundo tipo de alerta nesta tabela
-        // (parada_fora_tapete, por exemplo, que na Central é deliberadamente
-        // gerenciado) precisa deles no dia em que entrar. Quem fecha o que
+        // ATUALIZADO 27/08 (task B1): "desvio" deixou de ser o único tipo
+        // desta tabela -- parada_anomala/parada_longa/parada_fora_tapete
+        // entraram e NÃO estão em TIPOS_NAO_GERENCIADOS, então o resolve
+        // abaixo passa a executar de verdade pra elas (fecham sozinhas quando
+        // o carro volta a andar, igual à Central). Desvio continua saindo de
+        // 'ativo' só por ação manual. Quem fecha o que
         // ninguém trata é o cron diário 'expirar-alertas-romaneio-do-dia-
         // anterior' (migration 058) -- mesmo mecanismo da Central, mas com
         // janela de 1 dia em vez dos 7 dela, porque ninguém trabalha a tela
@@ -1086,71 +1452,98 @@ export async function POST(request: Request) {
           (a) => !TIPOS_NAO_GERENCIADOS.has(a.tipo)
         );
 
-        if (alerta) {
-          const alertaExistente = alertasAbertosVeiculo.find((a) => a.tipo === alerta!.tipo);
-          // Silenciamento de 2h (ver tiposSilenciadosPorVeiculo acima) --
-          // mesma estrutura da Central (route.ts:3086-3088): quando o tipo
-          // está silenciado NADA acontece pro veículo neste ciclo, nem
-          // insert nem resolve de obsoletos (a Central não resolve
-          // silenciado de propósito, pra preservar o contexto enquanto o
-          // operador investiga).
-          const silenciado = tiposSilenciadosPorVeiculo.get(veiculoId)?.has(alerta.tipo) ?? false;
+        // Candidatos DESTE ciclo: o desvio (Sinal A, quando houver) mais os
+        // alertas de parada da task B1. Até 27/08 este bloco tratava UM
+        // candidato só; com os 3 detectores de parada ele passa a tratar um
+        // conjunto -- mesma semântica da Central, que já convive com vários
+        // tipos abertos por veículo ao mesmo tempo.
+        const candidatosCiclo: Alerta[] = [...(alerta ? [alerta] : []), ...alertasParada];
+        const tiposDoCiclo = new Set(candidatosCiclo.map((c) => c.tipo));
+        // Silenciamento de 2h (ver tiposSilenciadosPorVeiculo acima) --
+        // mesma estrutura da Central (route.ts:3086-3088): tipo silenciado
+        // não insere, não escala e não é resolvido pela máquina (preserva o
+        // contexto enquanto o operador investiga).
+        const silenciadosVeiculo = tiposSilenciadosPorVeiculo.get(veiculoId) ?? new Set<string>();
 
-          if (!silenciado) {
-            const obsoletos = alertasGerenciados.filter((a) => a.tipo !== alerta!.tipo);
-            if (obsoletos.length > 0) {
-              const erroResolveObsoletos = await resolverPelaMaquina(admin, obsoletos, agora.toISOString());
-              if (erroResolveObsoletos) {
-                erros.push(`Aviso: falha ao resolver alertas_romaneio obsoletos do veiculo ${veiculoId}: ${erroResolveObsoletos}`);
-              }
-            }
-
-            if (!alertaExistente) {
-              const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
-                cliente_id: info.cliente_id,
-                veiculo_id: veiculoId,
-                nivel: alerta.nivel,
-                tipo: alerta.tipo,
-                motivo: alerta.motivo,
-                score: alerta.score,
-                status: "ativo",
-                lat: latAtual,
-                lng: lngAtual,
-                contexto: { origem_desvio: alerta.origemDesvio },
-                desde: agora.toISOString(),
-              });
-              if (erroInsert) {
-                erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
-              } else {
-                alertasGerados++;
-              }
-            } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
-              // contexto vai junto, igual à Central (route.ts:3195-3201):
-              // sem isso origem_desvio ficaria congelada no valor do alerta
-              // inicial quando a origem muda entre ele e a escalação -- e
-              // origem_desvio é insumo da comparação entre os pipelines.
-              const { error: erroEscalar } = await admin
-                .from("alertas_romaneio")
-                .update({
-                  nivel: alerta.nivel,
-                  motivo: alerta.motivo,
-                  score: alerta.score,
-                  contexto: { origem_desvio: alerta.origemDesvio },
-                })
-                .eq("id", alertaExistente.id);
-              if (erroEscalar) {
-                erros.push(`Aviso: falha ao escalar alertas_romaneio do veiculo ${veiculoId}: ${erroEscalar.message}`);
-              }
-            }
+        // Auto-resolve dos GERENCIADOS que pararam de valer neste ciclo
+        // (route.ts:3206-3212). Antes da task B1 isto nunca executava (só
+        // "desvio" existia nesta tabela, e desvio nunca é gerenciado); agora
+        // é o que faz parada_anomala/parada_longa/parada_fora_tapete fechar
+        // sozinha quando o carro volta a andar -- exatamente como na Central.
+        const obsoletos = alertasGerenciados.filter(
+          (a) => !tiposDoCiclo.has(a.tipo) && !silenciadosVeiculo.has(a.tipo)
+        );
+        if (obsoletos.length > 0) {
+          const erroResolveObsoletos = await resolverPelaMaquina(admin, obsoletos, agora.toISOString());
+          if (erroResolveObsoletos) {
+            erros.push(`Aviso: falha ao resolver alertas_romaneio obsoletos do veiculo ${veiculoId}: ${erroResolveObsoletos}`);
           }
-        } else if (alertasGerenciados.length > 0) {
-          // Sem alerta neste ciclo -- resolve os GERENCIADOS em aberto deste
-          // veículo (mesma lógica de route.ts:3206-3212). Hoje: nunca entra
-          // aqui, porque desvio nunca é gerenciado -- ver o bloco de
-          // TIPOS_NAO_GERENCIADOS acima antes de considerar isto morto.
-          const erroResolveTodos = await resolverPelaMaquina(admin, alertasGerenciados, agora.toISOString());
-          if (erroResolveTodos) {
-            erros.push(`Aviso: falha ao resolver alertas_romaneio do veiculo ${veiculoId}: ${erroResolveTodos}`);
+        }
+
+        for (const candidato of candidatosCiclo) {
+          if (silenciadosVeiculo.has(candidato.tipo)) continue;
+          const alertaExistente = alertasAbertosVeiculo.find((a) => a.tipo === candidato.tipo);
+          // contexto por tipo: desvio leva origem_desvio (insumo da comparação
+          // entre os pipelines); parada_fora_tapete leva os mesmos 3 campos
+          // que a Central grava (route.ts:3178-3182); as outras paradas levam
+          // o tempo parado, que é o que o operador precisa ver no card.
+          const contextoAlerta =
+            candidato.tipo === "desvio"
+              ? { origem_desvio: candidato.origemDesvio }
+              : candidato.tipo === "parada_fora_tapete"
+                ? { parado_min: paradoMinVeiculo, dentro_tapete: dentroTapeteVeiculo, risco_area_atual: riscoAreaVeiculo }
+                : { parado_min: paradoMinVeiculo };
+
+          if (!alertaExistente) {
+            // Cooldown por EPISÓDIO de parada (deveSuprimirRedisparoParada,
+            // @/lib/detectores): um alerta já tratado pelo operador tem
+            // status='resolvido' e por isso NUNCA aparece em
+            // alertasAbertosVeiculo -- sem este gate, o mesmo episódio de
+            // parada reabriria a cada ciclo de 30s (caso TUG-9D18 na Central).
+            // Aninhado aqui de propósito, pelo mesmo motivo documentado em
+            // route.ts:3198-3206.
+            const suprimidoPorCooldown =
+              TIPOS_PARADA_COM_COOLDOWN.has(candidato.tipo) &&
+              deveSuprimirRedisparoParada({
+                paradoDesde: paradoDesdeVeiculo,
+                alertasTratadosDoTipo: paradasTratadasPorVeiculoTipo.get(`${veiculoId}:${candidato.tipo}`) ?? [],
+              });
+            if (suprimidoPorCooldown) continue;
+
+            const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
+              cliente_id: info.cliente_id,
+              veiculo_id: veiculoId,
+              nivel: candidato.nivel,
+              tipo: candidato.tipo,
+              motivo: candidato.motivo,
+              score: candidato.score,
+              status: "ativo",
+              lat: latAtual,
+              lng: lngAtual,
+              contexto: contextoAlerta,
+              desde: agora.toISOString(),
+            });
+            if (erroInsert) {
+              erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
+            } else {
+              alertasGerados++;
+            }
+          } else if (alertaExistente.nivel !== "critico" && candidato.nivel === "critico") {
+            // contexto vai junto, igual à Central (route.ts:3195-3201): sem
+            // isso o contexto ficaria congelado no valor do alerta inicial
+            // quando ele muda entre o disparo e a escalação.
+            const { error: erroEscalar } = await admin
+              .from("alertas_romaneio")
+              .update({
+                nivel: candidato.nivel,
+                motivo: candidato.motivo,
+                score: candidato.score,
+                contexto: contextoAlerta,
+              })
+              .eq("id", alertaExistente.id);
+            if (erroEscalar) {
+              erros.push(`Aviso: falha ao escalar alertas_romaneio do veiculo ${veiculoId}: ${erroEscalar.message}`);
+            }
           }
         }
       } catch (errVeiculo) {
