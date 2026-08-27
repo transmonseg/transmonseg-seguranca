@@ -73,6 +73,8 @@ import {
   detectarParadaAnomala,
   detectarParadaForaTapete,
   deveSuprimirRedisparoParada,
+  suprimidoPorCooldownTemporal,
+  ehTipoComCooldownTemporal,
   calcularRiscoArea,
   PARADA_FORA_TAPETE_MIN,
   type Alerta,
@@ -288,6 +290,45 @@ export function deveResolverAlertaGerenciado(ctx: {
   // Qualquer outro tipo gerenciado que venha a existir nesta tabela:
   // comportamento de antes da task B1, inalterado.
   return true;
+}
+
+// Cooldown de re-disparo do CANDIDATO deste ciclo (task Achado C, 27/08) --
+// composição dos dois mecanismos que já existem aqui, um pra cada natureza de
+// alerta, exatamente como a Central Unitrac faz (motor/route.ts,
+// suprimidoPorCooldownParada || suprimidoPorCooldownTemporalDoTipo):
+//
+// - parada_anomala/parada_longa: cooldown por EPISÓDIO
+//   (deveSuprimirRedisparoParada, @/lib/detectores) -- já existia aqui antes
+//   desta task, intocado.
+// - desvio (e qualquer tipo futuro que entre em
+//   JANELA_COOLDOWN_TEMPORAL_POR_TIPO): cooldown por TEMPO
+//   (suprimidoPorCooldownTemporal, @/lib/detectores) -- a Central Romaneio só
+//   tinha o primeiro; "Resolver" um desvio aqui não impedia ele de reabrir no
+//   ciclo seguinte (30s), porque desvio nunca é TIPOS_PARADA_COM_COOLDOWN.
+//   Mesma função REAL importada e usada pela Central Unitrac, não uma cópia.
+//
+// Função pura só pra deixar a composição testável sem mockar
+// pool/admin/Supabase -- a query fresca por veículo continua vivendo no loop
+// (efeito colateral de rede), este helper só decide dado o resultado dela.
+export function suprimidoPorCooldownCandidato(ctx: {
+  tipo: string;
+  paradoDesde: string | null;
+  alertasTratadosDoTipo: { resolvidoEm: string }[];
+  agoraMs: number;
+  ultimoTratamentoTemporal: { resolvidoEm: string } | null;
+}): boolean {
+  const suprimidoPorCooldownParada =
+    TIPOS_PARADA_COM_COOLDOWN.has(ctx.tipo) &&
+    deveSuprimirRedisparoParada({
+      paradoDesde: ctx.paradoDesde,
+      alertasTratadosDoTipo: ctx.alertasTratadosDoTipo,
+    });
+  const suprimidoPorCooldownTemporalDoTipo = suprimidoPorCooldownTemporal({
+    tipo: ctx.tipo,
+    agoraMs: ctx.agoraMs,
+    ultimoTratamento: ctx.ultimoTratamentoTemporal,
+  });
+  return suprimidoPorCooldownParada || suprimidoPorCooldownTemporalDoTipo;
 }
 
 // ─── Gate de escopo por veículo (task B2, 27/08) ───────────────────────────
@@ -1868,12 +1909,62 @@ export async function POST(request: Request) {
             // parada reabriria a cada ciclo de 30s (caso TUG-9D18 na Central).
             // Aninhado aqui de propósito, pelo mesmo motivo documentado em
             // route.ts:3198-3206.
-            const suprimidoPorCooldown =
-              TIPOS_PARADA_COM_COOLDOWN.has(candidato.tipo) &&
-              deveSuprimirRedisparoParada({
-                paradoDesde: paradoDesdeVeiculo,
-                alertasTratadosDoTipo: paradasTratadasPorVeiculoTipo.get(`${veiculoId}:${candidato.tipo}`) ?? [],
-              });
+            //
+            // Achado C (plano 2026-08-27-romaneio-fonte-unica-plano-geral,
+            // Fase 2C): até aqui, "desvio" nunca entrava em NENHUM gate de
+            // cooldown nesta rota -- TIPOS_PARADA_COM_COOLDOWN só cobre as 2
+            // paradas, e desvio não tem parado_desde/episódio. Resolver um
+            // desvio individualmente na Central Romaneio não impedia ele de
+            // reabrir no ciclo seguinte (30s). A Central Unitrac já resolveu
+            // exatamente isso (achado real 25/08) com cooldown por TEMPO
+            // (suprimidoPorCooldownTemporal, @/lib/detectores, generalizada
+            // hoje pra desvio+jammer) -- mesma função REAL importada aqui, não
+            // reimplementada. Query fresca por veículo, só quando há um
+            // candidato NOVO de tipo com cooldown temporal (hoje só "desvio"
+            // roda nesta rota; jammer não é avaliado aqui): o snapshot batch
+            // de alertasAbertosVeiculo é montado 1x por veículo no topo do
+            // ciclo e pode estar desatualizado o suficiente pra perder uma
+            // resolução humana recente (mesmo motivo documentado em
+            // route.ts:3243-3256, Central Unitrac).
+            let ultimoTratamentoTemporal: { resolvidoEm: string } | null = null;
+            if (ehTipoComCooldownTemporal(candidato.tipo)) {
+              const trintaMinAtrasFresco = new Date(agora.getTime() - 30 * 60 * 1000).toISOString();
+              try {
+                const { rows: tratamentoFresco } = await pool.query<{ resolvido_em: string }>(
+                  `SELECT resolvido_em FROM alertas_romaneio
+                    WHERE veiculo_id = $1 AND cliente_id = $2
+                      AND tipo = $4
+                      AND origem_acao IN ('resolver_individual','falso_individual')
+                      AND operador_id IS NOT NULL
+                      AND resolvido_em >= $3
+                    ORDER BY resolvido_em DESC LIMIT 1`,
+                  [veiculoId, info.cliente_id, trintaMinAtrasFresco, candidato.tipo]
+                );
+                if (tratamentoFresco[0]) {
+                  ultimoTratamentoTemporal = { resolvidoEm: tratamentoFresco[0].resolvido_em };
+                }
+              } catch (errCooldownFresco) {
+                // Fallback INTOCADO (erra pro lado de alertar demais, nunca de
+                // esconder): se a query falha, ultimoTratamentoTemporal fica
+                // null e o candidato NÃO é suprimido. console.error além do
+                // erros.push porque erros[] só existe na resposta HTTP do
+                // ciclo, que o disparador do cron descarta -- sem isso a
+                // falha fica INVISÍVEL (mesmo achado real 27/08 que motivou o
+                // log persistente na Central Unitrac, route.ts:6203-6207).
+                console.error(
+                  `[cooldown-fresco-romaneio] falha ao consultar cooldown de ${candidato.tipo} | veiculo_id=${veiculoId} cliente_id=${info.cliente_id} em=${agora.toISOString()}`,
+                  errCooldownFresco
+                );
+                erros.push(`Aviso: falha ao consultar cooldown fresco de ${candidato.tipo} pro veiculo ${veiculoId}: ${String(errCooldownFresco)}`);
+              }
+            }
+            const suprimidoPorCooldown = suprimidoPorCooldownCandidato({
+              tipo: candidato.tipo,
+              paradoDesde: paradoDesdeVeiculo,
+              alertasTratadosDoTipo: paradasTratadasPorVeiculoTipo.get(`${veiculoId}:${candidato.tipo}`) ?? [],
+              agoraMs: agora.getTime(),
+              ultimoTratamentoTemporal,
+            });
             if (suprimidoPorCooldown) continue;
 
             const { error: erroInsert } = await admin.from("alertas_romaneio").insert({

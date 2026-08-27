@@ -24,6 +24,7 @@ import {
   deveResolverAlertaGerenciado,
   decidirEscopoDoVeiculo,
   deveAvaliarSinalA,
+  suprimidoPorCooldownCandidato,
 } from "./route";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
 import type { PontoEntrega } from "@/lib/unitrac";
@@ -514,5 +515,78 @@ describe("deveResolverAlertaGerenciado", () => {
         podeFecharForaTapete: false,
       })
     ).toBe(true);
+  });
+});
+
+// Task Achado C (plano 2026-08-27-romaneio-fonte-unica-plano-geral, Fase
+// 2C): antes desta task, "desvio" nunca entrava em NENHUM gate de
+// cooldown nesta rota -- TIPOS_PARADA_COM_COOLDOWN só cobre
+// parada_anomala/parada_longa, e desvio não tem parado_desde/episódio pra
+// aquele mecanismo. Resolver um desvio individualmente na Central Romaneio
+// não impedia ele de reabrir no ciclo seguinte (30s). Estes testes travam a
+// composição real usada pelo loop (suprimidoPorCooldownCandidato), que chama
+// suprimidoPorCooldownTemporal de @/lib/detectores -- a MESMA função REAL
+// que a Central Unitrac usa (motor/route.ts), não uma reimplementação.
+describe("suprimidoPorCooldownCandidato", () => {
+  const agoraMs = new Date("2026-08-27T12:00:00Z").getTime();
+
+  it("CASO DA TASK: desvio resolvido individualmente ha menos de 15min => suprime (nao reinsere no proximo ciclo)", () => {
+    expect(
+      suprimidoPorCooldownCandidato({
+        tipo: "desvio",
+        paradoDesde: null,
+        alertasTratadosDoTipo: [],
+        agoraMs,
+        ultimoTratamentoTemporal: { resolvidoEm: "2026-08-27T11:50:00Z" }, // 10min atras
+      })
+    ).toBe(true);
+  });
+
+  it("desvio resolvido individualmente ha mais de 15min => nao suprime, reabre normalmente", () => {
+    expect(
+      suprimidoPorCooldownCandidato({
+        tipo: "desvio",
+        paradoDesde: null,
+        alertasTratadosDoTipo: [],
+        agoraMs,
+        ultimoTratamentoTemporal: { resolvidoEm: "2026-08-27T11:44:00Z" }, // 16min atras
+      })
+    ).toBe(false);
+  });
+
+  it("desvio sem nenhum tratamento recente (query fresca nao achou nada) => nao suprime", () => {
+    expect(
+      suprimidoPorCooldownCandidato({
+        tipo: "desvio",
+        paradoDesde: null,
+        alertasTratadosDoTipo: [],
+        agoraMs,
+        ultimoTratamentoTemporal: null,
+      })
+    ).toBe(false);
+  });
+
+  it("REGRESSAO: cooldown por episodio da parada continua intocado (nao usa o cooldown temporal)", () => {
+    expect(
+      suprimidoPorCooldownCandidato({
+        tipo: "parada_anomala",
+        paradoDesde: "2026-08-27T11:00:00Z",
+        alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-27T11:30:00Z" }],
+        agoraMs,
+        ultimoTratamentoTemporal: null,
+      })
+    ).toBe(true);
+  });
+
+  it("REGRESSAO: parada_fora_tapete nao tem cooldown nenhum (nem episodio, nem temporal)", () => {
+    expect(
+      suprimidoPorCooldownCandidato({
+        tipo: "parada_fora_tapete",
+        paradoDesde: "2026-08-27T11:00:00Z",
+        alertasTratadosDoTipo: [{ resolvidoEm: "2026-08-27T11:30:00Z" }],
+        agoraMs,
+        ultimoTratamentoTemporal: { resolvidoEm: "2026-08-27T11:50:00Z" },
+      })
+    ).toBe(false);
   });
 });
