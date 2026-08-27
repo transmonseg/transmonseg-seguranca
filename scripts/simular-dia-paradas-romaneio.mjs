@@ -187,8 +187,15 @@ function vizinhosParadosEm(clienteId, veiculoId, lat, lng, tMs) {
 // ─── poi_cache (LEITURA pura -- ver nota de fidelidade no cabeçalho) ──────
 const poiCache = new Map();
 {
+  // pg devolve NUMERIC como string (sem setTypeParser neste projeto, ver
+  // motor/route.ts) -- Number() aqui é obrigatório, senão a chave nunca bate
+  // com a de temPOICacheado (achado real da revisão final, bug do C1 original:
+  // a chave ficava "-22.9000" vs "-22.9", zero hit possível).
   const { rows } = await client.query(`SELECT lat, lng, tem_poi FROM poi_cache`);
-  for (const r of rows) poiCache.set(`${r.lat}:${r.lng}`, r.tem_poi);
+  for (const r of rows) {
+    const k = `${Math.round(Number(r.lat) * 1000) / 1000}:${Math.round(Number(r.lng) * 1000) / 1000}`;
+    poiCache.set(k, r.tem_poi);
+  }
 }
 console.log(`poi_cache carregado: ${poiCache.size} celulas conhecidas (miss => temPOI=false, ver cabecalho).`);
 function temPOICacheado(lat, lng) {

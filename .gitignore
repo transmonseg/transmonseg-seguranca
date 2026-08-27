@@ -57,3 +57,6 @@ shot-*.png
 # Estado local da verificacao independente de desvio
 scripts/.state/
 scripts/backtest-desvio/corpus.json
+
+# Workspace de sessao do subagent-driven-development (ledger/briefs/reviews)
+.superpowers/sdd/
