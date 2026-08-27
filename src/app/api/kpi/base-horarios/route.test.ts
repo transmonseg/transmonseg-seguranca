@@ -189,4 +189,48 @@ describe("acharVisitasPorPonto", () => {
   it("sem posicao nenhuma: todos os pontos ficam null", () => {
     expect(acharVisitasPorPonto([], [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null }]);
   });
+
+  describe("dwell minimo (achado real 27/08, grupo KPI AJUSTES: 'tempo em loja com certeza tá errado')", () => {
+    it("UM UNICO ping de GPS dentro do raio (chegada===saida, 0min -- caso real PAULO M DA SILVA MERCEARIA) nao confirma visita", () => {
+      const posicoes = [
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:00:00.000Z" }, // longe
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T09:01:00.000Z" }, // 1 unico ping dentro do raio
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:02:00.000Z" }, // ja saiu de novo
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
+      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null });
+    });
+
+    it("bloco de 2 leituras mas ainda curto (< 60s de intervalo real): tambem nao confirma", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T09:00:00.000Z" },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T09:00:40.000Z" }, // so 40s depois
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:01:00.000Z" },
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
+      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null });
+    });
+
+    it("bloco de exatamente 60s ou mais: confirma normalmente", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T09:00:00.000Z" },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T09:01:00.000Z" }, // 60s depois, no limiar
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:02:00.000Z" },
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-08-27T09:00:00.000Z", saida: "2026-08-27T09:01:00.000Z" });
+    });
+
+    it("bloco curto (ping isolado) E bloco longo no mesmo ponto: fica com o longo, o curto nao interfere (ja seria descartado por duracao mesmo sem o filtro)", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T09:00:00.000Z" }, // ping isolado, 0min
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:01:00.000Z" },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T14:00:00.000Z" }, // visita real, 20min
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-27T14:20:00.000Z" },
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T14:25:00.000Z" },
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-08-27T14:00:00.000Z", saida: "2026-08-27T14:20:00.000Z" });
+    });
+  });
 });

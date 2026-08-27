@@ -147,29 +147,43 @@ type VisitaPonto = { id: string; chegada: string | null; saida: string | null };
  *  raio, fica com o de MAIOR duracao (mesmo criterio de desempate que
  *  montarVisitas.ts ja usava pra escolher entre paradas concorrentes).
  *  Ponto nunca visitado (raio nunca cruzado no dia) -- chegada/saida
- *  ficam null, nunca inventa. */
+ *  ficam null, nunca inventa.
+ *
+ *  Achado real 27/08 (grupo KPI AJUSTES, "tempo em loja com certeza tá
+ *  errado"): testado contra dado real do dia (RBI-0J25), 4 de 19 visitas
+ *  confirmadas vinham com chegada===saida (0 minutos) -- um UNICO ping de
+ *  GPS a <=300m do ponto, sem o caminhao ter parado de verdade (so'
+ *  passou perto ou cruzou a rua), virava "confirmado" igual uma entrega
+ *  real de 20min. Bloco com duracao abaixo de DWELL_MINIMO_MS (~2
+ *  leituras reais na cadencia normal de ~30-40s) não conta como visita
+ *  confirmada -- fica null, mesma filosofia de "nunca inventa" já usada
+ *  no resto da função (melhor não confirmar do que confirmar errado por
+ *  um ping isolado). */
+const DWELL_MINIMO_MS = 60_000
+
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]): VisitaPonto[] {
   return pontos.map((pt) => {
-    type Bloco = { inicio: string; fim: string; durMs: number };
-    const blocos: Bloco[] = [];
-    let atual: { inicio: string; fim: string } | null = null;
+    type Bloco = { inicio: string; fim: string; durMs: number }
+    const blocos: Bloco[] = []
+    let atual: { inicio: string; fim: string } | null = null
 
     for (const p of posicoes) {
-      const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= RAIO_ENTREGA_M;
+      const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= RAIO_ENTREGA_M
       if (dentro) {
-        if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em };
-        else atual.fim = p.criado_em;
+        if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em }
+        else atual.fim = p.criado_em
       } else if (atual) {
-        blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() });
-        atual = null;
+        blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() })
+        atual = null
       }
     }
-    if (atual) blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() });
+    if (atual) blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() })
 
-    if (blocos.length === 0) return { id: pt.id, chegada: null, saida: null };
-    const maior = blocos.reduce((a, b) => (b.durMs > a.durMs ? b : a));
-    return { id: pt.id, chegada: maior.inicio, saida: maior.fim };
-  });
+    if (blocos.length === 0) return { id: pt.id, chegada: null, saida: null }
+    const maior = blocos.reduce((a, b) => (b.durMs > a.durMs ? b : a))
+    if (maior.durMs < DWELL_MINIMO_MS) return { id: pt.id, chegada: null, saida: null }
+    return { id: pt.id, chegada: maior.inicio, saida: maior.fim }
+  })
 }
 
 function normPlaca(p: string): string {
