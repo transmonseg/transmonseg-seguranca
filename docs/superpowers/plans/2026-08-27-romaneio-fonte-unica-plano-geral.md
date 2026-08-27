@@ -148,7 +148,7 @@ Testar nos 3 layouts que apertam espaço: card normal, card com badge extra (`pa
 
 Os limiares atuais (3h atenção / 8h crítico, `MonitorV2.tsx:163-164`) foram **pedidos explicitamente pelo usuário em 13/08** — não são um valor arbitrário pra "consertar". A Fase 2 mediu mediana de 22min / p90 76min até tratamento, o que sugere um limiar bem mais baixo faria mais sentido pro problema de hoje — mas mudar isso é reabrir uma decisão de produto dele, não um ajuste técnico.
 
-**Antes de codar**: perguntar ao usuário se quer recalibrar. Se sim, valor sugerido pelo dado da Fase 2 (não decidido, só ponto de partida pra conversa): ~30min pra atenção (logo acima da mediana, pega a cauda sem pintar mais da metade dos alertas em fluxo normal — 10min pintaria a maioria, destruindo o próprio propósito do destaque) / manter ou ajustar o crítico. Se o usuário preferir manter 3h/8h, esta task fecha sem mudança de código nenhuma.
+**Decisão do usuário (27/08): "faz o que for melhor pro sistema" — autorizado recalibrar.** Valores escolhidos com base no dado da Fase 2: `LIMIAR_ALERTA_ATENCAO_MIN = 30` (logo acima da mediana de 22min até tratamento — pega quem está demorando mais que o normal, sem pintar a maioria dos alertas em fluxo saudável), `LIMIAR_ALERTA_CRITICO_MIN = 90` (perto do p90 real de 76min, arredondado pra cima do lado conservador). Substitui os `3*60`/`8*60` de `MonitorV2.tsx:163-164`.
 
 ### Task 2B.3 — Badge de GPS defasado na lista/card de alerta (o gap real, depois do inventário completo)
 
