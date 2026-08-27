@@ -155,13 +155,23 @@ function minutosDesde(desde: string): number {
 // nenhuma revisao, entre 92 alertas ativos -- nenhum destaque na tela
 // distinguia "acabou de abrir" de "esta ha' horas esperando", entao a
 // fila envelhecida ficava invisivel misturada com o resto. Limiares
-// pedidos pelo usuario: 3h chama atencao, 8h+ fica critico (era
-// aproximadamente a idade do alerta de 19h achado). Canal de cor
-// SEPARADO do `cor` semantico de tipo/nivel do alerta (que ja' e' usado
-// pra borda/fundo do card) -- escalonar por idade nao deve se confundir
-// com "que tipo de alerta e'".
-const LIMIAR_ALERTA_ATENCAO_MIN = 3 * 60;
-const LIMIAR_ALERTA_CRITICO_MIN = 8 * 60;
+// ORIGINAIS pedidos pelo usuario (13/08): 3h chama atencao, 8h+ fica
+// critico (era aproximadamente a idade do alerta de 19h achado). Canal de
+// cor SEPARADO do `cor` semantico de tipo/nivel do alerta (que ja' e'
+// usado pra borda/fundo do card) -- escalonar por idade nao deve se
+// confundir com "que tipo de alerta e'".
+//
+// RECALIBRADO 27/08 (Fase 2 do plano de latencia, autorizado pelo
+// usuario): investigacao com dado real de banco (26/08) mostrou que a
+// deteccao em si e' rapida (1,5-8min) -- o atraso percebido pelos
+// operadores vinha de mediana real de 22min ate' o alerta ser tratado,
+// p90 de 76min. Os limiares de 3h/8h so' pintavam os casos extremos e
+// deixavam invisivel o problema tipico do dia a dia (22-76min). Novos
+// valores: 30min pega quem esta' demorando mais que o normal sem pintar
+// a maioria dos alertas em fluxo saudavel; 90min fica perto do p90 real
+// (76min), do lado conservador.
+const LIMIAR_ALERTA_ATENCAO_MIN = 30;
+const LIMIAR_ALERTA_CRITICO_MIN = 90;
 function corIdadeAlerta(desde: string, tema: "dark" | "light"): { cor: string; peso: number } {
   const min = minutosDesde(desde);
   if (min >= LIMIAR_ALERTA_CRITICO_MIN) return { cor: tema === "dark" ? "#ff6b5e" : "#c9392c", peso: 800 };
@@ -1485,12 +1495,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             )}
             {(() => {
               const idade = corIdadeAlerta(a.desde, tema);
+              const tituloIdade = idade.cor
+                ? `Parado sem revisao ha' muito tempo (detectado ha' ${tempoAtras(a.desde)})`
+                : `Detectado ha' ${tempoAtras(a.desde)}`;
               return (
-                <span suppressHydrationWarning title={idade.cor ? "Parado sem revisao ha' muito tempo" : undefined} style={{
+                <span suppressHydrationWarning title={tituloIdade} style={{
                   fontSize: 10, color: idade.cor || T.dim, marginLeft: "auto", fontFamily: FONT_MONO,
                   fontWeight: idade.peso, letterSpacing: idade.cor ? ".02em" : "normal",
                 }}>
-                  {idade.cor && "⏱ "}{tempoAtras(a.desde)}
+                  ⏱ {tempoAtras(a.desde)}
                 </span>
               );
             })()}
@@ -1668,9 +1681,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                     {nomeT(a.tipo).toUpperCase()}
                   </span>
                 )}
-                <span suppressHydrationWarning style={{ fontSize: 10, color: corIdadeAlerta(a.desde, tema).cor || T.dim, fontFamily: FONT_MONO, fontWeight: corIdadeAlerta(a.desde, tema).peso }}>
-                  {tempoAtras(a.desde)}
-                </span>
+                {(() => {
+                  const idade = corIdadeAlerta(a.desde, tema);
+                  const tituloIdade = idade.cor
+                    ? `Parado sem revisao ha' muito tempo (detectado ha' ${tempoAtras(a.desde)})`
+                    : `Detectado ha' ${tempoAtras(a.desde)}`;
+                  return (
+                    <span suppressHydrationWarning title={tituloIdade} style={{ fontSize: 10, color: idade.cor || T.dim, fontFamily: FONT_MONO, fontWeight: idade.peso }}>
+                      ⏱ {tempoAtras(a.desde)}
+                    </span>
+                  );
+                })()}
               </button>
             );
           })}
