@@ -208,18 +208,39 @@ export async function geocodificarGoogle(enderecoBruto: string): Promise<{ lat: 
   }
 }
 
+// Achado real 27/08 (grupo KPI AJUSTES, "não está identificando os
+// clientes certo" -- caso BAIRRO:CENTRO:RIO DE JANEIRO): busca de
+// "bairro, cidade" pode devolver em 1o lugar um match de CIDADE/ESTADO
+// inteiro em vez do bairro pedido -- Nominatim interpretou "Centro, Rio
+// de Janeiro" como busca dentro do ESTADO do Rio, casando com o
+// municipio de Nova Friburgo (importance mais alto que o bairro certo),
+// que só aparecia em 2o lugar. limit=1 antigo nem deixava o resultado
+// certo aparecer na resposta. Tipos "amplos demais" pra responder uma
+// busca que pediu algo mais especifico que uma cidade inteira.
+const NOMINATIM_TIPOS_AMPLOS_DEMAIS = new Set(["city", "town", "state", "region", "country", "county"]);
+
 export async function geocodificarNominatim(enderecoBruto: string): Promise<{ lat: number; lng: number } | null> {
   try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(enderecoBruto)}&format=json&limit=1&countrycodes=br`;
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(enderecoBruto)}&format=json&limit=5&countrycodes=br`;
     const res = await fetch(url, {
       headers: { "User-Agent": "TransmonsegCentral/1.0" },
       signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { lat?: string; lon?: string }[];
-    const primeiro = data[0];
-    if (!primeiro?.lat || !primeiro?.lon) return null;
-    return { lat: parseFloat(primeiro.lat), lng: parseFloat(primeiro.lon) };
+    const data = (await res.json()) as { lat?: string; lon?: string; addresstype?: string }[];
+    if (data.length === 0) return null;
+    // So aplica a preferencia quando a query pediu algo mais especifico
+    // que uma cidade sozinha (tem virgula, ex: "Centro, Rio de Janeiro"
+    // ou um endereco completo) -- busca de CIDADE pura (sem virgula)
+    // deve mesmo aceitar um resultado tipo "city", nao filtrar. Sem
+    // nenhum resultado fora da lista ampla demais, cai pro 1o mesmo
+    // (nunca rejeita tudo so por causa deste filtro).
+    const candidatos = enderecoBruto.includes(",")
+      ? data.filter(d => !NOMINATIM_TIPOS_AMPLOS_DEMAIS.has(d.addresstype ?? ""))
+      : [];
+    const escolhido = candidatos[0] ?? data[0];
+    if (!escolhido?.lat || !escolhido?.lon) return null;
+    return { lat: parseFloat(escolhido.lat), lng: parseFloat(escolhido.lon) };
   } catch {
     return null;
   }

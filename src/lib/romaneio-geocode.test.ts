@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe } from "./romaneio-geocode";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarNominatim } from "./romaneio-geocode";
 
 describe("normalizarEndereco", () => {
   it("maiuscula, sem espacos duplicados, sem espaco nas pontas", () => {
@@ -280,6 +280,57 @@ describe("geocodificarLocal", () => {
     ];
     const buscar = vi.fn().mockResolvedValue(candidatos);
     const r = await geocodificarLocal("AVENIDA GETULIO VARGAS, 60 - SAO FELIX, CIDADE - LOJA 04", null, buscar);
+    expect(r).toBeNull();
+  });
+});
+
+describe("geocodificarNominatim (achado real 27/08, caso BAIRRO:CENTRO:RIO DE JANEIRO)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockFetch(resultados: unknown[]) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => resultados,
+    }));
+  }
+
+  it("query com virgula (bairro+cidade): pula resultado 'city'/'state' amplo demais e pega o resultado especifico", async () => {
+    // Reproduz o caso real: Nominatim devolve Nova Friburgo (city) em 1o
+    // lugar pra "Centro, Rio de Janeiro", o bairro certo (suburb) so' em 2o.
+    mockFetch([
+      { lat: "-22.2800004", lon: "-42.5325303", addresstype: "city" }, // Nova Friburgo, errado
+      { lat: "-22.9043934", lon: "-43.1830653", addresstype: "suburb" }, // Centro/RJ, certo
+    ]);
+    const r = await geocodificarNominatim("Centro, Rio de Janeiro");
+    expect(r).toEqual({ lat: -22.9043934, lng: -43.1830653 });
+  });
+
+  it("query SEM virgula (so' cidade): aceita resultado 'city' normalmente, nao filtra", async () => {
+    mockFetch([{ lat: "-22.9068", lon: "-43.1729", addresstype: "city" }]);
+    const r = await geocodificarNominatim("Rio de Janeiro");
+    expect(r).toEqual({ lat: -22.9068, lng: -43.1729 });
+  });
+
+  it("query com virgula mas TODOS os resultados sao amplos demais: cai pro 1o mesmo (nunca rejeita tudo)", async () => {
+    mockFetch([
+      { lat: "-22.2800004", lon: "-42.5325303", addresstype: "city" },
+      { lat: "-22.0", lon: "-43.0", addresstype: "state" },
+    ]);
+    const r = await geocodificarNominatim("Bairro Inventado, Cidade Sem Bairro Especifico");
+    expect(r).toEqual({ lat: -22.2800004, lng: -42.5325303 });
+  });
+
+  it("sem resultado nenhum: null", async () => {
+    mockFetch([]);
+    const r = await geocodificarNominatim("Endereco Que Nao Existe, Cidade");
+    expect(r).toBeNull();
+  });
+
+  it("erro de rede: null, nunca lanca", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("timeout")));
+    const r = await geocodificarNominatim("Rua X, 1 - Bairro, Cidade");
     expect(r).toBeNull();
   });
 });
