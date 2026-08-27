@@ -54,13 +54,31 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
-import { haversineM, agruparPontosPorPlaca, suspenderPorChegada, type AlvoUnitrac, type PontoEntrega } from "@/lib/unitrac";
+import {
+  haversineM,
+  agruparPontosPorPlaca,
+  suspenderPorChegada,
+  alvoMaisProximoQualquer,
+  type AlvoUnitrac,
+  type PontoEntrega,
+} from "@/lib/unitrac";
 import {
   temCoordenadaValida,
   BONUS_CORROBORACAO_POR_SINAL,
   TIPOS_NAO_GERENCIADOS,
   contaComoEventoDeSilenciamento,
+  emHorarioOperacao,
+  detectarParadaLonga,
+  detectarParadaAnomala,
+  detectarParadaForaTapete,
+  deveSuprimirRedisparoParada,
+  calcularRiscoArea,
+  PARADA_FORA_TAPETE_MIN,
+  type Alerta,
 } from "@/lib/detectores";
+import { temPOIProximo } from "@/lib/overpass";
+import { obterRouboCarga } from "@/lib/roubocarga";
+import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
@@ -97,6 +115,110 @@ const TIMEOUT_UNITRAC_MS = 20_000;
 // (route.ts:99, constante local não exportada -- mesmo valor, orçamento de
 // custo/latência, não regra de desvio).
 const MAX_CORRECOES_MATCH_POR_CICLO = 40;
+
+// ─── Detectores de parada (task B1, 27/08) ────────────────────────────────
+// Piso do raio de chegada pra decidir "o veículo está NO cliente" -- MESMO
+// número e mesmo motivo da Central (motor/route.ts:1815-1818 e o comentário
+// longo de suspenderPorChegada em unitrac.ts): o endereço geocodificado cai
+// longe de onde o caminhão realmente encosta, e o raio nominal do ponto
+// (50m no romaneio sem alvo Unitrac) sozinho perderia metade das chegadas.
+const PISO_RAIO_NO_CLIENTE_M = 150;
+// Raio de congestionamento -- mesmo valor da Central (route.ts:1339,
+// constante local não exportada lá): 2+ outros veículos parados dentro dele
+// é trânsito/fila, não roubo.
+const RAIO_CONGESTION_M = 250;
+// Piso de cobertura do tapete antes de confiar em "fora de via conhecida" --
+// mesmo valor e mesmo motivo da Central (route.ts:1777): tapete recém-criado
+// faz TODO veículo parecer fora de via conhecida (ruído de cold-start).
+const TAPETE_MIN_CELULAS = 300;
+// Cooldown de re-disparo por episódio de parada (deveSuprimirRedisparoParada,
+// @/lib/detectores) -- só conta tratamento INDIVIDUAL do operador, nunca ação
+// em massa. Mesmos valores da Central (route.ts:1437-1447).
+const ORIGENS_TRATAMENTO_INDIVIDUAL = ["resolver_individual", "falso_individual"];
+const LOOKBACK_PARADAS_TRATADAS_MS = 6 * 60 * 60 * 1000;
+// Tipos de parada que têm cooldown por episódio na Central -- parada_fora_tapete
+// fica de fora lá (route.ts:3207-3208) e fica de fora aqui, pela mesma razão.
+const TIPOS_PARADA_COM_COOLDOWN = new Set(["parada_anomala", "parada_longa"]);
+
+// "O veículo está parado NO cliente?" -- calculado EXCLUSIVAMENTE com os
+// pontos do romaneio geocodificado deste veículo (a mesma lista que alimenta
+// o Sinal A). Decisão de produto explícita e definitiva do dono (27/08): a
+// Central Romaneio NUNCA lê marcação/alvo da Unitrac; da Unitrac só vem o
+// rastro (lat/lng/velocidade), que é o que entra aqui como `pos`.
+//
+// Mesma fórmula da Central (motor/route.ts:1814-1818) -- só a FONTE dos
+// pontos muda, a regra é idêntica de propósito. Considera ponto feito E
+// pendente (alvoMaisProximoQualquer): a pergunta é "estou dentro do raio de
+// algum cliente da minha rota", não "tenho entrega pendente aqui".
+export function calcularNoClienteRomaneio(
+  pos: { lat: number; lng: number; velocidade: number | null },
+  pontosRomaneio: PontoEntrega[]
+): boolean {
+  if (pos.velocidade !== 0) return false;
+  // temCoordenadaValida: sem esse filtro um ponto (0,0) (geocode que falhou e
+  // não teve fallback) viraria um "cliente" a ~5.300km -- ver o comentário da
+  // função em detectores.ts.
+  const maisProximo = alvoMaisProximoQualquer(pos.lat, pos.lng, pontosRomaneio.filter(temCoordenadaValida));
+  if (maisProximo === null) return false;
+  return maisProximo.distM <= Math.max(maisProximo.ponto.raio, PISO_RAIO_NO_CLIENTE_M);
+}
+
+// Roda os 3 detectores de parada de @/lib/detectores (funções PURAS, já
+// testadas em detectores.test.ts -- esta função NUNCA reimplementa a decisão
+// deles, só liga o contexto da Central Romaneio na assinatura de cada um).
+//
+// Diferença deliberada em relação à Central: NÃO passa entregasFeitas/
+// entregasTotal pra detectarParadaLonga. Lá esses campos calam o alerta
+// quando a rota acabou, porque lá detectarRetornoTardio cobre esse caso;
+// aqui não existe retorno_tardio, então passá-los seria falso negativo puro
+// (ver [[feedback_desvio_priorizar_recall]]).
+export function avaliarParadasRomaneio(ctx: {
+  paradoMin: number;
+  emOperacao: boolean;
+  foraDaBase: boolean;
+  noCliente: boolean;
+  estavEmMovimento: boolean;
+  esMadrugada: boolean;
+  temPOIProximo: boolean;
+  jaParedoNoCicloAnterior: boolean;
+  vizinhosParados: number;
+  dentroTapete: boolean | null;
+  riscoAreaAtual: number;
+}): Alerta[] {
+  return [
+    detectarParadaLonga({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      foraDaBase: ctx.foraDaBase,
+      noCliente: ctx.noCliente,
+      temPOIProximo: ctx.temPOIProximo,
+    }),
+    detectarParadaAnomala({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      foraDaBase: ctx.foraDaBase,
+      noCliente: ctx.noCliente,
+      estavEmMovimento: ctx.estavEmMovimento,
+      esMadrugada: ctx.esMadrugada,
+      // Mesma decisão da Central (route.ts:2438): o sinal de área de risco
+      // entra pelo riscoAreaAtual (parada_fora_tapete), não por este flag.
+      emZonaRisco: false,
+      temPOIProximo: ctx.temPOIProximo,
+      jaParedoNoCicloAnterior: ctx.jaParedoNoCicloAnterior,
+      vizinhosParados: ctx.vizinhosParados,
+    }),
+    detectarParadaForaTapete({
+      paradoMin: ctx.paradoMin,
+      emOperacao: ctx.emOperacao,
+      foraDaBase: ctx.foraDaBase,
+      noCliente: ctx.noCliente,
+      dentroTapete: ctx.dentroTapete,
+      temPOIProximo: ctx.temPOIProximo,
+      vizinhosParados: ctx.vizinhosParados,
+      riscoAreaAtual: ctx.riscoAreaAtual,
+    }),
+  ].filter((a): a is Alerta => a !== null);
+}
 
 // Trava de execução única deste ciclo -- MESMO mecanismo da Central
 // (motor/route.ts:497-528): lease com expiração por UPDATE atômico em
