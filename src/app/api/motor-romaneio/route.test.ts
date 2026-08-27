@@ -287,7 +287,7 @@ describe("deveAvaliarSinalA", () => {
     expect(deveAvaliarSinalA(ctxSinalA())).toBe(true);
   });
 
-  it("REGRESSAO: os 5 gates historicos do Sinal A continuam valendo um a um", () => {
+  it("REGRESSAO: os 6 gates historicos do Sinal A continuam valendo um a um", () => {
     expect(deveAvaliarSinalA(ctxSinalA({ fresco: false }))).toBe(false);
     expect(deveAvaliarSinalA(ctxSinalA({ suspensoPorChegada: true }))).toBe(false);
     expect(deveAvaliarSinalA(ctxSinalA({ emCarenciaDeBase: true }))).toBe(false);
@@ -304,7 +304,12 @@ describe("B2 fim-a-fim (composicao das regras puras)", () => {
     { nf: "123456", clienteNome: "CLIENTE A", lat: PONTO.lat, lng: PONTO.lng, presencaConfirmadaEm: null },
   ];
   // Alvo Unitrac existe pra este veiculo -- e' o que ligava o `continue` antigo.
-  const alvosUnitrac = [pontoRomaneio(PONTO.lat, PONTO.lng, { feito: true, documento: "123456" })];
+  // feito=true e raio=400 sao justamente os dois campos que o alvo IMPOE em
+  // montarPontosDeRomaneio quando ele e' passado; com [] os dois caem pro
+  // valor do romaneio (feito=false, raio default 50).
+  const alvosUnitrac = [
+    pontoRomaneio(PONTO.lat, PONTO.lng, { feito: true, raio: 400, documento: "123456" }),
+  ];
 
   it("veiculo COM alvo Unitrac parado longe do romaneio: os 3 detectores avaliam e disparam, desvio nao roda", () => {
     const escopo = decidirEscopoDoVeiculo(alvosUnitrac.length);
@@ -332,12 +337,49 @@ describe("B2 fim-a-fim (composicao das regras puras)", () => {
     expect(avaliarParadasRomaneio(ctxParadaSuspeita({ noCliente }))).toEqual([]);
   });
 
-  it("veiculo SEM alvo Unitrac: mesmos pontos, mesmo veredito -- passar [] nao mudou nada pra ele", () => {
-    const escopo = decidirEscopoDoVeiculo(0);
-    expect(escopo).toEqual({ avaliaDesvio: true, avaliaParadas: true });
-    // Antes da B2 a rota passava pontosUnitracVeiculo, que pra este veiculo
-    // ja' era [] -- o argumento literal produz exatamente o mesmo resultado.
-    expect(montarPontosDeRomaneio(linhasRomaneio, [])).toEqual(montarPontosDeRomaneio(linhasRomaneio, []));
+  it("veiculo SEM alvo Unitrac: continua avaliando desvio E paradas, sem regressao", () => {
+    expect(decidirEscopoDoVeiculo(0)).toEqual({ avaliaDesvio: true, avaliaParadas: true });
+    // Antes da B2 a rota passava `pontosUnitracVeiculo`, que pra ESTE veiculo
+    // ja' era [] na pratica -- ou seja, pra ele o argumento literal e' o
+    // mesmo dado de sempre e nada mudou.
+    const pontos = montarPontosDeRomaneio(linhasRomaneio, []);
+    const noCliente = calcularNoClienteRomaneio({ ...PONTO, velocidade: 0 }, pontos);
+    expect(noCliente).toBe(true);
+    expect(avaliarParadasRomaneio(ctxParadaSuspeita({ noCliente }))).toEqual([]);
+  });
+
+  it("o que o [] literal REALMENTE muda: feito, raio e o fallback de coordenada saem do alvo Unitrac", () => {
+    // Este e' o teste que prova a decisao do brief (item 2). Passar o alvo
+    // Unitrac (comportamento antigo, so' alcancavel agora que o veiculo com
+    // alvo nao e' mais pulado inteiro) contamina 3 campos de `pontos`:
+    const comAlvo = montarPontosDeRomaneio(linhasRomaneio, alvosUnitrac);
+    const semAlvo = montarPontosDeRomaneio(linhasRomaneio, []);
+
+    // (1) `feito` vinha do status ao vivo da Unitrac...
+    expect(comAlvo[0].feito).toBe(true);
+    // ...e agora e' romaneio puro (presencaConfirmadaEm === null).
+    expect(semAlvo[0].feito).toBe(false);
+
+    // (2) `raio` vinha do alvo; agora cai no default de 50m do romaneio.
+    expect(comAlvo[0].raio).toBe(400);
+    expect(semAlvo[0].raio).toBe(50);
+
+    // (3) fallback de coordenada: linha SEM geocode proprio sobrevivia
+    // herdando a coordenada do alvo, e agora e' descartada.
+    const semGeocode = [
+      { nf: "123456", clienteNome: "CLIENTE A", lat: null, lng: null, presencaConfirmadaEm: null },
+    ];
+    expect(montarPontosDeRomaneio(semGeocode, alvosUnitrac)).toHaveLength(1);
+    expect(montarPontosDeRomaneio(semGeocode, [])).toHaveLength(0);
+
+    // Os 3 empurram na MESMA direcao: menos ponto de "estou no cliente" e raio
+    // menor => noCliente menos propenso a true => MAIS parada disparando,
+    // nunca menos ([[feedback_desvio_priorizar_recall]]). O caso do raio, em
+    // numero: parado a ~250m do ponto, com o raio de 400m do alvo o veiculo
+    // esta' no cliente; sem ele o piso RAIO_CHEGADA_MIN_M (300m) ainda cobre
+    // -- mas a partir de 300m o veredito passa a divergir.
+    expect(calcularNoClienteRomaneio({ ...FAIXA_100_300, velocidade: 0 }, comAlvo)).toBe(true);
+    expect(calcularNoClienteRomaneio({ ...FAIXA_100_300, velocidade: 0 }, semAlvo)).toBe(true);
   });
 });
 
