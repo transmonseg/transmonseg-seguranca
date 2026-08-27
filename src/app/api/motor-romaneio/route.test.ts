@@ -17,8 +17,14 @@
 // as regras vivem em funcoes PURAS exportadas da propria rota, testadas
 // direto, sem mockar banco/rede.
 import { describe, it, expect } from "vitest";
-import { calcularNoClienteRomaneio, avaliarParadasRomaneio } from "./route";
+import {
+  calcularNoClienteRomaneio,
+  avaliarParadasRomaneio,
+  avaliarDentroTapete,
+  deveResolverAlertaGerenciado,
+} from "./route";
 import type { PontoEntrega } from "@/lib/unitrac";
+import { celulaDe } from "@/lib/celulas";
 
 // Ponto de entrega do romaneio geocodificado, do jeito que
 // montarPontosDeRomaneio (@/lib/romaneio) devolve quando NAO ha alvo Unitrac
@@ -49,8 +55,13 @@ function pontoRomaneio(lat: number, lng: number, over: Partial<PontoEntrega> = {
 // parado EM CIMA do ponto de entrega do romaneio, sem nenhum alvo
 // correspondente na Unitrac.
 const PONTO = { lat: -22.8541, lng: -43.2965 };
-// ~120m do ponto -- dentro do piso de 150m, fora do raio nominal de 50m.
+// ~120m do ponto -- fora do raio nominal de 50m, dentro de qualquer piso.
 const PERTO = { lat: -22.85302, lng: -43.2965 };
+// ~250m do ponto -- a FAIXA CRITICA. Com o piso antigo de 150m dava
+// noCliente=false (caminhao no cliente virava parada_anomala aos 12min); com
+// RAIO_CHEGADA_MIN_M (300m, medido em 01/08 contra 4.441 pontos reais) da
+// true. Trava a decisao do fix round 1, finding 1.
+const FAIXA_100_300 = { lat: -22.85185, lng: -43.2965 };
 // ~2km do ponto -- inequivocamente fora.
 const LONGE = { lat: -22.8361, lng: -43.2965 };
 
@@ -63,9 +74,20 @@ describe("calcularNoClienteRomaneio", () => {
     expect(noCliente).toBe(true);
   });
 
-  it("parado a ~120m do ponto => ainda noCliente=true (piso de 150m, igual a Central)", () => {
+  it("parado a ~120m do ponto => ainda noCliente=true", () => {
     const noCliente = calcularNoClienteRomaneio(
       { lat: PERTO.lat, lng: PERTO.lng, velocidade: 0 },
+      [pontoRomaneio(PONTO.lat, PONTO.lng)]
+    );
+    expect(noCliente).toBe(true);
+  });
+
+  it("parado na faixa 100-300m do ponto geocodificado => noCliente=true (piso e' RAIO_CHEGADA_MIN_M=300, nao 150)", () => {
+    // Medicao de 01/08 (unitrac.ts:467-486): 19% das entregas reais acontecem
+    // nessa faixa. Com piso de 150m elas viravam parada_anomala aos 12min --
+    // o falso positivo que desligou esses detectores pra este cliente.
+    const noCliente = calcularNoClienteRomaneio(
+      { lat: FAIXA_100_300.lat, lng: FAIXA_100_300.lng, velocidade: 0 },
       [pontoRomaneio(PONTO.lat, PONTO.lng)]
     );
     expect(noCliente).toBe(true);
@@ -115,8 +137,8 @@ describe("calcularNoClienteRomaneio", () => {
     expect(calcularNoClienteRomaneio({ lat: PONTO.lat, lng: PONTO.lng, velocidade: 0 }, [])).toBe(false);
   });
 
-  it("usa o raio real do ponto quando ele e' maior que o piso de 150m", () => {
-    // 400m de distancia, raio de 500m no ponto -> dentro.
+  it("usa o raio real do ponto quando ele e' maior que o piso", () => {
+    // 400m de distancia (acima do piso de 300m), raio de 500m no ponto -> dentro.
     const a400m = { lat: -22.85050, lng: -43.2965 };
     const noCliente = calcularNoClienteRomaneio(
       { lat: a400m.lat, lng: a400m.lng, velocidade: 0 },
@@ -204,12 +226,115 @@ describe("avaliarParadasRomaneio", () => {
     expect(risco?.nivel).toBe("critico");
   });
 
-  it("rota concluida NAO suprime parada_longa nesta rota (nao ha retorno_tardio aqui pra cobrir)", () => {
+  it("rota concluida NAO suprime parada_longa nesta rota -- avaliarParadasRomaneio nem aceita entregasFeitas/Total (decisao registrada)", () => {
     // Na Central, detectarParadaLonga recebe entregasFeitas/entregasTotal e
     // se cala quando a rota acabou, porque la o retorno_tardio cobre esse
     // caso. A Central Romaneio nao tem retorno_tardio -- passar esses
     // parametros aqui viraria falso negativo puro.
     const tipos = avaliarParadasRomaneio(ctxParadaSuspeita({ paradoMin: 120 })).map((a) => a.tipo).sort();
     expect(tipos).toContain("parada_longa");
+  });
+});
+
+// Fix round 1, finding 2: falha PARCIAL na leitura do tapete (contagem OK,
+// células não) não pode virar "todo mundo fora do tapete".
+describe("avaliarDentroTapete", () => {
+  const CEL = celulaDe(PONTO.lat, PONTO.lng);
+
+  it("cobertura OK e celula do veiculo no tapete => true", () => {
+    expect(
+      avaliarDentroTapete({
+        confiavel: true,
+        contagemCelulasCliente: 5000,
+        celulasCliente: new Set([CEL]),
+        lat: PONTO.lat,
+        lng: PONTO.lng,
+      })
+    ).toBe(true);
+  });
+
+  it("cobertura OK e celula do veiculo FORA do tapete => false (unico caso que dispara o detector)", () => {
+    expect(
+      avaliarDentroTapete({
+        confiavel: true,
+        contagemCelulasCliente: 5000,
+        celulasCliente: new Set(["celula-de-outro-lugar"]),
+        lat: PONTO.lat,
+        lng: PONTO.lng,
+      })
+    ).toBe(false);
+  });
+
+  it("cobertura abaixo do piso (cold-start) => null, nunca false", () => {
+    expect(
+      avaliarDentroTapete({
+        confiavel: true,
+        contagemCelulasCliente: 299,
+        celulasCliente: new Set(),
+        lat: PONTO.lat,
+        lng: PONTO.lng,
+      })
+    ).toBeNull();
+  });
+
+  it("REGRESSAO: leitura nao confiavel com contagem alta e celulas vazias => null, nao false (senao seria flood fleet-wide)", () => {
+    expect(
+      avaliarDentroTapete({
+        confiavel: false,
+        contagemCelulasCliente: 150000,
+        celulasCliente: new Set(),
+        lat: PONTO.lat,
+        lng: PONTO.lng,
+      })
+    ).toBeNull();
+  });
+});
+
+// Fix round 1, finding 3: o auto-resolve novo só pode fechar o que o ciclo
+// realmente avaliou.
+describe("deveResolverAlertaGerenciado", () => {
+  const base = {
+    tipo: "parada_anomala",
+    disparouNesteCiclo: false,
+    silenciado: false,
+    podeFecharParadas: true,
+    podeFecharForaTapete: true,
+  };
+
+  it("tipo que disparou neste ciclo nunca e' fechado", () => {
+    expect(deveResolverAlertaGerenciado({ ...base, disparouNesteCiclo: true })).toBe(false);
+  });
+
+  it("tipo silenciado por falso positivo nunca e' fechado (preserva contexto do operador)", () => {
+    expect(deveResolverAlertaGerenciado({ ...base, silenciado: true })).toBe(false);
+  });
+
+  it("parada avaliada e condicao acabou => fecha", () => {
+    expect(deveResolverAlertaGerenciado(base)).toBe(true);
+  });
+
+  it("REGRESSAO: ciclo que NAO conseguiu avaliar a parada (Overpass fora, congestionamento, parado_desde ausente) nao fecha", () => {
+    expect(deveResolverAlertaGerenciado({ ...base, podeFecharParadas: false })).toBe(false);
+    expect(deveResolverAlertaGerenciado({ ...base, tipo: "parada_longa", podeFecharParadas: false })).toBe(false);
+  });
+
+  it("parada_fora_tapete depende da sua propria flag (tapete pode ser 'nao sei' com o resto avaliado)", () => {
+    expect(
+      deveResolverAlertaGerenciado({ ...base, tipo: "parada_fora_tapete", podeFecharForaTapete: false })
+    ).toBe(false);
+    expect(
+      deveResolverAlertaGerenciado({ ...base, tipo: "parada_fora_tapete", podeFecharForaTapete: true })
+    ).toBe(true);
+  });
+
+  it("outro tipo gerenciado qualquer mantem o comportamento de antes da B1", () => {
+    expect(
+      deveResolverAlertaGerenciado({
+        ...base,
+        tipo: "excesso",
+        podeFecharParadas: false,
+        podeFecharForaTapete: false,
+      })
+    ).toBe(true);
   });
 });

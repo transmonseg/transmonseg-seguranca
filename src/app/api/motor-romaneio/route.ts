@@ -59,6 +59,7 @@ import {
   agruparPontosPorPlaca,
   suspenderPorChegada,
   alvoMaisProximoQualquer,
+  RAIO_CHEGADA_MIN_M,
   type AlvoUnitrac,
   type PontoEntrega,
 } from "@/lib/unitrac";
@@ -117,12 +118,33 @@ const TIMEOUT_UNITRAC_MS = 20_000;
 const MAX_CORRECOES_MATCH_POR_CICLO = 40;
 
 // ─── Detectores de parada (task B1, 27/08) ────────────────────────────────
-// Piso do raio de chegada pra decidir "o veículo está NO cliente" -- MESMO
-// número e mesmo motivo da Central (motor/route.ts:1815-1818 e o comentário
-// longo de suspenderPorChegada em unitrac.ts): o endereço geocodificado cai
-// longe de onde o caminhão realmente encosta, e o raio nominal do ponto
-// (50m no romaneio sem alvo Unitrac) sozinho perderia metade das chegadas.
-const PISO_RAIO_NO_CLIENTE_M = 150;
+// Piso do raio pra decidir "o veículo está NO cliente".
+//
+// USA RAIO_CHEGADA_MIN_M (300m, @/lib/unitrac), NÃO os 150m da Central
+// (motor/route.ts:1815-1818). Corrigido na revisão da task B1 -- a versão
+// anterior deste comentário citava o comentário de suspenderPorChegada como
+// fonte dos 150m, e ele diz exatamente o contrário: 150 é o valor REJEITADO.
+// Medição real de 01/08 documentada em unitrac.ts:467-486, cruzando os 4.441
+// pontos de entrega geocodificados de 31/07+01/08 contra as paradas reais dos
+// caminhões -- com piso de 150m METADE das entregas nunca registrava chegada
+// (a faixa 100-300m, 19% do total, é exatamente a que se perde). Foi por isso
+// que a constante virou 300.
+//
+// Por que 150 pode estar certo lá e errado aqui: na Central o piso é aplicado
+// a ALVO DA UNITRAC (geofence cadastrado, coordenada conferida pela operação);
+// aqui é aplicado a ENDEREÇO GEOCODIFICADO do romaneio -- justamente a fonte
+// de menor precisão que aquela medição mediu. Com 150m, caminhão de verdade
+// parado no cliente mas a 150-300m do ponto geocodificado vira noCliente=false
+// e dispara parada_anomala aos 12min: o MESMO falso positivo que motivou
+// desligar esses 3 detectores pra este cliente em 26/08 (e um detector que
+// inunda acaba desligado, o que zera o recall de vez -- foi o que aconteceu).
+//
+// Consequência aceita e consciente: dentro da bolha de 300m em torno de um
+// ponto do romaneio os 3 detectores de parada ficam mudos. É a mesma bolha
+// que suspenderPorChegada (mesma constante) já usa NESTE arquivo pra suspender
+// o Sinal A -- antes desta correção a rota respondia "tá no cliente?" com dois
+// números diferentes (300 no desvio, 150 na parada).
+const PISO_RAIO_NO_CLIENTE_M = RAIO_CHEGADA_MIN_M;
 // Raio de congestionamento -- mesmo valor da Central (route.ts:1339,
 // constante local não exportada lá): 2+ outros veículos parados dentro dele
 // é trânsito/fila, não roubo.
@@ -139,6 +161,10 @@ const LOOKBACK_PARADAS_TRATADAS_MS = 6 * 60 * 60 * 1000;
 // Tipos de parada que têm cooldown por episódio na Central -- parada_fora_tapete
 // fica de fora lá (route.ts:3207-3208) e fica de fora aqui, pela mesma razão.
 const TIPOS_PARADA_COM_COOLDOWN = new Set(["parada_anomala", "parada_longa"]);
+// Os 3 tipos que esta rota passou a produzir na task B1 -- usados pra decidir
+// quais alertas em aberto este ciclo tem autoridade pra FECHAR (ver
+// podeFecharParadas no loop).
+const TIPOS_PARADA = new Set(["parada_anomala", "parada_longa", "parada_fora_tapete"]);
 
 // "O veículo está parado NO cliente?" -- calculado EXCLUSIVAMENTE com os
 // pontos do romaneio geocodificado deste veículo (a mesma lista que alimenta
@@ -218,6 +244,49 @@ export function avaliarParadasRomaneio(ctx: {
       riscoAreaAtual: ctx.riscoAreaAtual,
     }),
   ].filter((a): a is Alerta => a !== null);
+}
+
+// dentroTapete de UM veículo -- `null` significa "não sei" e NUNCA dispara
+// parada_fora_tapete (nem autoriza fechar um em aberto). Dois motivos
+// diferentes produzem null de propósito: cobertura abaixo de
+// TAPETE_MIN_CELULAS (cold-start, mesma cautela da Central) e leitura do
+// tapete não confiável neste ciclo (`confiavel=false`, ver as duas queries de
+// corredor_celulas). Sem o segundo caso, uma falha só na query de células
+// deixaria a contagem alta com o conjunto vazio e TODO veículo candidato
+// pareceria "fora do tapete" -- flood fleet-wide (achado da revisão da B1).
+export function avaliarDentroTapete(ctx: {
+  confiavel: boolean;
+  contagemCelulasCliente: number;
+  celulasCliente: Set<string>;
+  lat: number;
+  lng: number;
+}): boolean | null {
+  if (!ctx.confiavel) return null;
+  if (ctx.contagemCelulasCliente < TAPETE_MIN_CELULAS) return null;
+  return vizinhanca3x3(ctx.lat, ctx.lng).some((c) => ctx.celulasCliente.has(c));
+}
+
+// Este ciclo tem autoridade pra FECHAR (auto-resolve pela máquina) um alerta
+// gerenciado que está em aberto? Achado da revisão da B1: antes da task nada
+// nesta tabela era gerenciado e este caminho nunca executava; agora ele roda
+// todo ciclo, e "o detector não disparou" pode significar tanto "a condição
+// acabou" (fechar é o certo) quanto "não deu pra avaliar" -- Overpass fora do
+// ar, congestionamento não lido, parado_desde ausente, GPS atrasado. Fechar
+// no segundo caso apaga da tela um alerta antirroubo real, sem ninguém ter
+// tratado. Só fecha o que foi de fato avaliado.
+export function deveResolverAlertaGerenciado(ctx: {
+  tipo: string;
+  disparouNesteCiclo: boolean;
+  silenciado: boolean;
+  podeFecharParadas: boolean;
+  podeFecharForaTapete: boolean;
+}): boolean {
+  if (ctx.disparouNesteCiclo || ctx.silenciado) return false;
+  if (ctx.tipo === "parada_fora_tapete") return ctx.podeFecharForaTapete;
+  if (TIPOS_PARADA.has(ctx.tipo)) return ctx.podeFecharParadas;
+  // Qualquer outro tipo gerenciado que venha a existir nesta tabela:
+  // comportamento de antes da task B1, inalterado.
+  return true;
 }
 
 // Trava de execução única deste ciclo -- MESMO mecanismo da Central
@@ -653,8 +722,19 @@ export async function POST(request: Request) {
     // mecânica da Central: contagem total por cliente pro piso
     // TAPETE_MIN_CELULAS + só as células candidatas (a mesma vizinhança 3x3
     // já montada acima pra vias_celulas), nunca o tapete inteiro.
+    //
+    // tapeteConfiavel (achado da revisão da task B1): as DUAS queries abaixo
+    // têm que ter dado certo pro sinal valer. Se só a segunda falhasse, a
+    // contagem ficaria >= TAPETE_MIN_CELULAS com o conjunto de células VAZIO,
+    // e aí `dentroTapete` viraria FALSE (não null) pra TODO veículo candidato
+    // do ciclo -- ou seja, toda parada fora do cliente dispararia
+    // parada_fora_tapete de uma vez, um flood fleet-wide disfarçado de
+    // fail-open. Com a flag, falha em QUALQUER uma das duas degrada pro
+    // comportamento que o comentário promete: dentroTapete=null, detector
+    // mudo naquele ciclo.
     const contagemTapetePorCliente = new Map<string, number>();
     const celulasTapetePorCliente = new Map<string, Set<string>>();
+    let tapeteConfiavel = true;
     if (clienteIdsUnicos.length > 0) {
       try {
         const { rows } = await pool.query<{ cliente_id: string; n: string }>(
@@ -683,9 +763,10 @@ export async function POST(request: Request) {
           }
         }
       } catch (errTapete) {
-        // Sem tapete => dentroTapete fica null => parada_fora_tapete não
-        // dispara (mesma cautela de cold-start da Central). Os outros 2
-        // detectores seguem normalmente.
+        // Falha em qualquer uma das duas queries => dentroTapete fica null =>
+        // parada_fora_tapete não dispara (mesma cautela de cold-start da
+        // Central). Os outros 2 detectores seguem normalmente.
+        tapeteConfiavel = false;
         erros.push(`Aviso: falha ao ler corredor_celulas (parada_fora_tapete fica inativa neste ciclo): ${String(errTapete)}`);
       }
     }
@@ -724,6 +805,10 @@ export async function POST(request: Request) {
     // neste ciclo, então são carregados sob demanda (memoizados), não em todo
     // ciclo. Num ciclo sem ninguém parado fora do cliente, custo zero.
     let paradosFrotaCache: { lat: number; lng: number }[] | null = null;
+    // Falha na leitura => vizinhosParados=0 (não suprime nada, mais alerta) MAS
+    // também não pode servir de base pra FECHAR alerta em aberto -- ver
+    // podeFecharParadas no loop.
+    let paradosFrotaFalhou = false;
     async function paradosDaFrota(): Promise<{ lat: number; lng: number }[]> {
       if (paradosFrotaCache) return paradosFrotaCache;
       try {
@@ -739,6 +824,7 @@ export async function POST(request: Request) {
         // Sem a lista, vizinhosParados fica 0 => nenhuma supressão por
         // congestionamento => mais alerta, nunca menos.
         erros.push(`Aviso: falha ao ler paradas da frota (congestionamento nao suprime neste ciclo): ${String(errParados)}`);
+        paradosFrotaFalhou = true;
         paradosFrotaCache = [];
       }
       return paradosFrotaCache;
@@ -1147,6 +1233,28 @@ export async function POST(request: Request) {
         let riscoAreaVeiculo = 0;
         const paradoDesdeVeiculo = posAtual.parado_desde;
 
+        // "Este ciclo AVALIOU de verdade as paradas deste veículo?" -- achado
+        // da revisão da task B1. O auto-resolve do Step 9 fecha todo tipo
+        // gerenciado que não disparou neste ciclo; sem estas flags, "não
+        // disparou" e "não deu pra avaliar" viram a mesma coisa, e um
+        // parada_anomala/parada_longa REAL e ativo seria fechado pela máquina
+        // (operador_id null, card some da tela) por causa de: GPS atrasado,
+        // parado_desde ausente, Overpass fora do ar (temPOI=true suprime os 3),
+        // falha na leitura de congestionamento, ou tapete parcialmente lido.
+        // Reabriria no ciclo saudável seguinte (auto-resolve não arma
+        // cooldown), mas a janela em que o alerta some é real. Só fecha o que
+        // este ciclo de fato conseguiu avaliar.
+        let podeFecharParadas = false;
+        let podeFecharForaTapete = false;
+
+        if (fresco && posAtual.velocidade !== 0 && posAtual.velocidade != null) {
+          // Veículo em movimento com leitura fresca: nenhum dos 3 detectores
+          // pode valer (todos exigem parada). É o caminho normal de fechamento
+          // -- o carro voltou a andar, o alerta de parada morreu.
+          podeFecharParadas = true;
+          podeFecharForaTapete = true;
+        }
+
         if (fresco && posAtual.velocidade === 0 && paradoDesdeVeiculo) {
           const inicioMs = new Date(paradoDesdeVeiculo).getTime();
           if (Number.isFinite(inicioMs)) {
@@ -1162,12 +1270,20 @@ export async function POST(request: Request) {
           const candidatoParada =
             emOperacao && foraDaBase && !noCliente && paradoMinVeiculo >= PARADA_FORA_TAPETE_MIN;
 
+          // Não ser candidato é ausência REAL de condição (está no cliente, na
+          // base, fora do horário, parado há menos de 3min) -- avaliação
+          // completa, pode fechar o que estiver aberto.
+          podeFecharParadas = !candidatoParada;
+          podeFecharForaTapete = !candidatoParada;
+
           if (candidatoParada) {
-            const contagemTapete = contagemTapetePorCliente.get(info.cliente_id) ?? 0;
-            if (contagemTapete >= TAPETE_MIN_CELULAS) {
-              const celulasCliente = celulasTapetePorCliente.get(info.cliente_id) ?? new Set<string>();
-              dentroTapeteVeiculo = vizinhanca3x3(latAtual, lngAtual).some((c) => celulasCliente.has(c));
-            }
+            dentroTapeteVeiculo = avaliarDentroTapete({
+              confiavel: tapeteConfiavel,
+              contagemCelulasCliente: contagemTapetePorCliente.get(info.cliente_id) ?? 0,
+              celulasCliente: celulasTapetePorCliente.get(info.cliente_id) ?? new Set<string>(),
+              lat: latAtual,
+              lng: lngAtual,
+            });
 
             // Só os 2 gatilhos reais consultam POI/congestionamento -- mesma
             // economia da Central (route.ts:2006 e 2024).
@@ -1176,10 +1292,12 @@ export async function POST(request: Request) {
             const candidatoLonga = paradoMinVeiculo >= 90;
 
             let temPOI = false;
+            let overpassFalhou = false;
             if (candidatoAnomala || candidatoForaTapete || candidatoLonga) {
               try {
                 temPOI = await temPOIProximo(latAtual, lngAtual, pool);
               } catch {
+                overpassFalhou = true;
                 // Overpass fora do ar: assume POI presente (mesma decisão da
                 // Central, route.ts:2010-2016) -- prefere não inundar a
                 // operação com falso positivo em massa durante instabilidade.
@@ -1231,6 +1349,18 @@ export async function POST(request: Request) {
               new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false }).format(agora),
               10
             );
+
+            // Confiabilidade DESTE veículo neste ciclo (ver podeFecharParadas
+            // acima): Overpass caído ou leitura de congestionamento falha/ativa
+            // suprimem os detectores por motivo que NÃO é "a condição acabou"
+            // -- nesses casos o ciclo não fecha alerta em aberto, só deixa de
+            // abrir alerta novo.
+            const avaliacaoConfiavel = !overpassFalhou && !paradosFrotaFalhou && vizinhosParados < 2;
+            podeFecharParadas = avaliacaoConfiavel;
+            // parada_fora_tapete ainda exige um veredito real do tapete:
+            // dentroTapete null (cold-start ou leitura parcial) é "não sei",
+            // nunca "não está mais fora do tapete".
+            podeFecharForaTapete = avaliacaoConfiavel && dentroTapeteVeiculo !== null;
 
             alertasParada.push(
               ...avaliarParadasRomaneio({
@@ -1470,8 +1600,19 @@ export async function POST(request: Request) {
         // "desvio" existia nesta tabela, e desvio nunca é gerenciado); agora
         // é o que faz parada_anomala/parada_longa/parada_fora_tapete fechar
         // sozinha quando o carro volta a andar -- exatamente como na Central.
-        const obsoletos = alertasGerenciados.filter(
-          (a) => !tiposDoCiclo.has(a.tipo) && !silenciadosVeiculo.has(a.tipo)
+        //
+        // Só fecha o que este ciclo AVALIOU (podeFecharParadas /
+        // podeFecharForaTapete, ver o bloco de parada acima) -- "não disparou"
+        // e "não deu pra avaliar" não podem ter o mesmo efeito num alerta
+        // antirroubo em aberto.
+        const obsoletos = alertasGerenciados.filter((a) =>
+          deveResolverAlertaGerenciado({
+            tipo: a.tipo,
+            disparouNesteCiclo: tiposDoCiclo.has(a.tipo),
+            silenciado: silenciadosVeiculo.has(a.tipo),
+            podeFecharParadas,
+            podeFecharForaTapete,
+          })
         );
         if (obsoletos.length > 0) {
           const erroResolveObsoletos = await resolverPelaMaquina(admin, obsoletos, agora.toISOString());
