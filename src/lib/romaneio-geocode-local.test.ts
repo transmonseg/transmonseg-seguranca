@@ -32,6 +32,10 @@ describe("extrairCidadeDoEndereco", () => {
     expect(extrairCidadeDoEndereco("SEM VIRGULA SUFICIENTE")).toBeNull();
     expect(extrairCidadeDoEndereco("SO UMA, VIRGULA")).toBeNull();
   });
+
+  it("achado real (cliente EMPORIO VALLEJU): romaneio sem cidade nenhuma ('RUA ,NUM, BAIRRO', sem ' - ') -- nao inventa cidade a partir do bairro", () => {
+    expect(extrairCidadeDoEndereco("ESTRADA UNIAO E INDUSTRIA ,7046, NOGUEIRA")).toBeNull();
+  });
 });
 
 describe("normalizarNomeRua", () => {
@@ -108,6 +112,10 @@ describe("extrairBairroDoEndereco", () => {
 
   it("endereco mal formado (menos de 2 virgulas): retorna null", () => {
     expect(extrairBairroDoEndereco("SO UMA, VIRGULA")).toBeNull();
+  });
+
+  it("achado real (cliente EMPORIO VALLEJU): sem ' - ', o bairro e' o ultimo segmento inteiro", () => {
+    expect(extrairBairroDoEndereco("ESTRADA UNIAO E INDUSTRIA ,7046, NOGUEIRA")).toBe("NOGUEIRA");
   });
 });
 

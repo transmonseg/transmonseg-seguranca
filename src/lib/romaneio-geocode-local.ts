@@ -13,6 +13,13 @@ export function extrairRuaDoEndereco(enderecoBruto: string): string {
 export function extrairCidadeDoEndereco(enderecoBruto: string): string | null {
   const partes = enderecoBruto.split(",");
   if (partes.length < 3) return null;
+  // Achado real (cliente EMPORIO VALLEJU): o romaneio as vezes omite a
+  // cidade por completo -- "RUA ,NUMERO, BAIRRO", sem " - " nenhum -- em
+  // vez do formato normal "RUA, NUM - BAIRRO, CIDADE - SUFIXO". Sem essa
+  // checagem, o bairro (unico dado real no ultimo segmento) era extraido
+  // como se fosse cidade (ex: "NOGUEIRA", que e' bairro de Petropolis,
+  // virava "cidade" -- geocode por sorte caiu perto, mas era coincidencia).
+  if (!partes[1].includes(" - ")) return null;
   const ultimaParte = partes[partes.length - 1].trim();
   const cidade = ultimaParte.split(" - ")[0]?.trim();
   return cidade || null;
@@ -28,6 +35,10 @@ export function extrairNumeroDoEndereco(enderecoBruto: string): string | null {
 export function extrairBairroDoEndereco(enderecoBruto: string): string | null {
   const partes = enderecoBruto.split(",");
   if (partes.length < 3) return null;
+  // Mesma variante sem cidade do achado EMPORIO VALLEJU (ver
+  // extrairCidadeDoEndereco): sem " - " embutido em partes[1], o bairro de
+  // verdade e' o ultimo segmento inteiro, nao o que viria depois de " - ".
+  if (!partes[1].includes(" - ")) return partes[partes.length - 1].trim() || null;
   const bairro = partes[1].split(" - ")[1]?.trim();
   return bairro || null;
 }
