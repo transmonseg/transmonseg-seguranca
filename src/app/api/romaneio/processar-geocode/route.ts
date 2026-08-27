@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
-import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge } from "@/lib/romaneio-geocode-local";
+import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
 export const maxDuration = 60;
@@ -188,15 +188,25 @@ export async function POST(request: Request) {
       .filter((c): c is string => c !== null)
       .map(expandirCidadeTruncada)
   )];
+  // termoBuscaCidade (achado real 27/08, item 3 da blindagem): o nome
+  // PELADO ia pro Nominatim e nome de municipio se repete pelo Brasil
+  // inteiro -- o cache de producao tinha CIDADE:NATIVIDADE apontando pra
+  // Natividade/TO (~1500km), CIDADE:VALENÇA pra Valença/BA, CIDADE:MESQUITA
+  // pra Mesquita/MG, e mais uma duzia iguais, todos EM USO como regua de
+  // validacao de distancia dos outros enderecos. Municipio reconhecido do
+  // RJ agora vai qualificado com ", RJ, Brasil". O termo qualificado e'
+  // tambem a CHAVE de cache, entao as entradas envenenadas antigas
+  // simplesmente deixam de ser lidas -- sem precisar apagar nada do banco.
   const pontosCidade = new Map<string, { lat: number; lng: number }>();
   for (const cidade of cidadesUnicas) {
-    const chaveCidade = `CIDADE:${cidade.toUpperCase()}`;
+    const termoCidade = termoBuscaCidade(cidade);
+    const chaveCidade = `CIDADE:${termoCidade.toUpperCase()}`;
     const doCache = await buscarCache(chaveCidade);
     if (doCache) {
       pontosCidade.set(cidade, { lat: doCache.lat, lng: doCache.lng });
       continue;
     }
-    const ponto = await geocodificarNominatimThrottled(cidade);
+    const ponto = await geocodificarNominatimThrottled(termoCidade);
     if (ponto) {
       await salvarCache(chaveCidade, { ...ponto, fonte: "nominatim" });
       pontosCidade.set(cidade, ponto);
@@ -229,13 +239,16 @@ export async function POST(request: Request) {
   const pontosBairro = new Map<string, { lat: number; lng: number }>();
   for (const chave of bairroCidadeUnicos) {
     const [bairro, cidade] = chave.split("|");
-    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${cidade.toUpperCase()}`;
+    // Mesma qualificacao de estado do ponto de cidade acima -- "Centro,
+    // Natividade" sozinho tem a mesma ambiguidade nacional.
+    const termoBairro = `${bairro}, ${termoBuscaCidade(cidade)}`;
+    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${termoBuscaCidade(cidade).toUpperCase()}`;
     const doCache = await buscarCache(chaveCache);
     if (doCache) {
       pontosBairro.set(chave, { lat: doCache.lat, lng: doCache.lng });
       continue;
     }
-    const ponto = await geocodificarNominatimThrottled(`${bairro}, ${cidade}`);
+    const ponto = await geocodificarNominatimThrottled(termoBairro);
     if (ponto) {
       await salvarCache(chaveCache, { ...ponto, fonte: "nominatim" });
       pontosBairro.set(chave, ponto);

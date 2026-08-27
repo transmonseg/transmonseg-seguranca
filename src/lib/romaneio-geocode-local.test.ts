@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   extrairRuaDoEndereco, extrairCidadeDoEndereco, normalizarNomeRua,
   extrairNumeroDoEndereco, extrairBairroDoEndereco, expandirCidadeTruncada,
-  montarEnderecoParaGeocode, municipioCodigoIbge,
+  montarEnderecoParaGeocode, municipioCodigoIbge, termoBuscaCidade,
 } from "./romaneio-geocode-local";
 
 describe("extrairRuaDoEndereco", () => {
@@ -205,6 +205,34 @@ describe("expandirCidadeTruncada", () => {
     it("cidade de OUTRO estado que aparece no dado real continua sem expandir (nao inventa municipio do RJ)", () => {
       expect(expandirCidadeTruncada("ALEM PARAIBA")).toBe("ALEM PARAIBA"); // MG, 2 linhas
     });
+  });
+});
+
+// Achado real 27/08 (item 3 da blindagem): o ponto de referencia de cidade
+// era buscado com o nome PELADO, e o cache de producao acumulou dezenas de
+// pontos em outro estado -- CIDADE:NATIVIDADE apontando pra Natividade/TO,
+// ~1500km, EM USO como regua de validacao de distancia dos enderecos.
+describe("termoBuscaCidade", () => {
+  it("municipio reconhecido do RJ: qualifica com o estado (nome de municipio se repete pelo Brasil inteiro)", () => {
+    expect(termoBuscaCidade("Natividade")).toBe("Natividade, RJ, Brasil");
+    expect(termoBuscaCidade("Valença")).toBe("Valença, RJ, Brasil");
+    expect(termoBuscaCidade("Mesquita")).toBe("Mesquita, RJ, Brasil");
+    expect(termoBuscaCidade("Rio Bonito")).toBe("Rio Bonito, RJ, Brasil");
+  });
+
+  it("funciona com a cidade em CAIXA ALTA (formato bruto do romaneio)", () => {
+    expect(termoBuscaCidade("NATIVIDADE")).toBe("NATIVIDADE, RJ, Brasil");
+  });
+
+  it("nao reconhecido (bairro ou lixo que o parsing entregou como cidade): NAO afirma RJ", () => {
+    expect(termoBuscaCidade("GRAJAU")).toBe("GRAJAU");
+    expect(termoBuscaCidade("PISO S")).toBe("PISO S");
+    expect(termoBuscaCidade("ALEM PARAIBA")).toBe("ALEM PARAIBA");
+  });
+
+  it("cidade truncada, ja expandida antes: qualifica (a expansao e' o que habilita o reconhecimento)", () => {
+    expect(termoBuscaCidade(expandirCidadeTruncada("VARRE SAI"))).toBe("Varre-Sai, RJ, Brasil");
+    expect(termoBuscaCidade(expandirCidadeTruncada("SANTO ANTONIO D"))).toBe("Santo Antônio de Pádua, RJ, Brasil");
   });
 });
 

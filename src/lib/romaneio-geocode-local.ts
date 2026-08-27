@@ -291,6 +291,36 @@ export function municipioCodigoIbge(cidadeExpandida: string): string | null {
   return MUNICIPIO_CODIGO_IBGE_NORMALIZADOS[semAcentoMaiusculo(cidadeExpandida)] ?? null;
 }
 
+// Achado real 27/08 (auditoria do item 3 da blindagem): o ponto de
+// referencia de cidade era resolvido mandando o nome PELADO pro Nominatim
+// ("Natividade"), e nome de municipio se repete pelo Brasil inteiro. O
+// cache de producao estava com dezenas de pontos de cidade em outro
+// estado, todos em uso:
+//
+//   CIDADE:NATIVIDADE  -> -11.71, -47.73  (Natividade/TO, ~1500km)
+//   CIDADE:VALENÇA     -> -13.37, -39.07  (Valença/BA)
+//   CIDADE:SAPUCAIA    -> -29.82, -51.16  (Sapucaia do Sul/RS)
+//   CIDADE:MESQUITA    -> -19.22, -42.61  (Mesquita/MG)
+//   CIDADE:RIO BONITO  -> -23.10, -48.26  (Rio Bonito/SP)
+//   CIDADE:RIO CLARO   -> -22.41, -47.56  (Rio Claro/SP)
+//   CIDADE:SUMIDOURO   -> -12.71, -41.83  (BA)
+//   CIDADE:PENHA       -> -26.78, -48.65  (Penha/SC)
+//
+// Isso e' pior que um endereco errado: o ponto de cidade e' a REGUA contra
+// a qual todo o resto e' validado. Errado, ele reprova candidato certo por
+// "distancia" (a linha vai pra 'falhou' e cai no fallback da Unitrac, a
+// coordenada imprecisa que o romaneio existe pra evitar) e escolhe o
+// candidato mais proximo do lugar errado.
+//
+// So qualifica municipio RECONHECIDO do RJ -- pra bairro/lixo que o
+// parsing eventualmente entrega como se fosse cidade, afirmar "RJ" seria
+// inventar. Retorna o termo de busca; quem chama usa ele TAMBEM como chave
+// de cache, o que descarta de graca as entradas envenenadas antigas (chave
+// nova, sem precisar apagar nada do banco).
+export function termoBuscaCidade(cidadeExpandida: string): string {
+  return municipioCodigoIbge(cidadeExpandida) ? `${cidadeExpandida}, RJ, Brasil` : cidadeExpandida;
+}
+
 // Monta uma string enxuta especificamente pra mandar pro Google/Nominatim
 // -- SEM o sufixo de complemento de entrega (ex. "LOJA 02", "KM 270
 // QUADRA F 101", "1 PISO PARTE UNIDADE DO SHOPPING 530AB"), que nao faz
