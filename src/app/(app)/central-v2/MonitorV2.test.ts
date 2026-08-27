@@ -171,3 +171,37 @@ describe("indicador de idade do alerta (task 2B.1/2B.2, 27/08)", () => {
     expect(corIdadeAlerta(desdeMinutosAtras(200), "light")).toEqual({ cor: "#c9392c", peso: 800 });
   });
 });
+
+// Reimplementa a condicao de exibicao do badge "GPS +Nmin" no card do
+// alerta (MonitorV2.tsx, renderCardAlerta ~linha 1478) -- task 2B.3 (27/08).
+// Achado da Fase 2: 13,5% dos fixes de GPS de 26/08 chegaram com >=10min de
+// atraso na origem (Unitrac), concentrado em alguns veiculos, e isso era
+// invisivel no card/lista de alertas (so mapa em 60min e painel de detalhe
+// em 30min cobriam parte do problema). Aditivo: nao mexe em nenhum dos
+// limiares/telas existentes.
+function mostraBadgeAtrasoGps(atraso_min: number | null): boolean {
+  return atraso_min != null && atraso_min >= 10;
+}
+
+describe("badge de GPS defasado no card do alerta (task 2B.3, 27/08)", () => {
+  it("nao aparece quando atraso_min e null", () => {
+    expect(mostraBadgeAtrasoGps(null)).toBe(false);
+  });
+
+  it("nao aparece abaixo de 10min", () => {
+    expect(mostraBadgeAtrasoGps(0)).toBe(false);
+    expect(mostraBadgeAtrasoGps(9)).toBe(false);
+    expect(mostraBadgeAtrasoGps(9.99)).toBe(false);
+  });
+
+  it("aparece a partir de 10min (inclusive)", () => {
+    expect(mostraBadgeAtrasoGps(10)).toBe(true);
+    expect(mostraBadgeAtrasoGps(10.4)).toBe(true);
+    expect(mostraBadgeAtrasoGps(45)).toBe(true);
+  });
+
+  it("nao quebra com atraso_min fracionario -- Math.round no texto do badge", () => {
+    expect(Math.round(10.4)).toBe(10);
+    expect(Math.round(10.6)).toBe(11);
+  });
+});

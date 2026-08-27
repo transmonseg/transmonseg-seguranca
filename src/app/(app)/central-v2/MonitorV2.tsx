@@ -1493,6 +1493,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 POSSÍVEL DESVIO
               </span>
             )}
+            {a.atraso_min != null && a.atraso_min >= 10 && (
+              <span title={`GPS deste veiculo chegou com ${Math.round(a.atraso_min)}min de atraso da origem (Unitrac)`} style={{
+                fontSize: 9, fontWeight: 800, padding: "1px 5px", borderRadius: 4,
+                background: `${T.yellow}22`, color: T.yellow, letterSpacing: ".03em",
+              }}>
+                GPS +{Math.round(a.atraso_min)}min
+              </span>
+            )}
             {(() => {
               const idade = corIdadeAlerta(a.desde, tema);
               const tituloIdade = idade.cor
