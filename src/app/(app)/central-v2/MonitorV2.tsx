@@ -223,7 +223,17 @@ function rotuloPainelStyle(
   };
 }
 
-const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, settings: 900 } as const;
+// `toolbar` é o z-index do PRÓPRIO container da toolbar (não dos itens dentro
+// dela). Isso importa porque `position: relative` + `zIndex` no container cria
+// um stacking context novo: tudo que está DENTRO da toolbar (combo, settings)
+// fica confinado a competir nesse valor lá fora, não no valor interno deles
+// (achado real 27/08 -- settings tinha zIndex 900 mas a toolbar em si só
+// tinha 50, então os pills do mapa com zIndex 100 competiam direto contra o
+// "50" da toolbar no stacking context raiz e venciam, mesmo settings sendo
+// 900 "por dentro"). Tem que ficar acima de tudo que fica sobre o mapa
+// (badge/toasts/combo/drawer) e abaixo do overlay de pânico, que precisa
+// cobrir a tela inteira incluindo a toolbar.
+const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, settings: 900, toolbar: 1500 } as const;
 
 // Chips visiveis por padrao na faixa de desvios do topo do mapa antes de
 // colapsar num contador "+N" (poluicao visual quando ha muitos simultaneos).
@@ -2066,7 +2076,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         background: T.toolbarBg,
         flexShrink: 0,
         position: "relative",
-        zIndex: 50,
+        zIndex: Z.toolbar,
         paddingLeft: 8,
         paddingRight: 8,
       }}>
