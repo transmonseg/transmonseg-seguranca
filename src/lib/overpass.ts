@@ -2,6 +2,14 @@
 // (posto, restaurante, farmacia etc.) num raio de 80m ao redor de um ponto.
 // Resultado cacheado 7 dias na tabela poi_cache para nao saturar a API.
 //
+// CONTRATO (revisao final de branch 27/08, achado I3): o boolean devolvido e
+// sempre um VEREDITO ("tem POI" / "nao tem POI"). Quando a checagem nao pode
+// ser feita -- Overpass fora do ar, timeout, HTTP de erro, corpo invalido, ou
+// falha de pool/query no poi_cache -- a funcao LANCA. Quem chama decide o
+// fail-open (os dois motores assumem POI presente e marcam o ciclo como nao
+// confiavel). Nunca devolva `false` por falha: "nao consegui checar" virando
+// "nao ha POI" libera os 3 detectores de parada pra frota inteira de uma vez.
+//
 // Tipos de amenity considerados "parada legitima" de caminhao:
 //   fuel (posto), restaurant, fast_food, pharmacy, supermarket, bank,
 //   hospital, bus_station, parking, car_wash, car_service, atm
@@ -50,22 +58,49 @@ export async function temPOIProximo(
       `way[amenity~"${AMENITIES}"](around:${RAIO_M},${lat},${lng});` +
       `);out count;`;
 
+    // Falha de consulta (rede, timeout, HTTP != 2xx, JSON invalido) LANCA --
+    // nunca vira `false` silencioso. Achado da revisao final de branch (27/08,
+    // I3): a versao anterior engolia o erro de fetch e devolvia false, entao
+    // os dois motores (motor/route.ts e motor-romaneio/route.ts) tinham um
+    // `catch { temPOI = true; ... }` que so disparava por falha de
+    // pool/query no poi_cache -- praticamente NUNCA por queda real do
+    // Overpass. Efeito pratico do bug: durante uma instabilidade do Overpass,
+    // "nao consegui checar" virava "confirmei que nao ha POI", o que (a)
+    // libera os 3 detectores de parada pra frota inteira ao mesmo tempo
+    // (flood de falso positivo, exatamente o que aquele catch existia pra
+    // evitar) e (b) na Central Romaneio deixava `overpassFalhou` false, entao
+    // o gate de auto-resolve considerava o ciclo confiavel e podia FECHAR
+    // sozinho um alerta de parada real.
+    //
+    // Contrato pros chamadores: `true`/`false` = veredito de verdade; excecao
+    // = "nao deu pra checar", trate como o caminho de falha que voce ja tem.
+    // Os dois call sites atuais ja faziam exatamente isso (fail-open,
+    // temPOI=true) pro caminho de erro de pool/DB -- nenhum precisou mudar,
+    // so passaram a ser acionados pelo caso que importa.
     let temPoi = false;
+    let res: Response;
     try {
-      const res = await fetch(OVERPASS_URL, {
+      res = await fetch(OVERPASS_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: `data=${encodeURIComponent(query)}`,
         signal: AbortSignal.timeout(6000),
       });
-      if (res.ok) {
-        const json = (await res.json()) as { elements?: { tags?: { total?: number } }[] };
-        const total = json.elements?.[0]?.tags?.total;
-        temPoi = typeof total === "number" ? total > 0 : (json.elements?.length ?? 0) > 0;
-      }
-    } catch {
-      // Falha de rede: retorna false (conservador — pode disparar falso positivo)
-      return false;
+    } catch (err) {
+      throw new Error(`Overpass indisponivel (rede/timeout): ${String(err)}`);
+    }
+    if (!res.ok) {
+      // 429 (rate limit) e 504 (gateway timeout) sao os dois modos de falha
+      // recorrentes do overpass-api.de publico -- ambos sao "nao consegui
+      // checar", nunca "nao ha POI".
+      throw new Error(`Overpass respondeu HTTP ${res.status}`);
+    }
+    try {
+      const json = (await res.json()) as { elements?: { tags?: { total?: number } }[] };
+      const total = json.elements?.[0]?.tags?.total;
+      temPoi = typeof total === "number" ? total > 0 : (json.elements?.length ?? 0) > 0;
+    } catch (err) {
+      throw new Error(`Overpass devolveu corpo invalido: ${String(err)}`);
     }
 
     // Gravar no cache
