@@ -20,6 +20,19 @@ describe("extrairRuaDoEndereco", () => {
 });
 
 describe("extrairCidadeDoEndereco", () => {
+  // Achado real da auditoria 27/08 (194 linhas / 50 enderecos distintos
+  // nos ultimos 30 dias): o sufixo de complemento de entrega as vezes tem
+  // virgula, e ai a cidade nao e' o ultimo segmento -- e' sempre o
+  // TERCEIRO. Casos reais de producao abaixo.
+  it("sufixo de complemento COM virgula: a cidade continua sendo o terceiro segmento, nao o ultimo", () => {
+    // Estava gravado em producao com (-22.83106, -43.27671), no Rio
+    // capital, ~137km de Rio das Ostras -- porque a "cidade" lida era "5".
+    expect(extrairCidadeDoEndereco("ESTRADA CALIFORNIA, S/N - CANTAGALO, RIO DAS OSTRAS - KM 7,5")).toBe("RIO DAS OSTRAS");
+    expect(extrairCidadeDoEndereco("AVENIDA DOM HÉLDER CÂMARA, 5474 - DEL CASTILHO, RIO DE JANEIRO - LOJA 306, 306A, PISO S")).toBe("RIO DE JANEIRO");
+    expect(extrairCidadeDoEndereco("AVENIDA DE SANTA CRUZ, 5403 - BANGU, RIO DE JANEIRO - A, B, C RUA BOIOBI, 204")).toBe("RIO DE JANEIRO");
+    expect(extrairCidadeDoEndereco("ROD PRESIDENTE JOAO GOULART RJ 116, 2501 - A SANTO ANTONIO, BOM JARDIM - KM 106,5")).toBe("BOM JARDIM");
+  });
+
   it("extrai o primeiro token do trecho depois da ULTIMA virgula", () => {
     expect(extrairCidadeDoEndereco("RUA MONS MIGUEL REIS MELLO, 33 - LIBERDADE, NATIVIDADE - *")).toBe("NATIVIDADE");
   });

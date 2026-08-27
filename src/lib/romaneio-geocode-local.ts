@@ -20,8 +20,23 @@ export function extrairCidadeDoEndereco(enderecoBruto: string): string | null {
   // como se fosse cidade (ex: "NOGUEIRA", que e' bairro de Petropolis,
   // virava "cidade" -- geocode por sorte caiu perto, mas era coincidencia).
   if (!partes[1].includes(" - ")) return null;
-  const ultimaParte = partes[partes.length - 1].trim();
-  const cidade = ultimaParte.split(" - ")[0]?.trim();
+  // partes[2], NAO a ultima parte -- achado real da auditoria 27/08 sobre
+  // os ultimos 30 dias. No formato "<RUA>, <NUM> - <BAIRRO>, <CIDADE> -
+  // <SUFIXO>" a cidade e' sempre o TERCEIRO segmento; usar o ultimo so'
+  // funcionava porque o sufixo de complemento de entrega geralmente nao
+  // tem virgula. Quando ele tem (194 linhas / 50 enderecos distintos em 30
+  // dias -- "KM 7,5", "LOJA 306, 306A, PISO S", "A, B, C RUA BOIOBI, 204"),
+  // a "cidade" extraida virava lixo do sufixo ("5", "PISO S", "204").
+  // Consequencia: sem cidade nao ha pontoCidade nem municipioCodigo, entao
+  // a linha ia pro CNEFE/OSM sem filtro de municipio E sem validacao de
+  // distancia -- exatamente o buraco que este plano existe pra fechar.
+  // Caso concreto em producao: "ESTRADA CALIFORNIA, S/N - CANTAGALO, RIO
+  // DAS OSTRAS - KM 7,5" lia cidade "5" e esta gravado com a coordenada
+  // (-22.83106, -43.27671), no Rio de Janeiro capital, ~137km de Rio das
+  // Ostras. Com 3 segmentos (o caso comum) partes[2] E' a ultima parte,
+  // entao nada muda pra maioria esmagadora das linhas.
+  const parteCidade = partes[2].trim();
+  const cidade = parteCidade.split(" - ")[0]?.trim();
   return cidade || null;
 }
 
