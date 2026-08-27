@@ -1162,22 +1162,72 @@ export function deveSuprimirRedisparoParada(ctx: {
 // propósito -- prioriza recall (ver [[feedback_desvio_priorizar_recall]]):
 // um desvio genuinamente ainda em andamento deve voltar a aparecer logo,
 // não ficar escondido por horas só porque foi visto uma vez.
-//
-// Reusada TAL QUAL pelo jammer desde 27/08 (achado real: 49 re-disparos de
-// jammer apos resolver_individual em 26-27/08, 43 deles em menos de 15min --
-// detectarJammer nao passava por nenhum mecanismo de supressao). A funcao e'
-// generica apesar do nome: so compara agoraMs contra o ultimo tratamento
-// humano, nao olha tipo nenhum. Jammer entra aqui (e nao no cooldown por
-// episodio da parada) porque tambem e' condicao CONTINUA, sem parado_desde
-// equivalente. Ver o wiring em src/app/api/motor/route.ts (bloco do cooldown).
 export const JANELA_COOLDOWN_DESVIO_MS = 15 * 60 * 1000;
+
+// Achado real 27/08 (dado de 26-27/08): detectarJammer nao passava por NENHUM
+// mecanismo de supressao de re-disparo -- resolver um jammer individualmente
+// nao impedia nada, o ciclo seguinte (30s) reinseria. Medido: 49 re-disparos
+// apos resolver_individual, 43 deles em menos de 15min; RQU-4B93 com 25
+// alertas de jammer em 64min.
+//
+// Jammer entra no cooldown TEMPORAL (e nao no por episodio da parada) porque
+// tambem e' condicao CONTINUA -- atraso de GPS com ignicao ligada, sem
+// parado_desde equivalente.
+//
+// Janela PROPRIA de 5min, mais curta que os 15min do desvio -- decisao
+// explicita do usuario em 27/08, perguntado diretamente: jammer e' risco
+// MAIOR que desvio (correlacao historica alta com sequestro/roubo de carga em
+// andamento), entao a janela cega depois de um "Resolver" equivocado tem que
+// ser a menor possivel. Mitigado tambem pelo fato de o veiculo continuar
+// VERMELHO no mapa durante o cooldown de qualquer jeito -- o cooldown suprime
+// a re-insercao do alerta, nunca esconde o veiculo do operador.
+export const JANELA_COOLDOWN_JAMMER_MS = 5 * 60 * 1000;
+
+// Janela por tipo. Fonte unica: quem quiser saber se um tipo tem cooldown
+// temporal (e qual) consulta este mapa, nunca uma lista paralela de tipos.
+export const JANELA_COOLDOWN_TEMPORAL_POR_TIPO: ReadonlyMap<string, number> = new Map([
+  ["desvio", JANELA_COOLDOWN_DESVIO_MS],
+  ["jammer", JANELA_COOLDOWN_JAMMER_MS],
+]);
+
+export function ehTipoComCooldownTemporal(tipo: string): boolean {
+  return JANELA_COOLDOWN_TEMPORAL_POR_TIPO.has(tipo);
+}
 
 export function deveSuprimirRedisparoDesvio(ctx: {
   agoraMs: number;
   ultimoTratamento: { resolvidoEm: string } | null;
+  // Default = janela do desvio, pra manter os chamadores antigos identicos.
+  janelaMs?: number;
 }): boolean {
   if (!ctx.ultimoTratamento) return false;
   const tratadoMs = new Date(ctx.ultimoTratamento.resolvidoEm).getTime();
   if (!Number.isFinite(tratadoMs)) return false;
-  return ctx.agoraMs - tratadoMs < JANELA_COOLDOWN_DESVIO_MS;
+  return ctx.agoraMs - tratadoMs < (ctx.janelaMs ?? JANELA_COOLDOWN_DESVIO_MS);
+}
+
+// Predicado COMPLETO do cooldown temporal, usado pelo motor
+// (src/app/api/motor/route.ts, bloco do cooldown) -- tipo + janela do tipo +
+// comparacao de tempo num lugar so'.
+//
+// Vive aqui, exportado, de proposito (achado da revisao 27/08): enquanto essa
+// combinacao morava inline no route.ts, o teste so conseguia REIMPLEMENTAR o
+// predicado -- e teste espelho continua verde mesmo se alguem apagar a logica
+// do motor. Com a funcao extraida, motor e teste chamam exatamente o mesmo
+// codigo.
+//
+// Tipo sem cooldown temporal (parada, panico, favela, ...) sempre retorna
+// false -- passa direto, comportamento identico ao de antes.
+export function suprimidoPorCooldownTemporal(ctx: {
+  tipo: string;
+  agoraMs: number;
+  ultimoTratamento: { resolvidoEm: string } | null;
+}): boolean {
+  const janelaMs = JANELA_COOLDOWN_TEMPORAL_POR_TIPO.get(ctx.tipo);
+  if (janelaMs === undefined) return false;
+  return deveSuprimirRedisparoDesvio({
+    agoraMs: ctx.agoraMs,
+    ultimoTratamento: ctx.ultimoTratamento,
+    janelaMs,
+  });
 }

@@ -41,7 +41,8 @@ import {
   contaComoEventoDeSilenciamento,
   BONUS_CORROBORACAO_POR_SINAL,
   deveSuprimirRedisparoParada,
-  deveSuprimirRedisparoDesvio,
+  ehTipoComCooldownTemporal,
+  suprimidoPorCooldownTemporal,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -3245,10 +3246,11 @@ export async function POST(request: Request) {
               // menos de 15min); RQU-4B93 com 25 alertas de jammer em 64min.
               // Jammer, igual desvio, e uma condicao CONTINUA (atraso de GPS
               // com ignicao ligada), sem "inicio de episodio" discreto tipo o
-              // parado_desde da parada -- por isso reusa o cooldown por TEMPO
-              // do desvio (deveSuprimirRedisparoDesvio, generica: so compara
-              // agoraMs contra o ultimo tratamento humano, nao olha tipo),
-              // nao o cooldown por episodio da parada.
+              // parado_desde da parada -- por isso entra no cooldown por TEMPO
+              // (suprimidoPorCooldownTemporal, detectores.ts) e nao no
+              // cooldown por episodio da parada. JANELA PROPRIA de 5min (vs
+              // 15min do desvio), decisao do usuario em 27/08 -- ver comentario
+              // de JANELA_COOLDOWN_JAMMER_MS.
               //
               // Query fresca por veiculo pros DOIS tipos (mesma query
               // parametrizada por tipo, em vez de duas copias): jammer nao
@@ -3256,10 +3258,8 @@ export async function POST(request: Request) {
               // mapaDesviosTratados, que so existe pro desvio porque e
               // reusado noutro lugar (mapaTiposSilenciados). Aqui, so a
               // consulta fresca na hora exata da decisao.
-              const ehTipoComCooldownTemporal =
-                alerta.tipo === "desvio" || alerta.tipo === "jammer";
               let ultimoTratamentoTemporal: { resolvidoEm: string } | null = null;
-              if (ehTipoComCooldownTemporal && !jaExiste) {
+              if (ehTipoComCooldownTemporal(alerta.tipo) && !jaExiste) {
                 const trintaMinAtrasFresco = new Date(agora.getTime() - 30 * 60 * 1000).toISOString();
                 try {
                   const { rows: tratamentoFresco } = await pool.query<{ resolvido_em: string }>(
@@ -3294,20 +3294,16 @@ export async function POST(request: Request) {
                   erros.push(`Aviso: falha ao consultar cooldown fresco de ${alerta.tipo} pro veiculo ${veiculo_id}: ${String(errCooldownFresco)}`);
                 }
               }
-              const suprimidoPorCooldownDesvio =
-                alerta.tipo === "desvio" &&
-                deveSuprimirRedisparoDesvio({
-                  agoraMs: agora.getTime(),
-                  ultimoTratamento: ultimoTratamentoTemporal,
-                });
-              const suprimidoPorCooldownJammer =
-                alerta.tipo === "jammer" &&
-                deveSuprimirRedisparoDesvio({
-                  agoraMs: agora.getTime(),
-                  ultimoTratamento: ultimoTratamentoTemporal,
-                });
+              // Desvio (15min) e jammer (5min) num predicado so' -- a janela
+              // certa por tipo vem de JANELA_COOLDOWN_TEMPORAL_POR_TIPO, e
+              // qualquer outro tipo retorna false (passa direto).
+              const suprimidoPorCooldownTemporalDoTipo = suprimidoPorCooldownTemporal({
+                tipo: alerta.tipo,
+                agoraMs: agora.getTime(),
+                ultimoTratamento: ultimoTratamentoTemporal,
+              });
               const suprimidoPorCooldown =
-                suprimidoPorCooldownParada || suprimidoPorCooldownDesvio || suprimidoPorCooldownJammer;
+                suprimidoPorCooldownParada || suprimidoPorCooldownTemporalDoTipo;
 
               if (!jaExiste) {
                 if (!suprimidoPorCooldown) {
