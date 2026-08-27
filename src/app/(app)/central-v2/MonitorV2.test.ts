@@ -107,3 +107,67 @@ describe("mass-resolve x cooldown de re-disparo (achado I2)", () => {
     ]);
   });
 });
+
+// Reimplementa tempoAtras/corIdadeAlerta (MonitorV2.tsx, ~linhas 143-180) --
+// mesmo padrao das suites acima: cópia local da mesma expressao, testada
+// isolada (o componente nao exporta nada, ver comentario no topo do
+// arquivo). Task 2B.1/2B.2 (27/08): recalibra os limiares de 3h/8h pra
+// 30min/90min com base na mediana real de 22min / p90 de 76min ate' o
+// tratamento do alerta (medido contra dado real de 26/08).
+function tempoAtras(desde: string): string {
+  const diff = Math.floor((Date.now() - new Date(desde).getTime()) / 60000);
+  if (diff < 60) return `${diff}min`;
+  if (diff < 1440) return `${Math.floor(diff / 60)}h`;
+  return `${Math.floor(diff / 1440)}d`;
+}
+
+function minutosDesde(desde: string): number {
+  return Math.round((Date.now() - new Date(desde).getTime()) / 60000);
+}
+
+const LIMIAR_ALERTA_ATENCAO_MIN = 30;
+const LIMIAR_ALERTA_CRITICO_MIN = 90;
+function corIdadeAlerta(desde: string, tema: "dark" | "light"): { cor: string; peso: number } {
+  const min = minutosDesde(desde);
+  if (min >= LIMIAR_ALERTA_CRITICO_MIN) return { cor: tema === "dark" ? "#ff6b5e" : "#c9392c", peso: 800 };
+  if (min >= LIMIAR_ALERTA_ATENCAO_MIN) return { cor: tema === "dark" ? "#f2b84b" : "#a66a10", peso: 700 };
+  return { cor: "", peso: 400 };
+}
+
+function desdeMinutosAtras(min: number): string {
+  return new Date(Date.now() - min * 60000).toISOString();
+}
+
+describe("indicador de idade do alerta (task 2B.1/2B.2, 27/08)", () => {
+  it("tempoAtras formata em minutos abaixo de 1h", () => {
+    expect(tempoAtras(desdeMinutosAtras(5))).toBe("5min");
+    expect(tempoAtras(desdeMinutosAtras(45))).toBe("45min");
+  });
+
+  it("tempoAtras formata em horas entre 1h e 24h", () => {
+    expect(tempoAtras(desdeMinutosAtras(90))).toBe("1h");
+    expect(tempoAtras(desdeMinutosAtras(300))).toBe("5h");
+  });
+
+  it("tempoAtras formata em dias a partir de 24h", () => {
+    expect(tempoAtras(desdeMinutosAtras(1440))).toBe("1d");
+    expect(tempoAtras(desdeMinutosAtras(4320))).toBe("3d");
+  });
+
+  it("corIdadeAlerta nao pinta abaixo do limiar de atencao (30min, novo valor)", () => {
+    expect(corIdadeAlerta(desdeMinutosAtras(0), "dark")).toEqual({ cor: "", peso: 400 });
+    expect(corIdadeAlerta(desdeMinutosAtras(22), "dark")).toEqual({ cor: "", peso: 400 }); // mediana real (Fase 2)
+    expect(corIdadeAlerta(desdeMinutosAtras(29), "light")).toEqual({ cor: "", peso: 400 });
+  });
+
+  it("corIdadeAlerta pinta 'atencao' entre 30min e 90min (novos limiares)", () => {
+    expect(corIdadeAlerta(desdeMinutosAtras(30), "dark")).toEqual({ cor: "#f2b84b", peso: 700 });
+    expect(corIdadeAlerta(desdeMinutosAtras(76), "dark")).toEqual({ cor: "#f2b84b", peso: 700 }); // p90 real (Fase 2)
+    expect(corIdadeAlerta(desdeMinutosAtras(60), "light")).toEqual({ cor: "#a66a10", peso: 700 });
+  });
+
+  it("corIdadeAlerta pinta 'critico' a partir de 90min", () => {
+    expect(corIdadeAlerta(desdeMinutosAtras(90), "dark")).toEqual({ cor: "#ff6b5e", peso: 800 });
+    expect(corIdadeAlerta(desdeMinutosAtras(200), "light")).toEqual({ cor: "#c9392c", peso: 800 });
+  });
+});
