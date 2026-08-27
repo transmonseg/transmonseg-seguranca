@@ -124,6 +124,51 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
       expect(r).toEqual({ ...longeDoPontoCidade, fonte: "google" });
     });
   });
+
+  // Item 4 da blindagem de geocodificacao (27/08): esse caminho era 100%
+  // silencioso -- resultado aceito sem NENHUMA validacao de distancia (nao
+  // ha ponto de referencia contra o que comparar) e sem nenhum rastro no
+  // log. E' o cenario que precisa de olho humano quando acontece muito.
+  describe("aviso quando CNEFE/OSM resolvem SEM ponto de referencia de cidade (item 4)", () => {
+    const pontoCidade = { lat: -22.9, lng: -43.2 };
+
+    // O spy de console.warn e' global -- sem restaurar, as chamadas de um
+    // teste vazam pra contagem do seguinte.
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it("CNEFE sem ponto de referencia: avisa, mas NAO bloqueia o resultado", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const deps = mockDeps({ geocodificarCnefeDep: async () => ({ lat: 1, lng: 2 }) });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", null, deps);
+      expect(r).toEqual({ lat: 1, lng: 2, fonte: "cnefe" });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain("SEM ponto de referencia");
+      expect(warn.mock.calls[0][0]).toContain("fonte=cnefe");
+    });
+
+    it("OSM/local sem ponto de referencia: avisa, mas NAO bloqueia o resultado", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 1, lng: 2 }) });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", null, deps);
+      expect(r).toEqual({ lat: 1, lng: 2, fonte: "local" });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain("fonte=local");
+    });
+
+    it("COM ponto de referencia: nao avisa (a validacao de distancia rodou)", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const deps = mockDeps({ geocodificarCnefeDep: async () => ({ lat: 1, lng: 2 }) });
+      await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", pontoCidade, deps);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("hit de cache nao avisa (nada foi geocodificado agora)", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const deps = mockDeps({ buscarCache: async () => ({ lat: 1, lng: 2, fonte: "cnefe" }) });
+      await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(warn).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/022_cnefe_enderecos.sql)", () => {

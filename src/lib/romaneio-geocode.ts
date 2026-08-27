@@ -138,6 +138,35 @@ type Deps = {
   geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
 };
 
+// Item 4 da blindagem de geocodificacao (27/08). Quando CNEFE/OSM devolvem
+// um resultado SEM pontoCidade disponivel, a validacao de distancia de
+// escolherCandidatoMaisProximo NAO roda -- nao ha contra o que comparar --
+// e o resultado e' aceito na fé. Com pontoCidade a coordenada e' checada
+// contra os 30km; sem ele, o unico filtro que sobrou (depois da blindagem
+// do item 1) e' "so passa se for candidato UNICO". Isso e' bem mais fraco:
+// candidato unico da rua errada, do municipio errado, ainda passa -- foi
+// assim que "MANGUINHOS, ARMAÇO DOS BZIO" foi parar ~160km longe, no
+// Manguinhos do Rio capital.
+//
+// Ate hoje isso era 100% silencioso: nao dava pra saber, olhando o log,
+// que uma coordenada entrou por esse caminho sem validacao. O aviso abaixo
+// e' o gancho pra olho humano -- se aparecer MUITO, a causa quase sempre e'
+// a mesma (cidade que nao resolveu por truncamento/corrupcao no romaneio),
+// e o conserto e' em expandirCidadeTruncada/extrairCidadeDoEndereco, nao
+// aqui. Mesmo padrao de console.warn ja usado no resto do fluxo do
+// romaneio (ver processar-geocode/route.ts e motor-romaneio/route.ts).
+function avisarSemPontoCidade(
+  fonte: "cnefe" | "local",
+  enderecoBruto: string,
+  r: { lat: number; lng: number },
+  pontoCidade: { lat: number; lng: number } | null
+): void {
+  if (pontoCidade) return;
+  console.warn(
+    `Aviso: geocode do romaneio aceito SEM ponto de referencia de cidade (validacao de distancia nao rodou) -- fonte=${fonte} lat=${r.lat} lng=${r.lng} endereco=${JSON.stringify(enderecoBruto)}`
+  );
+}
+
 export async function geocodificarEndereco(
   enderecoBruto: string,
   pontoCidade: { lat: number; lng: number } | null,
@@ -154,12 +183,14 @@ export async function geocodificarEndereco(
   // Geocoding (usuario recusou vincular faturamento).
   const cnefe = await deps.geocodificarCnefeDep(enderecoBruto, pontoCidade);
   if (cnefe) {
+    avisarSemPontoCidade("cnefe", enderecoBruto, cnefe, pontoCidade);
     await deps.salvarCache(chave, { ...cnefe, fonte: "cnefe" });
     return { ...cnefe, fonte: "cnefe" };
   }
 
   const local = await deps.geocodificarLocalDep(enderecoBruto, pontoCidade);
   if (local) {
+    avisarSemPontoCidade("local", enderecoBruto, local, pontoCidade);
     await deps.salvarCache(chave, { ...local, fonte: "local" });
     return { ...local, fonte: "local" };
   }
