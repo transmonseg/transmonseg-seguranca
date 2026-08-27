@@ -3276,6 +3276,21 @@ export async function POST(request: Request) {
                     ultimoTratamentoTemporal = { resolvidoEm: tratamentoFresco[0].resolvido_em };
                   }
                 } catch (errCooldownFresco) {
+                  // Fallback INTOCADO (erra pro lado de alertar demais, nunca
+                  // de esconder): se a query falha, ultimoTratamentoTemporal
+                  // fica null e o alerta NAO e suprimido.
+                  //
+                  // Diagnostico 27/08 (achado B): o cooldown de desvio ainda
+                  // vaza em 14 de 50 casos de 26-27/08 e este catch era
+                  // estruturalmente INVISIVEL -- erros[] so existe na resposta
+                  // HTTP do ciclo, que o pg_net (quem dispara o cron)
+                  // descarta em 5s. O console.error vai pros logs do PM2, que
+                  // sao persistentes e legiveis via SSH. Nao muda
+                  // comportamento nenhum, so torna a falha observavel.
+                  console.error(
+                    `[cooldown-fresco] falha ao consultar cooldown de ${alerta.tipo} | veiculo_id=${veiculo_id} cliente_id=${cliente_id} em=${agora.toISOString()}`,
+                    errCooldownFresco
+                  );
                   erros.push(`Aviso: falha ao consultar cooldown fresco de ${alerta.tipo} pro veiculo ${veiculo_id}: ${String(errCooldownFresco)}`);
                 }
               }
