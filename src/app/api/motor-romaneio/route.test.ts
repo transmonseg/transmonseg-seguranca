@@ -22,7 +22,10 @@ import {
   avaliarParadasRomaneio,
   avaliarDentroTapete,
   deveResolverAlertaGerenciado,
+  decidirEscopoDoVeiculo,
+  deveAvaliarSinalA,
 } from "./route";
+import { montarPontosDeRomaneio } from "@/lib/romaneio";
 import type { PontoEntrega } from "@/lib/unitrac";
 import { celulaDe } from "@/lib/celulas";
 
@@ -233,6 +236,108 @@ describe("avaliarParadasRomaneio", () => {
     // parametros aqui viraria falso negativo puro.
     const tipos = avaliarParadasRomaneio(ctxParadaSuspeita({ paradoMin: 120 })).map((a) => a.tipo).sort();
     expect(tipos).toContain("parada_longa");
+  });
+});
+
+// ─── Task B2 (27/08): gate de escopo separado em dois efeitos ──────────────
+// Ate a B2, `route.ts` tinha um `continue` no topo do loop que pulava o
+// veiculo INTEIRO quando ele tinha pelo menos um alvo na Unitrac. Aquele
+// gate foi criado em 24/08 por um motivo real e medido (70% da frota
+// disparando "desvio" duplicado, quase flood) -- mas ele so' vale pro DESVIO:
+// a Central Unitrac esta com os 3 detectores de parada DESLIGADOS pro cliente
+// inteiro (CLIENTES_COM_MOTOR_ROMANEIO_PARALELO), entao pular o veiculo
+// inteiro deixava ~70% da frota sem detector de parada NENHUM nos dois
+// pipelines. Estes testes travam as duas pontas da separacao.
+describe("decidirEscopoDoVeiculo", () => {
+  it("veiculo SEM alvo Unitrac: avalia desvio E paradas (comportamento historico, nao mudou)", () => {
+    expect(decidirEscopoDoVeiculo(0)).toEqual({ avaliaDesvio: true, avaliaParadas: true });
+  });
+
+  it("CASO DA TASK: veiculo COM alvo Unitrac avalia paradas, mas NUNCA desvio", () => {
+    expect(decidirEscopoDoVeiculo(1)).toEqual({ avaliaDesvio: false, avaliaParadas: true });
+    expect(decidirEscopoDoVeiculo(37)).toEqual({ avaliaDesvio: false, avaliaParadas: true });
+  });
+
+  it("paradas rodam pra frota inteira -- nao existe entrada que desligue avaliaParadas", () => {
+    for (const n of [0, 1, 2, 5, 100]) {
+      expect(decidirEscopoDoVeiculo(n).avaliaParadas).toBe(true);
+    }
+  });
+});
+
+describe("deveAvaliarSinalA", () => {
+  function ctxSinalA(over: Partial<Parameters<typeof deveAvaliarSinalA>[0]> = {}) {
+    return {
+      avaliaDesvio: true,
+      fresco: true,
+      suspensoPorChegada: false,
+      emCarenciaDeBase: false,
+      paradoSemSeMover: false,
+      movimentoInsignificante: false,
+      qtdDestinosRelevantes: 3,
+      ...over,
+    };
+  }
+
+  it("PROTECAO DE 24/08: veiculo com alvo Unitrac nunca avalia o Sinal A, mesmo com tudo o resto favoravel", () => {
+    expect(deveAvaliarSinalA(ctxSinalA({ avaliaDesvio: false }))).toBe(false);
+  });
+
+  it("REGRESSAO: veiculo sem alvo Unitrac com condicoes favoraveis avalia, exatamente como antes da B2", () => {
+    expect(deveAvaliarSinalA(ctxSinalA())).toBe(true);
+  });
+
+  it("REGRESSAO: os 5 gates historicos do Sinal A continuam valendo um a um", () => {
+    expect(deveAvaliarSinalA(ctxSinalA({ fresco: false }))).toBe(false);
+    expect(deveAvaliarSinalA(ctxSinalA({ suspensoPorChegada: true }))).toBe(false);
+    expect(deveAvaliarSinalA(ctxSinalA({ emCarenciaDeBase: true }))).toBe(false);
+    expect(deveAvaliarSinalA(ctxSinalA({ paradoSemSeMover: true }))).toBe(false);
+    expect(deveAvaliarSinalA(ctxSinalA({ movimentoInsignificante: true }))).toBe(false);
+    expect(deveAvaliarSinalA(ctxSinalA({ qtdDestinosRelevantes: 0 }))).toBe(false);
+  });
+});
+
+describe("B2 fim-a-fim (composicao das regras puras)", () => {
+  // Caso central da task: caminhao COM alvo Unitrac (ou seja, dos ~70% que o
+  // gate antigo matava), parado 20min num lugar que NAO e' ponto do romaneio.
+  const linhasRomaneio = [
+    { nf: "123456", clienteNome: "CLIENTE A", lat: PONTO.lat, lng: PONTO.lng, presencaConfirmadaEm: null },
+  ];
+  // Alvo Unitrac existe pra este veiculo -- e' o que ligava o `continue` antigo.
+  const alvosUnitrac = [pontoRomaneio(PONTO.lat, PONTO.lng, { feito: true, documento: "123456" })];
+
+  it("veiculo COM alvo Unitrac parado longe do romaneio: os 3 detectores avaliam e disparam, desvio nao roda", () => {
+    const escopo = decidirEscopoDoVeiculo(alvosUnitrac.length);
+    expect(escopo.avaliaDesvio).toBe(false);
+    expect(escopo.avaliaParadas).toBe(true);
+
+    // A rota passa [] literal aqui de proposito (decisao de produto da B2):
+    // a Central Romaneio nunca mistura marcacao Unitrac em `pontos`.
+    const pontos = montarPontosDeRomaneio(linhasRomaneio, []);
+    expect(pontos).toHaveLength(1);
+    expect(pontos[0].feito).toBe(false); // veio do romaneio, nao do alvo Unitrac
+
+    const noCliente = calcularNoClienteRomaneio({ ...LONGE, velocidade: 0 }, pontos);
+    expect(noCliente).toBe(false);
+
+    const alertas = avaliarParadasRomaneio(ctxParadaSuspeita({ noCliente }));
+    expect(alertas.map((a) => a.tipo).sort()).toEqual(["parada_anomala", "parada_fora_tapete"]);
+    expect(alertas.some((a) => a.tipo === "desvio")).toBe(false);
+  });
+
+  it("mesmo veiculo COM alvo Unitrac, mas parado EM CIMA do ponto do romaneio: nada dispara", () => {
+    const pontos = montarPontosDeRomaneio(linhasRomaneio, []);
+    const noCliente = calcularNoClienteRomaneio({ ...PONTO, velocidade: 0 }, pontos);
+    expect(noCliente).toBe(true);
+    expect(avaliarParadasRomaneio(ctxParadaSuspeita({ noCliente }))).toEqual([]);
+  });
+
+  it("veiculo SEM alvo Unitrac: mesmos pontos, mesmo veredito -- passar [] nao mudou nada pra ele", () => {
+    const escopo = decidirEscopoDoVeiculo(0);
+    expect(escopo).toEqual({ avaliaDesvio: true, avaliaParadas: true });
+    // Antes da B2 a rota passava pontosUnitracVeiculo, que pra este veiculo
+    // ja' era [] -- o argumento literal produz exatamente o mesmo resultado.
+    expect(montarPontosDeRomaneio(linhasRomaneio, [])).toEqual(montarPontosDeRomaneio(linhasRomaneio, []));
   });
 });
 

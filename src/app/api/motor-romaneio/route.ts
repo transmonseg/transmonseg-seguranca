@@ -289,6 +289,64 @@ export function deveResolverAlertaGerenciado(ctx: {
   return true;
 }
 
+// ─── Gate de escopo por veículo (task B2, 27/08) ───────────────────────────
+// Até 27/08 este gate era um `continue` no topo do loop por veículo: ter ao
+// menos um alvo na Unitrac hoje pulava o veículo INTEIRO. O motivo original
+// (24/08) é real e medido em produção e continua valendo -- mas SÓ pro DESVIO
+// (Sinal A): reavaliar desvio aqui pra um veículo que a Central Unitrac já
+// cobre não soma sinal, só duplica alerta (31/44 veículos disparando, quase o
+// flood que o motor antigo já tinha combatido).
+//
+// O que aquele `continue` fazia de errado: matava junto os 3 detectores de
+// parada (parada_longa / parada_anomala / parada_fora_tapete, task B1), que
+// não têm NADA a ver com esse risco -- na Central Unitrac eles estão
+// DESLIGADOS pro cliente inteiro por flag (CLIENTES_COM_MOTOR_ROMANEIO_
+// PARALELO, motor/route.ts), então não existe alerta de parada pra duplicar,
+// pra veículo nenhum. Resultado antes desta task: ~70% da frota da Nutry Max
+// ficava sem detector de parada em NENHUM dos dois pipelines -- falso
+// negativo puro, e falso negativo é o erro caro aqui
+// ([[feedback_desvio_priorizar_recall]]).
+//
+// Daí a separação em dois efeitos: `avaliaDesvio` carrega a proteção de 24/08
+// intacta, `avaliaParadas` é sempre true. Não existe entrada que desligue as
+// paradas -- se um dia precisar existir, será por outra regra, nunca por
+// "tem alvo Unitrac".
+export function decidirEscopoDoVeiculo(qtdAlvosUnitracDoVeiculo: number): {
+  avaliaDesvio: boolean;
+  avaliaParadas: boolean;
+} {
+  return {
+    avaliaDesvio: qtdAlvosUnitracDoVeiculo === 0,
+    avaliaParadas: true,
+  };
+}
+
+// Gate completo do Sinal A (desvio) num lugar só e testável. Os 6 predicados
+// abaixo são EXATAMENTE os que já existiam inline no loop antes da B2 -- a
+// única coisa nova é `avaliaDesvio` (o gate de escopo acima), que entra como
+// primeiro corte. Qualquer um deles falso bloqueia a avaliação, e o streak
+// zera (a única exceção -- falha transiente do OSRM /table -- é tratada
+// DENTRO do bloco, não aqui).
+export function deveAvaliarSinalA(ctx: {
+  avaliaDesvio: boolean;
+  fresco: boolean;
+  suspensoPorChegada: boolean;
+  emCarenciaDeBase: boolean;
+  paradoSemSeMover: boolean;
+  movimentoInsignificante: boolean;
+  qtdDestinosRelevantes: number;
+}): boolean {
+  return (
+    ctx.avaliaDesvio &&
+    ctx.fresco &&
+    !ctx.suspensoPorChegada &&
+    !ctx.emCarenciaDeBase &&
+    !ctx.paradoSemSeMover &&
+    !ctx.movimentoInsignificante &&
+    ctx.qtdDestinosRelevantes > 0
+  );
+}
+
 // Trava de execução única deste ciclo -- MESMO mecanismo da Central
 // (motor/route.ts:497-528): lease com expiração por UPDATE atômico em
 // motor_lease. Motivo medido na Central (comentário dela em 247-264): sem
@@ -997,6 +1055,8 @@ export async function POST(request: Request) {
         const info = veiculoInfoPorId.get(veiculoId);
         if (!info) continue;
 
+        // Step 0: gate de escopo (decidirEscopoDoVeiculo, pura e testada).
+        //
         // Achado real 24/08 (usuário + investigação
         // docs/investigacoes/2026-08-21-marcacoes-faltantes.md, adendo "causa
         // raiz do padrão estrutural"): esta rota existe pra veículos SEM alvo
@@ -1010,10 +1070,17 @@ export async function POST(request: Request) {
         // de casar NF por aproximação contra a Unitrac
         // (montarPontosDeRomaneio), bem mais ruidoso que o status ao vivo que
         // a Central usa -- avaliar de novo aqui um veículo que a Central já
-        // cobre não soma sinal, só duplica alerta. Pula todo veículo que TEM
-        // pelo menos um alvo Unitrac hoje.
+        // cobre não soma sinal, só duplica alerta.
+        //
+        // ATUALIZADO 27/08 (task B2): até aqui isto era um `continue` que
+        // pulava o veículo INTEIRO. A proteção acima continua idêntica, mas
+        // agora ela desliga SÓ o Sinal A (ver deveAvaliarSinalA lá embaixo) --
+        // os 3 detectores de parada da B1 rodam pra TODO veículo, porque a
+        // Central Unitrac está com eles desligados pro cliente inteiro por
+        // flag e não há o que duplicar. O `continue` antigo deixava ~70% da
+        // frota sem detector de parada em nenhum dos dois pipelines.
         const pontosUnitracVeiculo = pontosUnitracPorPlaca.get(info.placa) ?? [];
-        if (pontosUnitracVeiculo.length > 0) continue;
+        const { avaliaDesvio } = decidirEscopoDoVeiculo(pontosUnitracVeiculo.length);
 
         // Step 1: posição atual -- mesma fonte da Central (posicoes_atuais), SOMENTE LEITURA.
         const posAtual = posAtualPorVeiculo.get(veiculoId);
@@ -1083,6 +1150,11 @@ export async function POST(request: Request) {
           continue;
         }
 
+        // Métrica do retorno da rota. Task B2: passa a contar a frota inteira
+        // com romaneio hoje, não só os sem alvo Unitrac -- é o número correto
+        // agora, já que todo veículo contado de fato tem as paradas avaliadas.
+        // Um salto de ~30% -> 100% da frota neste contador no primeiro ciclo
+        // depois do deploy é o efeito esperado, não regressão.
         veiculosProcessados++;
 
         // Posição anterior -- mesma fonte da Central (posicoes_historico),
@@ -1147,16 +1219,37 @@ export async function POST(request: Request) {
           lng: l.lng,
           presencaConfirmadaEm: l.presenca_confirmada_em,
         }));
-        // pontosUnitracVeiculo já foi calculado acima (Step 0, gate de
-        // escopo) -- sempre [] neste ponto, já que veículo com alvo Unitrac
-        // é pulado antes de chegar aqui. Mantido explícito no argumento
-        // (não hardcoded []) pra não esconder a dependência real da função.
-        const pontos = montarPontosDeRomaneio(pontosRomaneioDoVeiculo, pontosUnitracVeiculo);
+        // `[]` LITERAL, de propósito (decisão de produto da task B2, 27/08).
+        // Até a B2 aqui ia `pontosUnitracVeiculo`, com o comentário de que ele
+        // "sempre é [] neste ponto" -- verdade só porque o gate de escopo
+        // matava o veículo antes. Agora que veículo com alvo Unitrac chega
+        // até aqui, o argumento passaria a valer de verdade, e a Central
+        // Romaneio NUNCA deve misturar marcação Unitrac em `pontos`: é o
+        // casamento de NF por aproximação que ela faz que é ruidoso (é a causa
+        // documentada do quase-flood de 24/08).
+        //
+        // Efeito concreto de passar []: `feito` vira só
+        // `presencaConfirmadaEm !== null` (romaneio puro, sem o `alvo.feito`
+        // da Unitrac) e a linha sem geocode perde o fallback de coordenada do
+        // alvo -- ou seja, ela é descartada em vez de entrar com coordenada
+        // Unitrac. Os dois erram pro lado de alertar mais, nunca menos
+        // ([[feedback_desvio_priorizar_recall]]): mais ponto pendente e menos
+        // ponto de "estou no cliente". Pro veículo SEM alvo Unitrac nada muda
+        // (o argumento já era [] na prática).
+        const pontos = montarPontosDeRomaneio(pontosRomaneioDoVeiculo, []);
 
         // Step 3: mesma regra de pendentes da Central pro Sinal A
         // (pontosVeiculoParaDesvio em route.ts): !pt.feito && temCoordenadaValida(pt).
         const pendentes = pontos.filter((pt) => !pt.feito && temCoordenadaValida(pt));
 
+        // Daqui até `destinosRelevantes` é insumo EXCLUSIVO do Sinal A. Fica
+        // calculado pra todo veículo de propósito (task B2): é tudo aritmética
+        // em memória (haversine sobre pendentes + bases + escala), sem query,
+        // sem rede, sem escrita -- e o resultado só é consumido dentro do gate
+        // de deveAvaliarSinalA logo abaixo, que já corta o veículo com alvo
+        // Unitrac. Duplicar o gate aqui em cima só pra economizar dezenas de
+        // haversines aumentaria a chance de quebrar o desvio sem ganho real.
+        //
         // I1: gate de chegada (suspenderPorChegada, pura, @/lib/unitrac) --
         // suspende a avaliação quando o veículo já está dentro do raio do
         // pendente mais próximo (manobra/chegada, não desvio). Sem infra de
@@ -1416,7 +1509,24 @@ export async function POST(request: Request) {
         let ruaRaraStreakNovo = 0;
         let alerta: ReturnType<typeof montarAlertaDesvio> = null;
 
-        if (fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0) {
+        // Gate do Sinal A (deveAvaliarSinalA, pura e testada). Os 6 predicados
+        // originais estão intactos; `avaliaDesvio` é o corte novo da task B2 --
+        // é ELE que preserva a proteção de 24/08 agora que o veículo com alvo
+        // Unitrac não é mais pulado inteiro. Com avaliaDesvio=false nada aqui
+        // dentro roda: nenhuma chamada de OSRM, nenhum montarAlertaDesvio,
+        // `alerta` fica null e afastandoStreakNovo/ruaRaraStreakNovo ficam 0
+        // (mesmo default de qualquer outro ciclo bloqueado).
+        if (
+          deveAvaliarSinalA({
+            avaliaDesvio,
+            fresco,
+            suspensoPorChegada,
+            emCarenciaDeBase,
+            paradoSemSeMover,
+            movimentoInsignificante,
+            qtdDestinosRelevantes: destinosRelevantes.length,
+          })
+        ) {
           // M3: correção de posição via OSRM /match (route.ts:2551-2624) --
           // só entra em ação quando já existe streak (afastandoStreak > 0) e
           // existe pra matar o ruído de snap-to-road do achado de 13/08.
