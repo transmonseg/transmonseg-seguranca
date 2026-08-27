@@ -133,16 +133,18 @@ const TIPOS_NOTIFICAM_POR_CLIENTE: Record<string, string[]> = {
   "4586": ["parada_cliente"],  // Benassi: só parada de 1h30+ dentro do cliente
 };
 
-// Rótulo da 2ª aba de filtro na sidebar (pedido do cliente 07/07): "CRÍTICO"
-// não filtrava nada de útil (todo alerta já é crítico desde que a atenção foi
-// eliminada) — vira uma aba de FOCO especifica por cliente, mostrando só os
-// tipos que de fato importam pra aquela operação (mesmo mapa usado pro apito).
-// Cliente não mapeado aqui = 2ª aba não aparece (só "TUDO"), pra não mostrar
-// uma aba que sempre fica vazia.
-const LABEL_FOCO_POR_CLIENTE: Record<string, string> = {
-  "4096": "DESVIOS",
-  "4586": "1H+ CLIENTE",
-};
+// Aba "Desvios" (task A1, 27/08) -- FIXA e sempre visível pra QUALQUER
+// cliente, independente de cod_user_unitrac. Antes disso a 2ª aba (então
+// chamada "foco") só aparecia se o cliente estivesse mapeado em
+// LABEL_FOCO_POR_CLIENTE/TIPOS_NOTIFICAM_POR_CLIENTE -- falha silenciosa:
+// cliente novo sem entrada nesses Records nunca ganhava a aba, sem aviso
+// nenhum. Pedido explícito do cliente no grupo (26/08): desvio + parada
+// anômala têm que estar juntos numa aba que sempre existe.
+// Tipos fixos, não mais o array por cliente (TIPOS_NOTIFICAM_POR_CLIENTE
+// misturava parada_fora_tapete/parada_sem_marcacao pra Nutry, que aqui NÃO
+// entram mais -- continuam visíveis só em "TUDO").
+const TIPOS_ABA_DESVIOS = ["desvio", "parada_anomala"];
+const LABEL_ABA_DESVIOS = "DESVIOS";
 
 function tempoAtras(desde: string): string {
   const diff = Math.floor((Date.now() - new Date(desde).getTime()) / 60000);
@@ -578,11 +580,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const painel2 = usePainelFoco({ veiculosMapa, veiculosBase, alertas, alvosGlobais, horas });
 
   // UI
-  const [vista, setVista] = useState<"tudo" | "foco">("tudo");
-  // Tipos que a 2ª aba ("foco") filtra pra esse cliente, e o rótulo dela —
-  // mesmo mapa usado pro apito (ver TIPOS_NOTIFICAM_POR_CLIENTE acima).
-  const tiposFoco = TIPOS_NOTIFICAM_POR_CLIENTE[cliente] ?? [];
-  const labelFoco = LABEL_FOCO_POR_CLIENTE[cliente];
+  const [vista, setVista] = useState<"tudo" | "desvios">("tudo");
+  // Mapa de notificação (apito + faixa pulsante de desvio no mapa) continua
+  // por cliente -- escopo DIFERENTE da aba "Desvios" acima (essa é fixa/
+  // global pra qualquer cliente; apito/faixa continuam respeitando só o que
+  // cada operação pediu pra ser avisada, ver TIPOS_NOTIFICAM_POR_CLIENTE).
+  const tiposNotificamCliente = TIPOS_NOTIFICAM_POR_CLIENTE[cliente] ?? [];
   const [filtroComm, setFiltroComm] = useState<number | null>(null);
   const [busca, setBusca] = useState("");
   const [comboAberto, setComboAberto] = useState(false);
@@ -708,10 +711,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (localStorage.getItem("transmonseg-trafego") === "true") setCamTrafego(true);
     if (localStorage.getItem("transmonseg-legenda") === "true") setLegendaAberta(true);
     const vistaS = localStorage.getItem("transmonseg-vista");
-    // "critico" e valor legado (pre-rename da 2a aba pra "foco" em 07/07) —
-    // trata como "foco" pra nao perder a preferencia salva de quem ja usava.
+    // "critico" e "foco" sao valores legados (pre-rename da 2a aba pra
+    // "Desvios" fixa em 27/08, task A1) — tratados como "desvios" pra nao
+    // perder a preferencia salva de quem ja usava.
     if (vistaS === "tudo") setVista("tudo");
-    else if (vistaS === "critico" || vistaS === "foco") setVista("foco");
+    else if (vistaS === "critico" || vistaS === "foco" || vistaS === "desvios") setVista("desvios");
     const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
     if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
     const gruposOcultosS = localStorage.getItem("transmonseg-grupos-ocultos");
@@ -765,7 +769,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     });
   }, []);
 
-  const setVistaComPersistencia = useCallback((v: "tudo" | "foco") => {
+  const setVistaComPersistencia = useCallback((v: "tudo" | "desvios") => {
     localStorage.setItem("transmonseg-vista", v);
     setVista(v);
   }, []);
@@ -1168,7 +1172,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   );
 
   const alertasFiltrados = alertas.filter(a => {
-    if (vista === "foco" && !tiposFoco.includes(a.tipo)) return false;
+    if (vista === "desvios" && !TIPOS_ABA_DESVIOS.includes(a.tipo)) return false;
     if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
     if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
     if (modoRomaneio && !cvsComRomaneio.has(a.cv)) return false;
@@ -1202,7 +1206,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // filtrada por selecao — mesma classe de bug ja corrigida na malha de
   // pontos de entrega (alvosGlobaisSelecionados).
   const alertasFiltradosSplitBase = alertas.filter(a => {
-    if (vista === "foco" && !tiposFoco.includes(a.tipo)) return false;
+    if (vista === "desvios" && !TIPOS_ABA_DESVIOS.includes(a.tipo)) return false;
     if (filtroTipos.size > 0 && !filtroTipos.has(a.tipo)) return false;
     if (gruposOcultos.size > 0) {
       const g = cvParaGrupo.get(a.cv);
@@ -1623,7 +1627,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       painel: ReturnType<typeof usePainelFoco>; compacto?: boolean;
     }
   ) => {
-    if (!tiposFoco.includes("desvio") || desvios.length === 0) return null;
+    if (!tiposNotificamCliente.includes("desvio") || desvios.length === 0) return null;
     const visiveis = opts.mostrarTodos ? desvios : desvios.slice(0, opts.maxChips);
     const pad = opts.compacto ? "5px 9px" : "7px 13px";
     const painel = opts.painel;
@@ -2329,11 +2333,13 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           )}
 
-          {/* Filter tabs — 2ª aba é especifica por cliente ("foco": os tipos que
-              importam pra essa operação, mesmo mapa do apito). Cliente sem
-              mapeamento não ganha 2ª aba (ficaria sempre vazia). */}
+          {/* Filter tabs — "Desvios" (task A1, 27/08) é FIXA e sempre visível
+              pra qualquer cliente (desvio + parada_anomala), sem depender de
+              mapeamento por cod_user_unitrac. "TUDO" continua mostrando
+              literalmente todos os tipos, sem mudança de comportamento --
+              rede de segurança deliberada, aditiva à aba nova. */}
           <div style={{ display: "flex", padding: "5px 6px", gap: 3, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
-            {(labelFoco ? (["tudo", "foco"] as const) : (["tudo"] as const)).map(v => {
+            {(["tudo", "desvios"] as const).map(v => {
               const color = v === "tudo" ? T.accent : T.red;
               const ativo = vista === v;
               return (
@@ -2348,7 +2354,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                     <motion.div layoutId="pillVista" transition={{ type: "spring", stiffness: 500, damping: 40 }}
                       style={{ position: "absolute", inset: 0, borderRadius: 6, background: `${color}18`, zIndex: 0 }} />
                   )}
-                  <span style={{ position: "relative", zIndex: 1 }}>{v === "tudo" ? "TUDO" : labelFoco}</span>
+                  <span style={{ position: "relative", zIndex: 1 }}>{v === "tudo" ? "TUDO" : LABEL_ABA_DESVIOS}</span>
                 </motion.button>
               );
             })}
@@ -2358,7 +2364,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               cabeçalho compacto em vez de duas faixas de pílulas sempre abertas */}
           {(() => {
             const tiposDisponiveis = [...new Set(alertas.filter(a => {
-              if (vista === "foco" && !tiposFoco.includes(a.tipo)) return false;
+              if (vista === "desvios" && !TIPOS_ABA_DESVIOS.includes(a.tipo)) return false;
               return true;
             }).map(a => a.tipo))].sort((a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0));
             const temGrupos = grupos.length > 1;
@@ -2532,7 +2538,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                       background: "transparent", border: `1px solid ${T.border}`,
                       color: T.muted, fontSize: 10, cursor: "pointer", fontFamily: FONT_SANS,
                     }}>
-                      {vista === "foco" && labelFoco ? `Resolver ${labelFoco.toLowerCase()} (${alertasResolviveisEmMassa.length})`
+                      {vista === "desvios" ? `Resolver ${LABEL_ABA_DESVIOS.toLowerCase()} (${alertasResolviveisEmMassa.length})`
                         : `Resolver todos (${alertasResolviveisEmMassa.length})`}
                     </button>
                   )}
