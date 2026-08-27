@@ -274,3 +274,95 @@ de verdade. Vale comunicar isso ao time junto com os fixes.
 2. **Fase 2** (paralelo às duas acima, é só investigação, não bloqueia nada)
 3. **Fase 3** (antes da Fase 4, senão constrói sobre geocodificação ruim)
 4. **Fase 4** (a maior, só depois de 1-3 prontas e validadas contra dado real)
+
+---
+
+## Fase D — MEGA PLANO de redesign visual da Central (27/08, baseado em print real)
+
+**Origem:** usuário mandou 2 screenshots reais da tela em produção ("Central Romaneio", aba
+Desvios, e o dropdown de Configurações) com o pedido "melhora em tudo". Diferente das fases
+anteriores, aqui a base de dados/tokens de cor/fonte já foram auditados (Fase de micro-interações,
+mesmo dia) e estão corretos — esta fase é sobre os elementos visuais/estruturais específicos que
+aparecem nos prints reais, não uma reforma de zero.
+
+### Achados concretos (olhando os prints, não suposição)
+
+1. **BUG real (não é preferência, é quebrado) — dropdown de Configurações sobreposto pelos pills
+   flutuantes de alerta do mapa.** No print 2, o pill "RQV-4F38 DESVIO EM MOVIMENTO 1h" (que fica
+   ancorado sobre o mapa) invade visualmente o painel "CONFIGURACOES" aberto, cortando o espaço
+   onde deveria estar a opção "Modo escuro" (só "Modo claro" aparece limpo, abaixo do pill). É
+   problema de camada (z-index/stacking context) — o dropdown de configurações deveria renderizar
+   por cima de TUDO, incluindo os pills do mapa.
+
+2. **Botões de ação do card de alerta sem hierarquia visual.** No print 1, cada card da sidebar
+   tem 3 botões — "Focar", "Correto", "Falso" — todos com a mesma aparência (mesmo contorno cinza,
+   mesmo peso). Não há diferenciação visual entre uma ação neutra (Focar), uma positiva (Correto)
+   e uma negativa/correção (Falso) — o operador tem que ler o texto, não reconhece pela cor/forma.
+
+3. **Pills flutuantes do mapa apertados, overflow pouco claro.** A fileira de pills no topo do
+   mapa (RBJ-2J67, RQU-4B93, RQQ-5B81, etc.) fica espremida, e o indicador "+7" de itens que não
+   couberam é um badge pequeno sem indicação clara de que é clicável/expansível.
+
+4. **Header de estatística sem presença visual proporcional à importância.** "18 CRÍTICO / 0
+   VEIC." no topo da sidebar é o número mais importante da tela (quantos alertas críticos agora) e
+   está em texto plano, do mesmo peso visual que o resto da UI ao redor.
+
+5. **Acentuação faltando em textos da UI** — "CONFIGURACOES" sem cedilha/til (devia ser
+   "CONFIGURAÇÕES"). Cosmético, mas incoerente com o resto da UI que usa acentuação correta em
+   outros lugares (confirmado nos próprios prints: "CRÍTICO", "VEÍCULOS" têm acento certo).
+
+### Task D.1 — Corrigir o bug de z-index do dropdown de Configurações (CRÍTICO, primeira)
+
+**Files:** `src/app/(app)/central-v2/MonitorV2.tsx` (achar o componente do dropdown de
+Configurações e o componente dos pills flutuantes do mapa — ler o `z-index`/`zIndex` de cada um).
+
+Garantir que o painel de Configurações (e qualquer outro dropdown/modal da aplicação, auditar
+todos enquanto está nessa área do código) renderiza acima de QUALQUER elemento flutuante da tela,
+incluindo os pills de alerta do mapa. Estabelecer (se não existir) uma escala de `z-index`
+consistente no projeto em vez de valores arbitrários espalhados — ver a seção "Code Quality" da
+skill `redesign-existing-projects` ("Arbitrary z-index values like 9999 — Establish a clean z-index
+scale in the theme/variables").
+
+### Task D.2 — Hierarquia visual dos botões Focar/Correto/Falso
+
+Redesenhar os 3 botões do card de alerta pra terem identidade visual distinta:
+- **Focar**: neutro, terciário (texto ou contorno sutil) — é navegação, não decisão.
+- **Correto**: tom positivo (verde/accent, já existe `--verde` nos tokens) — confirma o alerta.
+- **Falso**: tom de atenção/correção (não necessariamente vermelho agressivo — é "corrigir o
+  sistema", não um erro do operador; considerar um tom neutro-mais-forte ou o `--amarelo` já
+  existente) — precisa de decisão de design, não só aplicar `--vermelho` sem pensar (falso positivo
+  não é uma ação "ruim", é uma correção válida e incentivada pelo projeto).
+
+**Não mudar o fluxo de clique (já foi refeito na Task A2 desta sessão — seleção de categoria +
+confirmar)** — só a aparência dos botões que abrem esse fluxo.
+
+### Task D.3 — Polish dos pills flutuantes do mapa
+
+Mais espaçamento/respiro entre pills, indicador de overflow ("+N") mais claro (ex: badge com fundo
+diferenciado + cursor pointer + tooltip "mais N veículos com alerta"), considerar truncar texto
+longo do motivo com reticências consistentes.
+
+### Task D.4 — Header de estatística com mais presença
+
+"18 CRÍTICO / 0 VEIC." vira um componente de destaque real (tipografia maior/peso maior pro
+número, rótulo menor abaixo ou ao lado, possível uso de cor pra crítico > 0 vs = 0) — sem inventar
+elemento novo de layout, só dar peso visual proporcional à importância do dado.
+
+### Task D.5 — Acentuação e polish de texto (menor, pode entrar em qualquer rodada)
+
+Corrigir "CONFIGURACOES" → "CONFIGURAÇÕES" e auditar rapidamente se há outros textos da UI sem
+acento (grep por strings de UI sem caracteres acentuados onde deveriam ter).
+
+### Critério de aceite geral
+- D.1 é bug real — teste (se houver padrão de teste de componente aplicável) ou, no mínimo,
+  verificação visual explícita depois do deploy (usuário já demonstrou que consegue mandar print
+  real, usar isso pra confirmar).
+- D.2-D.5: `npx vitest run`, `npx tsc --noEmit`, `npm run build` limpos. Sem mudança de tokens de
+  cor/fonte fora do que já existe (`--verde`/`--amarelo`/`--vermelho`/`--accent` já estão
+  definidos, reaproveitar).
+- Mesma disciplina desta sessão: implementador + revisor independente antes de qualquer deploy.
+
+### Ordem de execução
+D.1 primeiro e sozinho (bug real, isolado, rápido de revisar). D.2-D.4 podem ir juntos numa
+rodada (mesma área de código, cards de alerta + pills do mapa). D.5 entra de carona em qualquer
+uma das rodadas acima, é trivial.
