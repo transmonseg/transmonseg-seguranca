@@ -97,13 +97,22 @@ const FONTE_ROMANEIO_SEM_SOMBRA = `
       limit 1
     ) al on true`;
 
-// Flag de módulo: uma vez confirmado que `sombra` não existe (erro real de
-// coluna), para de tentar a cada request -- evita dobrar a query em toda
-// invocação enquanto a migration não é aplicada. Otimista (true) até provar
-// o contrário; nunca volta a true sozinha (replica precisa reiniciar depois
-// da migration aplicada -- mesmo custo aceito pelos caches de módulo já
-// existentes neste arquivo).
+// Flag de módulo: uma vez confirmado que `sombra` não existe (ou que a
+// query com o filtro falhou por qualquer motivo), para de tentar em TODA
+// request -- evita dobrar a query enquanto a migration não é aplicada.
+// Otimista (true) até provar o contrário.
+//
+// IMPORTANTE (revisor independente 27/08, IMPORTANTE 3): a flag TEM QUE se
+// re-testar periodicamente, não ficar presa em `false` pra sempre -- uma
+// falha TRANSIENTE (timeout, blip de rede) desligaria o filtro de sombra
+// deste endpoint (pollado a cada ~10s por navegador aberto) até o processo
+// reiniciar, mesmo com a migration aplicada e tudo saudável de novo depois.
+// Mesmo padrão TTL/expiração já usado nos outros caches deste arquivo
+// (CACHE_MS, VEICULOS_CACHE_MS) -- só que aqui o "cache" é do RESULTADO do
+// probe, não do dado em si.
 let sombraColunaDisponivel = true;
+let sombraColunaVerificadaEm = 0;
+const SOMBRA_RETESTE_MS = 5 * 60 * 1000;
 
 export async function GET(request: Request) {
   // Posições de frota são dado sensível: exige operador logado.
@@ -153,8 +162,17 @@ export async function GET(request: Request) {
          ${fonteAlertaSql}
          where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`;
 
+      // Só usa a variante sem filtro direto (pulando a tentativa com
+      // `sombra`) se JÁ sabemos que a coluna falta E o probe é recente --
+      // passado o TTL, tenta de novo com o filtro mesmo que a última
+      // tentativa tenha falhado (ver sombraColunaVerificadaEm acima).
+      const evitarProbeDeNovo =
+        fonte === "romaneio" &&
+        !sombraColunaDisponivel &&
+        Date.now() - sombraColunaVerificadaEm < SOMBRA_RETESTE_MS;
+
       let veiculosRows: { cv: string }[];
-      if (fonte === "romaneio" && !sombraColunaDisponivel) {
+      if (evitarProbeDeNovo) {
         veiculosRows = (
           await client.query<{ cv: string }>(montarQueryVeiculos(FONTE_ROMANEIO_SEM_SOMBRA), [clienteId, dataHojeSP])
         ).rows;
@@ -163,12 +181,19 @@ export async function GET(request: Request) {
           veiculosRows = (
             await client.query<{ cv: string }>(montarQueryVeiculos(FONTES_ALERTA[fonte]), [clienteId, dataHojeSP])
           ).rows;
+          if (fonte === "romaneio") {
+            sombraColunaDisponivel = true;
+            sombraColunaVerificadaEm = Date.now();
+          }
         } catch (errVeiculos) {
           if (fonte !== "romaneio") throw errVeiculos;
-          // `sombra` (migration contabo/062) ainda não existe -- cai pra
-          // versão sem o filtro e desliga a flag pro resto do processo (ver
-          // sombraColunaDisponivel acima).
+          // `sombra` (migration contabo/062) ainda não existe, OU a query
+          // com o filtro falhou por outro motivo -- cai pra versão sem o
+          // filtro. sombraColunaVerificadaEm marca AGORA, então a próxima
+          // tentativa com o filtro só acontece depois de SOMBRA_RETESTE_MS
+          // (nunca fica presa em `false` pra sempre, ver comentário acima).
           sombraColunaDisponivel = false;
+          sombraColunaVerificadaEm = Date.now();
           veiculosRows = (
             await client.query<{ cv: string }>(montarQueryVeiculos(FONTE_ROMANEIO_SEM_SOMBRA), [clienteId, dataHojeSP])
           ).rows;
