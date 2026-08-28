@@ -506,13 +506,26 @@ type VeiculoInfo = { id: string; placa: string; cv: string; cliente_id: string }
 // .superpowers/sdd/2026-08-27-romaneio-fonte-unica-plano-geral/task-fase4-inc1-brief.md):
 // pânico, jammer e excesso de velocidade são detectores 100% puros de
 // telemetria (@/lib/detectores) -- mesmas funções que a Central Unitrac já
-// usa, sem depender de alvo/raio/NF. Rodam aqui em SHADOW MODE: entram em
-// candidatosCiclo (mesma dedup/escalação/cooldown/auto-resolve dos outros
-// tipos, ver Step 9 abaixo) mas o insert marca `sombra: true` pra esses 3
-// tipos -- fonte única, consultada só no ponto do insert. Nunca aparecem nos
-// 3 caminhos de leitura voltados pra UI (alertas-romaneio/route.ts,
-// central-romaneio/page.tsx, mapa/route.ts), que filtram sombra=false.
+// usa, sem depender de alvo/raio/NF. Rodam aqui em SHADOW MODE: o insert
+// marca `sombra: true` pra esses 3 tipos -- fonte única, consultada no
+// ponto do insert (tanto no Step 9 quanto em processarJammerIndependente).
+// Nunca aparecem nos 3 caminhos de leitura voltados pra UI
+// (alertas-romaneio/route.ts, central-romaneio/page.tsx, mapa/route.ts),
+// que filtram sombra=false.
+//
+// Pânico e excesso entram em candidatosCiclo (mesma dedup/escalação/
+// cooldown/auto-resolve dos outros tipos, Step 9 abaixo). Jammer NÃO --
+// ver processarJammerIndependente e TIPOS_GERENCIADOS_FORA_DO_STEP9
+// (revisão independente 27/08, CRÍTICO 1: jammer precisa rodar antes do
+// gate de idempotência de datagps, que fica fora do alcance do Step 9).
 const TIPOS_SOMBRA = new Set(["panico", "jammer", "excesso"]);
+
+// Tipos que alertas_romaneio GERENCIA (fecha sozinho quando a condição
+// para) mas que NÃO passam pelo Step 9 padrão -- hoje só "jammer" (ver
+// processarJammerIndependente acima do POST). Local a este arquivo, não é
+// TIPOS_NAO_GERENCIADOS (@/lib/detectores, que é sobre NUNCA fechar
+// sozinho -- jammer fecha sozinho sim, só que por outro código).
+const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer"]);
 
 type EstadoAnterior = {
   afastando_streak: number;
@@ -563,6 +576,145 @@ async function resolverPelaMaquina(
     if (error) return error.message;
   }
   return null;
+}
+
+// Jammer tem ciclo de vida COMPLETAMENTE INDEPENDENTE do resto de
+// alertas_romaneio (Task Fase 4 Incremento 1, revisão independente 27/08,
+// CRÍTICO 1). Motivo: jammer precisa ser avaliado ANTES do gate de
+// idempotência por `datagps` (route.ts, bloco logo após "Step 1" no loop
+// principal) -- a própria definição de jammer é GPS congelado (atraso >=
+// 30min, `p.velocidade` na última leitura antes do sinal cair, ver
+// detectores.ts:186-190), então durante um jammer real `datagps` fica igual
+// ao ciclo anterior e o `continue` de idempotência dispara SEMPRE. Se
+// jammer ficasse no bloco de candidatos pós-continue (como estava antes
+// desta revisão), ele nunca seria avaliado durante o próprio jammer --
+// só no ciclo em que `ultimo_datagps` ainda é null (primeiro processamento
+// do veículo), que não cobre o caso real. Mesmo padrão que a Central
+// Unitrac já usa: `detectarJammer(pos)` isolado, ANTES de qualquer gate de
+// frescor (motor/route.ts:1904-1919).
+//
+// Por rodar ANTES do continue, jammer NÃO pode reusar candidatosCiclo/Step 9
+// (que só existem pós-continue) -- replica aqui, num escopo bem menor, só o
+// que jammer precisa: dedup (1 alerta aberto por vez), cooldown temporal
+// (mesmo suprimidoPorCooldownTemporal, mesma janela de 5min de
+// JANELA_COOLDOWN_JAMMER_MS), e insert com sombra=true. Consequência
+// direta: "jammer" tem que ficar de FORA do filtro de `alertasGerenciados`
+// no Step 9 (ver TIPOS_GERENCIADOS_FORA_DO_STEP9 mais abaixo) -- senão,
+// num ciclo em que o continue NÃO dispara (datagps avançou) mas a condição
+// de jammer AINDA é verdadeira (ex.: dispositivo entregando leituras
+// antigas em lote, cada uma mais nova que a anterior mas todas com atraso
+// >= 30min), o Step 9 veria "jammer" ausente de candidatosCiclo e fecharia
+// um alerta que este bloco acabou de confirmar que continua ativo -- os
+// dois mecanismos brigando pelo mesmo alerta.
+//
+// Auto-resolve de jammer (quando a condição para de bater) É feito aqui
+// também, no branch `!candidato` -- não fica sobrando pro Step 9 fechar
+// (que nem o vê mais).
+async function processarJammerIndependente(ctx: {
+  admin: ReturnType<typeof createAdminClient>;
+  pool: pg.Pool;
+  veiculoId: string;
+  clienteId: string;
+  latAtual: number;
+  lngAtual: number;
+  candidato: Alerta | null;
+  alertaExistente: AlertaAtivoRow | undefined;
+  agora: Date;
+  sombraDisponivel: boolean;
+  erros: string[];
+}): Promise<{ inserido: boolean }> {
+  const { admin, pool, veiculoId, clienteId, latAtual, lngAtual, candidato, alertaExistente, agora, sombraDisponivel, erros } = ctx;
+
+  if (!candidato) {
+    // Condição não bate mais neste ciclo -- fecha o que estava aberto
+    // (mesmo marcador de auto-resolução usado pelo resto do arquivo,
+    // contexto.auto_resolvido).
+    if (alertaExistente) {
+      const erro = await resolverPelaMaquina(admin, [alertaExistente], agora.toISOString());
+      if (erro) erros.push(`Aviso: falha ao resolver jammer obsoleto do veiculo ${veiculoId}: ${erro}`);
+    }
+    return { inserido: false };
+  }
+
+  if (alertaExistente) {
+    // Já aberto -- só escala se piorou. Nunca acontece hoje na prática
+    // (jammer é sempre nivel="critico", ver detectores.ts) -- mantido só
+    // por simetria com o resto do arquivo, caso o detector mude no futuro.
+    if (alertaExistente.nivel !== "critico" && candidato.nivel === "critico") {
+      const { error } = await admin
+        .from("alertas_romaneio")
+        .update({ nivel: candidato.nivel, motivo: candidato.motivo, score: candidato.score, contexto: {} })
+        .eq("id", alertaExistente.id);
+      if (error) erros.push(`Aviso: falha ao escalar jammer do veiculo ${veiculoId}: ${error.message}`);
+    }
+    return { inserido: false };
+  }
+
+  // Cooldown temporal (achado C, 27/08) -- MESMA função real
+  // (suprimidoPorCooldownTemporal, @/lib/detectores) que o resto do
+  // arquivo usa pra desvio, não uma cópia. "jammer" já está mapeado em
+  // JANELA_COOLDOWN_TEMPORAL_POR_TIPO (5min) desde a task Achado C.
+  const trintaMinAtras = new Date(agora.getTime() - 30 * 60 * 1000).toISOString();
+  let ultimoTratamentoTemporal: { resolvidoEm: string } | null = null;
+  try {
+    const { rows } = await pool.query<{ resolvido_em: string }>(
+      `SELECT resolvido_em FROM alertas_romaneio
+        WHERE veiculo_id = $1 AND cliente_id = $2 AND tipo = 'jammer'
+          AND origem_acao IN ('resolver_individual','falso_individual')
+          AND operador_id IS NOT NULL
+          AND resolvido_em >= $3
+        ORDER BY resolvido_em DESC LIMIT 1`,
+      [veiculoId, clienteId, trintaMinAtras]
+    );
+    if (rows[0]) ultimoTratamentoTemporal = { resolvidoEm: rows[0].resolvido_em };
+  } catch (errCooldown) {
+    console.error(
+      `[cooldown-fresco-romaneio] falha ao consultar cooldown de jammer | veiculo_id=${veiculoId} cliente_id=${clienteId} em=${agora.toISOString()}`,
+      errCooldown
+    );
+    erros.push(`Aviso: falha ao consultar cooldown fresco de jammer pro veiculo ${veiculoId}: ${String(errCooldown)}`);
+  }
+  if (
+    suprimidoPorCooldownTemporal({
+      tipo: "jammer",
+      agoraMs: agora.getTime(),
+      ultimoTratamento: ultimoTratamentoTemporal,
+    })
+  ) {
+    return { inserido: false };
+  }
+
+  // CRÍTICO 2 (revisão independente 27/08): se a coluna `sombra` não está
+  // disponível (migration 062 não aplicada OU o probe falhou por qualquer
+  // outro motivo -- ver sombraDisponivel no loop principal), NÃO insere.
+  // Inserir sem o campo cairia no DEFAULT false da migration e o alerta
+  // nasceria VISÍVEL -- e pior, aplicar a migration depois não "recolhe"
+  // linhas já gravadas com sombra=false. Preferir "não gravar o alerta
+  // shadow deste ciclo" a "vazar pra UI permanentemente".
+  if (!sombraDisponivel) {
+    erros.push(`Aviso: sombra indisponivel -- descartando candidato jammer do veiculo ${veiculoId} (nao gravado)`);
+    return { inserido: false };
+  }
+
+  const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
+    cliente_id: clienteId,
+    veiculo_id: veiculoId,
+    nivel: candidato.nivel,
+    tipo: candidato.tipo,
+    motivo: candidato.motivo,
+    score: candidato.score,
+    status: "ativo",
+    lat: latAtual,
+    lng: lngAtual,
+    contexto: {},
+    desde: agora.toISOString(),
+    sombra: true,
+  });
+  if (erroInsert) {
+    erros.push(`Aviso: falha ao inserir alertas_romaneio (jammer) pro veiculo ${veiculoId}: ${erroInsert.message}`);
+    return { inserido: false };
+  }
+  return { inserido: true };
 }
 
 // Piso pra gritar no log que o ciclo está demorando demais: 45s, metade do
@@ -662,6 +814,12 @@ export async function POST(request: Request) {
   const erros: string[] = [];
   let veiculosProcessados = 0;
   let alertasGerados = 0;
+  // MENOR 5 (revisão independente 27/08, Task Fase 4 Incremento 1):
+  // contador separado pra insert de pânico/jammer/excesso (TIPOS_SOMBRA) --
+  // alertasGerados fica reservado pro que a UI de fato mostra, sem
+  // contaminação de shadow mode na métrica que o controller usa pra
+  // comparar volume visível.
+  let alertasSombraGerados = 0;
   // Quantos veículos o loop TINHA pra percorrer neste ciclo. Junto com
   // veiculosProcessados e duracaoMs, é o mínimo pra distinguir "ciclo saudável
   // que pulou veículo por regra" (sem posição fresca, idempotência de datagps)
@@ -684,6 +842,7 @@ export async function POST(request: Request) {
       veiculosProcessados,
       veiculosComRomaneio,
       alertasGerados,
+      alertasSombraGerados,
       duracaoMs,
       erros,
     });
@@ -1291,6 +1450,45 @@ export async function POST(request: Request) {
         const lngAtual = posAtual.lng;
         const fresco = posAtual.atraso_min != null && posAtual.atraso_min < LIMIAR_ATRASO_FRESCO_MIN;
 
+        // Jammer (Task Fase 4 Incremento 1, revisão independente 27/08,
+        // CRÍTICO 1) -- PRECISA rodar aqui, ANTES do gate de idempotência
+        // de datagps logo abaixo, nunca depois. Ver processarJammerIndependente
+        // (topo do arquivo) pro raciocínio completo: jammer é definido por
+        // GPS congelado, então colocado depois do `continue` ele nunca
+        // dispararia durante um jammer real (datagps sempre igual ao ciclo
+        // anterior => sempre cai no continue). Pânico e excesso continuam
+        // no bloco pós-continue de sempre (nenhum dos dois depende de GPS
+        // parado pra disparar).
+        const alertasAbertosVeiculo = alertasAbertosPorVeiculo.get(veiculoId) ?? [];
+        const posNormalizadaJammer: PosicaoNormalizada = {
+          cv: info.cv,
+          placa: info.placa,
+          lat: latAtual,
+          lng: lngAtual,
+          velocidade: posAtual.velocidade ?? 0,
+          ignicao: posAtual.ignicao ?? false,
+          atraso: posAtual.atraso_min ?? 0,
+          panico: posAtual.panico ?? false,
+          bau: posAtual.bau_aberto ?? false,
+          datagps: posAtual.datagps ?? agora.toISOString(),
+          fresco,
+          evento: null,
+        };
+        const resultadoJammer = await processarJammerIndependente({
+          admin,
+          pool,
+          veiculoId,
+          clienteId: info.cliente_id,
+          latAtual,
+          lngAtual,
+          candidato: detectarJammer(posNormalizadaJammer),
+          alertaExistente: alertasAbertosVeiculo.find((a) => a.tipo === "jammer"),
+          agora,
+          sombraDisponivel,
+          erros,
+        });
+        if (resultadoJammer.inserido) alertasSombraGerados++;
+
         const estadoGravado: EstadoAnterior = estadoPorVeiculo.get(veiculoId) ?? {
           afastando_streak: 0,
           rua_rara_streak: 0,
@@ -1862,8 +2060,10 @@ export async function POST(request: Request) {
 
         // Step 9: gerencia alertas_romaneio, tabela PRÓPRIA -- MESMO padrão
         // de dedup + auto-resolve que a Central faz em `alertas`
-        // (route.ts:3079-3212).
-        const alertasAbertosVeiculo = alertasAbertosPorVeiculo.get(veiculoId) ?? [];
+        // (route.ts:3079-3212). `alertasAbertosVeiculo` já foi declarado
+        // mais acima (antes do gate de idempotência de datagps) -- reusado
+        // aqui, não redeclarado, porque processarJammerIndependente
+        // também precisa dele.
 
         // 🔴 O MOTOR NUNCA FECHA DESVIO. Mesmo filtro da Central
         // (route.ts:3079-3081, TIPOS_NAO_GERENCIADOS importado de
@@ -1895,24 +2095,33 @@ export async function POST(request: Request) {
         // janela de 1 dia em vez dos 7 dela, porque ninguém trabalha a tela
         // nova e um alerta preso cala o veículo na comparação (o motivo
         // completo está na migration).
+        // "jammer" fica de fora deste filtro (TIPOS_GERENCIADOS_FORA_DO_STEP9)
+        // -- tem ciclo de vida próprio em processarJammerIndependente,
+        // avaliado mais acima, antes do gate de idempotência de datagps
+        // (revisão independente 27/08, CRÍTICO 1). Deixá-lo aqui faria o
+        // Step 9 tentar fechar um jammer que o bloco de cima acabou de
+        // confirmar que continua ativo, todo ciclo em que o continue de
+        // datagps não dispara mas a condição de jammer persiste.
         const alertasGerenciados = alertasAbertosVeiculo.filter(
-          (a) => !TIPOS_NAO_GERENCIADOS.has(a.tipo)
+          (a) => !TIPOS_NAO_GERENCIADOS.has(a.tipo) && !TIPOS_GERENCIADOS_FORA_DO_STEP9.has(a.tipo)
         );
 
-        // Pânico/jammer/excesso de velocidade (Task Fase 4 Incremento 1,
-        // 27/08): 3 detectores 100% puros de telemetria (@/lib/detectores),
+        // Pânico/excesso de velocidade (Task Fase 4 Incremento 1, 27/08): 2
+        // detectores 100% puros de telemetria (@/lib/detectores),
         // reaproveitados exatamente como estão -- só monta o
         // PosicaoNormalizada mínimo a partir do que já foi lido de
         // posicoes_atuais (mais os 3 campos novos do SELECT acima). Roda pra
         // TODO veículo com posição (não gated por avaliaParadas/avaliaDesvio
         // -- esses gates existem pra não duplicar detector já coberto pela
-        // Central pro MESMO tipo de alerta visível; aqui os 3 tipos são
+        // Central pro MESMO tipo de alerta visível; aqui os 2 tipos são
         // shadow-only, então cobertura ampla é o próprio objetivo da task:
-        // comparar contra a Central pra frota inteira). fresco entra só
-        // porque é campo do tipo -- NÃO gateia a chamada: detectarJammer
-        // dispara justamente quando o GPS está atrasado (jammer = sinal
-        // preso), gatear por "fresco" cancelaria o próprio detector.
-        const posNormalizadaTelemetria: PosicaoNormalizada = {
+        // comparar contra a Central pra frota inteira).
+        //
+        // Jammer NÃO está mais aqui (revisão independente 27/08, CRÍTICO 1)
+        // -- ver processarJammerIndependente, chamado mais acima, antes do
+        // gate de idempotência de datagps que este bloco (pós-continue)
+        // nunca alcança durante um jammer real.
+        const posNormalizadaPanicoExcesso: PosicaoNormalizada = {
           cv: info.cv,
           placa: info.placa,
           lat: latAtual,
@@ -1927,20 +2136,20 @@ export async function POST(request: Request) {
           evento: null,
         };
         const alertasSombra: Alerta[] = [
-          detectarPanico(posNormalizadaTelemetria),
-          detectarJammer(posNormalizadaTelemetria),
-          detectarExcessoVelocidade(posNormalizadaTelemetria),
+          detectarPanico(posNormalizadaPanicoExcesso),
+          detectarExcessoVelocidade(posNormalizadaPanicoExcesso),
         ].filter((a): a is Alerta => a !== null);
 
         // Candidatos DESTE ciclo: o desvio (Sinal A, quando houver), os
-        // alertas de parada da task B1, e os 3 de telemetria pura em shadow
-        // mode acima. Até 27/08 este bloco tratava UM candidato só; com os
+        // alertas de parada da task B1, e pânico/excesso (shadow mode)
+        // acima. Até 27/08 este bloco tratava UM candidato só; com os
         // detectores de parada e agora os de shadow mode ele passa a tratar
         // um conjunto -- mesma semântica da Central, que já convive com
-        // vários tipos abertos por veículo ao mesmo tempo. Os 3 de shadow
-        // mode passam pelo MESMO pipeline de dedup/escalação/cooldown/
+        // vários tipos abertos por veículo ao mesmo tempo. Pânico/excesso
+        // passam pelo MESMO pipeline de dedup/escalação/cooldown/
         // auto-resolve dos outros (Step 9 abaixo) -- só o insert os marca
-        // sombra=true (TIPOS_SOMBRA, ver definição acima).
+        // sombra=true (TIPOS_SOMBRA, ver definição acima). Jammer é tratado
+        // à parte -- ver comentário acima.
         const candidatosCiclo: Alerta[] = [...(alerta ? [alerta] : []), ...alertasParada, ...alertasSombra];
         const tiposDoCiclo = new Set(candidatosCiclo.map((c) => c.tipo));
         // Silenciamento de 2h (ver tiposSilenciadosPorVeiculo acima) --
@@ -2061,6 +2270,22 @@ export async function POST(request: Request) {
             });
             if (suprimidoPorCooldown) continue;
 
+            // CRÍTICO 2 (revisão independente 27/08): se o candidato é de um
+            // tipo shadow (TIPOS_SOMBRA) e a coluna `sombra` não está
+            // disponível (migration 062 não aplicada OU o probe falhou por
+            // QUALQUER outro motivo -- ver sombraDisponivel acima), NÃO
+            // insere de jeito nenhum. A versão anterior omitia só o campo
+            // `sombra` do insert, que caía no DEFAULT false da migration e
+            // deixava o alerta VISÍVEL -- e pior: aplicar a migration
+            // depois não "recolhe" linhas já gravadas com sombra=false,
+            // então o vazamento seria permanente, não só durante a janela
+            // de deploy. Preferir "não gravar o alerta shadow deste ciclo"
+            // a "vazar pra UI pra sempre".
+            if (!sombraDisponivel && TIPOS_SOMBRA.has(candidato.tipo)) {
+              erros.push(`Aviso: sombra indisponivel -- descartando candidato ${candidato.tipo} do veiculo ${veiculoId} (nao gravado)`);
+              continue;
+            }
+
             const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
               cliente_id: info.cliente_id,
               veiculo_id: veiculoId,
@@ -2073,16 +2298,19 @@ export async function POST(request: Request) {
               lng: lngAtual,
               contexto: contextoAlerta,
               desde: agora.toISOString(),
-              // Task Fase 4 Incremento 1: panico/jammer/excesso gravam com
-              // sombra=true (shadow mode, ver TIPOS_SOMBRA no topo do
-              // arquivo) -- nunca visível na UI. Campo OMITIDO (não
-              // sombra:false) quando a coluna ainda não existe
-              // (sombraDisponivel=false) -- mesmo padrão de degradação do
-              // resto do arquivo.
-              ...(sombraDisponivel && TIPOS_SOMBRA.has(candidato.tipo) ? { sombra: true } : {}),
+              // Chega aqui só quando sombraDisponivel=true (ou o tipo não é
+              // de shadow, caso em que TIPOS_SOMBRA.has() é false e o
+              // spread não adiciona nada) -- o gate acima já garantiu isso.
+              ...(TIPOS_SOMBRA.has(candidato.tipo) ? { sombra: true } : {}),
             });
             if (erroInsert) {
               erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
+            } else if (TIPOS_SOMBRA.has(candidato.tipo)) {
+              // MENOR 5 (revisão independente 27/08): alertasGerados é a
+              // métrica que o controller usa pra comparar VOLUME visível
+              // gerado -- contar shadow mode ali contaminaria a comparação
+              // com um número que a UI nunca mostra. Contado à parte.
+              alertasSombraGerados++;
             } else {
               alertasGerados++;
             }
