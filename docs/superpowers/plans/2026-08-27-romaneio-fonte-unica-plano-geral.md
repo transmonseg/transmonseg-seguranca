@@ -220,6 +220,27 @@ completo. Resumo:
 
 Esta fase precisa do próprio spec+plano detalhado quando for priorizada — 11 detectores é trabalho de várias semanas, não dá pra planejar linha a linha agora. Recomendo tratar cada detector (ou grupo do item 1) como seu próprio incremento com spec→plano→SDD, não um plano único gigante.
 
+**Incremento 1 (27/08): COMPLETO e deployado, em shadow mode.** Pânico, jammer e excesso de
+velocidade (os 3 detectores 100% telemetria pura, sem depender de `noCliente`) agora rodam no
+motor-romaneio, gravando em `alertas_romaneio` com `sombra=true` — nunca aparecem na UI, só servem
+pra comparar contra a Central Unitrac. 3 rodadas de review (opus) até fechar 2 achados críticos
+reais: `detectarJammer` era inalcançável (gate de idempotência de `datagps` pulava o veículo antes
+do bloco novo, e jammer é definido justamente por `datagps` congelado) e um vazamento de
+visibilidade permanente na janela deploy→migration. Ver
+`.superpowers/sdd/2026-08-27-romaneio-fonte-unica-plano-geral/task-fase4-inc1-report.md` (no repo
+"MONITORAMENTO TEMP" antigo, mantido como scratch histórico) pro relatório completo.
+
+Dívida documentada, bloqueante só ANTES de tirar cada tipo do shadow mode (não bloqueia o shadow
+mode em si): (1) o ciclo independente do jammer não respeita o silenciamento de 2h que o operador
+aciona ao marcar falso positivo; (2) os 3 caminhos de leitura de UI têm fallback sem filtro de
+sombra em qualquer erro de query, não só coluna ausente — só vira risco real depois que existirem
+linhas `sombra=true` de verdade.
+
+**Próximo passo real**: deixar rodar alguns dias, comparar contra a Central Unitrac pra Nutry Max,
+resolver a dívida acima, só depois decidir tirar algum tipo do shadow mode. Baú e ignição noturna
+ficam pro Incremento 2 (dependem do `noCliente` próprio do Romaneio, não do da Unitrac — ainda não
+confirmado se dá pra reaproveitar direto).
+
 ---
 
 ## Pesquisa de tecnologia (GitHub) — o que vale usar, por fase
