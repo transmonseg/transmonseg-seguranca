@@ -2172,6 +2172,25 @@ export async function POST(request: Request) {
 
           const mesmoAlvoQueAntes = alvoNoRaioAgora !== null && alvoNoRaioAgora.pontoCodigo === codigoAnteriorNoRaio;
           const LIMIAR_VELOCIDADE_DWELL_KMH = 5;
+          // Ciclo alvo do motor -- ver dtParSegundos mais abaixo (mesma
+          // constante, usada la' tambem, so' uma declaracao pra nao colidir).
+          const PERIODO_CICLO_MOTOR_S = 60;
+          // Achado real 28/08 (TOS-1H26, "tem bastante pendente" -- ver
+          // grupo KPI AJUSTES/audio privado Tia Erica): o incremento de
+          // dwell usava +30s FIXO por ciclo qualificado, mas o motor roda a
+          // cada PERIODO_CICLO_MOTOR_S=60s (as vezes mais, sob carga) --
+          // subestimava o tempo parado real por quase 2x. Caso real
+          // medido: 3 leituras devagar/paradas em ~114s reais (52-62s de
+          // cadencia real entre elas) somavam so' 90s pelo calculo antigo
+          // (3*30), ficando ABAIXO do limiar de 120s -- por pouco nao
+          // confirmava uma entrega que genuinamente aconteceu (caminhao
+          // parado a <10m do cliente por quase 2min). Usa o tempo real
+          // decorrido desde o ciclo anterior (anterior.updated_at) em vez
+          // de um incremento fixo -- sem ciclo anterior pra medir contra
+          // (primeira leitura na faixa), cai pro periodo padrao do motor.
+          const incrementoDwellSegundos = anterior?.updated_at
+            ? (agora.getTime() - new Date(anterior.updated_at).getTime()) / 1000
+            : PERIODO_CICLO_MOTOR_S;
 
           let noRaioAlvoCodigo: number | null = alvoNoRaioAgora?.pontoCodigo ?? null;
           let noRaioDesde: string | null = desdeAnterior;
@@ -2186,10 +2205,10 @@ export async function POST(request: Request) {
           } else if (!mesmoAlvoQueAntes) {
             // Entrou num raio novo (ou pela primeira vez).
             noRaioDesde = agora.toISOString();
-            noRaioDwellSegundos = pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0;
+            noRaioDwellSegundos = pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? incrementoDwellSegundos : 0;
           } else {
             // Continua no mesmo raio: acumula dwell so quando devagar/parado.
-            noRaioDwellSegundos = dwellAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0);
+            noRaioDwellSegundos = dwellAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? incrementoDwellSegundos : 0);
           }
 
           // Presenca confirmada por permanencia (romaneio) -- ver
@@ -2396,13 +2415,13 @@ export async function POST(request: Request) {
             // acumula) -- proxima leitura confiavel decide.
           } else if (faixaPertoAgora !== null && faixaPertoAgora.pontoCodigo === codigoAnteriorFaixaPerto) {
             pertoSemMarcacaoCodigo = faixaPertoAgora.pontoCodigo;
-            pertoSemMarcacaoSegundos = dwellFaixaPertoAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0);
+            pertoSemMarcacaoSegundos = dwellFaixaPertoAnterior + (pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? incrementoDwellSegundos : 0);
           } else if (faixaPertoAgora !== null) {
             // Entrou na faixa de um ponto NOVO (troca de alvo mais
             // proximo em-faixa) -- comeca contagem nova, nao herda a de
             // outro ponto.
             pertoSemMarcacaoCodigo = faixaPertoAgora.pontoCodigo;
-            pertoSemMarcacaoSegundos = pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? 30 : 0;
+            pertoSemMarcacaoSegundos = pos.velocidade <= LIMIAR_VELOCIDADE_DWELL_KMH ? incrementoDwellSegundos : 0;
           } else if (saiuDeVerdadeDaFaixa) {
             // Saida FISICA confirmada do ponto rastreado -- zera (o
             // detector abaixo ja capturou dwellFaixaPertoAnterior antes
@@ -2649,7 +2668,7 @@ export async function POST(request: Request) {
           // km/h pra ~580/~490 km/h -- seguem ordens de grandeza acima do
           // piso de 150; e os 2 falsos (RQU-4B93 75 km/h, RBI-0J25 115 km/h)
           // caem pra ~61 e ~81 km/h, ainda mais longe do piso.
-          const PERIODO_CICLO_MOTOR_S = 60;
+          // (PERIODO_CICLO_MOTOR_S ja declarado mais acima, reusado aqui.)
           const dtParSegundos = anterior?.updated_at
             ? (Date.now() - new Date(anterior.updated_at).getTime()) / 1000 + PERIODO_CICLO_MOTOR_S
             : null;
