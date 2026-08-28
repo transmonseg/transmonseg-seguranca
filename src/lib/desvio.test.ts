@@ -7,61 +7,76 @@ import {
 } from "./desvio";
 
 describe("ehSaltoDeReconciliacaoDeAtraso", () => {
-  it("caso real TTJ-9I18 (28/08): leitura congelada com atraso 20 seguida de reconciliação com atraso 1 e salto de 20,8km em 68s", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 20798)).toBe(true);
+  it("caso real TTJ-9I18 (28/08): congelado com atraso 20, reconcilia com atraso 1 e salta 20,8km em 68s (1101 km/h implícitos)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 20798, 68)).toBe(true);
   });
 
-  it("caso real RQV-6I51 (28/08): atraso 15 -> 1, salto de 16,4km em 62s", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(15, 1, 16355)).toBe(true);
+  it("caso real RQV-6I51 (28/08): atraso 15 -> 1, salto de 16,4km em 62s (950 km/h implícitos)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(15, 1, 16355, 62)).toBe(true);
   });
 
-  // REGRESSÃO (achado da revisão independente, 28/08): este é o caso que a
-  // versão atraso-only do gate suprimia indevidamente. RQU-5G33, 22/08,
-  // status `resolvido` -- desvio REAL tratado pelo operador. A assinatura de
-  // atraso é idêntica à dos casos alvo (27 -> 1), mas o veículo andou só
-  // 327m em 62s: é um ciclo NORMAL com a telemetria se normalizando, não um
-  // salto de reconciliação. Sem a condição de salto, o gate custaria recall.
-  it("NÃO dispara quando o atraso caiu mas a posição quase não mudou -- caso real RQU-5G33 (desvio REAL, atraso 27 -> 1 em 327m)", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(27, 1, 327)).toBe(false);
+  it("caso real TTJ-9I18 (21/08, status `resolvido`): 7342m em 69s = 383 km/h -- continua DENTRO do gate, o par é fisicamente impossível mesmo sendo de um desvio real (validado por simulação: o alerta sai 1 leitura depois)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(16, 1, 7342, 69)).toBe(true);
+  });
+
+  // REGRESSÃO (1a revisão independente, 28/08): a versão atraso-only do gate
+  // suprimia este caso. RQU-5G33, 22/08, status `resolvido` -- desvio REAL.
+  // Assinatura de atraso idêntica à dos alvos (27 -> 1), mas 327m em 62s: é
+  // um ciclo NORMAL com a telemetria se normalizando.
+  it("NÃO dispara quando o atraso caiu mas a posição quase não mudou -- caso real RQU-5G33 (desvio REAL, atraso 27 -> 1 em 327m/62s)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(27, 1, 327, 62)).toBe(false);
+  });
+
+  // REGRESSÃO (2a revisão independente, 28/08): distância bruta sem olhar o
+  // intervalo suprimia ciclos LONGOS mas fisicamente plausíveis -- rodovia de
+  // verdade, não artefato.
+  it("NÃO dispara em ciclo longo com velocidade plausível -- casos reais RQU-4B93 (5446m/260s = 75 km/h) e RBI-0J25 (4644m/145s = 115 km/h)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(11, 2, 5446, 260)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(26, 2, 4644, 145)).toBe(false);
   });
 
   it("NÃO dispara com deslocamento de ciclo saudável mesmo com atraso alto caindo (p50=464m, p95=1517m, p99=2548m no dado real)", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(27, 2, 464)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 1517)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 2548)).toBe(false);
-    // RQU-6E83 (26/08, falso_positivo): atraso 27 -> 2, mas só 1229m --
-    // fica de fora do gate por não ser fisicamente um salto.
-    expect(ehSaltoDeReconciliacaoDeAtraso(27, 2, 1229)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(27, 2, 464, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 1517, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 2548, 60)).toBe(false);
+    // RQU-6E83 (26/08, falso_positivo): atraso 27 -> 2, mas só 1229m.
+    expect(ehSaltoDeReconciliacaoDeAtraso(27, 2, 1229, 83)).toBe(false);
   });
 
   it("NÃO dispara com telemetria saudável o tempo todo (ruído genuíno de geometria de estrada, categoria já coberta por LIMIAR_MOVIMENTO_MINIMO_M / streak)", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(1, 1, 20000)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(3, 2, 20000)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(1, 1, 20000, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(3, 2, 20000, 60)).toBe(false);
   });
 
   it("NÃO dispara se o atraso continua alto (telemetria ainda não reconciliou -- o ponto ainda está congelado)", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(20, 19, 20000)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(20, 4, 20000)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 19, 20000, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 4, 20000, 60)).toBe(false);
   });
 
   it("NÃO dispara acima de 60min de atraso anterior -- reconciliação depois de muito tempo sem comunicação é outra categoria (jammer), e no dado real de 21-28/08 os únicos 2 casos (TML-3B11 atraso 132, RQV-3J99 atraso 66) foram classificados como reais pelo operador", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(61, 1, 20000)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(132, 2, 8045)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(66, 2, 13395)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(61, 1, 20000, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(132, 2, 8045, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(66, 2, 13395, 60)).toBe(false);
   });
 
-  it("limites exatos dos limiares calibrados (atraso >=10 e <=60, atual <=3, salto >=4000m)", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(10, 3, 4000)).toBe(true);
-    expect(ehSaltoDeReconciliacaoDeAtraso(60, 3, 4000)).toBe(true);
-    expect(ehSaltoDeReconciliacaoDeAtraso(10, 3, 3999)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(9, 1, 20000)).toBe(false);
+  it("limites exatos dos limiares calibrados (atraso >=10 e <=60, atual <=3, salto >=4000m, velocidade implícita >=150 km/h)", () => {
+    // 4000m em 96s = 150,0 km/h exatos: os dois limiares no fio.
+    expect(ehSaltoDeReconciliacaoDeAtraso(10, 3, 4000, 96)).toBe(true);
+    expect(ehSaltoDeReconciliacaoDeAtraso(60, 3, 4000, 96)).toBe(true);
+    expect(ehSaltoDeReconciliacaoDeAtraso(10, 3, 3999, 96)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(9, 1, 20000, 60)).toBe(false);
+    // 4000m em 97s = 148,5 km/h: abaixo do piso de velocidade.
+    expect(ehSaltoDeReconciliacaoDeAtraso(10, 3, 4000, 97)).toBe(false);
   });
 
-  it("sem dado de atraso ou de movimento (cold-start, coluna nula, sem anterior) nunca suprime -- na dúvida, avalia", () => {
-    expect(ehSaltoDeReconciliacaoDeAtraso(null, 1, 20000)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(20, null, 20000)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, null)).toBe(false);
-    expect(ehSaltoDeReconciliacaoDeAtraso(undefined, undefined, undefined)).toBe(false);
+  it("sem dado de atraso, de movimento ou de intervalo (cold-start, coluna nula, sem anterior) nunca suprime -- na dúvida, avalia", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(null, 1, 20000, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, null, 20000, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, null, 60)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 20000, null)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 20000, 0)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 20000, -5)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(undefined, undefined, undefined, undefined)).toBe(false);
   });
 });
 

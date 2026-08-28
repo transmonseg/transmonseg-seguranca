@@ -139,10 +139,11 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
     // continua sendo a distancia deste ponto (o motor tambem grava a posicao
     // em posicoes_atuais mesmo quando suspende a avaliacao).
     const movimentoRealM = haversineM(anterior.lat, anterior.lng, pos.lat, pos.lng);
+    const dtParSegundos = (pos.criado_em - anterior.criado_em) / 1000;
     const suprimidoPorMovimento = GATE_MOVIMENTO_MINIMO && movimentoRealM < LIMIAR_MOVIMENTO_MINIMO_M;
     const suprimidoPorReconciliacao =
       GATE_RECONCILIACAO &&
-      ehSaltoDeReconciliacaoDeAtraso(anterior.atraso_min, pos.atraso_min, movimentoRealM);
+      ehSaltoDeReconciliacaoDeAtraso(anterior.atraso_min, pos.atraso_min, movimentoRealM, dtParSegundos);
     if (suprimidoPorMovimento || suprimidoPorReconciliacao) {
       if (suprimidoPorMovimento) totalSuprimidosMovimento++;
       else totalSuprimidosReconciliacao++;

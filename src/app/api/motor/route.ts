@@ -741,7 +741,7 @@ export async function POST(request: Request) {
     // ciclo, degradacao aceitavel e temporaria; nao persistente).
     const { data: posatuaisRows, error: erroLeituraPosAtuais } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, atraso_min, parado_desde, ultimo_evento, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos");
+      .select("veiculo_id, lat, lng, velocidade, atraso_min, updated_at, parado_desde, ultimo_evento, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos");
     if (erroLeituraPosAtuais) {
       const msg = `CRITICO: falha ao ler posicoes_atuais (estado por veiculo perdido neste ciclo, UPSERT sera pulado pra nao gravar cold-start por engano): ${erroLeituraPosAtuais.message}`;
       console.error(msg);
@@ -757,6 +757,10 @@ export async function POST(request: Request) {
         // par (anterior, atual) nao e' um ciclo de ~60s e sim minutos de
         // telemetria atrasada comprimidos numa leitura so'.
         atraso_min: number | null;
+        // 28/08 (2a revisao): quando este veiculo foi gravado pela ultima
+        // vez. E' o inicio do intervalo do par (anterior -> atual), usado
+        // pela checagem de velocidade implicita do gate de reconciliacao.
+        updated_at: string | null;
         parado_desde: string | null;
         ultimo_evento: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
@@ -774,6 +778,7 @@ export async function POST(request: Request) {
         lng: row.lng,
         velocidade: row.velocidade,
         atraso_min: row.atraso_min ?? null,
+        updated_at: row.updated_at ?? null,
         parado_desde: row.parado_desde,
         ultimo_evento: row.ultimo_evento ?? null,
         no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
@@ -2624,10 +2629,19 @@ export async function POST(request: Request) {
           // gates sao o mesmo criterio em lados opostos da mesma regua.
           // Mesmo comportamento de movimentoInsignificante: suspende SO' este
           // ciclo, sem zerar nem decrementar o streak.
+          // Intervalo do par: `anterior.updated_at` e' o instante em que o
+          // ciclo passado gravou posicoes_atuais pra este veiculo, entao
+          // (agora - updated_at) e' o mesmo dt que separa duas leituras
+          // consecutivas em posicoes_historico. Sem ele (cold-start, coluna
+          // nula) o gate nunca suprime.
+          const dtParSegundos = anterior?.updated_at
+            ? (Date.now() - new Date(anterior.updated_at).getTime()) / 1000
+            : null;
           const saltoDeReconciliacaoDeAtraso = ehSaltoDeReconciliacaoDeAtraso(
             anterior?.atraso_min ?? null,
             pos.atraso,
-            movimentoRealM
+            movimentoRealM,
+            dtParSegundos
           );
           const avaliavelIgnorandoReconciliacao =
             pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0;
@@ -2652,6 +2666,7 @@ export async function POST(request: Request) {
                     atrasoAnteriorMin: anterior?.atraso_min ?? null,
                     atrasoAtualMin: pos.atraso,
                     movimentoRealM,
+                    dtParSegundos,
                     destinos: destinosRelevantes.map((d) => ({ codigo: d.codigo, lat: d.lat, lng: d.lng })),
                   }),
                   estadoDesvioAnterior.afastandoStreak,
@@ -2961,6 +2976,33 @@ export async function POST(request: Request) {
               afastandoStreakNovo = estadoDesvioAnterior.afastandoStreak;
               ruaRaraStreakNovo = estadoDesvioAnterior.ruaRaraStreak;
             }
+          } else if (avaliavelIgnorandoReconciliacao && saltoDeReconciliacaoDeAtraso) {
+            // Achado da 2a revisao independente (28/08) -- BLOQUEANTE real, a
+            // garantia central deste gate era FALSA no codigo ate aqui.
+            // `afastandoStreakNovo`/`ruaRaraStreakNovo` nascem 0 la' em cima e
+            // so' sao escritos DENTRO do bloco de avaliacao acima (pelo
+            // resultado do detector, ou pelo `else` de falha do OSRM). Quando
+            // um gate pula o bloco inteiro, os dois ficam em 0 -- e o UPSERT
+            // em desvio_estado logo abaixo grava esse 0 sem COALESCE. Ou
+            // seja: os gates ZERAM o streak, nao "pulam o ciclo" como todo o
+            // comentario deste arquivo (e o de desvio.ts) afirmava.
+            //
+            // Pros gates pre-existentes (paradoSemSeMover,
+            // movimentoInsignificante, suspensoPorChegada, carencia de base)
+            // isso e' inofensivo na pratica: todos disparam com o veiculo
+            // parado ou praticamente parado, onde nao existe streak de
+            // divergencia real pra preservar -- e mexer neles agora mudaria
+            // sensibilidade ja' calibrada, fora do escopo desta task
+            // (registrado no relatorio pra decisao separada).
+            //
+            // Pra ESTE gate e' diferente: ele atua exatamente sobre veiculo
+            // EM MOVIMENTO, que pode estar no meio de uma divergencia real de
+            // 2-3 leituras. Zerar ali destruiria o streak acumulado e
+            // quebraria o "custo maximo de 1 ciclo" que justifica o fix
+            // inteiro. Restaura o estado anterior, que e' o que o detector
+            // teria se este ciclo simplesmente nao existisse.
+            afastandoStreakNovo = estadoDesvioAnterior.afastandoStreak;
+            ruaRaraStreakNovo = estadoDesvioAnterior.ruaRaraStreak;
           }
           if (alertaDesvioV2) candidatosCore.push(alertaDesvioV2);
 

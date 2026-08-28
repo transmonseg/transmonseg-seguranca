@@ -85,10 +85,28 @@ export const LIMIAR_CARENCIA_BASE_M = 1200;
 //
 // Limiar de salto = 4000m: e' o p99.9 do deslocamento de um ciclo saudavel
 // (pares com atraso <= 3 dos dois lados e movimento >= 50m): p50 = 464m,
-// p95 = 1517m, p99 = 2548m, p99.9 = 3962m em 8 dias (3961.8m; a mesma medida
-// em 5 dias deu 4115m). Acima disso o par nao e' fisicamente um ciclo de
-// ~60s: os 2 casos alvo dao 20,8km em 68s (1101 km/h implicitos) e 16,4km em
-// 62s (950 km/h). Corta o RQU-5G33 (327m) e demais ciclos normais.
+// p95 = 1517m, p99 = 2548m. O p99.9 fica em ~4km, mas OSCILA com a janela de
+// dias medida -- 3962m, 4001m e 4032m em tres medicoes diferentes (5 dias, 8
+// dias, e a do revisor independente). 4000 e' o valor redondo no meio dessa
+// faixa; nao ha precisao maior que isso no numero e nao adianta fingir que
+// ha. Corta o RQU-5G33 (327m) e demais ciclos normais.
+//
+// Limiar de velocidade implicita = 150 km/h (achado da 2a revisao
+// independente, 28/08): so' a distancia bruta nao basta, porque um ciclo
+// pode ser longo. Dois pares reais dos ultimos 8 dias passavam do salto de
+// 4km sendo fisicamente PLAUSIVEIS -- RQU-4B93 (5446m em 260s = 75 km/h) e
+// RBI-0J25 (4644m em 145s = 115 km/h): rodovia de verdade, ciclo longo, nao
+// artefato. Exigir tambem velocidade implicita impossivel torna a
+// justificativa "este par nao pode ser um ciclo real" literalmente
+// verdadeira. Distribuicao da velocidade implicita dentro do gate (711 pares
+// em 8 dias): min 75 km/h, p05 240, p25 426, p50 600 km/h -- so' 4 pares
+// ficam abaixo de 150 km/h, ou seja, o corte custa 0,6% da superficie do
+// gate e elimina 100% dos casos plausiveis achados. 150 km/h em LINHA RETA
+// sustentado por um ciclo inteiro esta ~50% acima do teto legal de caminhao
+// no Brasil -- nenhum caminhao carregado faz isso. Os 2 casos alvo: 1101
+// km/h e 950 km/h implicitos, ordens de grandeza acima. No sweep de alertas
+// (7 dias), adicionar esta condicao nao muda NADA (0 ativo / 1 resolvido /
+// 2 falso_positivo com ou sem ela) -- e' ganho de precisao de graca.
 //
 // Sweep final (alertas dos 7 dias tocados pelo gate, no par que forma o
 // streak). Com a condicao de salto >= 4000m:
@@ -100,13 +118,15 @@ export const LIMIAR_CARENCIA_BASE_M = 1200;
 //   12                         0        1            2
 //   15                         0        1            2
 //
-// Sem a condicao de salto (como estava na rodada 1) os mesmos 7 dias dao
-// 2 `resolvido` tocados em qualquer N >= 9 -- a janela de 4 dias da rodada 1
-// escondia isso. CORRECAO de uma afirmacao errada da rodada 1: N=10 NAO e'
-// "o menor limiar sem tocar desvio real" -- N=9 ja' zera os `ativo`, e com
-// a condicao de salto qualquer N entre 8 e 15 da o mesmo resultado nos
-// alertas. 10 foi mantido por conservadorismo (menor superficie de
-// supressao), nao por ser um minimo.
+// ATENCAO ao ler esse sweep: o "N de 8 a 15 da o mesmo resultado" vale
+// SOMENTE com a condicao de salto ligada. SEM ela (como estava na rodada 1),
+// os mesmos 7 dias dao 2 `resolvido` tocados em qualquer N de 8 a 15 -- a
+// janela de 4 dias da rodada 1 escondia isso. Confundir os dois cenarios foi
+// exatamente o que gerou divergencia entre revisoes; os dois numeros estao
+// aqui de proposito. CORRECAO de uma afirmacao errada da rodada 1: N=10 NAO
+// e' "o menor limiar sem tocar desvio real" -- N=9 ja' zera os `ativo`. 10
+// foi mantido por conservadorismo (menor superficie de supressao), nao por
+// ser um minimo.
 //
 // O unico `resolvido` que continua dentro do gate e' TTJ-9I18 (21/08, atraso
 // 16 -> 1, salto de 7342m em 69s = 383 km/h implicitos). E' o mesmo veiculo
@@ -131,27 +151,49 @@ export const LIMIAR_CARENCIA_BASE_M = 1200;
 // voltou ao normal". <=2 e <=3 dao EXATAMENTE o mesmo resultado nos alertas
 // da janela; 3 escolhido por ser a faixa normal completa.
 //
-// Custo de recall e' no maximo UM ciclo: igual a movimentoInsignificante, o
-// gate nao zera nem decrementa o streak, so' pula a avaliacao deste ciclo.
-// Um veiculo realmente divergindo continua divergindo no ciclo seguinte (ja'
+// Custo de recall e' no maximo UM ciclo -- MAS isso depende de o chamador
+// preservar o streak explicitamente. Achado da 2a revisao independente
+// (28/08): no motor, `afastandoStreakNovo` nasce 0 e so' e' escrito DENTRO do
+// bloco de avaliacao, entao qualquer gate que pula o bloco grava 0 em
+// desvio_estado -- ou seja, os gates existentes (paradoSemSeMover,
+// movimentoInsignificante, suspensoPorChegada...) ZERAM o streak, nao
+// "pulam o ciclo". Pra veiculo parado isso e' inofensivo; pra ESTE gate, que
+// atua sobre veiculo em movimento e potencialmente divergindo, nao e'.
+// route.ts tem um ramo dedicado que restaura estadoDesvioAnterior quando
+// ESTE gate suprime (ver o `else if` la'). Com isso a garantia vale de fato:
+// um veiculo realmente divergindo continua divergindo no ciclo seguinte (ja'
 // com os dois pontos reconciliados) e o streak retoma de onde parou -- o
 // alerta sai ~1 leitura depois, nunca deixa de sair.
 export const LIMIAR_ATRASO_RECONCILIACAO_MIN = 10;
 export const LIMIAR_ATRASO_NORMALIZADO_MIN = 3;
 export const LIMIAR_ATRASO_FRESCO_MIN = 60;
 export const LIMIAR_SALTO_RECONCILIACAO_M = 4000;
+export const LIMIAR_VELOCIDADE_IMPLAUSIVEL_KMH = 150;
 
 export function ehSaltoDeReconciliacaoDeAtraso(
   atrasoAnteriorMin: number | null | undefined,
   atrasoAtualMin: number | null | undefined,
-  movimentoRealM: number | null | undefined
+  movimentoRealM: number | null | undefined,
+  dtSegundos: number | null | undefined
 ): boolean {
-  if (atrasoAnteriorMin == null || atrasoAtualMin == null || movimentoRealM == null) return false;
+  if (
+    atrasoAnteriorMin == null ||
+    atrasoAtualMin == null ||
+    movimentoRealM == null ||
+    dtSegundos == null ||
+    // Sem intervalo utilizavel nao da' pra afirmar que o par e'
+    // fisicamente impossivel -- na duvida, avalia (nunca suprime).
+    !(dtSegundos > 0)
+  ) {
+    return false;
+  }
+  const velocidadeImplicitaKmh = (movimentoRealM / dtSegundos) * 3.6;
   return (
     atrasoAnteriorMin >= LIMIAR_ATRASO_RECONCILIACAO_MIN &&
     atrasoAnteriorMin <= LIMIAR_ATRASO_FRESCO_MIN &&
     atrasoAtualMin <= LIMIAR_ATRASO_NORMALIZADO_MIN &&
-    movimentoRealM >= LIMIAR_SALTO_RECONCILIACAO_M
+    movimentoRealM >= LIMIAR_SALTO_RECONCILIACAO_M &&
+    velocidadeImplicitaKmh >= LIMIAR_VELOCIDADE_IMPLAUSIVEL_KMH
   );
 }
 
