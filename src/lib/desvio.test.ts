@@ -1,5 +1,52 @@
 import { describe, it, expect } from "vitest";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio } from "./desvio";
+import {
+  avaliarAfastandoDeTudo,
+  avaliarRuaRara,
+  montarAlertaDesvio,
+  ehSaltoDeReconciliacaoDeAtraso,
+} from "./desvio";
+
+describe("ehSaltoDeReconciliacaoDeAtraso", () => {
+  it("caso real TTJ-9I18 (28/08): leitura congelada com atraso 20 seguida de reconciliação com atraso 1 e salto de 20,8km", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 1)).toBe(true);
+  });
+
+  it("caso real RQV-6I51 (28/08): atraso 15 -> 1, salto de 16,4km numa leitura", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(15, 1)).toBe(true);
+  });
+
+  it("NÃO dispara com telemetria saudável o tempo todo (ruído genuíno de geometria de estrada, categoria já coberta por LIMIAR_MOVIMENTO_MINIMO_M / streak)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(1, 1)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(3, 2)).toBe(false);
+  });
+
+  it("NÃO dispara se o atraso continua alto (telemetria ainda não reconciliou -- não há salto, o ponto ainda está congelado)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 19)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, 4)).toBe(false);
+  });
+
+  it("NÃO dispara acima de 60min de atraso anterior -- território de jammer/sem comunicação (detector próprio) e, no dado real de 22-28/08, os únicos 2 casos (TML-3B11 atraso 132, RQV-3J99 atraso 66) foram classificados como reais pelo operador", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(61, 1)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(132, 2)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(66, 2)).toBe(false);
+  });
+
+  it("limites exatos dos limiares calibrados (>=10, <=60, <=3)", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(10, 3)).toBe(true);
+    expect(ehSaltoDeReconciliacaoDeAtraso(60, 3)).toBe(true);
+    // 9 fica de fora: em N=8 um alerta `ativo` real (KSP-8814, 24/08,
+    // atraso 8->1) entraria no gate -- N=10 é o menor limiar com zero
+    // desvio real tocado.
+    expect(ehSaltoDeReconciliacaoDeAtraso(9, 1)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(8, 1)).toBe(false);
+  });
+
+  it("sem dado de atraso (cold-start, coluna nula) nunca suprime -- na dúvida, avalia", () => {
+    expect(ehSaltoDeReconciliacaoDeAtraso(null, 1)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(20, null)).toBe(false);
+    expect(ehSaltoDeReconciliacaoDeAtraso(undefined, undefined)).toBe(false);
+  });
+});
 
 describe("avaliarAfastandoDeTudo", () => {
   it("não acumula streak sem destinos (guard 0 pendentes)", () => {

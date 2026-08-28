@@ -11,8 +11,17 @@
 //
 // Uso: npx tsx --env-file=.env.production scripts/simular-dia-desvio-v2.mjs [YYYY-MM-DD]
 // Sem argumento, simula o dia de HOJE (comportamento original).
+//
+// Gates opcionais (28/08) -- DESLIGADOS por padrao, pra que o baseline deste
+// script continue exatamente o mesmo de todas as calibracoes anteriores
+// (LIMIAR_STREAK_AFASTANDO em 16/08, etc). Ligando-os, a simulacao fica mais
+// perto do motor real, que ja aplica os dois:
+//   GATE_MOVIMENTO_MINIMO=1  -> LIMIAR_MOVIMENTO_MINIMO_M (50m, achado 13/08)
+//   GATE_RECONCILIACAO=1     -> ehSaltoDeReconciliacaoDeAtraso (achado 28/08)
+// Em ambos, o ciclo e' pulado sem zerar/decrementar o streak (mesmo
+// comportamento do motor: `anterior`/`distAnteriores` seguem avancando).
 import pg from "pg";
-import { avaliarAfastandoDeTudo, avaliarRuaRara } from "../src/lib/desvio.ts";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, ehSaltoDeReconciliacaoDeAtraso } from "../src/lib/desvio.ts";
 import { celulaDe } from "../src/lib/celulas.ts";
 import { buscarDistanciasReais } from "../src/lib/distancia-real.ts";
 
@@ -43,6 +52,25 @@ const { rows: veiculos } = await client.query(
 );
 console.log(`Veículos com posição nesse dia: ${veiculos.length}`);
 
+const GATE_MOVIMENTO_MINIMO = process.env.GATE_MOVIMENTO_MINIMO === "1";
+const GATE_RECONCILIACAO = process.env.GATE_RECONCILIACAO === "1";
+const LIMIAR_MOVIMENTO_MINIMO_M = 50;
+console.log(`Gates: GATE_MOVIMENTO_MINIMO=${GATE_MOVIMENTO_MINIMO} GATE_RECONCILIACAO=${GATE_RECONCILIACAO}`);
+
+function haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (g) => (g * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+let totalSuprimidosMovimento = 0;
+let totalSuprimidosReconciliacao = 0;
+
 const eventos = [];
 let totalCiclosAvaliados = 0;
 let totalFalhasOSRM = 0;
@@ -66,7 +94,7 @@ async function getFreqCliente(clienteId) {
 
 async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
   const { rows: posicoes } = await client.query(
-    `SELECT lat, lng, velocidade, criado_em FROM posicoes_historico
+    `SELECT lat, lng, velocidade, atraso_min, criado_em FROM posicoes_historico
       WHERE veiculo_id = $1 AND criado_em >= $2 AND criado_em < $3 ORDER BY criado_em ASC`,
     [veiculo_id, inicioUTC, fimUTC]
   );
@@ -101,6 +129,22 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
 
     if (!distAtuais || !distAnteriores || distAtuais.length !== distAnteriores.length) {
       totalFalhasOSRM += distAtuais ? 0 : 1;
+      distAnteriores = distAtuais;
+      anterior = pos;
+      continue;
+    }
+
+    // Gates de supressao de CICLO (nao mexem no streak) -- ver cabecalho.
+    // Precisam rodar depois do OSRM porque `distAnteriores` do proximo ciclo
+    // continua sendo a distancia deste ponto (o motor tambem grava a posicao
+    // em posicoes_atuais mesmo quando suspende a avaliacao).
+    const movimentoRealM = haversineM(anterior.lat, anterior.lng, pos.lat, pos.lng);
+    const suprimidoPorMovimento = GATE_MOVIMENTO_MINIMO && movimentoRealM < LIMIAR_MOVIMENTO_MINIMO_M;
+    const suprimidoPorReconciliacao =
+      GATE_RECONCILIACAO && ehSaltoDeReconciliacaoDeAtraso(anterior.atraso_min, pos.atraso_min);
+    if (suprimidoPorMovimento || suprimidoPorReconciliacao) {
+      if (suprimidoPorMovimento) totalSuprimidosMovimento++;
+      else totalSuprimidosReconciliacao++;
       distAnteriores = distAtuais;
       anterior = pos;
       continue;
@@ -161,6 +205,8 @@ await Promise.all(Array.from({ length: CONCORRENCIA }, () => worker()));
 
 console.log(`\nCiclos avaliados (com >=2 leituras e pendentes): ${totalCiclosAvaliados}`);
 console.log(`Falhas de OSRM (ciclos pulados): ${totalFalhasOSRM}`);
+console.log(`Ciclos suprimidos por movimento < ${LIMIAR_MOVIMENTO_MINIMO_M}m: ${totalSuprimidosMovimento}`);
+console.log(`Ciclos suprimidos por salto de reconciliacao de atraso: ${totalSuprimidosReconciliacao}`);
 console.log(`\nTotal de desvios que teriam disparado no dia ${diaAlvo}: ${eventos.length}`);
 console.log(`  afastando_geral: ${eventos.filter((e) => e.tipo === "afastando_geral").length}`);
 console.log(`  rua_rara_frota: ${eventos.filter((e) => e.tipo === "rua_rara_frota").length}`);

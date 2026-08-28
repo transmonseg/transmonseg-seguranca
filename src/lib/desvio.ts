@@ -37,6 +37,83 @@ export const LIMIAR_TRANSITO_LONGO_M = 300_000;
 // do detector de desvio inteiro (os 2 sinais) enquanto ainda perto da base.
 export const LIMIAR_CARENCIA_BASE_M = 1200;
 
+// Achado real 28/08 (reclamacao no grupo "DESVIO DE ROTA" sobre volume de
+// desvio incorreto na Central Unitrac; 2 dos 16 falso-positivos do dia,
+// TTJ-9I18 e RQV-6I51, tem esta assinatura). Padrao no dado bruto de
+// posicoes_historico: a Unitrac repete a MESMA leitura (lat/lng identicos,
+// velocidade identica e > 0) por varios ciclos seguidos com `atraso_min`
+// SUBINDO leitura a leitura -- e' telemetria atrasada, o veiculo esta
+// rodando, so' o dado nao chegou. Quando a telemetria "volta ao normal",
+// `atraso_min` despenca pra 1-3 e a posicao SALTA de uma vez o chao
+// percorrido durante todo o congelamento. Caso TTJ-9I18 (28/08, UTC+2):
+//
+//   12:20:01 -21.690875,-41.476723 vel 86 atraso 14
+//   ...      (mesmo lat/lng, mesma velocidade, atraso 15,16,18,19)
+//   12:25:55 -21.690875,-41.476723 vel 86 atraso 20
+//   12:27:03 -21.644320,-41.671647 vel 88 atraso  1   <- salto de 20,8km
+//
+// RQV-6I51 no mesmo dia: atraso 15 -> 1, salto de 16,4km numa leitura.
+//
+// O ciclo do salto compara `anterior` (o ponto congelado) com `pos` (o
+// ponto reconciliado): ~20 minutos de deslocamento real comprimidos numa
+// unica comparacao de ciclo, quando o detector foi desenhado pra ciclos de
+// ~30-70s. E' o mesmo tipo de comparacao invalida que
+// LIMIAR_MOVIMENTO_MINIMO_M (motor/route.ts) ja' evita pelo lado de baixo
+// (movimento pequeno demais pra confiar na distancia de rua do OSRM), so'
+// que pelo lado de cima. Nao e' jammer (jammer e' ignicao ligada + atraso
+// >= 15min tratado por detector e cooldown proprios, e continua valendo:
+// este gate suspende apenas o ciclo de avaliacao de DESVIO).
+//
+// Calibracao (SELECT read-only em producao, 4 dias de alertas tipo='desvio'
+// = 782 alertas, pareados com o par de leituras que formou o streak em
+// posicoes_historico -- 5 dias, 3,46M pares consecutivos):
+//
+//   atraso_ant >= N, atraso_atual <= 3, atraso_ant <= 60
+//   N     ativo  resolvido  falso_positivo  limpo
+//   5       2        1            5           10
+//   8       1        0            3            3
+//   10      0        0            3            2   <- escolhido
+//   12      0        0            3            1
+//   15      0        0            3            1
+//
+// N=10 e' o MENOR limiar em que NENHUM alerta classificado pelo operador
+// como real (`ativo`/`resolvido`) e' tocado -- em N=8 um `ativo` real
+// (KSP-8814, 24/08, atraso 8->1, salto 2,8km) entraria no gate. Mesma
+// prioridade de sempre: aceita falso positivo, nunca perde desvio real.
+//
+// Teto de 60min: acima disso `pos.fresco` e' false (unitrac.ts) e o ciclo
+// nem chega a ser avaliado como desvio -- e' territorio de jammer/sem
+// comunicacao, com detector proprio. Empiricamente tambem: os 2 unicos
+// casos com atraso_ant > 60 nessa janela (TML-3B11 atraso 132, RQV-3J99
+// atraso 66) foram classificados `ativo`/`resolvido` pelo operador, ou
+// seja, tratados como reais -- ficam explicitamente fora do gate.
+//
+// Piso de 3min pro atraso atual: e' a faixa de regime normal observada no
+// proprio dado (leituras saudaveis ficam em atraso 1-3), i.e. "a telemetria
+// voltou ao normal". <=2 e <=3 dao EXATAMENTE o mesmo resultado nos 782
+// alertas da janela; 3 escolhido por ser a faixa normal completa.
+//
+// Custo de recall e' no maximo UM ciclo: igual a movimentoInsignificante, o
+// gate nao zera nem decrementa o streak, so' pula a avaliacao deste ciclo.
+// Um veiculo realmente divergindo continua divergindo no ciclo seguinte (ja'
+// com os dois pontos reconciliados) e o streak retoma de onde parou -- o
+// alerta sai ~1 leitura depois, nunca deixa de sair.
+export const LIMIAR_ATRASO_RECONCILIACAO_MIN = 10;
+export const LIMIAR_ATRASO_NORMALIZADO_MIN = 3;
+export const LIMIAR_ATRASO_FRESCO_MIN = 60;
+
+export function ehSaltoDeReconciliacaoDeAtraso(
+  atrasoAnteriorMin: number | null | undefined,
+  atrasoAtualMin: number | null | undefined
+): boolean {
+  if (atrasoAnteriorMin == null || atrasoAtualMin == null) return false;
+  return (
+    atrasoAnteriorMin >= LIMIAR_ATRASO_RECONCILIACAO_MIN &&
+    atrasoAnteriorMin <= LIMIAR_ATRASO_FRESCO_MIN &&
+    atrasoAtualMin <= LIMIAR_ATRASO_NORMALIZADO_MIN
+  );
+}
+
 export type ResultadoAfastando = { streak: number; disparou: boolean; aproximandoAlgum: boolean };
 
 // Sinal A: o veiculo se afastou (distancia REAL de rua, ja calculada pelo

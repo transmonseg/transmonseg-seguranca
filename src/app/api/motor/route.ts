@@ -63,7 +63,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, ehSaltoDeReconciliacaoDeAtraso } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
@@ -734,7 +734,7 @@ export async function POST(request: Request) {
     // ciclo, degradacao aceitavel e temporaria; nao persistente).
     const { data: posatuaisRows, error: erroLeituraPosAtuais } = await supabase
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, parado_desde, ultimo_evento, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos");
+      .select("veiculo_id, lat, lng, velocidade, atraso_min, parado_desde, ultimo_evento, no_raio_alvo_codigo, no_raio_desde, no_raio_dwell_segundos, perto_sem_marcacao_codigo, perto_sem_marcacao_segundos");
     if (erroLeituraPosAtuais) {
       const msg = `CRITICO: falha ao ler posicoes_atuais (estado por veiculo perdido neste ciclo, UPSERT sera pulado pra nao gravar cold-start por engano): ${erroLeituraPosAtuais.message}`;
       console.error(msg);
@@ -745,6 +745,11 @@ export async function POST(request: Request) {
       string,
       {
         lat: number | null; lng: number | null; velocidade: number | null;
+        // 28/08: atraso da leitura ANTERIOR -- usado por
+        // ehSaltoDeReconciliacaoDeAtraso (lib/desvio.ts) pra detectar que o
+        // par (anterior, atual) nao e' um ciclo de ~60s e sim minutos de
+        // telemetria atrasada comprimidos numa leitura so'.
+        atraso_min: number | null;
         parado_desde: string | null;
         ultimo_evento: string | null;
         no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
@@ -761,6 +766,7 @@ export async function POST(request: Request) {
         lat: row.lat,
         lng: row.lng,
         velocidade: row.velocidade,
+        atraso_min: row.atraso_min ?? null,
         parado_desde: row.parado_desde,
         ultimo_evento: row.ultimo_evento ?? null,
         no_raio_alvo_codigo: row.no_raio_alvo_codigo ?? null,
@@ -2594,7 +2600,57 @@ export async function POST(request: Request) {
             (d) => haversineM(pos.lat, pos.lng, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M
           );
 
-          if (pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0) {
+          // Achado real 28/08 (casos TTJ-9I18 e RQV-6I51, reclamacao de
+          // "desvio incorreto" no grupo DESVIO DE ROTA) -- ver
+          // ehSaltoDeReconciliacaoDeAtraso em lib/desvio.ts pro achado
+          // completo, os numeros da calibracao e por que N=10/M=3/teto=60.
+          // Resumo: quando a leitura ANTERIOR estava congelada com atraso
+          // alto e a atual voltou ao normal, o par (anterior, atual) nao e'
+          // um ciclo de ~60s, e sim minutos de deslocamento real comprimidos
+          // numa comparacao so' -- distancia de rota do OSRM nesse par nao e'
+          // comparavel. Mesmo comportamento de movimentoInsignificante:
+          // suspende SO' este ciclo, sem zerar nem decrementar o streak.
+          const saltoDeReconciliacaoDeAtraso = ehSaltoDeReconciliacaoDeAtraso(
+            anterior?.atraso_min ?? null,
+            pos.atraso
+          );
+          const avaliavelIgnorandoReconciliacao =
+            pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0;
+
+          // Visibilidade/auditoria: grava no desvio_disparo_log (mesma
+          // tabela imune ao STRIP_PESADO usada pros disparos) o ciclo que
+          // SERIA avaliado e foi suspenso por este gate -- so' quando o gate
+          // e' o unico motivo da suspensao, senao logaria toda a frota
+          // parada. tipo_disparo proprio: os scripts de validacao existentes
+          // filtram por tipo_disparo='afastando_geral' e nao sao afetados.
+          if (avaliavelIgnorandoReconciliacao && saltoDeReconciliacaoDeAtraso) {
+            try {
+              const celulaSuprimida = celulaDe(pos.lat, pos.lng);
+              await pool.query(
+                `INSERT INTO desvio_disparo_log
+                   (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [
+                  veiculo_id,
+                  "suprimido_salto_reconciliacao",
+                  JSON.stringify({
+                    atrasoAnteriorMin: anterior?.atraso_min ?? null,
+                    atrasoAtualMin: pos.atraso,
+                    movimentoRealM,
+                    destinos: destinosRelevantes.map((d) => ({ codigo: d.codigo, lat: d.lat, lng: d.lng })),
+                  }),
+                  estadoDesvioAnterior.afastandoStreak,
+                  estadoDesvioAnterior.ruaRaraStreak,
+                  celulaSuprimida,
+                  celulasFrequenciaCliente.get(celulaSuprimida) ?? 0,
+                ]
+              );
+            } catch (errSupressaoLog) {
+              erros.push(`Aviso: falha ao gravar supressao de salto de reconciliacao pro veiculo ${veiculo_id}: ${String(errSupressaoLog)}`);
+            }
+          }
+
+          if (avaliavelIgnorandoReconciliacao && !saltoDeReconciliacaoDeAtraso) {
             // Achado real 13/08 (4 falsos positivos no mesmo dia com delta de
             // distancia identico entre destinos completamente diferentes -- ver
             // docs/superpowers/specs/2026-08-13-osrm-match-desvio-design.md): /table
