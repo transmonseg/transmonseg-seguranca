@@ -65,7 +65,29 @@ const FONTES_ALERTA = {
       order by (a.nivel = 'critico') desc, a.tipo
       limit 1
     ) al on true`,
+  // sombra=false filtra pra fora panico/jammer/excesso rodando em shadow
+  // mode (Task Fase 4 Incremento 1, 27/08 -- motor-romaneio/route.ts,
+  // TIPOS_SOMBRA): esses 3 tipos existem em alertas_romaneio só pra
+  // comparar contra a Central, nunca pra colorir o mapa desta tela.
   romaneio: `
+    left join lateral (
+      select a.tipo
+      from alertas_romaneio a
+      where a.veiculo_id = v.id
+        and a.status in ('ativo', 'reconhecido')
+        and a.sombra = false
+      order by (a.nivel = 'critico') desc, a.tipo
+      limit 1
+    ) al on true`,
+} as const;
+
+// Variante sem o filtro de `sombra` -- coluna só existe a partir da
+// migration contabo/062. Query cru via `pg` não devolve {error} como o
+// supabase-js (ver o resto do arquivo): coluna inexistente estoura exceção,
+// então o fallback aqui é try/catch, não checagem de campo `.error`. Mesmo
+// padrão de degradação do resto do projeto (ver `origem` em
+// romaneio/status/route.ts), adaptado pra SQL cru.
+const FONTE_ROMANEIO_SEM_SOMBRA = `
     left join lateral (
       select a.tipo
       from alertas_romaneio a
@@ -73,8 +95,15 @@ const FONTES_ALERTA = {
         and a.status in ('ativo', 'reconhecido')
       order by (a.nivel = 'critico') desc, a.tipo
       limit 1
-    ) al on true`,
-} as const;
+    ) al on true`;
+
+// Flag de módulo: uma vez confirmado que `sombra` não existe (erro real de
+// coluna), para de tentar a cada request -- evita dobrar a query em toda
+// invocação enquanto a migration não é aplicada. Otimista (true) até provar
+// o contrário; nunca volta a true sozinha (replica precisa reiniciar depois
+// da migration aplicada -- mesmo custo aceito pelos caches de módulo já
+// existentes neste arquivo).
+let sombraColunaDisponivel = true;
 
 export async function GET(request: Request) {
   // Posições de frota são dado sensível: exige operador logado.
@@ -109,24 +138,42 @@ export async function GET(request: Request) {
     const chaveCacheVeiculos = `${clienteId}:${fonte}`;
     let veiculosCache = veiculosCachePorCliente.get(chaveCacheVeiculos);
     if (!veiculosCache || veiculosCache.expiraEm <= Date.now()) {
-      const veiculosRows = (
-        await client.query<{ cv: string }>(
-          `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
-                  p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
-                  p.rumo, p.parado_desde, al.tipo,
-                  exists (
-                    select 1 from romaneio_pontos rp
-                    where rp.veiculo_id = v.id and rp.romaneio_data = $2
-                      and rp.modo_teste = false
-                      and rp.lat is not null and rp.lng is not null
-                  ) as tem_romaneio_hoje
-           from posicoes_atuais p
-           join veiculos v on v.id = p.veiculo_id
-           ${FONTES_ALERTA[fonte]}
-           where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`,
-          [clienteId, dataHojeSP]
-        )
-      ).rows;
+      const montarQueryVeiculos = (fonteAlertaSql: string) =>
+        `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
+                p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
+                p.rumo, p.parado_desde, al.tipo,
+                exists (
+                  select 1 from romaneio_pontos rp
+                  where rp.veiculo_id = v.id and rp.romaneio_data = $2
+                    and rp.modo_teste = false
+                    and rp.lat is not null and rp.lng is not null
+                ) as tem_romaneio_hoje
+         from posicoes_atuais p
+         join veiculos v on v.id = p.veiculo_id
+         ${fonteAlertaSql}
+         where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`;
+
+      let veiculosRows: { cv: string }[];
+      if (fonte === "romaneio" && !sombraColunaDisponivel) {
+        veiculosRows = (
+          await client.query<{ cv: string }>(montarQueryVeiculos(FONTE_ROMANEIO_SEM_SOMBRA), [clienteId, dataHojeSP])
+        ).rows;
+      } else {
+        try {
+          veiculosRows = (
+            await client.query<{ cv: string }>(montarQueryVeiculos(FONTES_ALERTA[fonte]), [clienteId, dataHojeSP])
+          ).rows;
+        } catch (errVeiculos) {
+          if (fonte !== "romaneio") throw errVeiculos;
+          // `sombra` (migration contabo/062) ainda não existe -- cai pra
+          // versão sem o filtro e desliga a flag pro resto do processo (ver
+          // sombraColunaDisponivel acima).
+          sombraColunaDisponivel = false;
+          veiculosRows = (
+            await client.query<{ cv: string }>(montarQueryVeiculos(FONTE_ROMANEIO_SEM_SOMBRA), [clienteId, dataHojeSP])
+          ).rows;
+        }
+      }
       veiculosCache = { veiculos: veiculosRows, expiraEm: Date.now() + VEICULOS_CACHE_MS };
       veiculosCachePorCliente.set(chaveCacheVeiculos, veiculosCache);
     }

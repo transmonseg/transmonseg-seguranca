@@ -41,11 +41,30 @@ export async function GET(request: Request) {
 
   const clienteId = clienteData.id;
 
-  const { data: alertasRaw, error: erroAlertas } = await supabase
+  // sombra=false filtra pra fora os alertas de shadow mode (Task Fase 4
+  // Incremento 1, 27/08 -- panico/jammer/excesso rodando no motor-romaneio
+  // só pra comparar contra a Central, nunca visíveis aqui). `sombra` só
+  // existe a partir da migration contabo/062: se ainda não foi aplicada, o
+  // PostgREST erra por coluna inexistente e a consulta cai pra versão sem o
+  // filtro -- mesmo padrão de degradação já usado pra `origem`
+  // (romaneio/status/route.ts). Nesse modo old-code, os 3 tipos novos ainda
+  // nem existem em produção (o motor só escreve neles depois que ESTE
+  // deploy também subir), então a consulta sem filtro não regride nada.
+  const COLUNAS_ALERTA = "id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto";
+  let respostaAlertas = await supabase
     .from("alertas_romaneio")
-    .select("id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto")
+    .select(COLUNAS_ALERTA)
     .eq("cliente_id", clienteId)
-    .in("status", ["ativo", "reconhecido"]);
+    .in("status", ["ativo", "reconhecido"])
+    .eq("sombra", false);
+  if (respostaAlertas.error) {
+    respostaAlertas = await supabase
+      .from("alertas_romaneio")
+      .select(COLUNAS_ALERTA)
+      .eq("cliente_id", clienteId)
+      .in("status", ["ativo", "reconhecido"]);
+  }
+  const { data: alertasRaw, error: erroAlertas } = respostaAlertas;
   if (erroAlertas) {
     console.error(`Erro ao buscar alertas_romaneio (cliente=${cod}):`, erroAlertas);
   }

@@ -49,11 +49,13 @@ export default async function CentralRomaneioPage({
   // decidir se tem o que processar (api/motor-romaneio/route.ts): mesma data
   // de SP, modo_teste = false, veiculo_id NOT NULL. Se divergisse, a tela
   // diria "tem romaneio" enquanto o motor não gera alerta nenhum.
+  const COLUNAS_ALERTAS_ROMANEIO = "id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto";
+
   const [
     { data: clientesRaw },
     { data: veiculosRaw },
     { data: posicoesRaw },
-    { data: alertasRaw },
+    { data: alertasRawComSombra, error: erroAlertasComSombra },
     contagemComVeiculo,
     contagemHoje,
     contagemEscalaPao,
@@ -61,7 +63,13 @@ export default async function CentralRomaneioPage({
     supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
     supabase.from("veiculos").select("id, cliente_id, placa, cv"),
     supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
-    supabase.from("alertas_romaneio").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").in("status", ["ativo", "reconhecido"]),
+    // sombra=false filtra pra fora panico/jammer/excesso em shadow mode
+    // (Task Fase 4 Incremento 1, 27/08 -- ver motor-romaneio/route.ts,
+    // TIPOS_SOMBRA). `sombra` só existe a partir da migration contabo/062;
+    // se ainda não foi aplicada, PostgREST erra por coluna inexistente e o
+    // fallback abaixo repete sem o filtro (mesmo padrão do tratamento de
+    // `origem` logo adiante nesta função).
+    supabase.from("alertas_romaneio").select(COLUNAS_ALERTAS_ROMANEIO).in("status", ["ativo", "reconhecido"]).eq("sombra", false),
     supabase.from("romaneio_pontos").select("id", { count: "exact", head: true })
       .eq("romaneio_data", hoje).eq("modo_teste", false).not("veiculo_id", "is", null),
     supabase.from("romaneio_pontos").select("id", { count: "exact", head: true })
@@ -73,6 +81,10 @@ export default async function CentralRomaneioPage({
     supabase.from("romaneio_pontos").select("id", { count: "exact", head: true })
       .eq("romaneio_data", hoje).eq("modo_teste", false).eq("origem", "escala_pao"),
   ]);
+
+  const alertasRaw = erroAlertasComSombra
+    ? (await supabase.from("alertas_romaneio").select(COLUNAS_ALERTAS_ROMANEIO).in("status", ["ativo", "reconhecido"])).data
+    : alertasRawComSombra;
 
   // Falha de consulta abre o mapa (fail-open) em vez de mostrar o gate: um
   // gate por erro de banco tirava do operador uma tela que ele já poderia
