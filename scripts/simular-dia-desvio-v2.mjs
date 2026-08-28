@@ -20,8 +20,17 @@
 //   GATE_RECONCILIACAO=1     -> ehSaltoDeReconciliacaoDeAtraso (achado 28/08)
 // Em ambos, o ciclo e' pulado sem zerar/decrementar o streak (mesmo
 // comportamento do motor: `anterior`/`distAnteriores` seguem avancando).
+//   MODELAR_BASES=1          -> inclui as bases do cliente entre os destinos e
+//                               aplica o filtro de 50km (LIMIAR_DESTINO_RELEVANTE_M
+//                               em motor/route.ts, achado 13/08). O script nunca
+//                               modelou nenhum dos dois: usava os pendentes crus.
+//   GATE_RETORNO_BASE=1      -> (exige MODELAR_BASES=1) ehRetornoSustentadoABase
+//                               (achado 28/08): segura o DISPARO, sem tocar no
+//                               streak, quando o veiculo esta ha 15min se
+//                               aproximando ininterruptamente da propria base e
+//                               todas as bases estao alem do filtro de 50km.
 import pg from "pg";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, ehSaltoDeReconciliacaoDeAtraso } from "../src/lib/desvio.ts";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S } from "../src/lib/desvio.ts";
 import { celulaDe } from "../src/lib/celulas.ts";
 import { buscarDistanciasReais } from "../src/lib/distancia-real.ts";
 
@@ -54,8 +63,29 @@ console.log(`Veículos com posição nesse dia: ${veiculos.length}`);
 
 const GATE_MOVIMENTO_MINIMO = process.env.GATE_MOVIMENTO_MINIMO === "1";
 const GATE_RECONCILIACAO = process.env.GATE_RECONCILIACAO === "1";
+const MODELAR_BASES = process.env.MODELAR_BASES === "1";
+const GATE_RETORNO_BASE = process.env.GATE_RETORNO_BASE === "1";
+const LIMIAR_DESTINO_RELEVANTE_M = 50_000;
 const LIMIAR_MOVIMENTO_MINIMO_M = 50;
-console.log(`Gates: GATE_MOVIMENTO_MINIMO=${GATE_MOVIMENTO_MINIMO} GATE_RECONCILIACAO=${GATE_RECONCILIACAO}`);
+console.log(`Gates: GATE_MOVIMENTO_MINIMO=${GATE_MOVIMENTO_MINIMO} GATE_RECONCILIACAO=${GATE_RECONCILIACAO} MODELAR_BASES=${MODELAR_BASES} GATE_RETORNO_BASE=${GATE_RETORNO_BASE}`);
+if (GATE_RETORNO_BASE && !MODELAR_BASES) { console.error("GATE_RETORNO_BASE=1 exige MODELAR_BASES=1"); process.exit(1); }
+
+// Centroide da base igual ao centroideGeo() de src/lib/unitrac.ts (media dos
+// vertices do primeiro anel), nao ST_Centroid.
+const basesPorCliente = new Map();
+if (MODELAR_BASES) {
+  const { rows: basesRows } = await client.query(`SELECT cliente_id, ST_AsGeoJSON(geom) AS gj FROM bases`);
+  for (const b of basesRows) {
+    const geom = JSON.parse(b.gj);
+    const anel = geom.type === "Polygon" ? geom.coordinates[0] : geom.type === "MultiPolygon" ? geom.coordinates[0]?.[0] : null;
+    if (!anel || anel.length === 0) continue;
+    const lat = anel.reduce((s, c) => s + c[1], 0) / anel.length;
+    const lng = anel.reduce((s, c) => s + c[0], 0) / anel.length;
+    if (!basesPorCliente.has(b.cliente_id)) basesPorCliente.set(b.cliente_id, []);
+    basesPorCliente.get(b.cliente_id).push({ lat, lng });
+  }
+  console.log(`Bases carregadas: ${basesRows.length} linhas em ${basesPorCliente.size} clientes`);
+}
 
 function haversineM(lat1, lng1, lat2, lng2) {
   const R = 6371000;
@@ -70,6 +100,7 @@ function haversineM(lat1, lng1, lat2, lng2) {
 
 let totalSuprimidosMovimento = 0;
 let totalSuprimidosReconciliacao = 0;
+let totalSuprimidosRetornoBase = 0;
 
 const eventos = [];
 let totalCiclosAvaliados = 0;
@@ -110,8 +141,32 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
   let anterior = null;
   let snapIdx = 0;
   let distAnteriores = null;
+  // Janela rolante das ultimas RETORNO_BASE_JANELA_S de leituras (TODAS as
+  // leituras, avaliadas ou nao) -- no motor isso e' uma query direta em
+  // posicoes_historico, aqui o proprio array de posicoes ja e' essa fonte.
+  const basesDoCliente = MODELAR_BASES ? (basesPorCliente.get(cliente_id) ?? []) : [];
+  const distBaseDe = (p) => (basesDoCliente.length > 0
+    ? Math.min(...basesDoCliente.map((b) => haversineM(p.lat, p.lng, b.lat, b.lng)))
+    : null);
+  const janelaBase = [];
+  let posAnteriorParaJanela = null;
 
   for (const pos of posicoes) {
+    if (GATE_RETORNO_BASE) {
+      const dBase = distBaseDe(pos);
+      if (dBase != null) {
+        janelaBase.push({
+          tSegundos: new Date(pos.criado_em).getTime() / 1000,
+          distBaseM: dBase,
+          deslocamentoM: posAnteriorParaJanela
+            ? haversineM(posAnteriorParaJanela.lat, posAnteriorParaJanela.lng, pos.lat, pos.lng)
+            : 0,
+        });
+        const corte = new Date(pos.criado_em).getTime() / 1000 - RETORNO_BASE_JANELA_S;
+        while (janelaBase.length > 0 && janelaBase[0].tSegundos < corte) janelaBase.shift();
+      }
+      posAnteriorParaJanela = pos;
+    }
     while (snapIdx + 1 < snapshots.length && snapshots[snapIdx + 1].criado_em <= pos.criado_em) snapIdx++;
     const pendentesAgora = (snapshots[snapIdx]?.pendentes ?? []).filter((p) => p.lat != null && p.lng != null);
 
@@ -123,7 +178,26 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
       continue;
     }
 
-    const destinos = pendentesAgora.map((p) => ({ lat: p.lat, lng: p.lng }));
+    const destinosBrutos = [
+      ...pendentesAgora.map((p) => ({ lat: p.lat, lng: p.lng })),
+      ...basesDoCliente,
+    ];
+    // Reproduz o destinosRelevantes do motor (filtro de 50km). Sem
+    // MODELAR_BASES, mantem o comportamento historico do script (pendentes
+    // crus, sem filtro) pra que o baseline siga comparavel as calibracoes
+    // anteriores.
+    const destinos = MODELAR_BASES
+      ? destinosBrutos.filter((d) => haversineM(pos.lat, pos.lng, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M)
+      : destinosBrutos;
+    if (destinos.length === 0) {
+      // Igual ao motor: destinosRelevantes vazio pula o bloco de avaliacao
+      // inteiro, e desvio_estado acaba gravando streak 0.
+      anterior = pos;
+      distAnteriores = null;
+      afastandoStreak = 0;
+      ruaRaraStreak = 0;
+      continue;
+    }
     const distAtuais = await buscarDistanciasReais({ lat: pos.lat, lng: pos.lng }, destinos);
     totalCiclosAvaliados++;
 
@@ -159,6 +233,24 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
     const nVisitas = freqMap.get(celula) ?? 0;
     const ruaRara = avaliarRuaRara(nVisitas, afastando.aproximandoAlgum, ruaRaraStreak);
     ruaRaraStreak = ruaRara.streak;
+
+    // Gate de retorno a base: segura o DISPARO (nao o streak) quando todas as
+    // bases estao alem do filtro de 50km e o veiculo vem se aproximando delas
+    // sem interrupcao ha 15min. Mesma ordem do motor: roda depois de
+    // avaliarAfastandoDeTudo, so' quando o alerta ja ia sair.
+    const distBaseAgoraM = distBaseDe(pos);
+    const retornoSustentado =
+      GATE_RETORNO_BASE &&
+      afastando.disparou &&
+      distBaseAgoraM != null &&
+      distBaseAgoraM > LIMIAR_DESTINO_RELEVANTE_M &&
+      ehRetornoSustentadoABase(janelaBase);
+    if (retornoSustentado) {
+      totalSuprimidosRetornoBase++;
+      distAnteriores = distAtuais;
+      anterior = pos;
+      continue;
+    }
 
     if (afastando.disparou || ruaRara.disparou) {
       eventos.push({
@@ -209,6 +301,7 @@ console.log(`\nCiclos avaliados (com >=2 leituras e pendentes): ${totalCiclosAva
 console.log(`Falhas de OSRM (ciclos pulados): ${totalFalhasOSRM}`);
 console.log(`Ciclos suprimidos por movimento < ${LIMIAR_MOVIMENTO_MINIMO_M}m: ${totalSuprimidosMovimento}`);
 console.log(`Ciclos suprimidos por salto de reconciliacao de atraso: ${totalSuprimidosReconciliacao}`);
+console.log(`Disparos segurados por retorno sustentado a base: ${totalSuprimidosRetornoBase}`);
 console.log(`\nTotal de desvios que teriam disparado no dia ${diaAlvo}: ${eventos.length}`);
 console.log(`  afastando_geral: ${eventos.filter((e) => e.tipo === "afastando_geral").length}`);
 console.log(`  rua_rara_frota: ${eventos.filter((e) => e.tipo === "rua_rara_frota").length}`);
