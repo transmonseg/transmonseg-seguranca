@@ -2629,13 +2629,29 @@ export async function POST(request: Request) {
           // gates sao o mesmo criterio em lados opostos da mesma regua.
           // Mesmo comportamento de movimentoInsignificante: suspende SO' este
           // ciclo, sem zerar nem decrementar o streak.
-          // Intervalo do par: `anterior.updated_at` e' o instante em que o
-          // ciclo passado gravou posicoes_atuais pra este veiculo, entao
-          // (agora - updated_at) e' o mesmo dt que separa duas leituras
-          // consecutivas em posicoes_historico. Sem ele (cold-start, coluna
-          // nula) o gate nunca suprime.
+          // Intervalo do par, pra checagem de velocidade implicita. Cuidado
+          // que custou uma auto-revisao: `anterior.updated_at` e' quando o
+          // ciclo PASSADO gravou posicoes_atuais (no fim do ciclo), mas o
+          // ciclo ATUAL so' grava depois deste loop terminar -- entao
+          // (agora - updated_at) e' um dt MENOR que o intervalo real entre as
+          // duas gravacoes, por um offset igual a posicao deste veiculo
+          // dentro do loop (0 a ~60s, o periodo do motor -- ver
+          // scripts/motor-loop.mjs). dt menor => velocidade implicita MAIOR
+          // => suprimiria mais do que a calibracao previu, que e' exatamente
+          // o lado errado pra recall (era esse o bug que a condicao de
+          // velocidade veio corrigir).
+          //
+          // Soma o periodo do ciclo pra ter um LIMITE SUPERIOR do intervalo,
+          // e portanto um LIMITE INFERIOR da velocidade implicita: so'
+          // suprime quando o par e' impossivel mesmo assumindo o intervalo
+          // mais longo plausivel. Erra deliberadamente pro lado de NAO
+          // suprimir. Efeito nos casos reais: os 2 alvos caem de 1101/950
+          // km/h pra ~580/~490 km/h -- seguem ordens de grandeza acima do
+          // piso de 150; e os 2 falsos (RQU-4B93 75 km/h, RBI-0J25 115 km/h)
+          // caem pra ~61 e ~81 km/h, ainda mais longe do piso.
+          const PERIODO_CICLO_MOTOR_S = 60;
           const dtParSegundos = anterior?.updated_at
-            ? (Date.now() - new Date(anterior.updated_at).getTime()) / 1000
+            ? (Date.now() - new Date(anterior.updated_at).getTime()) / 1000 + PERIODO_CICLO_MOTOR_S
             : null;
           const saltoDeReconciliacaoDeAtraso = ehSaltoDeReconciliacaoDeAtraso(
             anterior?.atraso_min ?? null,

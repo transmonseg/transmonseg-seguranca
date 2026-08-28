@@ -108,6 +108,14 @@ export const LIMIAR_CARENCIA_BASE_M = 1200;
 // (7 dias), adicionar esta condicao nao muda NADA (0 ativo / 1 resolvido /
 // 2 falso_positivo com ou sem ela) -- e' ganho de precisao de graca.
 //
+// NOTA sobre o dt que o chamador passa: no motor ele e' um LIMITE SUPERIOR
+// do intervalo real (ver PERIODO_CICLO_MOTOR_S em route.ts), de proposito --
+// dt maior => velocidade implicita menor => suprime menos. No simulador o dt
+// e' exato (tem os dois timestamps). Ou seja, o conjunto de ciclos que o
+// MOTOR suprime e' um SUBCONJUNTO do que a simulacao suprime; a validacao
+// por simulacao e' um limite superior do impacto, que e' o lado certo pra
+// sustentar "nenhum desvio real perdido".
+//
 // Sweep final (alertas dos 7 dias tocados pelo gate, no par que forma o
 // streak). Com a condicao de salto >= 4000m:
 //
