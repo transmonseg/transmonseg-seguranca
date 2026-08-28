@@ -64,34 +64,72 @@ export const LIMIAR_CARENCIA_BASE_M = 1200;
 // >= 15min tratado por detector e cooldown proprios, e continua valendo:
 // este gate suspende apenas o ciclo de avaliacao de DESVIO).
 //
-// Calibracao (SELECT read-only em producao, 4 dias de alertas tipo='desvio'
-// = 782 alertas, pareados com o par de leituras que formou o streak em
-// posicoes_historico -- 5 dias, 3,46M pares consecutivos):
+// Calibracao (SELECT read-only em producao). Rodada 1 usou 4 dias de
+// alertas; a revisao independente mostrou que essa janela era curta demais
+// (overfit) e que a condicao SO' de atraso era insuficiente -- ver abaixo.
+// Numeros finais: 7 dias de alertas tipo='desvio' (195 ativo, 200 resolvido,
+// 197 falso_positivo, 525 limpo), pareados com o par de leituras que formou
+// o streak em posicoes_historico (8 dias, 5,56M pares consecutivos).
 //
-//   atraso_ant >= N, atraso_atual <= 3, atraso_ant <= 60
-//   N     ativo  resolvido  falso_positivo  limpo
-//   5       2        1            5           10
-//   8       1        0            3            3
-//   10      0        0            3            2   <- escolhido
-//   12      0        0            3            1
-//   15      0        0            3            1
+// POR QUE O ATRASO SOZINHO NAO BASTA (achado da revisao, 28/08): "atraso
+// alto que cai" acontece muito sem nenhum salto de posicao -- o dado
+// simplesmente se normaliza com o veiculo andando normalmente. Medido nos
+// pares dentro da faixa de atraso do gate e COM movimento real (>= 50m):
+// 70% andaram menos de 1km, ou seja, sao ciclos normais de ~60s, nao saltos
+// de reconciliacao. Suprimi-los e' perda de recall pura. Caso concreto:
+// RQU-5G33 (22/08, status `resolvido`, i.e. desvio REAL tratado pelo
+// operador) tem atraso 27 -> 1 no par que leva o streak de 0->1, mas
+// deslocamento de apenas 327m em 62s -- assinatura de atraso identica a dos
+// casos alvo, comportamento completamente diferente. Por isso o gate exige
+// TAMBEM que a posicao tenha saltado.
 //
-// N=10 e' o MENOR limiar em que NENHUM alerta classificado pelo operador
-// como real (`ativo`/`resolvido`) e' tocado -- em N=8 um `ativo` real
-// (KSP-8814, 24/08, atraso 8->1, salto 2,8km) entraria no gate. Mesma
-// prioridade de sempre: aceita falso positivo, nunca perde desvio real.
+// Limiar de salto = 4000m: e' o p99.9 do deslocamento de um ciclo saudavel
+// (pares com atraso <= 3 dos dois lados e movimento >= 50m): p50 = 464m,
+// p95 = 1517m, p99 = 2548m, p99.9 = 3962m em 8 dias (3961.8m; a mesma medida
+// em 5 dias deu 4115m). Acima disso o par nao e' fisicamente um ciclo de
+// ~60s: os 2 casos alvo dao 20,8km em 68s (1101 km/h implicitos) e 16,4km em
+// 62s (950 km/h). Corta o RQU-5G33 (327m) e demais ciclos normais.
 //
-// Teto de 60min: acima disso `pos.fresco` e' false (unitrac.ts) e o ciclo
-// nem chega a ser avaliado como desvio -- e' territorio de jammer/sem
-// comunicacao, com detector proprio. Empiricamente tambem: os 2 unicos
-// casos com atraso_ant > 60 nessa janela (TML-3B11 atraso 132, RQV-3J99
-// atraso 66) foram classificados `ativo`/`resolvido` pelo operador, ou
-// seja, tratados como reais -- ficam explicitamente fora do gate.
+// Sweep final (alertas dos 7 dias tocados pelo gate, no par que forma o
+// streak). Com a condicao de salto >= 4000m:
+//
+//   N (piso de atraso_ant)   ativo  resolvido  falso_positivo
+//   8                          0        1            2
+//   9                          0        1            2
+//   10                         0        1            2   <- escolhido
+//   12                         0        1            2
+//   15                         0        1            2
+//
+// Sem a condicao de salto (como estava na rodada 1) os mesmos 7 dias dao
+// 2 `resolvido` tocados em qualquer N >= 9 -- a janela de 4 dias da rodada 1
+// escondia isso. CORRECAO de uma afirmacao errada da rodada 1: N=10 NAO e'
+// "o menor limiar sem tocar desvio real" -- N=9 ja' zera os `ativo`, e com
+// a condicao de salto qualquer N entre 8 e 15 da o mesmo resultado nos
+// alertas. 10 foi mantido por conservadorismo (menor superficie de
+// supressao), nao por ser um minimo.
+//
+// O unico `resolvido` que continua dentro do gate e' TTJ-9I18 (21/08, atraso
+// 16 -> 1, salto de 7342m em 69s = 383 km/h implicitos). E' o mesmo veiculo
+// e o mesmo artefato dos casos alvo -- o par de leituras e' fisicamente
+// impossivel, entao a comparacao de distancia ali nao vale nada. Validado na
+// simulacao do dia 21/08: o disparo desse veiculo continua acontecendo com o
+// gate ligado, so' uma leitura depois (ver relatorio, secao Rodada 2).
+//
+// Teto de 60min no atraso ANTERIOR: a justificativa e' EMPIRICA, nao
+// tecnica. (A rodada 1 dizia "acima de 60 `pos.fresco` e' false e o ciclo nem
+// e' avaliado" -- isso esta ERRADO: `fresco` e' da leitura ATUAL, e o push
+// pra posicoes_atuais e' incondicional, entao uma leitura nao-fresca vira
+// `anterior` normalmente no ciclo seguinte.) O motivo real e' o dado: os 2
+// unicos casos com atraso_ant > 60 na janela (TML-3B11 atraso 132, RQV-3J99
+// atraso 66) foram ambos classificados `ativo`/`resolvido` pelo operador --
+// tratados como reais. Reconciliacao depois de MUITO tempo sem comunicacao
+// e' outra categoria (jammer/sem comunicacao, com detector proprio) e fica
+// deliberadamente fora deste gate.
 //
 // Piso de 3min pro atraso atual: e' a faixa de regime normal observada no
 // proprio dado (leituras saudaveis ficam em atraso 1-3), i.e. "a telemetria
-// voltou ao normal". <=2 e <=3 dao EXATAMENTE o mesmo resultado nos 782
-// alertas da janela; 3 escolhido por ser a faixa normal completa.
+// voltou ao normal". <=2 e <=3 dao EXATAMENTE o mesmo resultado nos alertas
+// da janela; 3 escolhido por ser a faixa normal completa.
 //
 // Custo de recall e' no maximo UM ciclo: igual a movimentoInsignificante, o
 // gate nao zera nem decrementa o streak, so' pula a avaliacao deste ciclo.
@@ -101,16 +139,19 @@ export const LIMIAR_CARENCIA_BASE_M = 1200;
 export const LIMIAR_ATRASO_RECONCILIACAO_MIN = 10;
 export const LIMIAR_ATRASO_NORMALIZADO_MIN = 3;
 export const LIMIAR_ATRASO_FRESCO_MIN = 60;
+export const LIMIAR_SALTO_RECONCILIACAO_M = 4000;
 
 export function ehSaltoDeReconciliacaoDeAtraso(
   atrasoAnteriorMin: number | null | undefined,
-  atrasoAtualMin: number | null | undefined
+  atrasoAtualMin: number | null | undefined,
+  movimentoRealM: number | null | undefined
 ): boolean {
-  if (atrasoAnteriorMin == null || atrasoAtualMin == null) return false;
+  if (atrasoAnteriorMin == null || atrasoAtualMin == null || movimentoRealM == null) return false;
   return (
     atrasoAnteriorMin >= LIMIAR_ATRASO_RECONCILIACAO_MIN &&
     atrasoAnteriorMin <= LIMIAR_ATRASO_FRESCO_MIN &&
-    atrasoAtualMin <= LIMIAR_ATRASO_NORMALIZADO_MIN
+    atrasoAtualMin <= LIMIAR_ATRASO_NORMALIZADO_MIN &&
+    movimentoRealM >= LIMIAR_SALTO_RECONCILIACAO_M
   );
 }
 

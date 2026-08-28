@@ -569,6 +569,13 @@ export async function POST(request: Request) {
   // proxima correcao, incrementado so' quando corrigirPosicoesComMatch
   // retorna um resultado usavel (confidence acima do piso).
   const contadorCorrecoesMatch = { valor: 0 };
+  // Log de auditoria das supressoes por salto de reconciliacao (28/08). E'
+  // best-effort: se a migration 063 (que libera o tipo_disparo novo no CHECK
+  // de desvio_disparo_log) ainda nao tiver sido aplicada, o INSERT falha --
+  // e falharia pra TODA supressao do ciclo, ~200-500x/dia, enchendo `erros`
+  // com a mesma mensagem. Na primeira falha desliga o log pelo resto do
+  // ciclo e reporta UMA vez. Nunca afeta a deteccao em si.
+  const logSupressaoDesvio = { habilitado: true };
   // Populado por cliente (candidatos deste ciclo, ver preencherGeocodeCacheCandidatos
   // e a pre-passada de cada cliente) — nao busca a tabela inteira (ver comentario ali).
   const cacheGeocode = new Map<string, string>();
@@ -2603,16 +2610,24 @@ export async function POST(request: Request) {
           // Achado real 28/08 (casos TTJ-9I18 e RQV-6I51, reclamacao de
           // "desvio incorreto" no grupo DESVIO DE ROTA) -- ver
           // ehSaltoDeReconciliacaoDeAtraso em lib/desvio.ts pro achado
-          // completo, os numeros da calibracao e por que N=10/M=3/teto=60.
-          // Resumo: quando a leitura ANTERIOR estava congelada com atraso
-          // alto e a atual voltou ao normal, o par (anterior, atual) nao e'
-          // um ciclo de ~60s, e sim minutos de deslocamento real comprimidos
-          // numa comparacao so' -- distancia de rota do OSRM nesse par nao e'
-          // comparavel. Mesmo comportamento de movimentoInsignificante:
-          // suspende SO' este ciclo, sem zerar nem decrementar o streak.
+          // completo, os numeros da calibracao e por que N=10/M=3/teto=60 e
+          // salto >= 4km. Resumo: quando a leitura ANTERIOR estava congelada
+          // com atraso alto, a atual voltou ao normal E a posicao saltou mais
+          // do que um ciclo real cobre, o par (anterior, atual) nao e' um
+          // ciclo de ~60s, e sim minutos de deslocamento comprimidos numa
+          // comparacao so' -- distancia de rota do OSRM nesse par nao e'
+          // comparavel. As tres condicoes juntas importam: atraso caindo SEM
+          // salto e' so' telemetria se normalizando com o veiculo andando
+          // normal (70% dos casos), e suprimir isso custaria recall de verdade
+          // (caso RQU-5G33, desvio real, 327m). Reusa o `movimentoRealM` ja'
+          // calculado logo acima pro LIMIAR_MOVIMENTO_MINIMO_M -- os dois
+          // gates sao o mesmo criterio em lados opostos da mesma regua.
+          // Mesmo comportamento de movimentoInsignificante: suspende SO' este
+          // ciclo, sem zerar nem decrementar o streak.
           const saltoDeReconciliacaoDeAtraso = ehSaltoDeReconciliacaoDeAtraso(
             anterior?.atraso_min ?? null,
-            pos.atraso
+            pos.atraso,
+            movimentoRealM
           );
           const avaliavelIgnorandoReconciliacao =
             pos.fresco && !suspensoPorChegada && !emCarenciaDeBase && !paradoSemSeMover && !movimentoInsignificante && destinosRelevantes.length > 0;
@@ -2623,7 +2638,7 @@ export async function POST(request: Request) {
           // e' o unico motivo da suspensao, senao logaria toda a frota
           // parada. tipo_disparo proprio: os scripts de validacao existentes
           // filtram por tipo_disparo='afastando_geral' e nao sao afetados.
-          if (avaliavelIgnorandoReconciliacao && saltoDeReconciliacaoDeAtraso) {
+          if (avaliavelIgnorandoReconciliacao && saltoDeReconciliacaoDeAtraso && logSupressaoDesvio.habilitado) {
             try {
               const celulaSuprimida = celulaDe(pos.lat, pos.lng);
               await pool.query(
@@ -2646,7 +2661,8 @@ export async function POST(request: Request) {
                 ]
               );
             } catch (errSupressaoLog) {
-              erros.push(`Aviso: falha ao gravar supressao de salto de reconciliacao pro veiculo ${veiculo_id}: ${String(errSupressaoLog)}`);
+              logSupressaoDesvio.habilitado = false;
+              erros.push(`Aviso: log de supressao de salto de reconciliacao desligado neste ciclo (migration 063 aplicada?) -- primeira falha no veiculo ${veiculo_id}: ${String(errSupressaoLog)}`);
             }
           }
 

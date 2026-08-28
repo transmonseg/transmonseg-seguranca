@@ -141,7 +141,8 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
     const movimentoRealM = haversineM(anterior.lat, anterior.lng, pos.lat, pos.lng);
     const suprimidoPorMovimento = GATE_MOVIMENTO_MINIMO && movimentoRealM < LIMIAR_MOVIMENTO_MINIMO_M;
     const suprimidoPorReconciliacao =
-      GATE_RECONCILIACAO && ehSaltoDeReconciliacaoDeAtraso(anterior.atraso_min, pos.atraso_min);
+      GATE_RECONCILIACAO &&
+      ehSaltoDeReconciliacaoDeAtraso(anterior.atraso_min, pos.atraso_min, movimentoRealM);
     if (suprimidoPorMovimento || suprimidoPorReconciliacao) {
       if (suprimidoPorMovimento) totalSuprimidosMovimento++;
       else totalSuprimidosReconciliacao++;
