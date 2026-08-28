@@ -63,7 +63,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, ehSaltoDeReconciliacaoDeAtraso } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
@@ -576,6 +576,11 @@ export async function POST(request: Request) {
   // com a mesma mensagem. Na primeira falha desliga o log pelo resto do
   // ciclo e reporta UMA vez. Nunca afeta a deteccao em si.
   const logSupressaoDesvio = { habilitado: true };
+  // Mesmo esquema pro log de supressao por retorno sustentado a base (28/08),
+  // com flag SEPARADA de proposito: o tipo_disparo novo depende da migration
+  // 064; se ela ainda nao estiver aplicada, so' este log se desliga -- o de
+  // salto de reconciliacao (migration 063, ja aplicada) continua funcionando.
+  const logRetornoBase = { habilitado: true };
   // Populado por cliente (candidatos deste ciclo, ver preencherGeocodeCacheCandidatos
   // e a pre-passada de cada cliente) — nao busca a tabela inteira (ver comentario ali).
   const cacheGeocode = new Map<string, string>();
@@ -2834,6 +2839,92 @@ export async function POST(request: Request) {
               // pra nao perder a serie historica caso volte a ser religado,
               // so' forca disparou=false na hora de montar o alerta.
               alertaDesvioV2 = montarAlertaDesvio(afastando, { ...ruaRara, disparou: false, celula: celulaAtualDesvio, nVisitas: nVisitasHistorico });
+
+              // Achado real 28/08 (reclamacao no grupo DESVIO DE ROTA: "muitos
+              // desvios de rota em veiculos que estavam retornando para a
+              // base"; casos TOS-0H81, TOS-6H57 e RQP-2G33, cliente Nutry Max)
+              // -- ver ehRetornoSustentadoABase em lib/desvio.ts pro achado
+              // completo, a medicao de por que a solucao obvia (tirar a base do
+              // filtro de 50km) custaria 14,7% dos desvios REAIS, e a
+              // calibracao da janela de 15min.
+              //
+              // Escopo deliberadamente estreito: so' entra quando TODAS as
+              // bases do cliente estao alem de LIMIAR_DESTINO_RELEVANTE_M, que
+              // e' exatamente o buraco -- com base dentro do limiar ela ja esta
+              // em destinosRelevantes, e uma base se aproximando ja' impede
+              // afastouDeTodos sozinha (o gate seria no-op).
+              //
+              // NAO mexe no streak (afastandoStreakNovo ja' foi escrito acima):
+              // no ciclo em que o veiculo deixar de se aproximar da base, o
+              // alerta sai imediatamente com o streak acumulado. O custo de
+              // recall e' zero por construcao, nao "no maximo um ciclo".
+              if (alertaDesvioV2?.origemDesvio === "afastando_geral" && centroidesBases.length > 0) {
+                try {
+                  const distBaseMaisProximaM = Math.min(
+                    ...centroidesBases.map((b) => haversineM(pos.lat, pos.lng, b.lat, b.lng))
+                  );
+                  if (distBaseMaisProximaM > LIMIAR_DESTINO_RELEVANTE_M) {
+                    // A leitura DESTE ciclo ainda nao esta em
+                    // posicoes_historico (INSERT em lote so' no fim do ciclo,
+                    // mesmo detalhe ja documentado no /match acima) -- entra em
+                    // memoria no fim da janela.
+                    const { rows: janelaBaseRows } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
+                      `SELECT lat, lng, criado_em FROM posicoes_historico
+                        WHERE veiculo_id = $1
+                          AND criado_em >= now() - ($2 || ' seconds')::interval
+                          AND lat IS NOT NULL AND lng IS NOT NULL
+                        ORDER BY criado_em ASC`,
+                      [veiculo_id, String(RETORNO_BASE_JANELA_S)]
+                    );
+                    const pontosJanela = [
+                      ...janelaBaseRows.map((r) => ({ lat: r.lat, lng: r.lng, t: new Date(r.criado_em).getTime() / 1000 })),
+                      { lat: pos.lat, lng: pos.lng, t: agora.getTime() / 1000 },
+                    ];
+                    const leiturasRetorno = pontosJanela.map((p, i) => ({
+                      tSegundos: p.t,
+                      distBaseM: Math.min(...centroidesBases.map((b) => haversineM(p.lat, p.lng, b.lat, b.lng))),
+                      deslocamentoM: i === 0 ? 0 : haversineM(pontosJanela[i - 1].lat, pontosJanela[i - 1].lng, p.lat, p.lng),
+                    }));
+                    if (ehRetornoSustentadoABase(leiturasRetorno)) {
+                      // Auditoria com tipo_disparo proprio, mesmo padrao do
+                      // gate de reconciliacao: os scripts de validacao filtram
+                      // por tipo_disparo='afastando_geral' e nao sao afetados.
+                      if (logRetornoBase.habilitado) {
+                        try {
+                          await pool.query(
+                            `INSERT INTO desvio_disparo_log
+                               (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula)
+                             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                            [
+                              veiculo_id,
+                              "suprimido_retorno_base",
+                              JSON.stringify({
+                                distBaseMaisProximaM: Math.round(distBaseMaisProximaM),
+                                leiturasNaJanela: leiturasRetorno.length,
+                                quedaM: Math.round(leiturasRetorno[0].distBaseM - leiturasRetorno[leiturasRetorno.length - 1].distBaseM),
+                                destinos: destinosRelevantes.map((d) => ({ codigo: d.codigo, lat: d.lat, lng: d.lng })),
+                              }),
+                              afastandoStreakNovo,
+                              ruaRara.streak,
+                              celulaAtualDesvio,
+                              nVisitasHistorico,
+                            ]
+                          );
+                        } catch (errLogRetorno) {
+                          logRetornoBase.habilitado = false;
+                          erros.push(`Aviso: log de supressao de retorno a base desligado neste ciclo (migration 064 aplicada?) -- primeira falha no veiculo ${veiculo_id}: ${String(errLogRetorno)}`);
+                        }
+                      }
+                      alertaDesvioV2 = null;
+                    }
+                  }
+                } catch (errRetornoBase) {
+                  // Fail-open igual ao corredor/classe viaria: qualquer falha
+                  // aqui deixa o alerta seguir normalmente. Um erro nunca pode
+                  // suprimir alerta.
+                  erros.push(`Aviso: falha ao avaliar retorno a base pro veiculo ${veiculo_id}: ${String(errRetornoBase)}`);
+                }
+              }
 
               // Achado real 13/08 (pesquisa + auditoria: circuito de
               // aprendizado morto -- ver comentario de getTaxasCalibracaoDesvio
