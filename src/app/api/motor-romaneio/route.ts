@@ -62,6 +62,7 @@ import {
   RAIO_CHEGADA_MIN_M,
   type AlvoUnitrac,
   type PontoEntrega,
+  type PosicaoNormalizada,
 } from "@/lib/unitrac";
 import {
   temCoordenadaValida,
@@ -77,6 +78,9 @@ import {
   ehTipoComCooldownTemporal,
   calcularRiscoArea,
   PARADA_FORA_TAPETE_MIN,
+  detectarPanico,
+  detectarJammer,
+  detectarExcessoVelocidade,
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
@@ -498,6 +502,18 @@ type LinhaRomaneioPontoDb = {
 
 type VeiculoInfo = { id: string; placa: string; cv: string; cliente_id: string };
 
+// Task Fase 4 Incremento 1 (27/08 -- ver
+// .superpowers/sdd/2026-08-27-romaneio-fonte-unica-plano-geral/task-fase4-inc1-brief.md):
+// pânico, jammer e excesso de velocidade são detectores 100% puros de
+// telemetria (@/lib/detectores) -- mesmas funções que a Central Unitrac já
+// usa, sem depender de alvo/raio/NF. Rodam aqui em SHADOW MODE: entram em
+// candidatosCiclo (mesma dedup/escalação/cooldown/auto-resolve dos outros
+// tipos, ver Step 9 abaixo) mas o insert marca `sombra: true` pra esses 3
+// tipos -- fonte única, consultada só no ponto do insert. Nunca aparecem nos
+// 3 caminhos de leitura voltados pra UI (alertas-romaneio/route.ts,
+// central-romaneio/page.tsx, mapa/route.ts), que filtram sombra=false.
+const TIPOS_SOMBRA = new Set(["panico", "jammer", "excesso"]);
+
 type EstadoAnterior = {
   afastando_streak: number;
   rua_rara_streak: number;
@@ -742,9 +758,13 @@ export async function POST(request: Request) {
     // posicoes_atuais -- mesma fonte da Central, SOMENTE LEITURA. datagps
     // entra pra idempotência (ver I3 do fix de 22/08): sem isso não dá pra
     // saber se esta leitura já foi avaliada num ciclo anterior.
+    // ignicao, panico, bau_aberto entram pra alimentar os 3 detectores de
+    // telemetria pura em shadow mode (Task Fase 4 Incremento 1, 27/08) --
+    // já são gravados pela Central (motor/route.ts:3389-3396), esta rota só
+    // passou a lê-los. Nenhuma migration necessária pra estas 3 colunas.
     const { data: posAtuaisRows, error: erroPosAtuais } = await admin
       .from("posicoes_atuais")
-      .select("veiculo_id, lat, lng, velocidade, atraso_min, datagps, updated_at, parado_desde")
+      .select("veiculo_id, lat, lng, velocidade, atraso_min, datagps, updated_at, parado_desde, ignicao, panico, bau_aberto")
       .in("veiculo_id", veiculoIds);
     if (erroPosAtuais) {
       erros.push(`Erro ao ler posicoes_atuais: ${erroPosAtuais.message}`);
@@ -763,6 +783,11 @@ export async function POST(request: Request) {
       // pra achar a posição ANTERIOR sem ambiguidade -- ver a query de
       // `anterior` no loop.
       updated_at: string | null;
+      // Telemetria pura pros 3 detectores de shadow mode (Task Fase 4
+      // Incremento 1) -- gravadas pela Central, SOMENTE LEITURA aqui.
+      ignicao: boolean | null;
+      panico: boolean | null;
+      bau_aberto: boolean | null;
     };
     const posAtualPorVeiculo = new Map<string, PosAtual>(
       ((posAtuaisRows ?? []) as PosAtual[]).map((p) => [p.veiculo_id, p])
@@ -1142,11 +1167,37 @@ export async function POST(request: Request) {
 
     // Alertas EM ABERTO de alertas_romaneio, tabela PRÓPRIA -- id/nivel entram
     // pra poder resolver/escalar (ver I2 do fix de 22/08), não só deduplicar.
-    const { data: alertasAbertosRows } = await admin
+    //
+    // `sombra` só existe a partir da migration contabo/062 (Task Fase 4
+    // Incremento 1, ver TIPOS_SOMBRA acima) -- mesmo padrão de degradação já
+    // usado pra `origem` (romaneio/status/route.ts) e `geocode_tentativas`
+    // (processar-geocode/route.ts): tenta a query já com a coluna nova
+    // (reaproveitando esta mesma leitura, sem query extra) e, se a coluna
+    // ainda não existir, cai pra query antiga e desliga sombraDisponivel --
+    // o insert do Step 9 simplesmente OMITE o campo `sombra` nesse modo,
+    // nunca quebra o ciclo inteiro. sombra em si não entra em dedup/escalar
+    // (não é lida do array abaixo), só serve pro insert -- por isso não
+    // precisa propagar pro tipo AlertaAtivoRow.
+    let sombraDisponivel = true;
+    // Tipada só pelas colunas usadas depois (sem `sombra` no shape): o
+    // primeiro SELECT pede a coluna a mais só pra sondar se ela existe, mas
+    // ninguém lê `sombra` de volta destas linhas -- ela só entra no insert
+    // (Step 9). Anotar explicitamente evita que os dois ramos (com/sem
+    // sombra no SELECT) infiram tipos incompatíveis entre si.
+    let alertasAbertosResp: { data: { id: string; veiculo_id: string; tipo: string; nivel: string; contexto: unknown }[] | null; error: { message: string } | null } = await admin
       .from("alertas_romaneio")
-      .select("id, veiculo_id, tipo, nivel, contexto")
+      .select("id, veiculo_id, tipo, nivel, contexto, sombra")
       .in("veiculo_id", veiculoIds)
       .in("status", ["ativo", "reconhecido"]);
+    if (alertasAbertosResp.error) {
+      sombraDisponivel = false;
+      alertasAbertosResp = await admin
+        .from("alertas_romaneio")
+        .select("id, veiculo_id, tipo, nivel, contexto")
+        .in("veiculo_id", veiculoIds)
+        .in("status", ["ativo", "reconhecido"]);
+    }
+    const { data: alertasAbertosRows } = alertasAbertosResp;
     const alertasAbertosPorVeiculo = new Map<string, AlertaAtivoRow[]>();
     for (const a of (alertasAbertosRows ?? []) as (AlertaAtivoRow & { veiculo_id: string })[]) {
       const lista = alertasAbertosPorVeiculo.get(a.veiculo_id) ?? [];
@@ -1848,12 +1899,49 @@ export async function POST(request: Request) {
           (a) => !TIPOS_NAO_GERENCIADOS.has(a.tipo)
         );
 
-        // Candidatos DESTE ciclo: o desvio (Sinal A, quando houver) mais os
-        // alertas de parada da task B1. Até 27/08 este bloco tratava UM
-        // candidato só; com os 3 detectores de parada ele passa a tratar um
-        // conjunto -- mesma semântica da Central, que já convive com vários
-        // tipos abertos por veículo ao mesmo tempo.
-        const candidatosCiclo: Alerta[] = [...(alerta ? [alerta] : []), ...alertasParada];
+        // Pânico/jammer/excesso de velocidade (Task Fase 4 Incremento 1,
+        // 27/08): 3 detectores 100% puros de telemetria (@/lib/detectores),
+        // reaproveitados exatamente como estão -- só monta o
+        // PosicaoNormalizada mínimo a partir do que já foi lido de
+        // posicoes_atuais (mais os 3 campos novos do SELECT acima). Roda pra
+        // TODO veículo com posição (não gated por avaliaParadas/avaliaDesvio
+        // -- esses gates existem pra não duplicar detector já coberto pela
+        // Central pro MESMO tipo de alerta visível; aqui os 3 tipos são
+        // shadow-only, então cobertura ampla é o próprio objetivo da task:
+        // comparar contra a Central pra frota inteira). fresco entra só
+        // porque é campo do tipo -- NÃO gateia a chamada: detectarJammer
+        // dispara justamente quando o GPS está atrasado (jammer = sinal
+        // preso), gatear por "fresco" cancelaria o próprio detector.
+        const posNormalizadaTelemetria: PosicaoNormalizada = {
+          cv: info.cv,
+          placa: info.placa,
+          lat: latAtual,
+          lng: lngAtual,
+          velocidade: posAtual.velocidade ?? 0,
+          ignicao: posAtual.ignicao ?? false,
+          atraso: posAtual.atraso_min ?? 0,
+          panico: posAtual.panico ?? false,
+          bau: posAtual.bau_aberto ?? false,
+          datagps: posAtual.datagps ?? agora.toISOString(),
+          fresco,
+          evento: null,
+        };
+        const alertasSombra: Alerta[] = [
+          detectarPanico(posNormalizadaTelemetria),
+          detectarJammer(posNormalizadaTelemetria),
+          detectarExcessoVelocidade(posNormalizadaTelemetria),
+        ].filter((a): a is Alerta => a !== null);
+
+        // Candidatos DESTE ciclo: o desvio (Sinal A, quando houver), os
+        // alertas de parada da task B1, e os 3 de telemetria pura em shadow
+        // mode acima. Até 27/08 este bloco tratava UM candidato só; com os
+        // detectores de parada e agora os de shadow mode ele passa a tratar
+        // um conjunto -- mesma semântica da Central, que já convive com
+        // vários tipos abertos por veículo ao mesmo tempo. Os 3 de shadow
+        // mode passam pelo MESMO pipeline de dedup/escalação/cooldown/
+        // auto-resolve dos outros (Step 9 abaixo) -- só o insert os marca
+        // sombra=true (TIPOS_SOMBRA, ver definição acima).
+        const candidatosCiclo: Alerta[] = [...(alerta ? [alerta] : []), ...alertasParada, ...alertasSombra];
         const tiposDoCiclo = new Set(candidatosCiclo.map((c) => c.tipo));
         // Silenciamento de 2h (ver tiposSilenciadosPorVeiculo acima) --
         // mesma estrutura da Central (route.ts:3086-3088): tipo silenciado
@@ -1893,13 +1981,19 @@ export async function POST(request: Request) {
           // contexto por tipo: desvio leva origem_desvio (insumo da comparação
           // entre os pipelines); parada_fora_tapete leva os mesmos 3 campos
           // que a Central grava (route.ts:3178-3182); as outras paradas levam
-          // o tempo parado, que é o que o operador precisa ver no card.
+          // o tempo parado, que é o que o operador precisa ver no card;
+          // pânico/jammer/excesso (TIPOS_SOMBRA) não têm contexto de parada
+          // -- paradoMinVeiculo não tem relação nenhuma com esses 3 tipos, e
+          // colocar ali seria contexto inventado/enganoso na comparação com
+          // a Central.
           const contextoAlerta =
             candidato.tipo === "desvio"
               ? { origem_desvio: candidato.origemDesvio }
               : candidato.tipo === "parada_fora_tapete"
                 ? { parado_min: paradoMinVeiculo, dentro_tapete: dentroTapeteVeiculo, risco_area_atual: riscoAreaVeiculo }
-                : { parado_min: paradoMinVeiculo };
+                : TIPOS_SOMBRA.has(candidato.tipo)
+                  ? {}
+                  : { parado_min: paradoMinVeiculo };
 
           if (!alertaExistente) {
             // Cooldown por EPISÓDIO de parada (deveSuprimirRedisparoParada,
@@ -1979,6 +2073,13 @@ export async function POST(request: Request) {
               lng: lngAtual,
               contexto: contextoAlerta,
               desde: agora.toISOString(),
+              // Task Fase 4 Incremento 1: panico/jammer/excesso gravam com
+              // sombra=true (shadow mode, ver TIPOS_SOMBRA no topo do
+              // arquivo) -- nunca visível na UI. Campo OMITIDO (não
+              // sombra:false) quando a coluna ainda não existe
+              // (sombraDisponivel=false) -- mesmo padrão de degradação do
+              // resto do arquivo.
+              ...(sombraDisponivel && TIPOS_SOMBRA.has(candidato.tipo) ? { sombra: true } : {}),
             });
             if (erroInsert) {
               erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
