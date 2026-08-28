@@ -144,6 +144,40 @@ describe("calcularKmContinuo", () => {
       expect(km!).toBeLessThan(12.5);
     });
   });
+
+  describe("leituras com posicao repetida (achado real 28/08, comparacao contra relatorio oficial Unitrac, caso TTK-9B93 26/08)", () => {
+    it("Unitrac so atualiza a cada ~5-6min, polling insere 1 leitura/min repetindo a mesma coordenada -- salto real na atualizacao nao e' comparado so contra o ultimo minuto", () => {
+      const posicoes = [
+        { lat: -21.8376, lng: -41.509, criado_em: "2026-08-26T13:21:20.000Z" },
+        { lat: -21.8376, lng: -41.509, criado_em: "2026-08-26T13:22:35.000Z" },
+        { lat: -21.8376, lng: -41.509, criado_em: "2026-08-26T13:23:53.000Z" },
+        { lat: -21.8376, lng: -41.509, criado_em: "2026-08-26T13:24:44.000Z" },
+        { lat: -21.8376, lng: -41.509, criado_em: "2026-08-26T13:26:16.000Z" },
+        // ~7.3km de deslocamento real -- Unitrac so atualizou agora, ~5min
+        // depois da primeira leitura repetida (nao 1min desde a ultima).
+        { lat: -21.8692, lng: -41.5567, criado_em: "2026-08-26T13:27:17.000Z" },
+      ];
+      const km = calcularKmContinuo(posicoes);
+      expect(km).not.toBeNull();
+      // Sem o fix, isso comparava contra 13:26:16->13:27:17 (~1min) =
+      // velocidade implicita muito acima do limiar, descartado como
+      // "glitch". Com o dedupe, compara contra 13:21:20->13:27:17 (~6min),
+      // velocidade plausivel, soma os ~6km reais.
+      expect(km!).toBeGreaterThan(5.5);
+      expect(km!).toBeLessThan(6.5);
+    });
+
+    it("veiculo genuinamente parado (posicao repetida o dia todo): continua proximo de zero, nao muda o caso ja coberto", () => {
+      const posicoes = Array.from({ length: 10 }, (_, i) => ({
+        lat: -22.816007,
+        lng: -43.277827,
+        criado_em: `2026-08-25T09:0${i}:00.000Z`,
+      }));
+      const km = calcularKmContinuo(posicoes);
+      expect(km).not.toBeNull();
+      expect(km!).toBe(0);
+    });
+  });
 });
 
 describe("filtrarJanelaRota (achado real 27/08, usuario: km deve ser so' saida->chegada, nao o dia inteiro)", () => {

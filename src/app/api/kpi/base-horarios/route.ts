@@ -139,8 +139,40 @@ export function filtrarJanelaRota(
   })
 }
 
-export function calcularKmContinuo(posicoes: Posicao[]): number | null {
-  if (posicoes.length < 2) return null
+/** Achado real 28/08 (comparacao contra relatorio oficial Unitrac,
+ *  TTK-9B93 26/08 -- ver grupo KPI AJUSTES, "não bateu o KM da KPI com o
+ *  do relatorio"): a Unitrac so' atualiza lat/lng a cada ~5-6min, mas
+ *  nosso polling insere uma leitura por ciclo (~1min) mesmo quando a
+ *  posicao NAO mudou -- repete a mesma coordenada varias vezes ate a
+ *  proxima atualizacao chegar. Quando a posicao finalmente muda, o salto
+ *  real (ex. ~7km de rodovia) fica comparado so' contra o intervalo entre
+ *  a PENULTIMA e a ULTIMA leitura repetida (~1min), nao os ~5-6min reais
+ *  em que o deslocamento aconteceu -- ~7km/1min = velocidade implicita de
+ *  300-450km/h, o filtro de VELOCIDADE_MAX_PLAUSIVEL_KMH descartava como
+ *  "glitch" um trecho de rodovia genuino. Resultado medido: 26.9km
+ *  calculados vs 271.25km do relatorio oficial da Unitrac pro mesmo
+ *  veiculo/dia -- 90% subestimado.
+ *  Fix: remove leituras consecutivas com a MESMA coordenada antes de
+ *  somar, mantendo so' a PRIMEIRA de cada sequencia repetida -- isso
+ *  reatribui o deslocamento ao intervalo de tempo REAL (desde a ultima
+ *  vez que a posicao mudou), nao ao ultimo ciclo de polling. Validado:
+ *  com essa mudanca, TTK-9B93 26/08 fecha em 270.9km (0.1% de diferenca
+ *  do relatorio oficial), sem precisar descartar nenhum segmento. */
+function removerLeiturasRepetidas(posicoes: Posicao[]): Posicao[] {
+  const dedupe: Posicao[] = [posicoes[0]]
+  for (let i = 1; i < posicoes.length; i++) {
+    const anterior = dedupe[dedupe.length - 1]
+    if (posicoes[i].lat !== anterior.lat || posicoes[i].lng !== anterior.lng) {
+      dedupe.push(posicoes[i])
+    }
+  }
+  return dedupe
+}
+
+export function calcularKmContinuo(posicoesBrutas: Posicao[]): number | null {
+  if (posicoesBrutas.length < 2) return null
+  const posicoes = removerLeiturasRepetidas(posicoesBrutas)
+  if (posicoes.length < 2) return 0
   let metros = 0
   for (let i = 1; i < posicoes.length; i++) {
     const distanciaM = haversineM(posicoes[i - 1].lat, posicoes[i - 1].lng, posicoes[i].lat, posicoes[i].lng)
