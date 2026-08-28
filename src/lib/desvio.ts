@@ -205,6 +205,104 @@ export function ehSaltoDeReconciliacaoDeAtraso(
   );
 }
 
+// ─── Gate de "retorno sustentado a base" (achado real 28/08) ─────────────
+//
+// Reclamacao real da equipe no resumo de fim de dia do grupo DESVIO DE ROTA:
+// "tivemos muitos desvios de rota em que principalmente [em] veiculos que
+// estavam retornando para a base". Confirmado no dado (READ-ONLY,
+// desvio_disparo_log + posicoes_historico, 5 dias): 20,3% dos 12.492
+// disparos de afastando_geral acontecem com TODAS as bases do cliente a mais
+// de LIMIAR_DESTINO_RELEVANTE_M (50km, motor/route.ts). Nesses, o filtro de
+// 50km -- criado em 13/08 pra impedir que uma base distante MASCARE uma
+// divergencia local real -- tira a propria base do conjunto avaliado
+// justamente quando o veiculo esta voltando pra ela. Sobram so' os pontos de
+// entrega pendentes, e voltar pra base afasta de TODOS eles ao mesmo tempo:
+// afastouDeTodos fica true sem nenhum contrapeso.
+//
+// POR QUE NAO SE RESOLVE ISSO SO' TIRANDO A BASE DO FILTRO DE 50KM (a
+// solucao obvia, e a hipotese do brief): porque ela reintroduz o problema de
+// 13/08 em escala industrial. Medicao no dado real (5 dias, 12.492 disparos
+// pareados com posicoes_historico e com o status do alerta):
+//
+//   disparos com todas as bases > 50km ........................ 2.536
+//   ... desses, base APROXIMANDO no par que fechou o streak .... 1.967
+//   ... entre eles, disparos de alerta ativo/resolvido ......... 113
+//   incidentes reais (veiculo+30min, alerta ativo/resolvido) ... 299
+//   incidentes que ficariam TOTALMENTE sem alerta .............. 44 (14,7%)
+//
+// A 60-130km da base, a variacao da distancia ate ela e' dominada pelo rumo
+// geral da rodovia, nao pelo comportamento local do motorista -- que e'
+// exatamente o raciocinio de 13/08. "Base aproximou neste ciclo" nao
+// distingue nada: acontece em 78% dos disparos com base filtrada, reais e
+// falsos igualmente. Perder 14,7% dos desvios reais e' inaceitavel
+// ([[feedback_desvio_priorizar_recall]]: aceitar falso positivo, nunca perder
+// desvio real), entao o fix simples foi descartado.
+//
+// O QUE DISTINGUE DE VERDADE: nao o sinal de um ciclo, e sim a persistencia.
+// Um retorno a base de verdade e' uma aproximacao ininterrupta por muitos
+// minutos, em que quase todo metro rodado vira metro a menos de base. Sweep
+// dos mesmos 5 dias (parametros: janela, monotonicidade, queda minima e
+// fracao do caminho convertida em aproximacao):
+//
+//   janela  monotonia   fracao   supr. ruido   supr. REAIS   incid. perdidos
+//   300s    estrita     >=0.5    372 (3,1%)    16            1
+//   420s    estrita     >=0.5    628 (5,2%)    16            2
+//   600s    estrita     >=0.5    574 (4,8%)    7             2
+//   900s    estrita     >=0.5    331 (2,8%)    0             0
+//   1200s   estrita     >=0.5    162 (1,4%)    0             0
+//   900s    estrita     >=0.7    260 (2,2%)    0             0
+//   900s    >=0.9       >=0.5    515 (4,3%)    6             1
+//
+// 15 minutos de queda ESTRITA (nenhuma leitura da janela pode aumentar a
+// distancia) e' onde a curva cruza zero: nenhum dos 507 disparos de alerta
+// real dos 5 dias sobrevive a esse teste, enquanto 331 disparos de ruido
+// sim. Janela mais curta (10min, 7min) ja' pega desvio real -- a margem esta
+// no comprimento da janela, nao nos outros parametros (com 900s, exigir
+// fracao 0,3 ou 0,7 nao muda o lado de recall: 0 em ambos).
+//
+// Deliberadamente NAO se ignora leitura "parada" na checagem de
+// monotonicidade: tolerar passos < 50m parece razoavel, mas triplica a
+// superficie do gate e volta a pegar desvio real (com janela de 900s:
+// 25 disparos reais e 11 incidentes perdidos). Uma unica leitura afastando
+// derruba o gate -- e' de proposito.
+//
+// Custo maximo de recall por construcao: o chamador aplica isto DEPOIS de
+// avaliarAfastandoDeTudo e NAO mexe no streak. Assim que o veiculo deixa de
+// se aproximar da base o gate para de valer e o alerta sai no mesmo ciclo,
+// com o streak ja' acumulado -- nao ha atraso nem reinicio.
+export const RETORNO_BASE_JANELA_S = 900;
+export const RETORNO_BASE_SPAN_MIN_S = 600;
+export const RETORNO_BASE_MIN_LEITURAS = 5;
+export const RETORNO_BASE_QUEDA_MIN_M = 1000;
+export const RETORNO_BASE_FRACAO_CAMINHO_MIN = 0.5;
+
+export type LeituraRetornoBase = {
+  // epoch em segundos (ordem crescente)
+  tSegundos: number;
+  // distancia em linha reta ate a base mais proxima do cliente
+  distBaseM: number;
+  // deslocamento real desde a leitura anterior (0 na primeira)
+  deslocamentoM: number;
+};
+
+export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolean {
+  if (leituras.length < RETORNO_BASE_MIN_LEITURAS) return false;
+  const primeira = leituras[0];
+  const ultima = leituras[leituras.length - 1];
+  if (ultima.tSegundos - primeira.tSegundos < RETORNO_BASE_SPAN_MIN_S) return false;
+  let caminhoM = 0;
+  for (let i = 1; i < leituras.length; i++) {
+    // Queda ESTRITA em TODA leitura da janela -- uma unica leitura que
+    // aumenta a distancia ate a base derruba o gate (ver comentario acima).
+    if (!(leituras[i].distBaseM < leituras[i - 1].distBaseM)) return false;
+    caminhoM += leituras[i].deslocamentoM;
+  }
+  const quedaM = primeira.distBaseM - ultima.distBaseM;
+  if (quedaM < RETORNO_BASE_QUEDA_MIN_M) return false;
+  if (!(caminhoM > 0)) return false;
+  return quedaM / caminhoM >= RETORNO_BASE_FRACAO_CAMINHO_MIN;
+}
+
 export type ResultadoAfastando = { streak: number; disparou: boolean; aproximandoAlgum: boolean };
 
 // Sinal A: o veiculo se afastou (distancia REAL de rua, ja calculada pelo

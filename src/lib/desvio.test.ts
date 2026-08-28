@@ -4,7 +4,69 @@ import {
   avaliarRuaRara,
   montarAlertaDesvio,
   ehSaltoDeReconciliacaoDeAtraso,
+  ehRetornoSustentadoABase,
 } from "./desvio";
+
+// Helper: monta a janela de leituras do gate de retorno a base a partir de
+// uma lista de distancias ate a base, com intervalo de 60s entre leituras e
+// deslocamento real informado por leitura.
+function janela(
+  distancias: number[],
+  deslocamentoPorLeituraM: number,
+  intervaloS = 60
+) {
+  return distancias.map((distBaseM, i) => ({
+    tSegundos: i * intervaloS,
+    distBaseM,
+    deslocamentoM: i === 0 ? 0 : deslocamentoPorLeituraM,
+  }));
+}
+
+describe("ehRetornoSustentadoABase", () => {
+  it("caso real do padrão reclamado (28/08): 15 leituras em 14min caindo sem interrupção rumo à base, quase todo metro rodado virando aproximação", () => {
+    // 15 leituras, 700m mais perto por leitura, 800m rodados por leitura
+    // (fração 0,875) -- perfil dos TOS-0H81/TOS-6H57/RQP-2G33.
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 700);
+    expect(ehRetornoSustentadoABase(janela(dists, 800))).toBe(true);
+  });
+
+  it("UMA leitura que afasta no meio da janela derruba o gate (monotonicidade estrita, sem tolerância a parada) -- é o que impede o cenário 13/08 de mascarar desvio local real", () => {
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 700);
+    dists[7] = dists[6] + 10; // um único blip afastando
+    expect(ehRetornoSustentadoABase(janela(dists, 800))).toBe(false);
+  });
+
+  it("não vale com janela curta: 15min é onde a calibração cruza zero desvio real suprimido (5 leituras em 4min não bastam)", () => {
+    const dists = [70_000, 69_300, 68_600, 67_900, 67_200];
+    expect(ehRetornoSustentadoABase(janela(dists, 800, 60))).toBe(false);
+  });
+
+  it("não vale com poucas leituras, mesmo cobrindo tempo suficiente", () => {
+    const dists = [70_000, 68_000, 66_000, 64_000];
+    expect(ehRetornoSustentadoABase(janela(dists, 2200, 300))).toBe(false);
+  });
+
+  it("não vale quando a aproximação é leve perto do que o veículo rodou (deriva de rodovia, não retorno) -- fração do caminho abaixo de 0,5", () => {
+    // 100m mais perto por leitura, mas 1000m rodados: fração 0,1
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 100);
+    expect(ehRetornoSustentadoABase(janela(dists, 1000))).toBe(false);
+  });
+
+  it("não vale quando a queda total é pequena demais (< 1km em 15min de janela)", () => {
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 60);
+    expect(ehRetornoSustentadoABase(janela(dists, 70))).toBe(false);
+  });
+
+  it("janela vazia ou sem leitura suficiente nunca suprime", () => {
+    expect(ehRetornoSustentadoABase([])).toBe(false);
+    expect(ehRetornoSustentadoABase(janela([70_000, 69_000], 1100, 600))).toBe(false);
+  });
+
+  it("veículo divergindo localmente (distância à base subindo) nunca é confundido com retorno", () => {
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 + i * 700);
+    expect(ehRetornoSustentadoABase(janela(dists, 800))).toBe(false);
+  });
+});
 
 describe("ehSaltoDeReconciliacaoDeAtraso", () => {
   it("caso real TTJ-9I18 (28/08): congelado com atraso 20, reconcilia com atraso 1 e salta 20,8km em 68s (1101 km/h implícitos)", () => {
