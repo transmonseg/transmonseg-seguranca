@@ -1332,11 +1332,19 @@ export async function POST(request: Request) {
     // usado pra `origem` (romaneio/status/route.ts) e `geocode_tentativas`
     // (processar-geocode/route.ts): tenta a query já com a coluna nova
     // (reaproveitando esta mesma leitura, sem query extra) e, se a coluna
-    // ainda não existir, cai pra query antiga e desliga sombraDisponivel --
-    // o insert do Step 9 simplesmente OMITE o campo `sombra` nesse modo,
-    // nunca quebra o ciclo inteiro. sombra em si não entra em dedup/escalar
-    // (não é lida do array abaixo), só serve pro insert -- por isso não
-    // precisa propagar pro tipo AlertaAtivoRow.
+    // ainda não existir (ou o probe falhar por qualquer outro motivo), cai
+    // pra query antiga e desliga sombraDisponivel. Com sombraDisponivel
+    // false, o insert do Step 9 e o de processarJammerIndependente NÃO
+    // GRAVAM o candidato de TIPOS_SOMBRA (descarte silencioso, só um
+    // erros.push informativo) -- CORRIGIDO no fix do CRÍTICO 2 (revisão
+    // independente 27/08): a versão anterior omitia só o campo `sombra` do
+    // insert, que caía no DEFAULT false da migration e deixava o alerta
+    // VISÍVEL de forma permanente (aplicar a migration depois não "recolhe"
+    // linha já gravada com sombra=false) -- ver o insert em si (~linha
+    // 2270-2290) e processarJammerIndependente (topo do arquivo) pro
+    // comportamento real. `sombra` em si não entra em dedup/escalar (não é
+    // lida do array abaixo), só serve pro insert -- por isso não precisa
+    // propagar pro tipo AlertaAtivoRow.
     let sombraDisponivel = true;
     // Tipada só pelas colunas usadas depois (sem `sombra` no shape): o
     // primeiro SELECT pede a coluna a mais só pra sondar se ela existe, mas

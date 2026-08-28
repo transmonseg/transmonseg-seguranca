@@ -93,6 +93,18 @@ const mockState = vi.hoisted(() => ({
   // um mock ingênuo que devolve dado fixo).
   usarDatasetLeitura: false,
   alertasRomaneioLeitura: [] as Record<string, unknown>[],
+  // Item de acabamento (segunda revisão, 27/08): alertas JÁ ABERTOS que a
+  // rota vai ler no início do ciclo (a mesma leitura que alimenta tanto o
+  // dedup do Step 9 quanto `alertaExistente` de processarJammerIndependente).
+  // Usado pelo teste "Step 9 não fecha jammer que continua ativo" -- as
+  // outras leituras de alertas_romaneio nos testes de POST continuam vazias
+  // por padrão (ver o `else` do dispatch abaixo).
+  alertasAbertosPreexistentes: [] as Record<string, unknown>[],
+  // Captura os .update() feitos em alertas_romaneio, com o id do
+  // .eq("id", ...) que os acompanha -- é o que permite provar que o Step 9
+  // NÃO tentou fechar um alerta específico (nenhuma entrada em `updates`
+  // com aquele id), não só que o ciclo não crashou.
+  updates: [] as { id: unknown; payload: Record<string, unknown> }[],
 }));
 
 // Fake do supabase-js admin: cada `.from(tabela)` devolve um builder novo,
@@ -132,6 +144,12 @@ vi.mock("@/lib/supabase/admin", () => {
           mockState.inserts.push(payload as Record<string, unknown>);
           resultado = { data: null, error: null };
         } else if (tabela === "alertas_romaneio" && op === "update") {
+          // Captura pra provar AUSÊNCIA de update sobre um id específico
+          // (ver o teste "Step 9 não fecha jammer ativo") -- id vem do
+          // .eq("id", ...) que sempre acompanha um update nesta rota
+          // (resolverPelaMaquina e a escalação do Step 9).
+          const idAlvo = eqFiltros.find(([col]) => col === "id")?.[1];
+          mockState.updates.push({ id: idAlvo, payload: payload as Record<string, unknown> });
           resultado = { data: null, error: null };
         } else if (tabela === "alertas_romaneio" && op === "select") {
           const pedeColunaSombra = selectCols.includes("sombra");
@@ -150,11 +168,18 @@ vi.mock("@/lib/supabase/admin", () => {
               eqFiltros.every(([col, val]) => (linha as Record<string, unknown>)[col] === val)
             );
             resultado = { data: linhas, error: null };
+          } else if (selectCols.includes("nivel")) {
+            // A leitura de "alertas EM ABERTO" (route.ts) é a única das 3
+            // selects internas de alertas_romaneio que pede `nivel` --
+            // paradasTratadas pede "tipo, veiculo_id, resolvido_em" e
+            // falsosRecentes pede "tipo, veiculo_id, contexto", nenhuma das
+            // duas tem "nivel". Alimenta tanto o dedup do Step 9 quanto
+            // `alertaExistente` de processarJammerIndependente -- mesma
+            // leitura, mesmo dado, exatamente como no código real.
+            resultado = { data: mockState.alertasAbertosPreexistentes, error: null };
           } else {
-            // Toda leitura de alertas_romaneio nos testes do POST começa
-            // vazia -- sem alerta prévio pra deduplicar/escalar/silenciar
-            // nesses cenários (cobertos individualmente pelos outros
-            // testes).
+            // paradasTratadas / falsosRecentes: sem dado prévio nos
+            // cenários cobertos por este arquivo.
             resultado = { data: [], error: null };
           }
         } else {
@@ -243,6 +268,8 @@ describe("POST /api/motor-romaneio -- shadow mode (Task Fase 4 Incremento 1)", (
     mockState.probeSombraErro = false;
     mockState.usarDatasetLeitura = false;
     mockState.alertasRomaneioLeitura = [];
+    mockState.alertasAbertosPreexistentes = [];
+    mockState.updates = [];
     mockState.posAtual = {
       veiculo_id: VEICULO_ID,
       lat: -22.0,
@@ -334,6 +361,55 @@ describe("POST /api/motor-romaneio -- shadow mode (Task Fase 4 Incremento 1)", (
     // um cenário onde ele simplesmente não disparou por acidente.
     const body = await res.json();
     expect(body.veiculosProcessados).toBe(0);
+  });
+
+  it("item de acabamento (segunda revisao, 27/08): Step 9 NAO fecha um jammer que processarJammerIndependente acabou de confirmar ativo no mesmo ciclo", async () => {
+    // Cenario que motivou TIPOS_GERENCIADOS_FORA_DO_STEP9 (route.ts): um
+    // dispositivo entregando leituras antigas em lote -- cada datagps MAIS
+    // NOVO que o anterior (entao o continue de idempotencia NAO dispara,
+    // Step 9 roda normalmente), mas todas ainda com atraso>=30min (a
+    // condicao de jammer continua batendo). Sem a exclusao, Step 9 veria
+    // "jammer" ausente de candidatosCiclo (ele nunca entra la) e tentaria
+    // fechar um alerta que o bloco independente, rodando ANTES, acabou de
+    // confirmar que continua ativo -- os dois mecanismos brigando pelo
+    // mesmo alerta.
+    const ultimoDatagpsAntigo = "2026-08-27T09:00:00.000Z";
+    const datagpsNovoMasAindaAtrasado = "2026-08-27T09:35:00.000Z"; // +35min, ainda dentro da janela de jammer critico (atraso_min abaixo cobre isso)
+    mockState.ultimoDatagpsGravado = ultimoDatagpsAntigo; // MAIS ANTIGO que a leitura atual -> continue NAO dispara
+    mockState.posAtual = {
+      ...mockState.posAtual,
+      ignicao: true,
+      atraso_min: 45, // >= JAMMER_ATENCAO_MIN (30), condicao de jammer continua batendo
+      velocidade: 0,
+      datagps: datagpsNovoMasAindaAtrasado,
+    };
+    // Alerta de jammer JA ABERTO pro mesmo veiculo -- é o que processarJammerIndependente
+    // encontra via alertaExistente e o que Step 9 NAO pode fechar.
+    mockState.alertasAbertosPreexistentes = [
+      { id: "jammer-aberto-1", veiculo_id: VEICULO_ID, tipo: "jammer", nivel: "critico", contexto: {} },
+    ];
+
+    const { POST } = await import("./route");
+    const res = await POST(requisicaoDoCron());
+    expect(res.status).toBe(200);
+
+    // Confirma que o cenario de fato exercitou o caminho "continue NAO
+    // disparou, Step 9 rodou de verdade" -- senao este teste provaria
+    // menos do que anuncia.
+    const body = await res.json();
+    expect(body.veiculosProcessados).toBe(1);
+
+    // O ponto central: NENHUM update foi feito sobre o id do alerta de
+    // jammer ja aberto -- nem resolverPelaMaquina (fechamento automatico
+    // do Step 9), nem escalacao (nivel ja e' critico, nao escalaria mesmo,
+    // mas a ausencia TOTAL de update sobre este id e' o que prova que o
+    // Step 9 nem tentou tocar nele).
+    const updateNoJammerAberto = mockState.updates.find((u) => u.id === "jammer-aberto-1");
+    expect(updateNoJammerAberto).toBeUndefined();
+
+    // E nenhum insert NOVO de jammer aconteceu (alertaExistente ja' cobria
+    // o dedup dentro de processarJammerIndependente).
+    expect(mockState.inserts.filter((i) => i.tipo === "jammer")).toEqual([]);
   });
 
   it("CRITICO 2 (revisao independente 27/08): probe de sombra falha (coluna ausente OU erro transiente) -- candidato de shadow mode NAO e' inserido de jeito nenhum (nem visivel, nem sombra)", async () => {
