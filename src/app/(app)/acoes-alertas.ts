@@ -7,6 +7,7 @@ import { registrarCasosDesvioRevisao } from "@/lib/casos-desvio-revisao";
 import { IDADE_MINIMA_ACAO_MASSA_MIN } from "@/lib/detectores";
 import { invalidarCacheAlertas } from "@/app/api/alertas/route";
 import { invalidarCacheAlertasRomaneio } from "@/app/api/alertas-romaneio/route";
+import { invalidarCacheMapa } from "@/app/api/mapa/route";
 
 // Achado real 29/08 (grupo WhatsApp: "alerta limpo demora sumir, às vezes
 // volta"): as rotas de leitura têm cache manual em memória de 8s
@@ -14,10 +15,12 @@ import { invalidarCacheAlertasRomaneio } from "@/app/api/alertas-romaneio/route"
 // não do módulo da rota). Sem isto, uma ação podia continuar servindo o
 // alerta já resolvido por até 8s -- e se duas telas pollavam em momentos
 // diferentes desse intervalo, uma via resolvido e a outra ainda via o
-// alerta antigo, dando a impressão de "sumiu e voltou".
+// alerta antigo, dando a impressão de "sumiu e voltou". /api/mapa tem o
+// mesmo problema pra cor do carro no mapa (achado da varredura de sistema).
 function invalidarCachesLeitura(tabela: TabelaAlertas) {
   if (tabela === "alertas_romaneio") invalidarCacheAlertasRomaneio();
   else invalidarCacheAlertas();
+  invalidarCacheMapa();
 }
 
 export type ResultadoAcao = { ok?: boolean; erro?: string; ignoradosRecentes?: number };

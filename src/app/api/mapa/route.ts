@@ -38,6 +38,15 @@ type VeiculosCacheEntry = { veiculos: unknown[]; expiraEm: number };
 const VEICULOS_CACHE_MS = 10_000;
 const veiculosCachePorCliente = new Map<string, VeiculosCacheEntry>();
 
+// Achado real 29/08 (varredura de sistema): mesma classe de bug já corrigida
+// em /api/alertas -- resolver/marcar falso/limpar um alerta não invalidava
+// este cache, então a COR do carro no mapa podia continuar mostrando o
+// alerta já resolvido por até VEICULOS_CACHE_MS. Chamado por
+// acoes-alertas.ts junto com invalidarCacheAlertas(Romaneio).
+export function invalidarCacheMapa() {
+  veiculosCachePorCliente.clear();
+}
+
 // De qual pipeline vem o alerta que COLORE o veículo no mapa.
 //
 // - "central" (DEFAULT, comportamento histórico intocado): tabela `alertas`,
