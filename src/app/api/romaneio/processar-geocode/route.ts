@@ -399,11 +399,31 @@ export async function POST(request: Request) {
   let tentativasDisponivel = true;
   let semGeocode: LinhaFallback[] | null = null;
 
+  // Achado real 29/08 (varredura de sistema): ate ontem esta consulta so'
+  // pegava `veiculo_id IS NOT NULL` -- linhas 'falhou' com veiculo_id nulo
+  // (placa ainda nao cadastrada NO MOMENTO do upload, ver
+  // romaneio/upload/route.ts) nunca entravam aqui nem na fase principal (que
+  // so' reprocessa pendente/processando), ficavam presas pra sempre e nunca
+  // chegavam ao estado terminal que dispara revisao manual. 305 linhas assim
+  // em producao, presas desde 31/07.
+  //
+  // Investigacao (READ-ONLY) derrubou a hipotese inicial de que a placa
+  // "nunca" bateria com um veiculo: 283 das 305 (93%) HOJE ja tem um
+  // veiculo cadastrado com a mesma placa -- o veiculo so' foi cadastrado
+  // DEPOIS do upload do romaneio, e veiculo_id e' resolvido so' uma vez, no
+  // insert. Ou seja, reprocessar tem chance real de resolver: nao e' so'
+  // "promover mais rapido pro terminal", e' "tentar recasar a placa de
+  // novo" (ver bloco logo abaixo, secao "reata veiculo_id orfao").
+  // Por isso o filtro `.not("veiculo_id", "is", null)` sai daqui -- as
+  // linhas orfas agora entram no MESMO orcamento de tentativas/espera que
+  // ja existia (reaproveita geocode_tentativas/geocode_ultima_tentativa_em,
+  // nao duplica mecanismo), e por isso tambem chegam ao STATUS_SEM_COORDENADA
+  // terminal quando esgotam, do jeito que ja acontecia pras linhas com
+  // veiculo.
   const comLimite = await admin
     .from("romaneio_pontos")
     .select("id, nf, placa, veiculo_id, geocode_tentativas")
     .eq("geocode_status", "falhou")
-    .not("veiculo_id", "is", null)
     .lt("geocode_tentativas", MAX_TENTATIVAS_FALLBACK_UNITRAC)
     .or(`geocode_ultima_tentativa_em.is.null,geocode_ultima_tentativa_em.lt.${tentavelAntesDe}`)
     // Sem ORDER BY (comportamento antigo) o `limit` pegava sempre o mesmo
@@ -421,7 +441,6 @@ export async function POST(request: Request) {
       .from("romaneio_pontos")
       .select("id, nf, placa, veiculo_id")
       .eq("geocode_status", "falhou")
-      .not("veiculo_id", "is", null)
       .limit(LOTE_FALLBACK_UNITRAC);
     semGeocode = semLimite.data as LinhaFallback[] | null;
   } else {
@@ -431,10 +450,85 @@ export async function POST(request: Request) {
   let fallbackUnitrac = 0;
   let esgotaramTentativas = 0;
   let corrigidosViaRomaneio = 0;
+  let veiculoIdReatribuido = 0;
+
+  // Conta uma tentativa que NAO resolveu (nem achou alvo da Unitrac, nem
+  // recasou a placa com um veiculo) e, esgotado o limite, promove ao estado
+  // terminal. Extraido pra funcao porque agora tem DOIS chamadores: o loop
+  // de fallback Unitrac de sempre (linhas com veiculo_id) e o bloco novo de
+  // recasamento de placa (linhas orfas que continuam sem veiculo
+  // cadastrado).
+  const registrarFalhaTentativa = async (linha: LinhaFallback) => {
+    if (!tentativasDisponivel) return;
+    const tentativas = (linha.geocode_tentativas ?? 0) + 1;
+    const esgotou = tentativas >= MAX_TENTATIVAS_FALLBACK_UNITRAC;
+    const { error: erroTentativa } = await admin
+      .from("romaneio_pontos")
+      .update({
+        geocode_tentativas: tentativas,
+        geocode_ultima_tentativa_em: new Date().toISOString(),
+        ...(esgotou ? { geocode_status: STATUS_SEM_COORDENADA } : {}),
+      })
+      .eq("id", linha.id);
+    if (erroTentativa) {
+      console.warn(`Aviso: erro ao contar tentativa de geocode do ponto ${linha.id}: ${erroTentativa.message}`);
+    } else if (esgotou) {
+      esgotaramTentativas++;
+      console.warn(
+        `Aviso: ponto de romaneio ${linha.id} (placa=${linha.placa} nf=${linha.nf}) esgotou ${MAX_TENTATIVAS_FALLBACK_UNITRAC} tentativas de geocode -- marcado como ${STATUS_SEM_COORDENADA}, precisa de revisao manual (nao sera mais reprocessado automaticamente)`
+      );
+    }
+  };
+
+  // Separa quem tem veiculo_id (segue pro fallback Unitrac de sempre, mais
+  // abaixo) de quem nao tem (reata veiculo_id orfao, bloco a seguir). Feito
+  // ANTES de qualquer chamada a Unitrac de proposito: uma linha orfa nao
+  // contribui `cv` nenhum pra buscarAlvos (precisa de veiculo_id pra isso),
+  // entao ela tem que ser tratada num caminho que nao dependa de
+  // `cvsUnicos.length > 0` -- um lote inteiro de linhas orfas deixaria esse
+  // `if` vazio e o bloco inteiro de contagem de tentativa seria pulado.
+  const semGeocodeComVeiculo = (semGeocode ?? []).filter((l): l is LinhaFallback & { veiculo_id: string } => !!l.veiculo_id);
+  const semGeocodeOrfaos = (semGeocode ?? []).filter((l) => !l.veiculo_id);
+
+  // Reata veiculo_id orfao: se a placa foi cadastrada DEPOIS do upload
+  // (achado real 29/08, ver comentario acima), o veiculo existe agora --
+  // corrige a linha pra que o proximo ciclo (30s) processe ela pelo
+  // caminho normal (com cv/alvo Unitrac de verdade). So' uma consulta local
+  // (sem API externa), por isso roda todo ciclo, fora do orcamento de
+  // tentativas. Quando NAO acha veiculo, conta como tentativa igual ao
+  // fallback Unitrac -- reaproveita o mesmo mecanismo, nao inventa um novo.
+  if (semGeocodeOrfaos.length > 0) {
+    const placasOrfas = [...new Set(semGeocodeOrfaos.map((l) => l.placa))];
+    const { data: veiculosOrfaos, error: erroVeiculosOrfaos } = await admin.from("veiculos").select("id, placa").in("placa", placasOrfas);
+    if (erroVeiculosOrfaos) {
+      console.warn(`Aviso: erro ao buscar veiculos pra recasar placas orfas: ${erroVeiculosOrfaos.message}`);
+    }
+    const veiculoIdPorPlacaOrfa = new Map((veiculosOrfaos ?? []).map((v) => [v.placa, v.id as string]));
+
+    for (const linha of semGeocodeOrfaos) {
+      const veiculoIdNovo = veiculoIdPorPlacaOrfa.get(linha.placa);
+      if (veiculoIdNovo) {
+        const { error: erroReatar } = await admin.from("romaneio_pontos").update({ veiculo_id: veiculoIdNovo }).eq("id", linha.id);
+        if (erroReatar) {
+          console.warn(`Aviso: erro ao recasar veiculo_id do ponto ${linha.id}: ${erroReatar.message}`);
+        } else {
+          veiculoIdReatribuido++;
+        }
+        // Resolvido (ou tentativa de resolver) sem gastar tentativa -- nao
+        // achou coordenada ainda, so' deixou a linha elegivel pro caminho
+        // normal no proximo ciclo.
+        continue;
+      }
+      // Placa continua sem veiculo cadastrado: unica coisa possivel de
+      // tentar pra esta linha era o recasamento acima, ja' feito e falhou.
+      // Conta a tentativa igual ao fallback Unitrac.
+      await registrarFalhaTentativa(linha);
+    }
+  }
 
   const veiculoIdsTodos = [
     ...new Set([
-      ...(semGeocode ?? []).map((l) => l.veiculo_id),
+      ...semGeocodeComVeiculo.map((l) => l.veiculo_id),
       ...geocodificadosOk.map((l) => l.veiculo_id),
     ].filter((v): v is string => !!v)),
   ];
@@ -450,7 +544,7 @@ export async function POST(request: Request) {
         const alvoPorPlacaNf = new Map(alvos.map((a) => [`${a.placa}:${a.alvodocumento}`, a]));
 
         // Fallback existente: geocode falhou, usa coordenada da Unitrac.
-        for (const linha of semGeocode ?? []) {
+        for (const linha of semGeocodeComVeiculo) {
           const alvo = alvoPorPlacaNf.get(`${linha.placa}:${linha.nf}`);
           if (alvo?.pontolatitude && alvo?.pontolongitude) {
             const { error: erroFallback } = await admin
@@ -470,25 +564,7 @@ export async function POST(request: Request) {
           // estiver aplicada, mantem o comportamento antigo (sem contador,
           // retenta pra sempre) em vez de arriscar update em coluna
           // inexistente.
-          if (!tentativasDisponivel) continue;
-          const tentativas = (linha.geocode_tentativas ?? 0) + 1;
-          const esgotou = tentativas >= MAX_TENTATIVAS_FALLBACK_UNITRAC;
-          const { error: erroTentativa } = await admin
-            .from("romaneio_pontos")
-            .update({
-              geocode_tentativas: tentativas,
-              geocode_ultima_tentativa_em: new Date().toISOString(),
-              ...(esgotou ? { geocode_status: STATUS_SEM_COORDENADA } : {}),
-            })
-            .eq("id", linha.id);
-          if (erroTentativa) {
-            console.warn(`Aviso: erro ao contar tentativa de geocode do ponto ${linha.id}: ${erroTentativa.message}`);
-          } else if (esgotou) {
-            esgotaramTentativas++;
-            console.warn(
-              `Aviso: ponto de romaneio ${linha.id} (placa=${linha.placa} nf=${linha.nf}) esgotou ${MAX_TENTATIVAS_FALLBACK_UNITRAC} tentativas de geocode -- marcado como ${STATUS_SEM_COORDENADA}, precisa de revisao manual (nao sera mais reprocessado automaticamente)`
-            );
-          }
+          await registrarFalhaTentativa(linha);
         }
 
         // Correcao nova: geocode do romaneio funcionou, compara com a
@@ -551,5 +627,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, limiteTentativasAtivo: tentativasDisponivel });
+  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, limiteTentativasAtivo: tentativasDisponivel });
 }
