@@ -13,6 +13,12 @@ type AlertasCacheEntry = { body: { alertas: unknown[] }; expiraEm: number };
 const CACHE_MS = 8_000;
 const cachePorCliente = new Map<string, AlertasCacheEntry>();
 
+// Mesmo achado/fix de /api/alertas/route.ts (29/08): revalidatePath não
+// alcança este cache manual em memória. Chamado por acoes-alertas.ts.
+export function invalidarCacheAlertasRomaneio() {
+  cachePorCliente.clear();
+}
+
 export async function GET(request: Request) {
   const auth = await createClient();
   const {

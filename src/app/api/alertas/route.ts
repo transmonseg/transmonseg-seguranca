@@ -11,6 +11,18 @@ type AlertasCacheEntry = { body: { alertas: unknown[] }; expiraEm: number };
 const CACHE_MS = 8_000;
 const cachePorCliente = new Map<string, AlertasCacheEntry>();
 
+// Achado real 29/08: resolver/marcar falso um alerta grava no banco e chama
+// revalidatePath (invalida o cache de PÁGINA do Next.js), mas essa rota tem
+// seu PRÓPRIO cache manual em memória (acima), que revalidatePath não
+// alcança — o dashboard continuava servindo o alerta já resolvido por até
+// CACHE_MS depois da ação. Chamado por acoes-alertas.ts logo após qualquer
+// escrita. Limpa tudo (não só o cliente afetado) — mais simples e seguro do
+// que mapear cliente_id -> cod_user_unitrac aqui, custo é só 1 consulta a
+// mais nos outros clientes que estejam pollando no mesmo instante.
+export function invalidarCacheAlertas() {
+  cachePorCliente.clear();
+}
+
 export async function GET(request: Request) {
   const auth = await createClient();
   const {

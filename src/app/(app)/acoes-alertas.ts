@@ -5,6 +5,20 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { registrarCasosDesvioRevisao } from "@/lib/casos-desvio-revisao";
 import { IDADE_MINIMA_ACAO_MASSA_MIN } from "@/lib/detectores";
+import { invalidarCacheAlertas } from "@/app/api/alertas/route";
+import { invalidarCacheAlertasRomaneio } from "@/app/api/alertas-romaneio/route";
+
+// Achado real 29/08 (grupo WhatsApp: "alerta limpo demora sumir, às vezes
+// volta"): as rotas de leitura têm cache manual em memória de 8s
+// (CACHE_MS) que revalidatePath NÃO alcança (é cache de PÁGINA do Next,
+// não do módulo da rota). Sem isto, uma ação podia continuar servindo o
+// alerta já resolvido por até 8s -- e se duas telas pollavam em momentos
+// diferentes desse intervalo, uma via resolvido e a outra ainda via o
+// alerta antigo, dando a impressão de "sumiu e voltou".
+function invalidarCachesLeitura(tabela: TabelaAlertas) {
+  if (tabela === "alertas_romaneio") invalidarCacheAlertasRomaneio();
+  else invalidarCacheAlertas();
+}
 
 export type ResultadoAcao = { ok?: boolean; erro?: string; ignoradosRecentes?: number };
 
@@ -41,6 +55,7 @@ async function atualizar(id: string, patch: Record<string, unknown>, tabela: Tab
     .eq("id", id);
   if (error) return { erro: "Não foi possível atualizar o alerta." };
   revalidatePath(tabela === "alertas_romaneio" ? "/central-romaneio" : "/");
+  invalidarCachesLeitura(tabela);
   return { ok: true };
 }
 
@@ -187,6 +202,7 @@ export async function resolverVarios(
   if (error) return { erro: "Não foi possível resolver os alertas." };
   const resolvidos = atualizados?.length ?? 0;
   revalidatePath(tabela === "alertas_romaneio" ? "/central-romaneio" : "/");
+  invalidarCachesLeitura(tabela);
   return { ok: true, resolvidos, ignoradosRecentes: ids.length - resolvidos };
 }
 
@@ -229,5 +245,6 @@ export async function limparVarios(
   if (error) return { erro: "Não foi possível limpar os alertas." };
   const limpos = atualizados?.length ?? 0;
   revalidatePath(tabela === "alertas_romaneio" ? "/central-romaneio" : "/");
+  invalidarCachesLeitura(tabela);
   return { ok: true, limpos, ignoradosRecentes: ids.length - limpos };
 }
