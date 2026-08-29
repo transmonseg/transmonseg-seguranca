@@ -2193,8 +2193,16 @@ export async function POST(request: Request) {
           // decorrido desde o ciclo anterior (anterior.updated_at) em vez
           // de um incremento fixo -- sem ciclo anterior pra medir contra
           // (primeira leitura na faixa), cai pro periodo padrao do motor.
+          // Achado real 30/08: sem Math.round aqui, a diferenca de
+          // timestamps em ms produz float (ex: 34259.969) que quebra o
+          // INSERT em lote de posicoes_atuais (colunas no_raio_dwell_segundos/
+          // perto_sem_marcacao_segundos sao integer) -- e' um insert em
+          // lote, entao 1 veiculo com fracao de segundo derruba a
+          // gravacao de posicao de TODA a frota naquele ciclo. Confirmado
+          // em producao: posicoes_atuais ficou 20+min sem nenhuma
+          // atualizacao ate este fix.
           const incrementoDwellSegundos = anterior?.updated_at
-            ? (agora.getTime() - new Date(anterior.updated_at).getTime()) / 1000
+            ? Math.round((agora.getTime() - new Date(anterior.updated_at).getTime()) / 1000)
             : PERIODO_CICLO_MOTOR_S;
 
           let noRaioAlvoCodigo: number | null = alvoNoRaioAgora?.pontoCodigo ?? null;
