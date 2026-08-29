@@ -8,6 +8,8 @@ export type ResultadoUploadRomaneio = {
   erro?: string;
   romaneioData?: string;
   totalLinhas?: number;
+  linhasInseridas?: number;
+  linhasDuplicadas?: number;
   placasNaoEncontradas?: string[];
   modoTeste?: boolean;
   origem?: OrigemRomaneio;
@@ -116,6 +118,15 @@ export default function PainelUploadRomaneio({
     >
       {resultado.ok
         ? `${resultado.totalLinhas} linhas recebidas de ${resultado.romaneioData}${
+            // Achado real 29/08 (revisao independente): reenviar um arquivo
+            // ja upado (ex: apos corrigir e reenviar sem reverter antes)
+            // mostrava a MESMA mensagem de sucesso de um upload real, com 0
+            // linhas gravadas -- "duplicacao silenciosa" virava "no-op
+            // silencioso". Os campos ja existiam na API, so' nao apareciam.
+            resultado.linhasDuplicadas
+              ? ` (${resultado.linhasInseridas ?? 0} novas, ${resultado.linhasDuplicadas} já existiam -- reenvio detectado)`
+              : ""
+          }${
             resultado.placasNaoEncontradas && resultado.placasNaoEncontradas.length > 0
               ? ` -- placas não encontradas: ${resultado.placasNaoEncontradas.join(", ")}`
               : ""

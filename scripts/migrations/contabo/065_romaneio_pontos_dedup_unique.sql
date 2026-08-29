@@ -87,6 +87,23 @@
 --   2) geocode_status = 'ok' (ja geocodificada -- preserva trabalho de
 --      geocodificacao ja feito, evita reprocessar/perder lat-lng)
 --   3) criado_em mais recente (desempate final, so' quando 1 e 2 empatam)
+--
+-- AVISO OPERACIONAL (achado na revisao independente 29/08): o DELETE remove
+-- 2186 linhas com presenca_confirmada_em preenchida (a duplicata descartada
+-- de cada grupo tinha confirmacao redundante -- a linha mantida SEMPRE
+-- preserva a sua propria confirmacao, verificado: 0 grupos perdem a unica
+-- confirmacao existente). Ainda assim, qualquer contagem de "entregas
+-- confirmadas" no periodo 07-31 a 08-26 vai CAIR ~9,6% (22718 -> 20532)
+-- depois desta migracao, porque duplicatas confirmadas duas vezes agora
+-- contam uma vez so. Avisar antes de rodar em producao pra nao virar
+-- "o sistema perdeu entregas" sem contexto.
+--
+-- Envolvida em transacao (achado na revisao: psql -f autocommita cada
+-- statement por padrao -- sem BEGIN/COMMIT, se o ALTER TABLE falhar depois
+-- do DELETE, as 5748 linhas ja teriam sido apagadas em producao). Fazer
+-- pg_dump -t romaneio_pontos antes de rodar, como rede de seguranca real.
+BEGIN;
+
 DELETE FROM romaneio_pontos WHERE ctid IN (
   SELECT ctid FROM (
     SELECT
@@ -116,5 +133,7 @@ ALTER TABLE romaneio_pontos
 -- ignoreDuplicates: true }) -- essa constraint e' o que da suporte a esse
 -- upsert (PostgREST exige um UNIQUE/PK real sobre as colunas do
 -- on_conflict).
+
+COMMIT;
 
 NOTIFY pgrst, 'reload schema';
