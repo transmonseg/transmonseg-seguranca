@@ -234,7 +234,12 @@ export async function geocodificarGoogle(enderecoBruto: string): Promise<{ lat: 
     const data = (await res.json()) as { results?: { geometry?: { location?: { lat: number; lng: number } } }[] };
     const loc = data.results?.[0]?.geometry?.location;
     return loc ? { lat: loc.lat, lng: loc.lng } : null;
-  } catch {
+  } catch (err) {
+    // Achado real 30/08: rede, quota, ou chave invalida/expirada saiam
+    // por aqui sem log -- degradacao pro proximo tier da cascata (CNEFE/
+    // OSM ja resolveram antes, entao hoje isso quase nunca importa), mas
+    // se a chave expirar de vez isso fica invisivel pra sempre sem log.
+    console.error("geocodificarGoogle: falha na chamada:", err);
     return null;
   }
 }
@@ -272,7 +277,9 @@ export async function geocodificarNominatim(enderecoBruto: string): Promise<{ la
     const escolhido = candidatos[0] ?? data[0];
     if (!escolhido?.lat || !escolhido?.lon) return null;
     return { lat: parseFloat(escolhido.lat), lng: parseFloat(escolhido.lon) };
-  } catch {
+  } catch (err) {
+    // Achado real 30/08: mesmo motivo do catch de geocodificarGoogle acima.
+    console.error("geocodificarNominatim: falha na chamada:", err);
     return null;
   }
 }

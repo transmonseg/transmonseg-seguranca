@@ -137,7 +137,11 @@ export async function obterRouboCarga(): Promise<RouboCargaDados | null> {
     };
     cache = { dados, exp: agora + 6 * 60 * 60 * 1000 }; // 6h
     return dados;
-  } catch {
+  } catch (err) {
+    // Achado real 30/08: excecao de agregarISP()/buscarMalhaCisp() (ex: CSV
+    // do ISP-RJ mudou de formato) saia sem log -- sintoma em producao era
+    // so "mapa parou de atualizar", sem rastro pra diagnosticar.
+    console.error("dadosRouboCarga: falha ao atualizar, servindo cache antigo se houver:", err);
     return cache?.dados ?? null;
   }
 }

@@ -30,7 +30,12 @@ async function lerSessaoGuardada(): Promise<string | null> {
     );
     if (rows.length === 0 || !rows[0].ok) return null;
     return rows[0].cookie;
-  } catch {
+  } catch (err) {
+    // Achado real 30/08: erro de banco (pool esgotado, timeout) virava
+    // "sessao nunca capturada" sem log -- indistinguivel de verdade sem
+    // olhar o log, podia levar a recaptura manual de captcha desnecessaria
+    // quando o problema real era o Postgres fora do ar.
+    console.error("lerSessaoGuardada: falha ao ler unitrac_sessao:", err);
     return null;
   } finally {
     await pool.end();
@@ -81,7 +86,15 @@ export async function manterSessaoViva(): Promise<{ viva: boolean }> {
       await pool.end();
     }
     return { viva };
-  } catch {
+  } catch (err) {
+    // Achado real 30/08: falha de rede no keep-alive (fetch lança antes do
+    // pool.query rodar) sai por aqui sem NUNCA marcar ok=false no banco --
+    // a sessao fica registrada como valida mesmo com o keep-alive mudo
+    // neste ciclo, sem log. Nao mudei o comportamento (continua so'
+    // devolvendo viva:false pro chamador, sem escrever no banco -- decisao
+    // de nao marcar morta por 1 falha transiente de rede parece certa),
+    // so' adicionei visibilidade.
+    console.error("manterSessaoViva: falha ao verificar sessao (rede/portal Unitrac):", err);
     return { viva: false };
   }
 }

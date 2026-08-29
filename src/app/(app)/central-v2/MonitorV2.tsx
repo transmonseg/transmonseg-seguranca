@@ -646,6 +646,26 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Agora guarda o erro pra reverter a remocao otimista e avisar o operador.
   const [erroAcaoMassa, setErroAcaoMassa] = useState<string | null>(null);
 
+  // Achado real 30/08 (varredura de sistema): falha de rede nos dois polls
+  // principais (alertas, posições do mapa) era engolida em silêncio (catch
+  // vazio) -- se o endpoint caísse por mais tempo (deploy, timeout, erro 5xx
+  // persistente), a tela continuava mostrando os últimos dados como se
+  // estivessem em dia, indefinidamente, sem nenhum sinal pro operador.
+  // Guarda o timestamp do último poll bem-sucedido (qualquer um dos dois) --
+  // usado só pra mostrar um aviso discreto quando passa muito tempo sem
+  // atualização real, não muda nenhum comportamento de dado/detecção.
+  const [ultimoPollOk, setUltimoPollOk] = useState<number>(Date.now());
+  // Tick só pra forçar reavaliação do indicador de dado desatualizado --
+  // se os polls ficarem falhando, nenhum outro setState dispara re-render
+  // pra mostrar que o tempo parado está crescendo.
+  const [, forcarTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => forcarTick(x => x + 1), 20_000);
+    return () => clearInterval(t);
+  }, []);
+  const LIMIAR_DADO_DESATUALIZADO_MS = 90_000;
+  const dadoDesatualizado = Date.now() - ultimoPollOk > LIMIAR_DADO_DESATUALIZADO_MS;
+
   // Filtro por tipo de alerta (sidebar) — multi-select
   const [filtroTipos, setFiltroTipos] = useState<Set<string>>(new Set());
 
@@ -975,7 +995,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         }
         alertasRef.current = novos;
         setAlertas(novos);
-      } catch { /* ignore */ }
+        setUltimoPollOk(Date.now());
+      } catch { /* ignore -- ver ultimoPollOk pro indicador de dado desatualizado */ }
     };
     poll();
     const t = setInterval(poll, 30_000);
@@ -1008,7 +1029,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         // 1016), então `tipo` — que agora vem de alertas_romaneio — passa a
         // ser a ÚNICA fonte de cor nesta tela.
         setVeiculosMapa(fonteAlertas === "romaneio" ? vs.map(v => ({ ...v, nivel: null })) : vs);
-      } catch { /* ignore */ }
+        setUltimoPollOk(Date.now());
+      } catch { /* ignore -- ver ultimoPollOk pro indicador de dado desatualizado */ }
     };
     poll();
     const t = setInterval(poll, 30_000);
@@ -1086,28 +1108,55 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Agora, se não sobrar OUTRO alerta ativo pro mesmo veículo, atualiza a
   // cor na hora (otimista); se a condição real ainda existir, o motor
   // recria o alerta no próximo ciclo e a cor volta — corretamente.
+  // Achado real 30/08 (varredura de sistema): ao contrário das ações em
+  // massa (handleResolverTodos/handleLimparTodos, abaixo), estas duas
+  // descartavam o resultado do servidor -- se a sessão expirasse ou o
+  // update falhasse no banco, o card já tinha sumido e o carro já tinha
+  // perdido a cor otimisticamente, sem NADA avisar o operador. O alerta
+  // continuava ativo no servidor até o próximo poll (até 30s depois)
+  // reintroduzir o card, sem explicação. Mesmo tratamento de
+  // erroAcaoMassa já usado pelas ações em massa: se falhar, devolve o
+  // alerta pra tela e mostra o aviso.
   const handleResolver = useCallback(async (id: string) => {
+    let alvoRemovido: AlertaEnriquecido | undefined;
     setAlertas(a => {
       const alvo = a.find(x => x.id === id);
+      alvoRemovido = alvo;
       const restante = a.filter(x => x.id !== id);
       if (alvo && !restante.some(x => x.cv === alvo.cv)) {
         setVeiculosMapa(vs => vs.map(v => v.cv === alvo.cv ? { ...v, nivel: null, tipo: null } : v));
       }
       return restante;
     });
-    await resolverAlerta(id, tabelaAlertas);
+    const resultado = await resolverAlerta(id, tabelaAlertas);
+    if (resultado.erro || !resultado.ok) {
+      if (alvoRemovido) {
+        const alvo = alvoRemovido;
+        setAlertas(a => (a.some(x => x.id === id) ? a : [...a, alvo]));
+      }
+      setErroAcaoMassa(resultado.erro ?? "Não foi possível resolver o alerta.");
+    }
   }, [tabelaAlertas]);
 
   const handleFalso = useCallback(async (id: string, categoria: CategoriaFalso, detalhe: string) => {
+    let alvoRemovido: AlertaEnriquecido | undefined;
     setAlertas(a => {
       const alvo = a.find(x => x.id === id);
+      alvoRemovido = alvo;
       const restante = a.filter(x => x.id !== id);
       if (alvo && !restante.some(x => x.cv === alvo.cv)) {
         setVeiculosMapa(vs => vs.map(v => v.cv === alvo.cv ? { ...v, nivel: null, tipo: null } : v));
       }
       return restante;
     });
-    await marcarFalsoComCategoria(id, categoria, tabelaAlertas, detalhe);
+    const resultado = await marcarFalsoComCategoria(id, categoria, tabelaAlertas, detalhe);
+    if (resultado.erro || !resultado.ok) {
+      if (alvoRemovido) {
+        const alvo = alvoRemovido;
+        setAlertas(a => (a.some(x => x.id === id) ? a : [...a, alvo]));
+      }
+      setErroAcaoMassa(resultado.erro ?? "Não foi possível marcar o alerta como falso.");
+    }
   }, [tabelaAlertas]);
 
   // ── Map controls ─────────────────────────────────────────────────────
@@ -2610,6 +2659,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {erroAcaoMassa && (
             <div style={{ padding: "5px 8px", fontSize: 10, color: "#f87171", borderBottom: `1px solid ${T.border}` }}>
               {erroAcaoMassa} Nada foi alterado — os alertas continuam na lista.
+            </div>
+          )}
+
+          {dadoDesatualizado && (
+            <div style={{ padding: "5px 8px", fontSize: 10, color: T.yellow, borderBottom: `1px solid ${T.border}` }}>
+              ⚠ Sem atualização desde {new Date(ultimoPollOk).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} — os dados na tela podem estar desatualizados.
             </div>
           )}
 

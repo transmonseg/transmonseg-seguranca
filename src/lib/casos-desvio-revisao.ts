@@ -57,18 +57,32 @@ export async function registrarCasosDesvioRevisao(
       .in("id", ids)
       .eq("modo_teste", false)
       .in("tipo", TIPOS_CASO_REVISAO);
-    if (errAlertas || !alertasDesvio || alertasDesvio.length === 0) return;
+    // Achado real 30/08 (varredura de sistema): erro real de query (permissão,
+    // timeout, schema drift) caia no mesmo `return` de "sem alertas pra
+    // registrar" -- se essa query passasse a falhar sistematicamente, o
+    // pipeline de calibração parava de registrar casos sem ninguém perceber.
+    if (errAlertas) {
+      console.error(`registrarCasosDesvioRevisao: erro ao buscar alertas (ids=${ids.length}):`, errAlertas);
+      return;
+    }
+    if (!alertasDesvio || alertasDesvio.length === 0) return;
 
     const agora = new Date();
     for (const a of alertasDesvio) {
       const { inicio, fim } = calcularJanelaTrilha(new Date(a.desde), agora);
-      const { data: trilha } = await admin
+      const { data: trilha, error: errTrilha } = await admin
         .from("posicoes_historico")
         .select("lat, lng, velocidade, ignicao, atraso_min, criado_em")
         .eq("veiculo_id", a.veiculo_id)
         .gte("criado_em", inicio.toISOString())
         .lte("criado_em", fim.toISOString())
         .order("criado_em", { ascending: true });
+      // Achado real 30/08: erro aqui gravava trilha:[] silenciosamente (caso
+      // continuava sendo registrado, só sem a trilha) -- log pra não perder
+      // o rastro se essa query começar a falhar de verdade.
+      if (errTrilha) {
+        console.error(`registrarCasosDesvioRevisao: erro ao buscar trilha (veiculo_id=${a.veiculo_id}):`, errTrilha);
+      }
 
       // Achado real 13/08 (pesquisa + auditoria adversarial: segmentoCalibracaoPreferido
       // tinha testes completos mas NUNCA era chamada em codigo real -- so'
