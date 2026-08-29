@@ -21,7 +21,23 @@ const AMENITIES = [
   "bank", "hospital", "bus_station", "parking", "car_wash", "atm",
 ].join("|");
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+// Achado real 30/08 (varredura de sistema): overpass-api.de comecou a
+// recusar conexao (TCP "connection refused" nos 4 IPs, v4 e v6) do VPS de
+// producao a partir de 27/08 -- provavel ban por volume de chamadas do
+// endpoint publico gratuito. Efeito real: temPOIProximo lancava exceçao em
+// TODO ciclo havia 3 dias, e o fail-open documentado (`catch` em
+// motor/route.ts) assume POI presente pra NAO gerar ruido -- ou seja, os 3
+// detectores de parada suspeita perto de POI (parada_anomala,
+// saida_nao_autorizada parado, parada_fora_tapete) ficaram silenciosamente
+// mais permissivos (risco de recall) pra frota inteira por 3 dias, sem
+// ninguem perceber (poi_cache zerou de escritas novas nesse periodo).
+// Trocado pro mirror overpass.osm.ch (confirmado alcancavel e respondendo
+// dado real do VPS na mesma investigacao). Se este tambem parar de
+// responder no futuro, o comportamento de fail-open documentado acima
+// continua protegendo contra crash -- so' silencia os 3 detectores nesse
+// meio tempo, o que precisa de monitoramento ativo (nao ha alerta hoje pra
+// "Overpass fora do ar ha X dias").
+const OVERPASS_URL = "https://overpass.osm.ch/api/interpreter";
 const RAIO_M = 80;
 const CACHE_DIAS = 7;
 
@@ -96,9 +112,19 @@ export async function temPOIProximo(
       throw new Error(`Overpass respondeu HTTP ${res.status}`);
     }
     try {
-      const json = (await res.json()) as { elements?: { tags?: { total?: number } }[] };
+      // Achado real 30/08: a API Overpass devolve `tags.total` de `out
+      // count;` como STRING (ex: "14"), nunca number -- confirmado com
+      // chamada real, tanto no mirror antigo quanto no novo. O `typeof
+      // total === "number"` original nunca era verdadeiro, entao SEMPRE
+      // caia no fallback `elements.length > 0`, que por sua vez e' SEMPRE
+      // true pra `out count;` (ela devolve exatamente 1 elemento mesmo
+      // quando total=0) -- ou seja, temPoi vinha sempre `true`,
+      // independente de existir POI de verdade. So' nao foi percebido
+      // porque a API estava banida (achado acima) e a funcao nunca
+      // chegava a esta linha. `Number(total)` converte a string real.
+      const json = (await res.json()) as { elements?: { tags?: { total?: number | string } }[] };
       const total = json.elements?.[0]?.tags?.total;
-      temPoi = typeof total === "number" ? total > 0 : (json.elements?.length ?? 0) > 0;
+      temPoi = total != null ? Number(total) > 0 : (json.elements?.length ?? 0) > 0;
     } catch (err) {
       throw new Error(`Overpass devolveu corpo invalido: ${String(err)}`);
     }

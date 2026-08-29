@@ -55,19 +55,42 @@ describe("temPOIProximo -- contrato de falha (achado I3 da revisao final de bran
   });
 
   it("resposta boa continua devolvendo veredito normal (sem regressao)", async () => {
+    // Achado real 30/08: a API Overpass devolve tags.total como STRING
+    // (ex: "3"), nunca number -- confirmado com chamada real ao serviço.
+    // Estes mocks usam string de propósito, pra não repetir o "espelho"
+    // que escondeu o bug original (typeof total === "number" nunca batia
+    // com o contrato real, e o teste antigo usava number, então nunca
+    // pegava isso).
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ elements: [{ tags: { total: 3 } }] }),
+      json: async () => ({ elements: [{ tags: { total: "3" } }] }),
     }));
     const { pool } = poolFalso();
     await expect(temPOIProximo(-22.9, -43.2, pool)).resolves.toBe(true);
 
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ elements: [{ tags: { total: 0 } }] }),
+      json: async () => ({ elements: [{ tags: { total: "0" } }] }),
     }));
     const { pool: pool2 } = poolFalso();
     await expect(temPOIProximo(-22.9, -43.2, pool2)).resolves.toBe(false);
+  });
+
+  it("regressao real 30/08: total='0' (string) nao pode virar temPoi=true", async () => {
+    // Esta é a assinatura EXATA da resposta real do Overpass pra `out
+    // count;` quando não há nenhum POI: elements sempre tem 1 item (o
+    // pseudo-nó de contagem), mesmo com total=0. Antes do fix, isso caía
+    // no fallback `elements.length > 0` (sempre true) porque `typeof "0"
+    // === "number"` é false. Prova que o fix não depende só do valor
+    // numérico, mas de realmente ler o total como string.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        elements: [{ type: "count", id: 0, tags: { nodes: "0", ways: "0", relations: "0", total: "0" } }],
+      }),
+    }));
+    const { pool } = poolFalso();
+    await expect(temPOIProximo(-22.9, -43.2, pool)).resolves.toBe(false);
   });
 
   it("cache fresco responde sem tocar na rede", async () => {
