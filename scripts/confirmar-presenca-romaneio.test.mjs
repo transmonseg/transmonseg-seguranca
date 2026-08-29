@@ -11,8 +11,8 @@ describe("calcularStreakMaximoComPosicao", () => {
 
   it("streak curto (menos que o minimo): dwellMaxS abaixo do minimo, posicaoReal null", () => {
     const trilha = [
-      { lat: -22.9001, lng: -43.2001, velocidade: 0 },
-      { lat: -22.9001, lng: -43.2001, velocidade: 0 },
+      { lat: -22.9001, lng: -43.2001, velocidade: 0, criado_em: "2026-08-30T09:00:00.000Z" },
+      { lat: -22.9001, lng: -43.2001, velocidade: 0, criado_em: "2026-08-30T09:00:30.000Z" },
     ];
     const r = calcularStreakMaximoComPosicao(trilha, PONTO.lat, PONTO.lng, 300, 5, 120);
     expect(r.dwellMaxS).toBeLessThan(120);
@@ -21,11 +21,11 @@ describe("calcularStreakMaximoComPosicao", () => {
 
   it("streak longo dentro do raio, parado: confirma e retorna a media real da trilha", () => {
     const trilha = [
-      { lat: -22.9002, lng: -43.2002, velocidade: 0 },
-      { lat: -22.9004, lng: -43.2004, velocidade: 0 },
-      { lat: -22.9004, lng: -43.2004, velocidade: 0 },
-      { lat: -22.9004, lng: -43.2004, velocidade: 0 },
-      { lat: -22.9004, lng: -43.2004, velocidade: 0 },
+      { lat: -22.9002, lng: -43.2002, velocidade: 0, criado_em: "2026-08-30T09:00:00.000Z" },
+      { lat: -22.9004, lng: -43.2004, velocidade: 0, criado_em: "2026-08-30T09:00:40.000Z" },
+      { lat: -22.9004, lng: -43.2004, velocidade: 0, criado_em: "2026-08-30T09:01:20.000Z" },
+      { lat: -22.9004, lng: -43.2004, velocidade: 0, criado_em: "2026-08-30T09:02:00.000Z" },
+      { lat: -22.9004, lng: -43.2004, velocidade: 0, criado_em: "2026-08-30T09:02:40.000Z" },
     ];
     const r = calcularStreakMaximoComPosicao(trilha, PONTO.lat, PONTO.lng, 300, 5, 120);
     expect(r.dwellMaxS).toBeGreaterThanOrEqual(120);
@@ -35,12 +35,31 @@ describe("calcularStreakMaximoComPosicao", () => {
     expect(r.posicaoReal.lng).toBeCloseTo(-43.20036, 4);
   });
 
+  it("achado real 30/08 (TOS-1H26/backlog do cron morto): cadencia real >30s -- +30s fixo subestimava, tempo real bate o limiar", () => {
+    // 3 leituras qualificadas com ~55-60s de cadencia real (tipico do
+    // motor) -- pelo calculo antigo (+30s fixo) isso somava so' 60s,
+    // abaixo do limiar de 120s. Com o tempo real (2 intervalos de ~57s),
+    // fecha em ~114s -- ainda abaixo dos 120s classicos SE o limiar fosse
+    // rigido, mas o objetivo do teste e' a MEDICAO ficar fiel ao real,
+    // nao o limiar em si (ver proximo teste pra um caso que realmente
+    // deveria confirmar).
+    const trilha = [
+      { lat: -22.9002, lng: -43.2002, velocidade: 0, criado_em: "2026-08-30T09:00:00.000Z" },
+      { lat: -22.9002, lng: -43.2002, velocidade: 0, criado_em: "2026-08-30T09:00:57.000Z" },
+      { lat: -22.9002, lng: -43.2002, velocidade: 0, criado_em: "2026-08-30T09:01:54.000Z" },
+    ];
+    const r = calcularStreakMaximoComPosicao(trilha, PONTO.lat, PONTO.lng, 300, 5, 120);
+    // tempo real decorrido: 114s (2 intervalos de 57s) -- NAO 60s (2*30
+    // fixo, valor que o calculo antigo teria dado).
+    expect(r.dwellMaxS).toBeCloseTo(114, 0);
+  });
+
   it("velocidade alta interrompe o streak (nao conta como parado)", () => {
     const trilha = [
-      { lat: -22.9002, lng: -43.2002, velocidade: 0 },
-      { lat: -22.9002, lng: -43.2002, velocidade: 0 },
-      { lat: -22.9002, lng: -43.2002, velocidade: 20 }, // interrompe
-      { lat: -22.9002, lng: -43.2002, velocidade: 0 },
+      { lat: -22.9002, lng: -43.2002, velocidade: 0, criado_em: "2026-08-30T09:00:00.000Z" },
+      { lat: -22.9002, lng: -43.2002, velocidade: 0, criado_em: "2026-08-30T09:00:30.000Z" },
+      { lat: -22.9002, lng: -43.2002, velocidade: 20, criado_em: "2026-08-30T09:01:00.000Z" }, // interrompe
+      { lat: -22.9002, lng: -43.2002, velocidade: 0, criado_em: "2026-08-30T09:01:30.000Z" },
     ];
     const r = calcularStreakMaximoComPosicao(trilha, PONTO.lat, PONTO.lng, 300, 5, 120);
     expect(r.dwellMaxS).toBeLessThan(120); // nenhum streak individual chega ao minimo
@@ -48,11 +67,11 @@ describe("calcularStreakMaximoComPosicao", () => {
 
   it("fora do raio nao conta, mesmo parado", () => {
     const trilha = [
-      { lat: -23.5, lng: -43.9, velocidade: 0 }, // longe do ponto
-      { lat: -23.5, lng: -43.9, velocidade: 0 },
-      { lat: -23.5, lng: -43.9, velocidade: 0 },
-      { lat: -23.5, lng: -43.9, velocidade: 0 },
-      { lat: -23.5, lng: -43.9, velocidade: 0 },
+      { lat: -23.5, lng: -43.9, velocidade: 0, criado_em: "2026-08-30T09:00:00.000Z" }, // longe do ponto
+      { lat: -23.5, lng: -43.9, velocidade: 0, criado_em: "2026-08-30T09:00:30.000Z" },
+      { lat: -23.5, lng: -43.9, velocidade: 0, criado_em: "2026-08-30T09:01:00.000Z" },
+      { lat: -23.5, lng: -43.9, velocidade: 0, criado_em: "2026-08-30T09:01:30.000Z" },
+      { lat: -23.5, lng: -43.9, velocidade: 0, criado_em: "2026-08-30T09:02:00.000Z" },
     ];
     const r = calcularStreakMaximoComPosicao(trilha, PONTO.lat, PONTO.lng, 300, 5, 120);
     expect(r.dwellMaxS).toBe(0);

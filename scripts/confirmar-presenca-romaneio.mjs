@@ -62,6 +62,23 @@ const FONTES_GEOCODIFICADAS = new Set(["cnefe", "nominatim", "google", "local"])
 // vencedora, pra poder corrigir/confirmar romaneio_cliente_codigo_geocode
 // com onde o veiculo REALMENTE parou (Fase 2), nao so o timestamp de
 // presenca (que ja existia, ver header do arquivo).
+//
+// Achado real 30/08 (auditoria "pendente demais" no grupo KPI AJUSTES):
+// dwellAtualS incrementava +30s FIXO por leitura qualificada -- MESMO bug
+// ja corrigido em src/app/api/motor/route.ts (achado TOS-1H26, 28/08),
+// mas este script roda FORA do Next.js (sem import de lib nenhuma, ver
+// header do arquivo) entao o fix de la' nunca chegou aqui. A cadencia
+// real de posicoes_historico varia (30s a 60s+, nunca fixa) -- 30s fixo
+// SUBESTIMA o dwell real sempre que a cadencia real e' maior, empurrando
+// paradas genuinamente >=120s pra baixo do limiar. Medido em producao:
+// ~1700 entregas com parada real medida em minutos (ate 33min, 0m de
+// distancia) continuavam "pendente" porque o crontab deste script tinha
+// ficado apontando pra um diretorio removido por 2 dias (ver commit) --
+// nesse meio tempo NENHUMA leitura nova era feita, entao o bug de +30s
+// fixo nao tinha nem chance de aparecer isolado; destravado o cron, ele
+// ficou visivel: mesmo rodando, boa parte do backlog nao confirmava por
+// causa deste calculo. Agora usa o tempo real decorrido entre a leitura
+// atual e a anterior (ambas ja "dentro"), nao mais um incremento fixo.
 export function calcularStreakMaximoComPosicao(trilha, pontoLat, pontoLng, raioM, velMaxKmh, dwellMinimoS) {
   let dwellAtualS = 0;
   let dwellMaxS = 0;
@@ -78,7 +95,8 @@ export function calcularStreakMaximoComPosicao(trilha, pontoLat, pontoLng, raioM
         dwellAtualS = 0;
         somaLat = 0; somaLng = 0; contagem = 0;
       } else {
-        dwellAtualS += 30;
+        const dtS = (new Date(ponto.criado_em).getTime() - new Date(trilha[i - 1].criado_em).getTime()) / 1000;
+        dwellAtualS += dtS > 0 ? dtS : 0;
       }
       somaLat += ponto.lat; somaLng += ponto.lng; contagem++;
       if (dwellAtualS > dwellMaxS) {
@@ -158,7 +176,7 @@ async function main() {
     const chave = `${veiculoId}:${dia}`;
     if (trilhaPorChave.has(chave)) return trilhaPorChave.get(chave);
     const { rows } = await pool.query(
-      `SELECT lat, lng, velocidade FROM posicoes_historico
+      `SELECT lat, lng, velocidade, criado_em FROM posicoes_historico
         WHERE veiculo_id = $1
           AND (criado_em AT TIME ZONE 'America/Sao_Paulo')::date = $2::date
         ORDER BY criado_em ASC`,
