@@ -1,6 +1,7 @@
 import { buscarAlvos, agruparPontosPorPlaca, corrigirComPontoAprendido, type PontoEntrega } from "@/lib/unitrac";
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { createClient } from "@/lib/supabase/server";
 
 // Pool proprio e pequeno (mesmo padrao de recalibrar-desvio): esta rota so
 // faz duas leituras curtas por request, e ja e servida por cache de 30s.
@@ -150,6 +151,14 @@ function normalizarNf(v: string | null | undefined): string {
 }
 
 export async function GET(request: Request) {
+  // Achado real 30/08 (varredura de segurança): rota expunha entrega de
+  // cliente (nome, endereco, NF, coordenada) sem NENHUMA checagem de auth --
+  // qualquer um na internet podia puxar por query string. Mesmo padrao de
+  // /api/mapa.
+  const auth = await createClient();
+  const { data: { user } } = await auth.auth.getUser();
+  if (!user) return Response.json({ erro: "nao autorizado" }, { status: 401 });
+
   const { searchParams } = new URL(request.url);
   // Suporta ?cv=X (único) ou múltiplos ?cv=A&cv=B (frota completa)
   const cvs = searchParams.getAll("cv");

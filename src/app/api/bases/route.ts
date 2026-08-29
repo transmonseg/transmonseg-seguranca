@@ -1,7 +1,15 @@
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: Request) {
+  // Achado real 30/08 (varredura de segurança): rota expunha geofence de
+  // base de cliente por clienteId sem NENHUMA checagem de auth. Mesmo
+  // padrão de /api/mapa e /api/alvos.
+  const auth = await createClient();
+  const { data: { user } } = await auth.auth.getUser();
+  if (!user) return Response.json({ erro: "nao autorizado" }, { status: 401 });
+
   const { searchParams } = new URL(request.url);
   const clienteId = searchParams.get("clienteId");
   if (!clienteId) return Response.json({ type: "FeatureCollection", features: [] }, { status: 400 });
