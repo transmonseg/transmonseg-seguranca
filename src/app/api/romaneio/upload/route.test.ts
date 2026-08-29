@@ -39,7 +39,24 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({ auth: { getUser: mockGetUser } }),
 }));
 
-const mockInsert = vi.fn();
+// upsert(linhas, opcoes).select("id") -- mock encadeado no mesmo formato
+// do client real (ver route.ts). Por padrao simula "nada era duplicata":
+// devolve uma linha por linha enviada. Testes que precisam simular
+// duplicata setam proximoUpsertResultado ANTES de chamar POST -- variavel
+// simples em vez de mockResolvedValueOnce: a fila de "once" do vitest nao
+// e' limpa por clearAllMocks(), entao um item nao consumido numa chamada
+// extra de upsert dentro de um teste vazaria pro proximo teste.
+let proximoUpsertResultado: { data: unknown[]; error: unknown } | null = null;
+const mockUpsertSelect = vi.fn();
+const mockUpsert = vi.fn((linhas: unknown[], _opcoes?: unknown) => {
+  const resultado = proximoUpsertResultado ?? {
+    data: (linhas as unknown[]).map((_, i) => ({ id: `linha-${i}` })),
+    error: null,
+  };
+  proximoUpsertResultado = null;
+  mockUpsertSelect.mockImplementation(async () => resultado);
+  return { select: mockUpsertSelect };
+});
 const mockSelect = vi.fn();
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
@@ -47,7 +64,7 @@ vi.mock("@/lib/supabase/admin", () => ({
       if (tabela === "veiculos") {
         return { select: () => ({ in: mockSelect }) };
       }
-      return { insert: mockInsert };
+      return { upsert: mockUpsert };
     },
   }),
 }));
@@ -75,10 +92,10 @@ function linhaRegexValida() {
 describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    proximoUpsertResultado = null;
     mockGetUser.mockResolvedValue({ data: { user: { id: "u1", email: "op@x.com" } } });
     mockExtrairDataRomaneio.mockReturnValue("2026-08-12");
     mockSelect.mockResolvedValue({ data: [] });
-    mockInsert.mockResolvedValue({ error: null });
   });
 
   it("PDF que bate o regex Nutry Max: usa parseRomaneio, NAO chama o extrator LLM", async () => {
@@ -89,7 +106,7 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     const res = await POST(criarRequisicao("romaneio.pdf"));
     expect(res.status).toBe(200);
     expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
-    expect(mockInsert).toHaveBeenCalled();
+    expect(mockUpsert).toHaveBeenCalled();
     const body = await res.json();
     expect(body.fonteExtracao).toBe("regex");
   });
@@ -122,7 +139,7 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     const res = await POST(criarRequisicao("escala-do-pao.pdf"));
     expect(res.status).toBe(200);
     expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
-    expect(mockInsert).toHaveBeenCalled();
+    expect(mockUpsert).toHaveBeenCalled();
     const body = await res.json();
     expect(body.fonteExtracao).toBe("regex_tabular");
     expect(body.romaneioData).toBe("2026-08-25");
@@ -137,7 +154,7 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("escala-do-pao.pdf"));
     expect(res.status).toBe(422);
-    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
     expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
   });
 
@@ -214,7 +231,7 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("romaneio-ilegivel.pdf"));
     expect(res.status).toBe(422);
-    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
   });
 
   it("linha extraida sem endereco (ambigua) e aceita, nao bloqueia o upload", async () => {
@@ -238,7 +255,11 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     });
     const { POST } = await import("./route");
     await POST(criarRequisicao("romaneio.pdf"));
-    const linhasInseridas = mockInsert.mock.calls[0][0];
+    const linhasInseridas = mockUpsert.mock.calls[0][0] as Array<{
+      carga_destino_codigo: unknown;
+      carga_destino_nome: unknown;
+      nf: string;
+    }>;
     expect(linhasInseridas[0].carga_destino_codigo).toBeNull();
     expect(linhasInseridas[0].carga_destino_nome).toBeNull();
     // nf e' NOT NULL no banco -- nunca pode inserir null aqui.
@@ -256,7 +277,7 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("romaneio.pdf"));
     expect(res.status).toBe(422);
-    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
     expect(mockExtrairRomaneioViaLLM).not.toHaveBeenCalled();
   });
 
@@ -301,9 +322,9 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao("romaneio.pdf", "conteudo", { origem: "escala_pao" }));
     expect(res.status).toBe(200);
-    const linhasInseridas = mockInsert.mock.calls[0][0];
+    const linhasInseridas = mockUpsert.mock.calls[0][0] as Array<{ origem: string }>;
     expect(linhasInseridas).toHaveLength(2);
-    expect(linhasInseridas.every((l: { origem: string }) => l.origem === "escala_pao")).toBe(true);
+    expect(linhasInseridas.every((l) => l.origem === "escala_pao")).toBe(true);
     expect((await res.json()).origem).toBe("escala_pao");
   });
 
@@ -311,14 +332,16 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
     const { POST } = await import("./route");
     await POST(criarRequisicao("romaneio.pdf"));
-    expect(mockInsert.mock.calls[0][0][0].origem).toBe("romaneio");
+    const linhas = mockUpsert.mock.calls[0][0] as Array<{ origem: string }>;
+    expect(linhas[0].origem).toBe("romaneio");
   });
 
   it("origem arbitraria vinda do cliente NUNCA chega ao banco: cai pro padrao", async () => {
     mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
     const { POST } = await import("./route");
     await POST(criarRequisicao("romaneio.pdf", "conteudo", { origem: "'; drop table romaneio_pontos; --" }));
-    expect(mockInsert.mock.calls[0][0][0].origem).toBe("romaneio");
+    const linhas = mockUpsert.mock.calls[0][0] as Array<{ origem: string }>;
+    expect(linhas[0].origem).toBe("romaneio");
   });
 
   it("planilha corrompida (XLSX.read lanca exception): 422 claro, nao 500", async () => {
@@ -330,6 +353,66 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.ok).toBe(false);
-    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  // ─── Task "evitar duplicacao silenciosa no upload de romaneio" (27/08 --
+  // ver migration 065): reenviar o mesmo arquivo nao pode mais duplicar
+  // linhas em romaneio_pontos. O endpoint troca insert() por
+  // upsert(..., { onConflict, ignoreDuplicates: true }) -- o teste real de
+  // "o banco rejeita a segunda copia" e' da constraint (migration 065,
+  // fora do alcance de um teste unitario de rota), mas aqui garantimos que
+  // a ROTA chama o upsert do jeito certo (chave da constraint, DO NOTHING)
+  // e reporta corretamente quantas linhas eram duplicata.
+
+  it("upsert usa a chave da constraint (migration 065) com ignoreDuplicates -- nunca insert() puro", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
+    const { POST } = await import("./route");
+    await POST(criarRequisicao("romaneio.pdf"));
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    const opcoes = mockUpsert.mock.calls[0][1];
+    expect(opcoes).toEqual({
+      onConflict: "romaneio_data,placa,nf,modo_teste,origem",
+      ignoreDuplicates: true,
+    });
+  });
+
+  it("reenviar o mesmo arquivo duas vezes: a segunda vez nao insere nenhuma linha nova (upsert devolve 0 linhas) e o retorno reflete isso em linhasDuplicadas", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida(), { ...linhaRegexValida(), nf: "2" }]);
+    const { POST } = await import("./route");
+
+    // 1o upload: as 2 linhas sao novas (comportamento padrao do mock).
+    const res1 = await POST(criarRequisicao("romaneio.pdf"));
+    const body1 = await res1.json();
+    expect(body1.totalLinhas).toBe(2);
+    expect(body1.linhasInseridas).toBe(2);
+    expect(body1.linhasDuplicadas).toBe(0);
+
+    // 2o upload do MESMO arquivo -- simula o banco reconhecendo as 2
+    // linhas como conflito na constraint (ON CONFLICT DO NOTHING: nenhuma
+    // linha volta no .select()).
+    proximoUpsertResultado = { data: [], error: null };
+    const res2 = await POST(criarRequisicao("romaneio.pdf"));
+    const body2 = await res2.json();
+    expect(res2.status).toBe(200);
+    expect(body2.totalLinhas).toBe(2);
+    expect(body2.linhasInseridas).toBe(0);
+    expect(body2.linhasDuplicadas).toBe(2);
+  });
+
+  it("upload parcialmente duplicado: linhasInseridas + linhasDuplicadas soma totalLinhas", async () => {
+    mockParseRomaneio.mockReturnValue([
+      linhaRegexValida(),
+      { ...linhaRegexValida(), nf: "2" },
+      { ...linhaRegexValida(), nf: "3" },
+    ]);
+    // Simula banco: so' 1 das 3 linhas era nova (2 ja existiam).
+    proximoUpsertResultado = { data: [{ id: "linha-nova" }], error: null };
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao("romaneio.pdf"));
+    const body = await res.json();
+    expect(body.totalLinhas).toBe(3);
+    expect(body.linhasInseridas).toBe(1);
+    expect(body.linhasDuplicadas).toBe(2);
   });
 });

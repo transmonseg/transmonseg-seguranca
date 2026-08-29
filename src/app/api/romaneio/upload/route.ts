@@ -14,6 +14,13 @@ export const maxDuration = 120;
 
 const EXTENSOES_PLANILHA = [".xlsx", ".xls", ".csv"];
 
+// Chave natural de "esta e' a mesma linha de entrega" -- ver migration 065
+// (scripts/migrations/contabo/) pra investigacao completa do dado real por
+// tras dessa escolha. Precisa bater exatamente com o UNIQUE criado la' --
+// o upsert abaixo depende de existir uma constraint real sobre essas
+// colunas (PostgREST exige um UNIQUE/PK pro on_conflict funcionar).
+const CHAVE_UNICA_ROMANEIO_PONTOS = "romaneio_data,placa,nf,modo_teste,origem";
+
 function ehPlanilha(nomeArquivo: string): boolean {
   const nome = nomeArquivo.toLowerCase();
   return EXTENSOES_PLANILHA.some((ext) => nome.endsWith(ext));
@@ -227,10 +234,31 @@ export async function POST(request: Request) {
     };
   });
 
-  const { error: erroInsert } = await admin.from("romaneio_pontos").insert(linhasParaInserir);
+  // upsert + ON CONFLICT DO NOTHING (ignoreDuplicates) em vez de insert()
+  // puro -- reenviar o mesmo arquivo (achado real: 2291 linhas duplicadas
+  // em 18/08, mais casos em 31/07, 10/08, 24/08, 26/08, todos reenvio do
+  // MESMO romaneio) nao duplica mais, so' ignora silenciosamente a linha
+  // que ja existe. DO NOTHING (nao DO UPDATE) de proposito: um reenvio e'
+  // sempre o mesmo conteudo (confirmado investigando os grupos duplicados
+  // reais -- endereco/cliente/geocode_status identicos dentro de cada
+  // grupo), entao nao ha nada pra "atualizar" -- e DO NOTHING preserva
+  // geocode_status/lat/lng/presenca_confirmada_em ja processados na linha
+  // existente em vez de arriscar sobrescrever com os valores 'pendente'
+  // desse novo insert.
+  //
+  // .select("id") depois do upsert: com ignoreDuplicates, o PostgREST so'
+  // devolve (RETURNING) as linhas que realmente foram inseridas -- as que
+  // bateram em conflito nao aparecem. E' assim que contamos duplicata sem
+  // outra query.
+  const { data: linhasInseridas, error: erroInsert } = await admin
+    .from("romaneio_pontos")
+    .upsert(linhasParaInserir, { onConflict: CHAVE_UNICA_ROMANEIO_PONTOS, ignoreDuplicates: true })
+    .select("id");
   if (erroInsert) {
     return Response.json({ ok: false, erro: `Erro ao salvar: ${erroInsert.message}` }, { status: 500 });
   }
+  const totalInseridas = linhasInseridas?.length ?? 0;
+  const linhasDuplicadas = linhasParaInserir.length - totalInseridas;
 
   // Geocodificacao roda em background (ver /api/romaneio/processar-geocode,
   // disparado por pg_cron) -- upload so insere as linhas como 'pendente' e
@@ -241,6 +269,8 @@ export async function POST(request: Request) {
     ok: true,
     romaneioData,
     totalLinhas: linhasNormalizadas.length,
+    linhasInseridas: totalInseridas,
+    linhasDuplicadas,
     placasNaoEncontradas,
     modoTeste,
     origem,
