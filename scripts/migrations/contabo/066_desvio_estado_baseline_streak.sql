@@ -1,4 +1,11 @@
--- 049_desvio_estado_baseline_streak.sql
+-- 066_desvio_estado_baseline_streak.sql
+--
+-- Achado da revisao independente (30/08): esta migration foi originalmente
+-- criada como scripts/migrations/049_..., mas essa sequencia raiz e' o
+-- legado do Supabase, parado na 048 -- desde a 050 tudo vai so' pra
+-- scripts/migrations/contabo/ (a que roda de verdade em producao), e o
+-- numero 049 ja' existia la' (049_desvio_disparo_log_corredor_confirmou.sql).
+-- Renomeado pra 066 (proximo da sequencia viva), conteudo SQL identico.
 --
 -- Suavizacao (streak) do detector `baseline_veiculo` -- ver
 -- .superpowers/sdd/2026-08-27-romaneio-fonte-unica-plano-geral/
