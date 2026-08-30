@@ -650,7 +650,12 @@ export function calcularRiscoArea(ctx: {
   }
   if (ctx.emCorredorRodoviaRisco) score += RISCO_CORREDOR_RODOVIA;
   if (ctx.emAreaRiscoCliente) score += RISCO_AREA_CLIENTE;
-  return Math.min(100, score * ctx.fatorHorario);
+  // Achado real 30/08 (varredura de sistema): fatorHorario e' fracionario
+  // (0.7-1.6), entao score*fatorHorario sempre teve resto -- hoje seguro
+  // (so' vai pra jsonb, nunca coluna integer), mas e' a MESMA classe do bug
+  // que derrubou posicoes_atuais em 29/08 (incrementoDwellSegundos sem
+  // Math.round). Arredondar aqui elimina o risco latente sem custo real.
+  return Math.round(Math.min(100, score * ctx.fatorHorario));
 }
 
 // Ponto de entrega com coordenada valida? Unitrac retorna null quando o
