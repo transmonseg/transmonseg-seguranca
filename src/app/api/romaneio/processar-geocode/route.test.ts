@@ -177,6 +177,69 @@ describe("POST /api/romaneio/processar-geocode -- linhas 'falhou' com veiculo_id
   });
 });
 
+describe("POST /api/romaneio/processar-geocode -- lote misto e modo degradado (achado da revisao independente 30/08)", () => {
+  it("lote com 1 linha orfa E 1 linha com veiculo NO MESMO ciclo -- os dois caminhos rodam, nenhum pisa no outro", async () => {
+    filaSelect["romaneio_pontos"] = [
+      { data: [], error: null }, // candidatos (pendentes)
+      {
+        data: [
+          { id: "p-orfa", nf: "NFO", placa: "ORF1234", veiculo_id: null, geocode_tentativas: 0 },
+          { id: "p-comv", nf: "NFV", placa: "COMV1234", veiculo_id: "v-comv", geocode_tentativas: 0 },
+        ],
+        error: null,
+      },
+    ];
+    filaSelect["veiculos"] = [
+      { data: [{ id: "v-orfa-recem-cadastrado", placa: "ORF1234" }], error: null }, // rematch da orfa
+      { data: [{ id: "v-comv", cv: "CV-MISTO", cliente_id: "c-misto" }], error: null }, // cv da linha com veiculo
+    ];
+    mockBuscarAlvos.mockResolvedValue([
+      { placa: "COMV1234", alvodocumento: "NFV", pontolatitude: -22.8, pontolongitude: -43.1, alvosituacaoservico: 0, pontocodigo: 1 },
+    ]);
+
+    const { POST } = await import("./route");
+    const res = await POST(requisicao());
+    const body = await res.json();
+
+    // Linha orfa: reatada, sem gastar tentativa.
+    expect(body.veiculoIdReatribuido).toBe(1);
+    // Linha com veiculo: achou alvo na Unitrac, virou 'ok'.
+    expect(body.fallbackUnitrac).toBe(1);
+    expect(body.esgotaramTentativas).toBe(0);
+    // buscarAlvos so' foi chamada com o cv da linha COM veiculo -- a orfa nao
+    // contribui cv nenhum (ainda nao tinha veiculo_id quando a lista de cvs
+    // foi montada).
+    expect(mockBuscarAlvos).toHaveBeenCalledWith(["CV-MISTO"]);
+
+    const updOrfa = updatesDe("romaneio_pontos").find((u) => u.id === "p-orfa");
+    expect(updOrfa?.payload).toEqual({ veiculo_id: "v-orfa-recem-cadastrado" });
+    const updComV = updatesDe("romaneio_pontos").find((u) => u.id === "p-comv");
+    expect(updComV?.payload).toEqual({ lat: -22.8, lng: -43.1, geocode_status: "ok" });
+  });
+
+  it("modo degradado (comLimite.error, tentativasDisponivel=false): orfa sem veiculo NAO gasta tentativa -- retenta pra sempre, nunca vira terminal sozinha", async () => {
+    filaSelect["romaneio_pontos"] = [
+      { data: [], error: null }, // candidatos (pendentes)
+      { data: null, error: { message: "timeout" } }, // comLimite falha -> cai no semLimite
+      { data: [{ id: "p-degradada", nf: "NFD", placa: "DEG0000", veiculo_id: null }], error: null }, // semLimite
+    ];
+    filaSelect["veiculos"] = [{ data: [], error: null }]; // nenhum veiculo com essa placa
+
+    const { POST } = await import("./route");
+    const res = await POST(requisicao());
+    const body = await res.json();
+
+    expect(body.limiteTentativasAtivo).toBe(false);
+    expect(body.veiculoIdReatribuido).toBe(0);
+    expect(body.esgotaramTentativas).toBe(0);
+    // Nao pode ter tentado gravar geocode_tentativas nesta linha -- modo
+    // degradado nao gasta orcamento, ver `if (!tentativasDisponivel) return;`
+    // em registrarFalhaTentativa.
+    const upd = updatesDe("romaneio_pontos").find((u) => u.id === "p-degradada");
+    expect(upd).toBeUndefined();
+  });
+});
+
 describe("POST /api/romaneio/processar-geocode -- regressao: linhas 'falhou' COM veiculo_id (fluxo de ontem, Fase 3)", () => {
   it("acha alvo na Unitrac -- vira 'ok' com a coordenada, sem gastar tentativa", async () => {
     filaSelect["romaneio_pontos"] = [
