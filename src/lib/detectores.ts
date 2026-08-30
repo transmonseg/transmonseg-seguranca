@@ -895,18 +895,109 @@ export type CtxAnomaliaBaseline = {
 const BASELINE_MIN_AMOSTRAS_FROTA = 20;
 const BASELINE_Z_LIMIAR = 3;
 
-export function detectarAnomaliaBaseline(ctx: CtxAnomaliaBaseline): Alerta | null {
+// "alta" = rapido demais pro padrao, "baixa" = devagar demais. Direcao faz
+// parte do estado do streak de proposito (ver LIMIAR_STREAK_BASELINE).
+export type DirecaoAnomaliaBaseline = "alta" | "baixa";
+
+// Achado real 29/08 (dado de producao, 24-29/08 -- ver
+// task-baseline-flapping-report.md): este detector compara UMA leitura
+// instantanea de GPS (~30-45s) contra a distribuicao historica do veiculo,
+// sem nenhuma janela de persistencia. Resultado medido: ~2000 alertas
+// baseline_veiculo/dia na producao, 100% deles com origem_acao IS NULL
+// (nenhum tratado por operador em 10 dias, todos auto-resolvidos no ciclo
+// seguinte) -- e 54% (Nutry Max) / 33% (Benassi) das corridas de anomalia
+// duram UM unico ciclo. Isso e ruido estatistico de amostra pontual, nao
+// condicao sustentada.
+//
+// Custa MAIS que ruido na tela: baseline_veiculo esta em
+// TIPOS_CORROBORANTES, entao cada disparo da BONUS_CORROBORACAO_POR_SINAL
+// (+15 de score) a qualquer outro alerta do mesmo veiculo no mesmo ciclo
+// (60 alertas em 6 dias receberam esse bonus, 42 deles desvios).
+//
+// A correcao e' a MESMA ja validada pro desvio em 16/08
+// (LIMIAR_STREAK_AFASTANDO, desvio.ts): exigir persistencia, NAO baixar
+// sensibilidade. BASELINE_Z_LIMIAR continua em 3 -- uma anomalia real e
+// sustentada continua sendo detectada, so' que a partir do 2o ciclo
+// (latencia extra de ~1 ciclo, ~30-45s).
+//
+// Numeros que escolheram o 2 (simulacao fiel do motor sobre
+// posicoes_historico, 6-7 dias reais, scripts/comparar-streaks-baseline.mjs):
+//   Nutry Max: episodios/dia 279 (streak=1) -> 133 (2) -> 62 (3) -> 39 (4)
+//   Benassi:   episodios/dia 1957 (1) -> 1330 (2) -> 904 (3) -> 683 (4)
+// streak=2 mata exatamente a maior classe de ruido (o blip isolado de 1
+// ciclo: 54% das corridas na Nutry Max) pelo menor custo possivel de
+// latencia -- 1 ciclo. streak=3 reduziria mais, mas passa a cortar tambem
+// corridas de 2 ciclos (25% na Nutry Max), que ja nao sao "leitura solta"
+// e podem ser evento curto e real -- custo de recall sem evidencia que o
+// justifique, contra a doutrina do projeto de priorizar recall.
+export const LIMIAR_STREAK_BASELINE = 2;
+
+// Avaliacao CRUA (sem streak): a leitura DESTE ciclo isolado e' anomala?
+// Continua sendo o que a guarda anti-autopoluicao do baseline
+// (decidirAdmissaoBaseline em route.ts) precisa saber -- ela pergunta "esta
+// leitura suja o baseline?", nao "ja deu pra alertar?".
+function avaliarBaselineCru(ctx: CtxAnomaliaBaseline): {
+  alerta: Alerta | null;
+  direcao: DirecaoAnomaliaBaseline | null;
+} {
   const usaProprio = ctx.baselineProprio.n >= ctx.minAmostrasProprio;
   const baseline = usaProprio ? ctx.baselineProprio : ctx.baselineFrota;
   const minAmostras = usaProprio ? ctx.minAmostrasProprio : BASELINE_MIN_AMOSTRAS_FROTA;
   const z = zScoreBaseline(ctx.velocidadeMediaViagemKmh, baseline, minAmostras);
-  if (z === null || !Number.isFinite(z) || Math.abs(z) < BASELINE_Z_LIMIAR) return null;
+  if (z === null || !Number.isFinite(z) || Math.abs(z) < BASELINE_Z_LIMIAR) {
+    return { alerta: null, direcao: null };
+  }
   const origem = usaProprio ? "deste veiculo" : "da frota (veiculo ainda sem historico proprio)";
   return {
-    nivel: "atencao",
-    tipo: "baseline_veiculo",
-    motivo: `Velocidade media da viagem (${ctx.velocidadeMediaViagemKmh.toFixed(0)}km/h) foge ${Math.abs(z).toFixed(1)} desvios do padrao ${origem}`,
-    score: 35,
+    alerta: {
+      nivel: "atencao",
+      tipo: "baseline_veiculo",
+      motivo: `Velocidade media da viagem (${ctx.velocidadeMediaViagemKmh.toFixed(0)}km/h) foge ${Math.abs(z).toFixed(1)} desvios do padrao ${origem}`,
+      score: 35,
+    },
+    direcao: z > 0 ? "alta" : "baixa",
+  };
+}
+
+export function detectarAnomaliaBaseline(ctx: CtxAnomaliaBaseline): Alerta | null {
+  return avaliarBaselineCru(ctx).alerta;
+}
+
+export type EstadoStreakBaseline = {
+  streak: number;
+  direcao: DirecaoAnomaliaBaseline | null;
+};
+
+// Versao COM persistencia. Funcao pura: recebe o estado do ciclo anterior
+// (persistido em desvio_estado.baseline_streak/baseline_direcao, migration
+// 049) e devolve o estado novo + o alerta, que so' existe quando a mesma
+// anomalia, na MESMA direcao, se repetiu por LIMIAR_STREAK_BASELINE ciclos.
+//
+// Direcao entra no streak de proposito: "rapido demais" num ciclo e
+// "devagar demais" no seguinte e' a assinatura de ruido (uma leitura de GPS
+// solta pra cada lado), nao de anomalia sustentada -- somar as duas no mesmo
+// streak reintroduziria exatamente o flapping que este fix remove. Troca de
+// direcao reinicia a contagem em 1, nao continua de onde estava.
+//
+// Zera assim que a condicao deixa de valer (mesmo "sem meio-termo" do
+// streak de desvio): ou disparou por streak real, ou nao disparou.
+// Ciclo NAO avaliavel (veiculo parado, leitura velha) nao chega aqui -- o
+// motor preserva o estado anterior nesse caso, pra um buraco de sinal no
+// meio de uma anomalia real nao destruir o streak acumulado (mesmo
+// raciocinio do gate de reconciliacao do desvio, 28/08).
+export function avaliarStreakBaseline(
+  ctx: CtxAnomaliaBaseline,
+  anterior: EstadoStreakBaseline
+): { alerta: Alerta | null; anomaliaCrua: boolean; estado: EstadoStreakBaseline } {
+  const cru = avaliarBaselineCru(ctx);
+  if (cru.alerta === null || cru.direcao === null) {
+    return { alerta: null, anomaliaCrua: false, estado: { streak: 0, direcao: null } };
+  }
+  const streak = anterior.direcao === cru.direcao ? anterior.streak + 1 : 1;
+  return {
+    alerta: streak >= LIMIAR_STREAK_BASELINE ? cru.alerta : null,
+    anomaliaCrua: true,
+    estado: { streak, direcao: cru.direcao },
   };
 }
 

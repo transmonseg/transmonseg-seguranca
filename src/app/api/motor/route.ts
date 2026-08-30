@@ -32,7 +32,8 @@ import {
   detectarParadaSemMarcacao,
   PARADA_SEM_MARCACAO_RAIO_EXTRA_M,
   BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS,
-  detectarAnomaliaBaseline,
+  avaliarStreakBaseline,
+  type EstadoStreakBaseline,
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
   PARADA_FORA_TAPETE_MIN,
@@ -816,6 +817,34 @@ export async function POST(request: Request) {
       }
     } catch (errDesvioEstado) {
       erros.push(`Aviso: desvio v2 indisponivel neste ciclo (estado): ${String(errDesvioEstado)}`);
+    }
+
+    // Streak do baseline comportamental (baseline_streak/baseline_direcao,
+    // migration 049). Query PROPRIA e catch PROPRIO pelo mesmo motivo
+    // documentado no bloco de classe viaria logo abaixo (achado de 15/08):
+    // se estas colunas ainda nao existirem (deploy antes da migration), a
+    // falha nao pode zerar o streak do detector de desvio da frota inteira.
+    // erroLeituraBaselineStreak vira fail-safe no UPSERT: sem leitura
+    // confiavel, o valor gravado no banco fica INTOCADO (nao regride a 0).
+    const baselineStreakPorVeiculo = new Map<string, EstadoStreakBaseline>();
+    let erroLeituraBaselineStreak = false;
+    try {
+      const { rows } = await pool.query<{
+        veiculo_id: string;
+        baseline_streak: number;
+        baseline_direcao: "alta" | "baixa" | null;
+      }>(
+        `SELECT veiculo_id, baseline_streak, baseline_direcao FROM desvio_estado`
+      );
+      for (const r of rows) {
+        baselineStreakPorVeiculo.set(r.veiculo_id, {
+          streak: r.baseline_streak,
+          direcao: r.baseline_direcao,
+        });
+      }
+    } catch (errBaselineStreak) {
+      erroLeituraBaselineStreak = true;
+      erros.push(`Aviso: streak de baseline indisponivel neste ciclo (estado): ${String(errBaselineStreak)}`);
     }
 
     // Classe viaria (ultima_via_principal_em/saiu_parada_confirmada_em) --
@@ -2093,14 +2122,40 @@ export async function POST(request: Request) {
             ?? { n: 0, media: 0, variancia: 0, excluidaDesde: null };
           const baselineFrotaAtual = mapaBaselineFrota.get(`${cliente_id}:${tipoViagem}:velocidade_media_kmh`)
             ?? { n: 0, media: 0, variancia: 0 };
-          const alertaBaseline = pos.fresco && pos.velocidade > 0
-            ? detectarAnomaliaBaseline({
-                velocidadeMediaViagemKmh: pos.velocidade,
-                baselineProprio,
-                baselineFrota: baselineFrotaAtual,
-                minAmostrasProprio: BASELINE_MIN_AMOSTRAS_PROPRIO,
-              })
-            : null;
+          // Suavizacao por streak (29/08, migration 049) -- ver
+          // LIMIAR_STREAK_BASELINE em detectores.ts pro dado real que
+          // motivou. `alertaBaseline` (o que vira alerta e corrobora outros
+          // sinais) so' existe depois de N ciclos consecutivos anomalos na
+          // MESMA direcao; `anomaliaBaselineCrua` (a leitura deste ciclo
+          // isolado) continua sendo o que a guarda anti-autopoluicao logo
+          // abaixo consome -- as duas perguntas sao diferentes e nao podem
+          // compartilhar a mesma resposta (se a autopoluicao passasse a usar
+          // o valor com streak, o primeiro ciclo de uma anomalia REAL e
+          // sustentada entraria no baseline e comecaria a contaminar
+          // exatamente o que a guarda de 12/07 existe pra proteger).
+          //
+          // Ciclo nao avaliavel (parado ou leitura velha): preserva o estado
+          // anterior em vez de zerar -- um buraco de sinal no meio de uma
+          // anomalia sustentada nao pode destruir o streak acumulado (mesmo
+          // raciocinio do gate de reconciliacao do desvio, 28/08). Medido:
+          // a diferenca entre preservar e zerar e' <3% dos disparos, entao a
+          // escolha se paga em recall sem custar ruido.
+          const estadoBaselineAnterior = baselineStreakPorVeiculo.get(veiculo_id) ?? { streak: 0, direcao: null };
+          const avaliacaoBaseline = pos.fresco && pos.velocidade > 0
+            ? avaliarStreakBaseline(
+                {
+                  velocidadeMediaViagemKmh: pos.velocidade,
+                  baselineProprio,
+                  baselineFrota: baselineFrotaAtual,
+                  minAmostrasProprio: BASELINE_MIN_AMOSTRAS_PROPRIO,
+                },
+                estadoBaselineAnterior
+              )
+            : { alerta: null, anomaliaCrua: false, estado: estadoBaselineAnterior };
+          const alertaBaseline = avaliacaoBaseline.alerta;
+          const anomaliaBaselineCrua = avaliacaoBaseline.anomaliaCrua;
+          const baselineStreakNovo = avaliacaoBaseline.estado.streak;
+          const baselineDirecaoNova = avaliacaoBaseline.estado.direcao;
           // Achado real 12/07 (autopoluicao confirmada com dado de producao,
           // TTH-6G37: z-score caiu de 14.5 pra 3.5 em 10min na MESMA
           // velocidade): uma leitura sinalizada como anomala neste ciclo NAO
@@ -2131,7 +2186,7 @@ export async function POST(request: Request) {
           const usaBaselineProprio = baselineProprio.n >= BASELINE_MIN_AMOSTRAS_PROPRIO;
           const decisaoBaseline = decidirAdmissaoBaseline({
             usaBaselineProprio,
-            ehAnomalia: alertaBaseline !== null,
+            ehAnomalia: anomaliaBaselineCrua,
             excluidaDesde: baselineProprio.excluidaDesde,
             agora,
           });
@@ -3142,11 +3197,21 @@ export async function POST(request: Request) {
 
           try {
             await pool.query(
-              `INSERT INTO desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, atualizado_em)
-               VALUES ($1, $2, $3, $4, $5, now())
+              `INSERT INTO desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, baseline_streak, baseline_direcao, atualizado_em)
+               VALUES ($1, $2, $3, $4, $5, $7, $8, now())
                ON CONFLICT (veiculo_id) DO UPDATE SET
                  afastando_streak = EXCLUDED.afastando_streak,
                  rua_rara_streak = EXCLUDED.rua_rara_streak,
+                 -- $6 = a leitura de baseline_streak/baseline_direcao no
+                 -- inicio do ciclo deu certo? Se NAO, o valor calculado em
+                 -- JS partiu de um fallback zerado e gravar isso regrediria
+                 -- o streak real da frota inteira (mesma classe de bug que o
+                 -- COALESCE das 2 colunas abaixo resolveu em 15/08) -- neste
+                 -- caso preserva o que ja esta no banco. As 2 colunas andam
+                 -- SEMPRE juntas: direcao sem streak (ou vice-versa) e'
+                 -- estado inconsistente.
+                 baseline_streak = CASE WHEN $6::boolean THEN EXCLUDED.baseline_streak ELSE desvio_estado.baseline_streak END,
+                 baseline_direcao = CASE WHEN $6::boolean THEN EXCLUDED.baseline_direcao ELSE desvio_estado.baseline_direcao END,
                  -- COALESCE (achado da revisao final, 15/08, Important):
                  -- estas 2 colunas nunca sao INTENCIONALMENTE setadas de
                  -- volta a null pelo JS -- so ficam null quando o app nao
@@ -3161,7 +3226,16 @@ export async function POST(request: Request) {
                  ultima_via_principal_em = COALESCE(EXCLUDED.ultima_via_principal_em, desvio_estado.ultima_via_principal_em),
                  saiu_parada_confirmada_em = COALESCE(EXCLUDED.saiu_parada_confirmada_em, desvio_estado.saiu_parada_confirmada_em),
                  atualizado_em = now()`,
-              [veiculo_id, afastandoStreakNovo, ruaRaraStreakNovo, ultimaViaPrincipalEmNova, saiuParadaConfirmadaEmNova]
+              [
+                veiculo_id,
+                afastandoStreakNovo,
+                ruaRaraStreakNovo,
+                ultimaViaPrincipalEmNova,
+                saiuParadaConfirmadaEmNova,
+                !erroLeituraBaselineStreak,
+                baselineStreakNovo,
+                baselineDirecaoNova,
+              ]
             );
             if (pos.fresco) {
               const celulaAgoraDesvio = celulaDe(pos.lat, pos.lng);

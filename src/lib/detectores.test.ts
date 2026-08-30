@@ -25,6 +25,9 @@ import {
   PARADA_SEM_MARCACAO_DWELL_MINIMO_SEGUNDOS,
   type CtxBypassEntrega,
   detectarAnomaliaBaseline,
+  avaliarStreakBaseline,
+  LIMIAR_STREAK_BASELINE,
+  type EstadoStreakBaseline,
   arbitrarCandidatos,
   reduzirPorTransitoInferido,
   TIPOS_NAO_GERENCIADOS,
@@ -808,6 +811,113 @@ describe("detectarAnomaliaBaseline (baseline comportamental por veiculo)", () =>
       minAmostrasProprio: 20,
     });
     expect(a).toBeNull();
+  });
+});
+
+describe("avaliarStreakBaseline (suavizacao por persistencia, 29/08)", () => {
+  const baselineProprioEstavel: Baseline = { n: 50, media: 40, variancia: 100 };
+  const baselineFrota: Baseline = { n: 500, media: 45, variancia: 121 };
+  const zero: EstadoStreakBaseline = { streak: 0, direcao: null };
+  const ctx = (velocidade: number) => ({
+    velocidadeMediaViagemKmh: velocidade,
+    baselineProprio: baselineProprioEstavel,
+    baselineFrota,
+    minAmostrasProprio: 20,
+  });
+  // baselineProprioEstavel: media 40, sd 10 -> z=+4 em 80km/h, z=-4 em 0... mas
+  // o motor nunca chama com velocidade 0; 5km/h da z=-3.5 (anomalia "baixa").
+  const RAPIDO = 80;
+  const LENTO = 5;
+  const NORMAL = 50;
+
+  it("primeiro ciclo anomalo: conta streak mas NAO dispara (era o flapping)", () => {
+    const r = avaliarStreakBaseline(ctx(RAPIDO), zero);
+    expect(r.alerta).toBeNull();
+    expect(r.anomaliaCrua).toBe(true);
+    expect(r.estado).toEqual({ streak: 1, direcao: "alta" });
+  });
+
+  it("segundo ciclo anomalo consecutivo na mesma direcao: dispara", () => {
+    const r1 = avaliarStreakBaseline(ctx(RAPIDO), zero);
+    const r2 = avaliarStreakBaseline(ctx(RAPIDO), r1.estado);
+    expect(r2.alerta?.tipo).toBe("baseline_veiculo");
+    expect(r2.alerta?.nivel).toBe("atencao");
+    expect(r2.estado.streak).toBe(2);
+  });
+
+  it("anomalia sustentada continua disparando nos ciclos seguintes (recall preservado)", () => {
+    let estado = zero;
+    const disparos: boolean[] = [];
+    for (let i = 0; i < 5; i++) {
+      const r = avaliarStreakBaseline(ctx(RAPIDO), estado);
+      disparos.push(r.alerta !== null);
+      estado = r.estado;
+    }
+    expect(disparos).toEqual([false, true, true, true, true]);
+    expect(estado.streak).toBe(5);
+  });
+
+  it("ciclo normal no meio zera o streak (sem meio-termo, igual ao streak de desvio)", () => {
+    const r1 = avaliarStreakBaseline(ctx(RAPIDO), zero);
+    const r2 = avaliarStreakBaseline(ctx(NORMAL), r1.estado);
+    expect(r2.alerta).toBeNull();
+    expect(r2.anomaliaCrua).toBe(false);
+    expect(r2.estado).toEqual({ streak: 0, direcao: null });
+    // ...e o proximo ciclo anomalo recomeca do 1, nao dispara de imediato.
+    const r3 = avaliarStreakBaseline(ctx(RAPIDO), r2.estado);
+    expect(r3.alerta).toBeNull();
+    expect(r3.estado.streak).toBe(1);
+  });
+
+  it("direcoes OPOSTAS nao somam streak: reinicia em 1 e nao dispara", () => {
+    const r1 = avaliarStreakBaseline(ctx(RAPIDO), zero);
+    expect(r1.estado.direcao).toBe("alta");
+    const r2 = avaliarStreakBaseline(ctx(LENTO), r1.estado);
+    expect(r2.estado.direcao).toBe("baixa");
+    expect(r2.estado.streak).toBe(1);
+    expect(r2.alerta).toBeNull();
+  });
+
+  it("2 ciclos consecutivos de anomalia BAIXA tambem disparam", () => {
+    const r1 = avaliarStreakBaseline(ctx(LENTO), zero);
+    expect(r1.alerta).toBeNull();
+    const r2 = avaliarStreakBaseline(ctx(LENTO), r1.estado);
+    expect(r2.alerta?.tipo).toBe("baseline_veiculo");
+    expect(r2.estado).toEqual({ streak: 2, direcao: "baixa" });
+  });
+
+  it("anomaliaCrua ignora o streak -- e o que a guarda anti-autopoluicao consome", () => {
+    // Ciclo 1 nao alerta, mas a leitura E anomala: precisa continuar sendo
+    // EXCLUIDA do baseline, senao a anomalia real entra no proprio baseline
+    // no primeiro ciclo e comeca a se auto-normalizar (regressao de 12/07).
+    const r1 = avaliarStreakBaseline(ctx(RAPIDO), zero);
+    expect(r1.alerta).toBeNull();
+    expect(r1.anomaliaCrua).toBe(true);
+  });
+
+  it("sem baseline confiavel: nao dispara nem acumula streak", () => {
+    const r = avaliarStreakBaseline(
+      {
+        velocidadeMediaViagemKmh: RAPIDO,
+        baselineProprio: { n: 0, media: 0, variancia: 0 },
+        baselineFrota: { n: 0, media: 0, variancia: 0 },
+        minAmostrasProprio: 20,
+      },
+      { streak: 1, direcao: "alta" }
+    );
+    expect(r.alerta).toBeNull();
+    expect(r.anomaliaCrua).toBe(false);
+    expect(r.estado).toEqual({ streak: 0, direcao: null });
+  });
+
+  it("detectarAnomaliaBaseline (versao crua) segue igual: dispara no primeiro ciclo", () => {
+    // Contrato preservado de proposito -- e a funcao que responde "esta
+    // leitura e anomala?", nao "ja da pra alertar?".
+    expect(detectarAnomaliaBaseline(ctx(RAPIDO))).not.toBeNull();
+  });
+
+  it("LIMIAR_STREAK_BASELINE e 2 (escolhido com dado real 24-29/08)", () => {
+    expect(LIMIAR_STREAK_BASELINE).toBe(2);
   });
 });
 
