@@ -2,10 +2,22 @@
 // Estáticas: cacheadas (mudam raramente), carregam uma vez no mapa.
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { createClient } from "@/lib/supabase/server";
 
 export const revalidate = 86400; // 1 dia
 
 export async function GET() {
+  // Achado real 30/08 (varredura de seguranca, mesma classe do fix em
+  // /api/alvos e /api/bases): rota fazia query direta via pg.Client
+  // (bypassa RLS por completo) sem NENHUMA checagem de auth -- respondia
+  // 200 com o GeoJSON inteiro pra qualquer requisicao nao autenticada.
+  // Dado aqui e' de sensibilidade menor (perimetro de favela, camada de
+  // referencia estatica, nao geofence de cliente especifico), mas o padrao
+  // do repo e' exigir sessao em toda rota consumida pela tela autenticada.
+  const auth = await createClient();
+  const { data: { user } } = await auth.auth.getUser();
+  if (!user) return Response.json({ erro: "nao autorizado" }, { status: 401 });
+
   const client = new pg.Client({
     ...configPoolContabo(process.env.DATABASE_URL),
   });
