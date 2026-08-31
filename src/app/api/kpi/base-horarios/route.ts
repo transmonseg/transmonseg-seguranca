@@ -186,7 +186,13 @@ export function calcularKmContinuo(posicoesBrutas: Posicao[]): number | null {
 
 // Mesmo raio ja validado do lado do KPI (RAIO_ENTREGA_METROS em
 // kpi-romaneio/constants.ts, usado por montarVisitas.ts).
-const RAIO_ENTREGA_M = 300;
+// Achado real 30/08: auditoria dos 396 pendentes de 29/08 achou 69 casos
+// (17%) com parada real a 296-497m do ponto -- exatamente a faixa perdida
+// pelo piso de 300m. Caso confirmado TOS2B69/SUPERMERCADO BOM PRECO
+// (ITABORAI, ver relatorio Unitrac: parada na rua, fora do raio do
+// cliente). Subido pra 500m (ver RAIO_PRESENCA_MIN_M em motor/route.ts,
+// mesmo raciocinio, decoupled de RAIO_CHEGADA_MIN_M que fica em 300m).
+const RAIO_ENTREGA_M = 500;
 
 type PontoEntrega = { id: string; lat: number; lng: number };
 type VisitaPonto = { id: string; chegada: string | null; saida: string | null };

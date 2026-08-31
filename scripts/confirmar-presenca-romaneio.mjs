@@ -40,7 +40,13 @@ const DATABASE_URL =
 // geocodificado. Endereco geocodificado (nunca casado por NF/placa real
 // como o alvo Unitrac) e' por natureza menos preciso -- usar o mesmo piso
 // de 300m do motor, nao o valor antigo de 50m.
-const RAIO_PADRAO_M = 300;
+// Corrigido 30/08 (achado real): auditoria dos 396 pendentes de 29/08 achou
+// 69 casos (17%) com parada real a 296-497m do ponto -- faixa perdida pelo
+// piso de 300m. Caso confirmado TOS2B69/SUPERMERCADO BOM PRECO (ITABORAI,
+// relatorio Unitrac mostra parada na rua, fora do raio do cliente). Subido
+// pra 500m (RAIO_PRESENCA_MIN_M em motor/route.ts), decoupled do piso de
+// SUPRESSAO DE DESVIO (RAIO_CHEGADA_MIN_M em unitrac.ts, fica em 300m).
+const RAIO_PADRAO_M = 500;
 const DWELL_MINIMO_SEGUNDOS = 120;
 const VELOCIDADE_MAX_PARADO_KMH = 5;
 // So processa romaneios dos ultimos N dias -- historico antigo ja teve

@@ -1,6 +1,16 @@
 // Motor de detecção de alertas — POST /api/motor
 // Rota protegida por x-motor-key (MOTOR_SECRET). Nunca use em client.
 
+// Piso do raio para CONFIRMACAO DE PRESENCA (entrega), separado do piso de
+// SUPRESSAO DE DESVIO (RAIO_CHEGADA_MIN_M, unitrac.ts, fica em 300m de
+// proposito). Achado real 30/08: auditoria dos 396 pendentes de 29/08 achou
+// 69 casos (17%) com parada real (>=120s, vel<=5) a 296-497m do ponto --
+// exatamente a faixa que o piso de 300m perde. Caso TOS2B69/SUPERMERCADO BOM
+// PRECO (ITABORAI) confirmado pelo proprio relatorio Unitrac: parada na rua,
+// fora do raio do cliente. Subir so este piso (nao o de desvio) resolve sem
+// criar area cega pra deteccao de desvio perto de clientes.
+const RAIO_PRESENCA_MIN_M = 500;
+
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
@@ -15,7 +25,6 @@ import {
   centroideGeo,
   distanciaAoSegmentoM,
   suspenderPorChegada,
-  RAIO_CHEGADA_MIN_M,
   corrigirComPontoAprendido,
   PONTO_APRENDIDO_ATIVO,
 } from "@/lib/unitrac";
@@ -2337,11 +2346,16 @@ export async function POST(request: Request) {
               // (nao autocorrecao via Unitrac). Revertido pra usar o ponto
               // CORRIGIDO aqui tambem -- objetivo real da feature era
               // reduzir entregas que ficam sem confirmar por causa da
-              // coordenada errada da Unitrac (piso de RAIO_CHEGADA_MIN_M ja
+              // coordenada errada da Unitrac (piso de RAIO_PRESENCA_MIN_M ja
               // existia pra isso, mas nao adianta se o CENTRO do raio ta
               // errado por 100+m).
+              //
+              // Achado real 30/08: piso separado de RAIO_CHEGADA_MIN_M (que
+              // e' de SUPRESSAO DE DESVIO e fica em 300m de proposito -- ver
+              // comentario em unitrac.ts). Confirmacao de presenca pode ter
+              // piso mais largo (500m) sem criar area cega de desvio.
               const distM = haversineM(pos.lat, pos.lng, pt.lat, pt.lng);
-              if (distM <= Math.max(pt.raio, RAIO_CHEGADA_MIN_M)) {
+              if (distM <= Math.max(pt.raio, RAIO_PRESENCA_MIN_M)) {
                 presencaEntregaCiclo.push({
                   veiculo_id,
                   ponto_codigo: pt.pontoCodigo,
