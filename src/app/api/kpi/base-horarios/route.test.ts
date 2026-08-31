@@ -275,6 +275,47 @@ describe("acharVisitasPorPonto", () => {
     expect(acharVisitasPorPonto([], [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null }]);
   });
 
+  describe("corroboracao por vizinhanca (achado real 30/08, bucket 500m-2km: 27% eram 1 parada real servindo varios clientes vizinhos -- ex. TTM-2G02/Rocinha)", () => {
+    // ~600m de LOJA_A -- dentro do RAIO_VIZINHANCA_M (800m), mas fora do
+    // RAIO_ENTREGA_M direto (500m) por desenho do teste.
+    const LOJA_VIZINHA = { id: "NF_VIZINHA", lat: -22.0054, lng: -43.0 };
+
+    it("ponto nunca visitado, mas vizinho a <=800m foi confirmado: herda chegada/saida do vizinho, marcado viaVizinhanca", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:00:00.000Z" }, // confirma LOJA_A
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:15:00.000Z" },
+      ];
+      const [visitaA, visitaVizinha] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_VIZINHA]);
+      expect(visitaA).toEqual({ id: "NF1", chegada: "2026-08-30T10:00:00.000Z", saida: "2026-08-30T10:15:00.000Z" });
+      expect(visitaVizinha).toEqual({
+        id: "NF_VIZINHA",
+        chegada: "2026-08-30T10:00:00.000Z",
+        saida: "2026-08-30T10:15:00.000Z",
+        viaVizinhanca: true,
+      });
+    });
+
+    it("vizinho fora do raio de vizinhanca (LOJA_B, ~77km): nao herda nada, continua null sem a marcacao", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:00:00.000Z" },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:15:00.000Z" },
+      ];
+      const [, visitaB] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_B]);
+      expect(visitaB).toEqual({ id: "NF2", chegada: null, saida: null });
+    });
+
+    it("visita direta tem prioridade sobre vizinhanca: ponto com dwell proprio nao herda de ninguem, mesmo com vizinho confirmado por perto", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:00:00.000Z" }, // LOJA_A
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:15:00.000Z" },
+        { lat: -22.0054, lng: -43.0, criado_em: "2026-08-30T11:00:00.000Z" }, // LOJA_VIZINHA, visita PROPRIA
+        { lat: -22.0054, lng: -43.0, criado_em: "2026-08-30T11:05:00.000Z" },
+      ];
+      const [, visitaVizinha] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_VIZINHA]);
+      expect(visitaVizinha).toEqual({ id: "NF_VIZINHA", chegada: "2026-08-30T11:00:00.000Z", saida: "2026-08-30T11:05:00.000Z" });
+    });
+  });
+
   describe("dwell minimo (achado real 27/08, grupo KPI AJUSTES: 'tempo em loja com certeza tá errado')", () => {
     it("UM UNICO ping de GPS dentro do raio (chegada===saida, 0min -- caso real PAULO M DA SILVA MERCEARIA) nao confirma visita", () => {
       const posicoes = [

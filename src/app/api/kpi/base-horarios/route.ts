@@ -195,7 +195,22 @@ export function calcularKmContinuo(posicoesBrutas: Posicao[]): number | null {
 const RAIO_ENTREGA_M = 500;
 
 type PontoEntrega = { id: string; lat: number; lng: number };
-type VisitaPonto = { id: string; chegada: string | null; saida: string | null };
+type VisitaPonto = { id: string; chegada: string | null; saida: string | null; viaVizinhanca?: boolean };
+
+// Achado real 30/08 (mesma investigacao do bucket 500m-2km, ver
+// RAIO_VIZINHANCA_M em scripts/confirmar-presenca-romaneio.mjs): 27% dos
+// pendentes eram o MESMO caminhao fazendo UMA parada real que serve VARIOS
+// clientes vizinhos (ex. TTM-2G02/Rocinha, rua estreita, entrega a pe) --
+// aumentar RAIO_ENTREGA_M nao resolve isso ponto a ponto. Corroboracao por
+// vizinhanca (mesmo raciocinio ja aplicado la, agora tambem aqui pro
+// relatorio real que a Erica ve): ponto sem visita propria, mas com OUTRO
+// ponto da MESMA placa/dia confirmado a <=RAIO_VIZINHANCA_M, herda a
+// janela chegada/saida do vizinho, marcado com viaVizinhanca=true --
+// decisao explicita do usuario 30/08: mostrar isso com uma marcacao
+// distinta no relatorio (nao como confirmacao direta igual as demais),
+// pra Erica saber que o horario e aproximado/emprestado de outra entrega
+// proxima, nao a chegada/saida exatas desta loja.
+const RAIO_VIZINHANCA_M = 800;
 
 /** Achado real 25/08 (mesma investigacao das duas funcoes acima):
  *  montarVisitas.ts (KPI) casa cada PARADA da Unitrac (ja clusterizada,
@@ -227,7 +242,7 @@ type VisitaPonto = { id: string; chegada: string | null; saida: string | null };
 const DWELL_MINIMO_MS = 60_000
 
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]): VisitaPonto[] {
-  return pontos.map((pt) => {
+  const diretas = pontos.map((pt) => {
     type Bloco = { inicio: string; fim: string; durMs: number }
     const blocos: Bloco[] = []
     let atual: { inicio: string; fim: string } | null = null
@@ -249,6 +264,30 @@ export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]
     if (maior.durMs < DWELL_MINIMO_MS) return { id: pt.id, chegada: null, saida: null }
     return { id: pt.id, chegada: maior.inicio, saida: maior.fim }
   })
+
+  // Passo 2: corroboracao por vizinhanca (ver comentario de
+  // RAIO_VIZINHANCA_M). So' pros pontos que o Passo 1 nao confirmou --
+  // dwell direto no PROPRIO endereco sempre tem prioridade.
+  const pontoPorId = new Map(pontos.map((pt) => [pt.id, pt]));
+  return diretas.map((v, i) => {
+    if (v.chegada !== null) return v;
+    const pt = pontoPorId.get(v.id)!;
+    let melhor: { chegada: string; saida: string } | null = null;
+    let menorDist = Infinity;
+    for (let j = 0; j < diretas.length; j++) {
+      if (j === i) continue;
+      const outro = diretas[j];
+      if (outro.chegada === null || outro.saida === null) continue;
+      const outroPt = pontos[j];
+      const dist = haversineM(pt.lat, pt.lng, outroPt.lat, outroPt.lng);
+      if (dist <= RAIO_VIZINHANCA_M && dist < menorDist) {
+        menorDist = dist;
+        melhor = { chegada: outro.chegada, saida: outro.saida };
+      }
+    }
+    if (!melhor) return v;
+    return { id: v.id, chegada: melhor.chegada, saida: melhor.saida, viaVizinhanca: true };
+  });
 }
 
 function normPlaca(p: string): string {
