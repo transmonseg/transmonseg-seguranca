@@ -138,9 +138,29 @@ export function calcularStreakMaximoComPosicao(trilha, pontoLat, pontoLng, raioM
   return { dwellMaxS, posicaoReal: { lat: somaLatMax / contagemMax, lng: somaLngMax / contagemMax } };
 }
 
+// Chave de endereco do cache de geocode -- MESMA normalizacao de
+// normalizarEndereco() em src/lib/romaneio-geocode.ts. Duplicada aqui pelo
+// mesmo motivo dos limiares acima: este script roda fora do Next.js, sem
+// acesso a src/lib/*.ts. Se um dia divergir, o efeito e MISS de cache
+// (recomputa/regrava por endereco), nunca hit em ancora de outro endereco.
+export function normalizarEnderecoChave(enderecoBruto) {
+  return (enderecoBruto ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+// Guarda de divergencia (31/08): mesmo com a chave por endereco (migration
+// 069), a media ponderada so faz sentido entre paradas do MESMO lugar. Uma
+// posicao real a mais de DIVERGENCIA_MAX_M da ancora ja gravada nao e "a
+// mesma parada medida de novo" -- e outro lugar (GPS ruim, endereco
+// ambiguo, ponto emprestado). Nesses casos nao escreve nada: mantem a
+// ancora existente. Vale como cinto de seguranca do rechaveamento -- foi
+// exatamente esse ramo de media que produziu a coordenada envenenada da
+// NUTRIMED (~60km de qualquer endereco real, ver migration 069).
+const DIVERGENCIA_MAX_M = 2000;
+
 // Decide a proxima escrita em romaneio_cliente_codigo_geocode dado o
 // estado atual (null se a linha nao existe ainda) e a posicao real
 // confirmada por dwell. Ver design doc, secao "Decisao", item 3.
+// Retorna null quando a decisao e NAO escrever.
 export function proximaEscritaCache(existente, posicaoReal) {
   if (existente === null) {
     return { lat: posicaoReal.lat, lng: posicaoReal.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: true };
@@ -148,7 +168,10 @@ export function proximaEscritaCache(existente, posicaoReal) {
   if (FONTES_GEOCODIFICADAS.has(existente.fonte)) {
     return { lat: posicaoReal.lat, lng: posicaoReal.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: false };
   }
-  // ja e dwell_confirmado -- media ponderada
+  // ja e dwell_confirmado -- media ponderada, mas so se for o mesmo lugar
+  if (haversineM(existente.lat, existente.lng, posicaoReal.lat, posicaoReal.lng) > DIVERGENCIA_MAX_M) {
+    return null;
+  }
   const n = existente.n_observacoes;
   return {
     lat: (existente.lat * n + posicaoReal.lat) / (n + 1),
@@ -177,7 +200,7 @@ async function main() {
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
   const { rows: pendentes } = await pool.query(
-    `SELECT id, veiculo_id, nf, romaneio_data, lat, lng, cliente_codigo
+    `SELECT id, veiculo_id, nf, romaneio_data, lat, lng, cliente_codigo, endereco_bruto
        FROM romaneio_pontos
       WHERE presenca_confirmada_em IS NULL
         AND lat IS NOT NULL AND lng IS NOT NULL
@@ -278,14 +301,22 @@ async function main() {
       let sufixoCache = "";
       let proxima = null;
       const clienteId = clienteIdPorVeiculo.get(p.veiculo_id);
-      if (clienteId && p.cliente_codigo) {
+      // Chave do cache inclui o endereco desde a migration 069 -- um mesmo
+      // cliente_codigo pode entregar em N enderecos reais diferentes (caso
+      // real: SODEXO em 25 enderecos, NUTRIMED em 9 hospitais), e ate a 068
+      // todos compartilhavam a MESMA linha, virando media entre lugares
+      // distintos.
+      const enderecoChave = normalizarEnderecoChave(p.endereco_bruto);
+      if (clienteId && p.cliente_codigo && enderecoChave) {
         const { rows: cacheRows } = await pool.query(
-          `SELECT lat, lng, fonte, n_observacoes FROM romaneio_cliente_codigo_geocode WHERE cliente_id = $1 AND cliente_codigo = $2`,
-          [clienteId, p.cliente_codigo]
+          `SELECT lat, lng, fonte, n_observacoes FROM romaneio_cliente_codigo_geocode WHERE cliente_id = $1 AND cliente_codigo = $2 AND endereco_chave = $3`,
+          [clienteId, p.cliente_codigo, enderecoChave]
         );
         const existente = cacheRows[0] ?? null;
         proxima = proximaEscritaCache(existente, posicaoReal);
-        sufixoCache = proxima.novaLinha ? " [cache: nova ancora]" : existente && existente.fonte === "dwell_confirmado" ? ` [cache: media atualizada, n=${proxima.n_observacoes}]` : " [cache: corrigido de geocodificacao pra dwell real]";
+        sufixoCache = proxima === null
+          ? " [cache: divergencia >2km da ancora, nao gravado]"
+          : proxima.novaLinha ? " [cache: nova ancora]" : existente && existente.fonte === "dwell_confirmado" ? ` [cache: media atualizada, n=${proxima.n_observacoes}]` : " [cache: corrigido de geocodificacao pra dwell real]";
       }
 
       // As 2 escritas (upsert do cache + update de presenca) precisam
@@ -304,12 +335,12 @@ async function main() {
           await client.query("BEGIN");
           if (proxima) {
             await client.query(
-              `INSERT INTO romaneio_cliente_codigo_geocode (cliente_id, cliente_codigo, lat, lng, fonte, n_observacoes, primeira_observacao, ultima_observacao)
-               VALUES ($1, $2, $3, $4, $5, $6, current_date, current_date)
-               ON CONFLICT (cliente_id, cliente_codigo) DO UPDATE SET
+              `INSERT INTO romaneio_cliente_codigo_geocode (cliente_id, cliente_codigo, endereco_chave, lat, lng, fonte, n_observacoes, primeira_observacao, ultima_observacao)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, current_date, current_date)
+               ON CONFLICT (cliente_id, cliente_codigo, endereco_chave) DO UPDATE SET
                  lat = EXCLUDED.lat, lng = EXCLUDED.lng, fonte = EXCLUDED.fonte,
                  n_observacoes = EXCLUDED.n_observacoes, ultima_observacao = current_date`,
-              [clienteId, p.cliente_codigo, proxima.lat, proxima.lng, proxima.fonte, proxima.n_observacoes]
+              [clienteId, p.cliente_codigo, enderecoChave, proxima.lat, proxima.lng, proxima.fonte, proxima.n_observacoes]
             );
           }
           await client.query(

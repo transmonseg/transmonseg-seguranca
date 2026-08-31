@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, normalizarEndereco } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
@@ -117,29 +117,40 @@ export async function POST(request: Request) {
     }
   }
 
-  // Cache por (cliente_id, cliente_codigo) -- ver migration 052. Politica
-  // write-once: le antes de geocodificar (se ja tem ancora, usa direto,
-  // pula a cascata de texto inteira), grava so' na PRIMEIRA vez que um
-  // codigo resolve com sucesso (nunca sobrescreve sozinha depois, ver
-  // comentario da migration). Precisa do cliente_id por linha ANTES do
-  // loop principal -- veiculo->cliente_id so' era resolvido mais abaixo,
-  // no bloco de fallback Unitrac, tarde demais pra decidir aqui.
+  // Cache por (cliente_id, cliente_codigo, endereco_chave) -- migration 052,
+  // rechaveado pela 069. Politica write-once: le antes de geocodificar (se
+  // ja tem ancora, usa direto, pula a cascata de texto inteira), grava so'
+  // na PRIMEIRA vez que um endereco daquele codigo resolve com sucesso
+  // (nunca sobrescreve sozinha depois, ver comentario da migration).
+  // Precisa do cliente_id por linha ANTES do loop principal -- veiculo->
+  // cliente_id so' era resolvido mais abaixo, no bloco de fallback Unitrac,
+  // tarde demais pra decidir aqui.
+  //
+  // endereco_chave entrou na chave em 31/08 (migration 069): a chave antiga
+  // (so' cliente_codigo) assumia "1 codigo = 1 lugar", falso no dado real --
+  // SODEXO (codigo 138748) entrega em 25 enderecos distintos do estado
+  // inteiro, NUTRIMED (139450) em 9 hospitais. Todos liam a MESMA ancora,
+  // e cada parada real em endereco diferente entrava na mesma media
+  // ponderada do lado da escrita (confirmar-presenca-romaneio.mjs),
+  // produzindo centroide a ~60km de qualquer endereco real. Mesma
+  // normalizacao de romaneio_geocode_cache (normalizarEndereco).
   const veiculoIdsPendentes = [...new Set(pendentes.map((l) => l.veiculo_id).filter((v): v is string => !!v))];
   const clientePorVeiculoAntecipado = new Map<string, string>();
   if (veiculoIdsPendentes.length > 0) {
     const { data: veiculosPendentes } = await admin.from("veiculos").select("id, cliente_id").in("id", veiculoIdsPendentes);
     for (const v of veiculosPendentes ?? []) clientePorVeiculoAntecipado.set(v.id, v.cliente_id);
   }
-  const buscarCacheClienteCodigo = async (clienteId: string, clienteCodigo: string) => {
+  const buscarCacheClienteCodigo = async (clienteId: string, clienteCodigo: string, enderecoChave: string) => {
     const { data } = await admin
       .from("romaneio_cliente_codigo_geocode")
       .select("lat, lng, fonte")
       .eq("cliente_id", clienteId)
       .eq("cliente_codigo", clienteCodigo)
+      .eq("endereco_chave", enderecoChave)
       .maybeSingle();
     return data ?? null;
   };
-  const salvarCacheClienteCodigoSeNovo = async (clienteId: string, clienteCodigo: string, r: { lat: number; lng: number; fonte: string }) => {
+  const salvarCacheClienteCodigoSeNovo = async (clienteId: string, clienteCodigo: string, enderecoChave: string, r: { lat: number; lng: number; fonte: string }) => {
     // ON CONFLICT DO NOTHING (nao upsert de verdade) -- write-once de
     // proposito, ver migration 052. upsert() com ignoreDuplicates:true e'
     // o equivalente do supabase-js pra isso (insert() simples nao aceita
@@ -148,6 +159,7 @@ export async function POST(request: Request) {
       {
         cliente_id: clienteId,
         cliente_codigo: clienteCodigo,
+        endereco_chave: enderecoChave,
         lat: r.lat,
         lng: r.lng,
         fonte: r.fonte,
@@ -155,7 +167,7 @@ export async function POST(request: Request) {
         primeira_observacao: hojeSP(),
         ultima_observacao: hojeSP(),
       },
-      { onConflict: "cliente_id,cliente_codigo", ignoreDuplicates: true }
+      { onConflict: "cliente_id,cliente_codigo,endereco_chave", ignoreDuplicates: true }
     );
   };
 
@@ -304,18 +316,20 @@ export async function POST(request: Request) {
   let doCacheClienteCodigo = 0;
 
   for (const linha of pendentes) {
-    // Cache por cliente_codigo primeiro (ver migration 052) -- se esse
-    // codigo ja resolveu com sucesso em outro dia, usa a ancora direto e
-    // pula a cascata de texto inteira (mais rapido e mais estavel: elimina
-    // a variacao de 1-2 coordenadas pro MESMO cliente que a analise de
-    // 16/08 achou). So aplica quando o codigo existe e o veiculo tem
-    // cliente_id resolvido -- sem isso cai pra cascata normal, igual antes.
+    // Cache por (cliente_codigo, endereco) primeiro (migrations 052/069) --
+    // se esse codigo ja resolveu ESTE endereco com sucesso em outro dia,
+    // usa a ancora direto e pula a cascata de texto inteira (mais rapido e
+    // mais estavel: elimina a variacao de 1-2 coordenadas pro MESMO cliente
+    // que a analise de 16/08 achou). So aplica quando o codigo existe e o
+    // veiculo tem cliente_id resolvido -- sem isso cai pra cascata normal,
+    // igual antes.
     const clienteIdLinha = linha.veiculo_id ? clientePorVeiculoAntecipado.get(linha.veiculo_id) : null;
+    const enderecoChaveLinha = normalizarEndereco(linha.endereco_bruto);
     let geocode: { lat: number; lng: number; fonte: string } | null = null;
     let viaCacheClienteCodigo = false;
 
     if (clienteIdLinha && linha.cliente_codigo) {
-      const ancora = await buscarCacheClienteCodigo(clienteIdLinha, linha.cliente_codigo);
+      const ancora = await buscarCacheClienteCodigo(clienteIdLinha, linha.cliente_codigo, enderecoChaveLinha);
       if (ancora) {
         geocode = { lat: ancora.lat, lng: ancora.lng, fonte: ancora.fonte };
         viaCacheClienteCodigo = true;
@@ -349,7 +363,7 @@ export async function POST(request: Request) {
       // regravar em cima de si mesmo (nao é' o caso aqui, ja' que so' entra
       // aqui quando geocode ainda era null, mas deixa explicito o porque).
       if (geocode && clienteIdLinha && linha.cliente_codigo) {
-        await salvarCacheClienteCodigoSeNovo(clienteIdLinha, linha.cliente_codigo, geocode);
+        await salvarCacheClienteCodigoSeNovo(clienteIdLinha, linha.cliente_codigo, enderecoChaveLinha, geocode);
       }
     }
 

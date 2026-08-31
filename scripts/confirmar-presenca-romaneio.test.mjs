@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calcularStreakMaximoComPosicao, proximaEscritaCache, distanciaVizinhoConfirmadoMaisProximo } from "./confirmar-presenca-romaneio.mjs";
+import { calcularStreakMaximoComPosicao, proximaEscritaCache, distanciaVizinhoConfirmadoMaisProximo, normalizarEnderecoChave } from "./confirmar-presenca-romaneio.mjs";
 
 describe("calcularStreakMaximoComPosicao", () => {
   const PONTO = { lat: -22.9, lng: -43.2 };
@@ -126,5 +126,56 @@ describe("proximaEscritaCache", () => {
     expect(r.fonte).toBe("dwell_confirmado");
     expect(r.n_observacoes).toBe(3);
     expect(r.novaLinha).toBe(false);
+  });
+
+  // Bug real confirmado 31/08 (ver migration 069): NUTRIMED cliente_codigo
+  // 139450 entrega em 9 hospitais espalhados pelo Rio, todos compartilhando
+  // UMA linha de cache -- a media entre eles caiu em -22.912365,-42.775819
+  // (perto de Tangua/Rio Bonito), ~60km de qualquer endereco real. A media
+  // ponderada so pode acontecer entre paradas do MESMO lugar.
+  it("achado real 31/08 (NUTRIMED 139450): parada real longe da ancora NAO entra na media", () => {
+    // Ancora ja gravada no HEMORIO (Rua Frei Caneca, Centro).
+    const existente = { lat: -22.9080, lng: -43.1950, fonte: "dwell_confirmado", n_observacoes: 3 };
+    // Parada real de hoje no Hospital Estadual Santa Maria (Taquara), ~19km.
+    const outroHospital = { lat: -22.9285, lng: -43.3830 };
+    expect(proximaEscritaCache(existente, outroHospital)).toBeNull();
+  });
+
+  it("parada real perto da ancora (mesmo lugar, ruido de GPS) continua entrando na media", () => {
+    const existente = { lat: -22.9080, lng: -43.1950, fonte: "dwell_confirmado", n_observacoes: 3 };
+    const mesmoLugar = { lat: -22.9083, lng: -43.1954 }; // ~50m
+    const r = proximaEscritaCache(existente, mesmoLugar);
+    expect(r).not.toBeNull();
+    expect(r.n_observacoes).toBe(4);
+  });
+
+  it("divergencia so bloqueia a media -- ancora geocodificada ainda e corrigida pra dwell real", () => {
+    // Geocodificacao errada (bairro errado, 19km): a posicao REAL medida
+    // por dwell e melhor evidencia que o texto, entao sobrescreve.
+    const existente = { lat: -22.9080, lng: -43.1950, fonte: "nominatim", n_observacoes: 1 };
+    const real = { lat: -22.9285, lng: -43.3830 };
+    const r = proximaEscritaCache(existente, real);
+    expect(r).toEqual({ lat: real.lat, lng: real.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: false });
+  });
+});
+
+describe("normalizarEnderecoChave", () => {
+  // Precisa bater com normalizarEndereco() de src/lib/romaneio-geocode.ts
+  // (trim + upper + colapso de espacos) -- os dois lados escrevem na MESMA
+  // linha de romaneio_cliente_codigo_geocode desde a migration 069.
+  it("trim, upper e colapso de espacos", () => {
+    expect(normalizarEnderecoChave("  rua frei   caneca, 08 - centro, RIO DE JANEIRO  "))
+      .toBe("RUA FREI CANECA, 08 - CENTRO, RIO DE JANEIRO");
+  });
+
+  it("enderecos DIFERENTES do mesmo cliente_codigo geram chaves diferentes (o bug da 069)", () => {
+    const hemorio = normalizarEnderecoChave("RUA FREI CANECA, 08 - CENTRO, RIO DE JANEIRO - HEMORIO");
+    const santaMaria = normalizarEnderecoChave("ESTRDA RIO PEQUENO, 656 - TAQUARA, RIO DE JANEIRO - HOSPITAL ESTADUAL SANTA MARIA");
+    expect(hemorio).not.toBe(santaMaria);
+  });
+
+  it("endereco nulo/vazio vira string vazia (chamador nao grava cache nesse caso)", () => {
+    expect(normalizarEnderecoChave(null)).toBe("");
+    expect(normalizarEnderecoChave("   ")).toBe("");
   });
 });

@@ -5,6 +5,24 @@ describe("normalizarEndereco", () => {
   it("maiuscula, sem espacos duplicados, sem espaco nas pontas", () => {
     expect(normalizarEndereco("  rua  teste,  10 - centro  ")).toBe("RUA TESTE, 10 - CENTRO");
   });
+
+  // Desde a migration 069 esta funcao produz o endereco_chave de
+  // romaneio_cliente_codigo_geocode -- e scripts/confirmar-presenca-romaneio.mjs
+  // escreve na MESMA linha com uma copia da funcao (roda fora do Next.js,
+  // nao consegue importar src/lib/*.ts). Se as duas divergirem, os dois
+  // lados passam a gravar linhas distintas pro mesmo endereco (cache que
+  // nunca acerta). Este teste trava as duas implementacoes juntas.
+  it("bate com normalizarEnderecoChave do script de confirmacao de presenca (migration 069)", async () => {
+    const { normalizarEnderecoChave } = await import("../../scripts/confirmar-presenca-romaneio.mjs");
+    const amostras = [
+      "  rua  teste,  10 - centro  ",
+      "RUA FREI CANECA, 08 - CENTRO, RIO DE JANEIRO - HEMORIO",
+      "AVENIDA JOÃO XXIII , 2891 - SANTA CRUZ, RIO DE JANEIRO - 668 TERNIUM BRASIL",
+      "ESTRDA RIO PEQUENO, 656 - TAQUARA, RIO DE JANEIRO - HOSPITAL ESTADUAL SANTA MARIA",
+      "rodovia\tpresidente  dutra , 4674 - jardim josé bonifácio\n",
+    ];
+    for (const a of amostras) expect(normalizarEnderecoChave(a)).toBe(normalizarEndereco(a));
+  });
 });
 
 describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> nominatim -- SEM fallback pra Unitrac de proposito, ver achado real 15/07)", () => {
