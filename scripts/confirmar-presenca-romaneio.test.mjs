@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calcularStreakMaximoComPosicao, proximaEscritaCache } from "./confirmar-presenca-romaneio.mjs";
+import { calcularStreakMaximoComPosicao, proximaEscritaCache, distanciaVizinhoConfirmadoMaisProximo } from "./confirmar-presenca-romaneio.mjs";
 
 describe("calcularStreakMaximoComPosicao", () => {
   const PONTO = { lat: -22.9, lng: -43.2 };
@@ -76,6 +76,30 @@ describe("calcularStreakMaximoComPosicao", () => {
     const r = calcularStreakMaximoComPosicao(trilha, PONTO.lat, PONTO.lng, 300, 5, 120);
     expect(r.dwellMaxS).toBe(0);
     expect(r.posicaoReal).toBeNull();
+  });
+});
+
+describe("distanciaVizinhoConfirmadoMaisProximo", () => {
+  it("lista vazia: null, sem vizinho pra corroborar", () => {
+    expect(distanciaVizinhoConfirmadoMaisProximo([], -22.9, -43.2)).toBeNull();
+  });
+
+  it("achado real 30/08 (TTM-2G02/Rocinha): 2 vizinhos confirmados na mesma rua, pega o mais proximo", () => {
+    // Estrada da Gavea 213 (confirmado) e 308 (confirmado) -- ponto novo
+    // e' o 369, mais perto do 308.
+    const confirmados = [
+      { lat: -22.98519, lng: -43.20139 }, // nº 213
+      { lat: -22.9862, lng: -43.19613 },  // nº 308
+    ];
+    const d = distanciaVizinhoConfirmadoMaisProximo(confirmados, -22.98642, -43.19613 + 0.0002);
+    expect(d).toBeGreaterThan(0);
+    expect(d).toBeLessThan(100); // bem mais perto do nº308 que do nº213
+  });
+
+  it("nenhum vizinho dentro de distancia razoavel: retorna a distancia mesmo assim (quem decide o limiar e' o chamador)", () => {
+    const confirmados = [{ lat: -23.5, lng: -43.9 }]; // longe (outro bairro)
+    const d = distanciaVizinhoConfirmadoMaisProximo(confirmados, -22.9, -43.2);
+    expect(d).toBeGreaterThan(50000);
   });
 });
 

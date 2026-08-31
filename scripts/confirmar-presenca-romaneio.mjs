@@ -47,6 +47,23 @@ const DATABASE_URL =
 // pra 500m (RAIO_PRESENCA_MIN_M em motor/route.ts), decoupled do piso de
 // SUPRESSAO DE DESVIO (RAIO_CHEGADA_MIN_M em unitrac.ts, fica em 300m).
 const RAIO_PADRAO_M = 500;
+// Achado real 30/08 (auditoria dos 396 pendentes de 29/08, bucket 500m-2km):
+// 27% (40 de 150) sao o MESMO caminhao fazendo UMA parada real que serve
+// VARIOS clientes vizinhos (caso mais claro: TTM-2G02 entregando 4 pontos
+// diferentes na Estrada da Gavea/Rocinha a partir da mesma parada, cada um
+// a 545-830m do proprio geocode -- rua estreita, caminhao nao entra,
+// entrega a pe). Nenhum aumento de raio POR PONTO resolve isso sozinho:
+// cada ponto teria que ter um raio absurdo pra alcancar a parada real, o
+// que criaria falso positivo com qualquer parada aleatoria perto.
+// Corroboracao por vizinhanca: se OUTRO ponto do MESMO romaneio
+// (veiculo+dia) ja foi confirmado (por dwell direto ou por esta mesma
+// vizinhanca) e esta a <=RAIO_VIZINHANCA_M do geocode deste ponto ainda
+// pendente, confirma tambem -- evidencia real e' "o caminhao esteve
+// comprovadamente nesta area hoje", nao um palpite de raio generico.
+// NAO escreve em romaneio_cliente_codigo_geocode (a posicao "emprestada"
+// do vizinho nao e o local real DESTE cliente -- so serve pra tirar do
+// pendente/mapa, nunca pra aprender geocode errado).
+const RAIO_VIZINHANCA_M = 800;
 const DWELL_MINIMO_SEGUNDOS = 120;
 const VELOCIDADE_MAX_PARADO_KMH = 5;
 // So processa romaneios dos ultimos N dias -- historico antigo ja teve
@@ -142,6 +159,18 @@ export function proximaEscritaCache(existente, posicaoReal) {
   };
 }
 
+// Menor distancia (m) entre (lat,lng) e qualquer ponto ja confirmado do
+// MESMO romaneio (veiculo+dia). null se a lista estiver vazia -- sem
+// nenhum vizinho confirmado ainda, nao ha corroboracao possivel.
+export function distanciaVizinhoConfirmadoMaisProximo(pontosConfirmados, lat, lng) {
+  let menor = null;
+  for (const c of pontosConfirmados) {
+    const d = haversineM(lat, lng, c.lat, c.lng);
+    if (menor === null || d < menor) menor = d;
+  }
+  return menor;
+}
+
 const DRY_RUN = process.argv.includes("--dry-run");
 
 async function main() {
@@ -192,14 +221,46 @@ async function main() {
     return rows;
   }
 
+  // Pontos ja confirmados do MESMO romaneio (veiculo+dia), pra corroboracao
+  // por vizinhanca (Passo 2). Comeca com o que ja estava confirmado no
+  // banco ANTES deste ciclo; cada confirmacao (direta ou por vizinhanca)
+  // deste ciclo tambem entra aqui, pra encadear (ex.: A confirma direto,
+  // B corrobora com A, C corrobora com B -- ordem de processamento nao
+  // importa, Passo 2 roda so depois que TODO o Passo 1 terminou).
+  const confirmadosPorChave = new Map();
+  async function confirmadosDoDia(veiculoId, diaISO) {
+    const chave = `${veiculoId}:${diaISO}`;
+    if (confirmadosPorChave.has(chave)) return confirmadosPorChave.get(chave);
+    const { rows } = await pool.query(
+      `SELECT lat, lng FROM romaneio_pontos
+        WHERE veiculo_id = $1 AND romaneio_data = $2::date
+          AND presenca_confirmada_em IS NOT NULL
+          AND lat IS NOT NULL AND lng IS NOT NULL`,
+      [veiculoId, diaISO]
+    );
+    confirmadosPorChave.set(chave, rows);
+    return rows;
+  }
+  function registrarConfirmado(veiculoId, diaISO, lat, lng) {
+    const chave = `${veiculoId}:${diaISO}`;
+    const lista = confirmadosPorChave.get(chave) ?? [];
+    lista.push({ lat, lng });
+    confirmadosPorChave.set(chave, lista);
+  }
+
+  const aindaPendentes = [];
   let confirmados = 0;
   let processados = 0;
   for (const p of pendentes) {
     processados++;
     if (processados % 500 === 0) console.log(`  ${processados}/${pendentes.length}... (${trilhaPorChave.size} trilhas em cache)`);
 
+    const diaISO = p.romaneio_data.toISOString().slice(0, 10);
     const trilha = await trilhaDoDia(p.veiculo_id, p.romaneio_data);
-    if (trilha.length === 0) continue;
+    if (trilha.length === 0) {
+      aindaPendentes.push(p);
+      continue;
+    }
 
     // Dwell: maior sequencia CONSECUTIVA de leituras dentro do raio E com
     // velocidade baixa. Nao precisa ser a MESMA leitura sempre parada no
@@ -264,12 +325,41 @@ async function main() {
         }
       }
       confirmados++;
+      registrarConfirmado(p.veiculo_id, diaISO, p.lat, p.lng);
       const prefixo = DRY_RUN ? "[dry-run] Confirmaria" : "Confirmado";
-      console.log(`${prefixo}: veiculo=${p.veiculo_id} nf=${p.nf} dia=${p.romaneio_data.toISOString().slice(0,10)} dwell~${dwellMaxS}s${sufixoCache}`);
+      console.log(`${prefixo}: veiculo=${p.veiculo_id} nf=${p.nf} dia=${diaISO} dwell~${dwellMaxS}s${sufixoCache}`);
+    } else {
+      aindaPendentes.push(p);
     }
   }
 
-  console.log(`\n${confirmados} presencas ${DRY_RUN ? "seriam confirmadas (dry-run, nada gravado)" : "confirmadas neste ciclo"}.`);
+  // Passo 2: corroboracao por vizinhanca (achado real 30/08, ver comentario
+  // de RAIO_VIZINHANCA_M). So roda pros que sobraram do Passo 1 -- dwell
+  // direto sempre tem prioridade, e' evidencia mais forte (parada
+  // encostada no PROPRIO endereco, nao emprestada de vizinho).
+  let confirmadosVizinhanca = 0;
+  for (const p of aindaPendentes) {
+    const diaISO = p.romaneio_data.toISOString().slice(0, 10);
+    const confirmadosMesmoRomaneio = await confirmadosDoDia(p.veiculo_id, diaISO);
+    const dist = distanciaVizinhoConfirmadoMaisProximo(confirmadosMesmoRomaneio, p.lat, p.lng);
+    if (dist === null || dist > RAIO_VIZINHANCA_M) continue;
+
+    // Deliberadamente NAO escreve em romaneio_cliente_codigo_geocode --
+    // a posicao emprestada e' de OUTRO cliente, gravar como ancora deste
+    // corromperia o geocode aprendido dele (ver comentario da constante).
+    if (!DRY_RUN) {
+      await pool.query(
+        `UPDATE romaneio_pontos SET presenca_confirmada_em = now() WHERE id = $1 AND presenca_confirmada_em IS NULL`,
+        [p.id]
+      );
+    }
+    confirmadosVizinhanca++;
+    registrarConfirmado(p.veiculo_id, diaISO, p.lat, p.lng);
+    const prefixo = DRY_RUN ? "[dry-run] Confirmaria" : "Confirmado";
+    console.log(`${prefixo} por vizinhanca: veiculo=${p.veiculo_id} nf=${p.nf} dia=${diaISO} dist_vizinho~${Math.round(dist)}m`);
+  }
+
+  console.log(`\n${confirmados} presencas ${DRY_RUN ? "seriam confirmadas" : "confirmadas"} por dwell direto, ${confirmadosVizinhanca} por vizinhanca neste ciclo${DRY_RUN ? " (dry-run, nada gravado)" : ""}.`);
   await pool.end();
 }
 
