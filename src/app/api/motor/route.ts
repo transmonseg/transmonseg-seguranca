@@ -3046,7 +3046,18 @@ export async function POST(request: Request) {
               // segue acumulando e o alerta sai assim que qualquer condicao
               // deixar de valer -- inclusive por o proprio streak alcancar o
               // limiar elevado, que e' a rede de seguranca do gate.
-              if (alertaDesvioV2?.origemDesvio === "afastando_geral") {
+              //
+              // DESATIVADO de proposito (decisao do usuario, 31/08): a
+              // revisao independente achou 1 caso real (RQQ-1B52, mesmo dia)
+              // que este gate suprimiria -- confirmado pelo proprio grupo
+              // horas depois ("1B52 - Desvio correto, se afastando de todos
+              // os clientes"). Trade-off apresentado ao usuario (~1 desvio
+              // real perdido/20 dias vs ~115 supressoes de ruido/20 dias):
+              // usuario escolheu NAO aplicar. Codigo/migration ficam prontos
+              // (nao removidos) caso surja uma versao mais segura ou o
+              // usuario reconsidere -- so' a ATIVACAO fica desligada aqui.
+              const GATE_SAIDA_BASE_ATIVO = false;
+              if (GATE_SAIDA_BASE_ATIVO && alertaDesvioV2?.origemDesvio === "afastando_geral") {
                 try {
                   if (
                     ehSaidaDeBaseSemDestinoAvaliavel({
