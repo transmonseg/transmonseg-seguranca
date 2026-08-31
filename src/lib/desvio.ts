@@ -303,6 +303,145 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
   return quedaM / caminhoM >= RETORNO_BASE_FRACAO_CAMINHO_MIN;
 }
 
+// ─── Gate de "saida da base sem destino avaliavel" (achado real 31/08) ───
+//
+// Reclamacao real no grupo "DESVIO DE ROTA" (31/08, com fotos de 4 veiculos
+// -- TTY-1A57, TTK-8A87, RQP-4A68, TTI-6E49): desvio marcado logo ao SAIR da
+// base, seguindo pela via principal rumo ao primeiro cliente, operador
+// confirmando "romaneio ja consta no sistema" e "nao desviou em nenhum
+// momento".
+//
+// MECANISMO. O filtro de LIMIAR_DESTINO_RELEVANTE_M (50km, motor/route.ts,
+// achado de 13/08) tira do conjunto avaliado todo destino a mais de 50km, pra
+// impedir que um destino muito distante MASCARE divergencia local. Em rota
+// LONGA (primeiro cliente do romaneio a >50km da base -- rotina em Nutry Max)
+// isso remove TODOS os clientes pendentes de uma vez, e sobra so' a base no
+// conjunto. A partir dai "afastar de TODOS os destinos relevantes" degenera
+// em "afastar da base" -- que e' exatamente o que progredir na rota significa.
+// emCarenciaDeBase (1200m, achado de 12/08 pra manobra de patio) e' curto
+// demais: no disparo real de 31/08 o veiculo ja estava a 8,5km da base na
+// primeira leitura do streak.
+//
+// ESCOPO -- POR QUE ISTO **NAO** COBRE "VEICULO SEM NENHUM PENDENTE".
+// Medicao read-only (18 dias, alertas com motivo "Afastando de todos%"
+// pareados com o desvio_disparo_log do ciclo e com pendentes_snapshot_log):
+// dos 1.026 alertas em que o conjunto avaliado ficou SEM nenhum cliente
+// pendente, ha duas populacoes completamente diferentes --
+//
+//   A) HAVIA pendentes, todos filtrados pelos 50km ..... 250 alertas
+//      ... tratados individualmente por operador (resolver_individual) ... 1
+//   B) NAO havia pendente nenhum (romaneio ausente/concluido) ... 776
+//      ... tratados individualmente por operador ......................... 6
+//
+// Em (B) o afastamento da base e' informacao de verdade: sem pendentes, o
+// veiculo deveria estar indo PRA base, e os 6 casos reais estao espalhados de
+// 1,3km a 46,9km dela -- nenhum criterio de distancia os separa do ruido.
+// Suprimir (B) custaria recall real ([[feedback_desvio_priorizar_recall]]),
+// entao (B) fica DELIBERADAMENTE fora deste gate: exige-se
+// `temPendenteForaDoRaio`, i.e. o conjunto ficou degenerado por causa do
+// filtro de 50km, nao por ausencia de rota. (Dois dos 4 veiculos da
+// reclamacao de 31/08 -- TTK-8A87 e TTI-6E49 -- caem em (B), com
+// alvos_api_ok=true e ZERO pendentes o dia inteiro: aquilo e' problema de
+// dado de entrada/romaneio, causa raiz diferente, tratada em outro lugar.)
+//
+// PISO DE DISTANCIA DA BASE. Dentro de (A) ainda existe 1 caso real tratado
+// individualmente: RQU-0B47 (25/08), a 1.922m da base, 114s depois de sair
+// dela -- exatamente o cenario que o brief manda preservar (motorista pega a
+// via errada logo na saida, antes de qualquer cliente entrar nos 50km). Por
+// isso o gate so' vale ALEM da area local da base. Sweep do piso, sempre
+// dentro de (A), em 18 dias (suprimidos: falso_positivo / limpo / ativo /
+// resolvido-individual-por-operador):
+//
+//   piso     fp   limpo  ativo  resolv_individual
+//   1.200m   15    186     18      1   <- perde o RQU-0B47
+//   2.000m   14    115     17      0
+//   3.000m   13    102     17      0
+//   5.000m   12     92     16      0   <- escolhido
+//   8.000m   11     78     15      0
+//
+// 5.000m e' 2,6x a distancia do unico caso real da classe (nao e' o menor
+// valor que zera a perda -- 2.000m ja' zera; 5.000m foi escolhido pela
+// margem, porque zerar em 2.000m seria ajustar o parametro a UM ponto de
+// dado). Todos os disparos da reclamacao de 31/08 que caem em (A) estavam a
+// 5,9km-37km da base.
+//
+// STREAK ELEVADO EM VEZ DE SUPRESSAO CEGA. Mesmo dentro do escopo acima o
+// gate nao cala o sinal pra sempre: ele exige mais evidencia. Dentro de (A) e
+// alem do piso, o ruido morre cedo e um afastamento que PERSISTE continua
+// disparando. Sweep do limiar (mesmos 18 dias, suprimidos = os que nao
+// alcancam o limiar):
+//
+//   limiar   fp   limpo  ativo  resolv_individual
+//   4         3     59     11      0
+//   6         3     74     14      0
+//   8         4     82     15      0   <- escolhido
+//   10        5     85     15      0
+//   sem teto 12     92     16      0
+//
+// 8 ciclos (~4min de afastamento continuo, ciclo de ~30s) pega ~89% do ruido
+// e ainda deixa uma rede de seguranca: divergencia real sustentada nesse
+// estado sai com atraso maximo de 6 leituras, nunca deixa de sair. Do 8 pro
+// "sem teto" ganha-se pouco (8 fp + 10 limpo) e perde-se a rede inteira.
+//
+// EXIGE EVIDENCIA POSITIVA DE PROGRESSO. A regra central do detector e'
+// "nunca dispara indo em direcao a um destino" -- e' o filtro de 50km que
+// tira do conjunto justamente os destinos aos quais o veiculo esta indo. O
+// gate so' age quando o veiculo esta DE FATO se aproximando (linha reta,
+// sem custo de OSRM) de algum dos pendentes que o filtro removeu, i.e.
+// quando ha evidencia de que ele esta progredindo na rota, nao so' ausencia
+// de evidencia contraria. Custo dessa exigencia extra no dado real (18d,
+// dentro de (A) e alem do piso): a supressao de ruido cai de 82 pra 75
+// `limpo`, e a supressao de alertas fechados em lote por operador cai de 15
+// pra 12 -- barato pelo ganho de justificativa.
+//
+// RISCO RESIDUAL, REPORTADO DE PROPOSITO: 12 alertas de (A) que passam por
+// todas as condicoes acima foram fechados por `resolver_massa` COM
+// operador_id (resolucao em lote) nos 18 dias e seriam suprimidos. Nenhum
+// deles foi aberto e julgado individualmente, e todos tem a mesma assinatura
+// estrutural do ruido (streak 2, janela de saida matinal), mas resolucao em
+// lote e' acao de operador -- fica registrado como custo possivel de ~0,7
+// alerta/dia, contra ~6/dia de ruido removido.
+//
+// NAO mexe no streak (mesma disciplina do gate de retorno a base): o
+// chamador aplica isto DEPOIS de avaliarAfastandoDeTudo, entao o streak
+// continua acumulando normalmente e o alerta sai no ciclo em que qualquer
+// uma das condicoes deixar de valer (um cliente entrou nos 50km, o streak
+// alcancou o limiar, ...) -- sem reinicio e sem atraso adicional.
+export const LIMIAR_SAIDA_BASE_MIN_M = 5000;
+export const LIMIAR_STREAK_SEM_DESTINO_AVALIAVEL = 8;
+
+export function ehSaidaDeBaseSemDestinoAvaliavel(args: {
+  // ha ao menos um cliente pendente DENTRO do raio de relevancia (conjunto
+  // avaliado nao esta degenerado) -- se sim, o gate nunca vale.
+  temPendenteRelevante: boolean;
+  // havia cliente(s) pendente(s) com coordenada valida, e nenhum sobreviveu
+  // ao filtro de 50km. False cobre "veiculo sem pendente nenhum", que fica
+  // fora do gate de proposito (populacao B do comentario acima).
+  temPendenteForaDoRaio: boolean;
+  // o veiculo se aproximou (linha reta, neste ciclo) de algum dos pendentes
+  // que o filtro de 50km removeu. Sem essa evidencia positiva de progresso o
+  // gate nao age.
+  aproximandoDePendenteForaDoRaio: boolean;
+  // distancia em linha reta ate a base mais proxima do cliente.
+  distBaseM: number | null;
+  streakAfastando: number;
+}): boolean {
+  const {
+    temPendenteRelevante,
+    temPendenteForaDoRaio,
+    aproximandoDePendenteForaDoRaio,
+    distBaseM,
+    streakAfastando,
+  } = args;
+  // Na duvida (sem distancia de base conhecida), NUNCA suprime.
+  if (distBaseM == null || !Number.isFinite(distBaseM)) return false;
+  if (temPendenteRelevante) return false;
+  if (!temPendenteForaDoRaio) return false;
+  if (!aproximandoDePendenteForaDoRaio) return false;
+  if (distBaseM < LIMIAR_SAIDA_BASE_MIN_M) return false;
+  return streakAfastando < LIMIAR_STREAK_SEM_DESTINO_AVALIAVEL;
+}
+
 export type ResultadoAfastando = { streak: number; disparou: boolean; aproximandoAlgum: boolean };
 
 // Sinal A: o veiculo se afastou (distancia REAL de rua, ja calculada pelo

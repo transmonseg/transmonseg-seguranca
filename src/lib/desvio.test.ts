@@ -5,6 +5,7 @@ import {
   montarAlertaDesvio,
   ehSaltoDeReconciliacaoDeAtraso,
   ehRetornoSustentadoABase,
+  ehSaidaDeBaseSemDestinoAvaliavel,
 } from "./desvio";
 
 // Helper: monta a janela de leituras do gate de retorno a base a partir de
@@ -263,5 +264,62 @@ describe("montarAlertaDesvio", () => {
       { disparou: true, streak: 2, celula: "0:0", nVisitas: 0 }
     );
     expect(ruaRara?.nivel).toBe("critico");
+  });
+});
+
+describe("ehSaidaDeBaseSemDestinoAvaliavel", () => {
+  // Perfil dos disparos reais reclamados em 31/08 (TTY-1A57, RQP-4A68,
+  // RQV-9B26, RQV-9E67): romaneio com dezenas de pendentes, todos a
+  // 56km-115km, veiculo a 19km-37km da base, streak 2 na hora do disparo.
+  const casoReclamado = {
+    temPendenteRelevante: false,
+    temPendenteForaDoRaio: true,
+    aproximandoDePendenteForaDoRaio: true,
+    distBaseM: 24_428,
+    streakAfastando: 2,
+  };
+
+  it("suprime o caso real de 31/08: rota longa, so' a base no conjunto avaliado, ja' longe da base", () => {
+    expect(ehSaidaDeBaseSemDestinoAvaliavel(casoReclamado)).toBe(true);
+  });
+
+  it("NAO vale quando ainda ha cliente pendente dentro dos 50km (rota curta -- comportamento de sempre)", () => {
+    expect(
+      ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, temPendenteRelevante: true, temPendenteForaDoRaio: false })
+    ).toBe(false);
+  });
+
+  it("NAO vale quando o veiculo nao tem pendente NENHUM -- populacao B, 6 casos reais tratados por operador em 18 dias", () => {
+    expect(
+      ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, temPendenteForaDoRaio: false })
+    ).toBe(false);
+  });
+
+  it("preserva o caso real RQU-0B47 (25/08): divergencia a 1.922m da base, logo apos sair, com pendentes a 65km", () => {
+    expect(
+      ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, distBaseM: 1_922 })
+    ).toBe(false);
+  });
+
+  it("piso de 5km: 4.999m ainda dispara, 5.000m ja' e' suprimido", () => {
+    expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, distBaseM: 4_999 })).toBe(false);
+    expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, distBaseM: 5_000 })).toBe(true);
+  });
+
+  it("rede de seguranca: afastamento que persiste ate o limiar de streak volta a disparar", () => {
+    expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, streakAfastando: 7 })).toBe(true);
+    expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, streakAfastando: 8 })).toBe(false);
+    expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, streakAfastando: 30 })).toBe(false);
+  });
+
+  it("NAO vale sem evidencia positiva de progresso: se o veiculo nao esta se aproximando de nenhum pendente filtrado, o alerta sai", () => {
+    expect(
+      ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, aproximandoDePendenteForaDoRaio: false })
+    ).toBe(false);
+  });
+
+  it("sem distancia de base conhecida (veiculo DENTRO da base, ou sem base cadastrada) nunca suprime", () => {
+    expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, distBaseM: null })).toBe(false);
+    expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, distBaseM: Number.NaN })).toBe(false);
   });
 });

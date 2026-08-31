@@ -73,7 +73,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
@@ -591,6 +591,11 @@ export async function POST(request: Request) {
   // 064; se ela ainda nao estiver aplicada, so' este log se desliga -- o de
   // salto de reconciliacao (migration 063, ja aplicada) continua funcionando.
   const logRetornoBase = { habilitado: true };
+  // Idem pro log de supressao por "saida da base sem destino avaliavel"
+  // (31/08, migration 068) -- flag propria pelo mesmo motivo: se a migration
+  // ainda nao estiver aplicada, so' esta auditoria se desliga; a supressao em
+  // si nao depende dela.
+  const logSaidaBase = { habilitado: true };
   // Populado por cliente (candidatos deste ciclo, ver preencherGeocodeCacheCandidatos
   // e a pre-passada de cada cliente) — nao busca a tabela inteira (ver comentario ali).
   const cacheGeocode = new Map<string, string>();
@@ -2709,9 +2714,33 @@ export async function POST(request: Request) {
           // acima de 50km ANTES de avaliar o sinal -- so' pra essa avaliacao,
           // nao mexe no `destinos` usado por chegada/corredor/corroboracao.
           const LIMIAR_DESTINO_RELEVANTE_M = 50_000;
-          const destinosRelevantes = destinos.filter(
-            (d) => haversineM(pos.lat, pos.lng, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M
-          );
+          const indicesRelevantes = destinos
+            .map((_, i) => i)
+            .filter((i) => haversineM(pos.lat, pos.lng, destinos[i].lat, destinos[i].lng) <= LIMIAR_DESTINO_RELEVANTE_M);
+          const destinosRelevantes = indicesRelevantes.map((i) => destinos[i]);
+          // Achado real 31/08 (ver ehSaidaDeBaseSemDestinoAvaliavel em
+          // lib/desvio.ts): interessa saber se o conjunto avaliado ficou SEM
+          // nenhum cliente pendente, e se isso aconteceu por causa do filtro
+          // de 50km (rota longa) ou por o veiculo simplesmente nao ter
+          // pendente nenhum -- sao duas populacoes com recall totalmente
+          // diferente. `destinos` e' montado como
+          // [pendentes..., bases..., escala...] (ver NAO_ESCALA_LEN acima),
+          // entao o indice < pontosVeiculoParaDesvio.length identifica
+          // pendente com precisao, sem depender do `codigo` (que tambem e'
+          // null pra pendente sem pontoCodigo).
+          const temPendenteRelevante = indicesRelevantes.some((i) => i < pontosVeiculoParaDesvio.length);
+          const temPendenteForaDoRaio = pontosVeiculoParaDesvio.length > 0 && !temPendenteRelevante;
+          // Evidencia positiva de progresso rumo aos pendentes que o filtro
+          // de 50km removeu (linha reta, sem custo de OSRM -- eles estao a
+          // dezenas de km, a geometria fina de rua nao muda o sinal). Usa a
+          // posicao BRUTA do ciclo anterior de proposito: o mesmo par que o
+          // filtro de 50km enxerga. Sem `anterior` valido fica false, e o
+          // gate que depende disto nao age (fail-open).
+          const aproximandoDePendenteForaDoRaio =
+            temPendenteForaDoRaio && anterior != null && anterior.lat != null && anterior.lng != null
+              ? Math.min(...pontosVeiculoParaDesvio.map((pt) => haversineM(pos.lat, pos.lng, pt.lat, pt.lng))) <
+                Math.min(...pontosVeiculoParaDesvio.map((pt) => haversineM(anterior!.lat!, anterior!.lng!, pt.lat, pt.lng)))
+              : false;
 
           // Achado real 28/08 (casos TTJ-9I18 e RQV-6I51, reclamacao de
           // "desvio incorreto" no grupo DESVIO DE ROTA) -- ver
@@ -3000,6 +3029,64 @@ export async function POST(request: Request) {
                   // aqui deixa o alerta seguir normalmente. Um erro nunca pode
                   // suprimir alerta.
                   erros.push(`Aviso: falha ao avaliar retorno a base pro veiculo ${veiculo_id}: ${String(errRetornoBase)}`);
+                }
+              }
+
+              // Achado real 31/08 (reclamacao no grupo DESVIO DE ROTA com
+              // fotos de 4 veiculos marcando desvio logo ao SAIR da base rumo
+              // ao primeiro cliente) -- ver ehSaidaDeBaseSemDestinoAvaliavel
+              // em lib/desvio.ts pro achado completo, a separacao entre "ha
+              // pendentes, todos filtrados pelos 50km" (esta classe) e
+              // "veiculo sem pendente nenhum" (DELIBERADAMENTE fora, 6 casos
+              // reais tratados por operador em 18 dias), e a calibracao do
+              // piso de 5km e do limiar de streak 8.
+              //
+              // NAO mexe no streak (afastandoStreakNovo ja' foi escrito
+              // acima), mesma disciplina do gate de retorno a base: o streak
+              // segue acumulando e o alerta sai assim que qualquer condicao
+              // deixar de valer -- inclusive por o proprio streak alcancar o
+              // limiar elevado, que e' a rede de seguranca do gate.
+              if (alertaDesvioV2?.origemDesvio === "afastando_geral") {
+                try {
+                  if (
+                    ehSaidaDeBaseSemDestinoAvaliavel({
+                      temPendenteRelevante,
+                      temPendenteForaDoRaio,
+                      aproximandoDePendenteForaDoRaio,
+                      distBaseM,
+                      streakAfastando: afastandoStreakNovo,
+                    })
+                  ) {
+                    if (logSaidaBase.habilitado) {
+                      try {
+                        await pool.query(
+                          `INSERT INTO desvio_disparo_log
+                             (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                          [
+                            veiculo_id,
+                            "suprimido_saida_base",
+                            JSON.stringify({
+                              distBaseM: distBaseM == null ? null : Math.round(distBaseM),
+                              pendentesTotal: pontosVeiculoParaDesvio.length,
+                              destinos: destinosRelevantes.map((d) => ({ codigo: d.codigo, lat: d.lat, lng: d.lng })),
+                            }),
+                            afastandoStreakNovo,
+                            ruaRara.streak,
+                            celulaAtualDesvio,
+                            nVisitasHistorico,
+                          ]
+                        );
+                      } catch (errLogSaidaBase) {
+                        logSaidaBase.habilitado = false;
+                        erros.push(`Aviso: log de supressao de saida da base desligado neste ciclo (migration 068 aplicada?) -- primeira falha no veiculo ${veiculo_id}: ${String(errLogSaidaBase)}`);
+                      }
+                    }
+                    alertaDesvioV2 = null;
+                  }
+                } catch (errSaidaBase) {
+                  // Fail-open, igual aos outros gates: erro nunca suprime.
+                  erros.push(`Aviso: falha ao avaliar saida da base pro veiculo ${veiculo_id}: ${String(errSaidaBase)}`);
                 }
               }
 
