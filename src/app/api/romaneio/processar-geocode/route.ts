@@ -362,7 +362,13 @@ export async function POST(request: Request) {
       // so' quando veio FRESCO da cascata -- um hit de cache nao deve se
       // regravar em cima de si mesmo (nao é' o caso aqui, ja' que so' entra
       // aqui quando geocode ainda era null, mas deixa explicito o porque).
-      if (geocode && clienteIdLinha && linha.cliente_codigo) {
+      // Checagem de enderecoChaveLinha not vazia (achado da revisao 31/08):
+      // simetrica a confirmar-presenca-romaneio.mjs, que ja guarda contra
+      // isso -- sem essa checagem aqui, este caminho podia gravar uma linha
+      // de chave '' que o .mjs nunca leria nem escreveria (hoje teorico,
+      // endereco_bruto e' NOT NULL e sem linhas vazias em producao, mas
+      // mantem os dois escritores com a mesma garantia).
+      if (geocode && clienteIdLinha && linha.cliente_codigo && enderecoChaveLinha) {
         await salvarCacheClienteCodigoSeNovo(clienteIdLinha, linha.cliente_codigo, enderecoChaveLinha, geocode);
       }
     }

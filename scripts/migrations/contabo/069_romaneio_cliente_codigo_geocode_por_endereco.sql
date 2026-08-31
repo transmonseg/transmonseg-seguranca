@@ -7,9 +7,12 @@
 -- cliente = 1 lugar". O mundo real do romaneio nao e assim -- clientes de
 -- refeicao coletiva/hospitalar usam UM codigo pra N unidades:
 --
---   cliente_codigo 138748 SODEXO DO BRASIL      -> 25 enderecos distintos
---       (Resende, Barra Mansa, Cantagalo, Itaguai, Seropedica, Duque de
---        Caxias, varios bairros do Rio) -- todos lendo UMA ancora
+--   cliente_codigo 138748 SODEXO DO BRASIL      -> 22 enderecos distintos
+--       agrupando so' por cliente_codigo (25 ao agrupar pelo par
+--       cliente_id+cliente_codigo, que e' a granularidade real da PK --
+--       ver revisao independente 31/08) -- Resende, Barra Mansa, Cantagalo,
+--       Itaguai, Seropedica, Duque de Caxias, varios bairros do Rio -- todos
+--       lendo UMA ancora
 --   cliente_codigo 157337 GASTROSERVICE         -> 17 enderecos distintos
 --   cliente_codigo 139450 NUTRIMED ALIMENTACAO  ->  9 hospitais distintos
 --       (media dwell caiu em -22.912365,-42.775819, perto de Tangua/Rio
@@ -52,6 +55,23 @@
 -- ja gravados (fora de escopo, ver brief).
 
 BEGIN;
+
+-- Guarda de reexecucao (achado da revisao independente 31/08): o ADD COLUMN
+-- e' idempotente, mas o DELETE de multi-endereco mais abaixo NAO e' --
+-- rodar esta migration de novo DEPOIS dela ja ter sido aplicada apagaria as
+-- ancoras legitimas por endereco que o fix passou a gravar (nao ha tabela
+-- de controle de migrations neste projeto, aplicacao e' manual). Aborta
+-- cedo se a PK ja tiver 3 colunas (endereco_chave ja faz parte dela).
+DO $$
+BEGIN
+  IF (
+    SELECT count(*) FROM information_schema.key_column_usage
+    WHERE table_name = 'romaneio_cliente_codigo_geocode'
+      AND constraint_name = 'romaneio_cliente_codigo_geocode_pkey'
+  ) >= 3 THEN
+    RAISE EXCEPTION 'migration 069 ja aplicada (PK ja tem endereco_chave) -- abortando pra nao reexecutar o DELETE de multi-endereco';
+  END IF;
+END $$;
 
 ALTER TABLE romaneio_cliente_codigo_geocode
   ADD COLUMN IF NOT EXISTS endereco_chave text NOT NULL DEFAULT '';
@@ -99,14 +119,42 @@ ALTER TABLE romaneio_cliente_codigo_geocode
   ADD CONSTRAINT romaneio_cliente_codigo_geocode_pkey
   PRIMARY KEY (cliente_id, cliente_codigo, endereco_chave);
 
--- O DEFAULT '' fica DE PROPOSITO (nao damos DROP DEFAULT). Janela de deploy:
--- entre aplicar esta migration e subir o codigo novo, a versao ANTIGA de
--- scripts/confirmar-presenca-romaneio.mjs (cron a cada poucos minutos)
--- ainda faz INSERT sem endereco_chave -- sem o default isso viraria erro de
--- NOT NULL e o cron quebraria. Com o default, ela grava numa linha de chave
--- '' que o codigo novo nunca le (o leitor sempre manda uma chave real), e
--- que o proximo ciclo do codigo novo simplesmente ignora. Linhas '' podem
--- ser limpas depois com:
+-- O DEFAULT '' fica DE PROPOSITO (nao damos DROP DEFAULT) -- mas NAO evita
+-- quebra na janela de deploy. Achado real na revisao independente (31/08),
+-- comprovado em dry-run contra producao: o problema nunca foi NOT NULL, e'
+-- o ALVO do ON CONFLICT. Depois desta migration trocar a PK pra
+-- (cliente_id, cliente_codigo, endereco_chave), o INSERT ANTIGO (codigo
+-- ainda rodando, com ON CONFLICT (cliente_id, cliente_codigo)) falha com
+-- 42P10 "no unique or exclusion constraint matching the ON CONFLICT
+-- specification" -- independente de DEFAULT. Confirmado rodando o INSERT
+-- exato do codigo antigo apos a troca de PK, em transacao revertida.
+--
+-- Impacto medido por escritor:
+--   confirmar-presenca-romaneio.mjs (crontab, poucos minutos): o erro
+--     aborta a transacao (BEGIN/COMMIT do proprio script) e da' throw --
+--     PARA a confirmacao de presenca inteira daquele ciclo, nao so' o
+--     upsert do cache.
+--   processar-geocode/route.ts (pg_cron ~30s): mesmo erro, mas via
+--     supabase-js o retorno de erro do upsert e' ignorado pelo caminho de
+--     chamada -- degrada em silencio (geocodifica normal, so' nao grava
+--     ancora), sem interromper o resto do ciclo.
+--
+-- NAO HA ORDEM QUE EVITE ISSO POR COMPLETO: deployar o codigo novo ANTES da
+-- migration tambem quebra (o ON CONFLICT de 3 colunas do codigo novo nao
+-- acha a PK antiga de 2 colunas). Procedimento recomendado (deploy real):
+--   1) comentar a linha do crontab de confirmar-presenca-romaneio.mjs
+--   2) aplicar esta migration
+--   3) deploy do codigo novo (processar-geocode/route.ts +
+--      confirmar-presenca-romaneio.mjs)
+--   4) reabilitar o crontab
+-- Se preferir nao mexer no crontab, aplicar migration+deploy em sequencia
+-- rapida e aceitar no maximo 1 rodada de confirmar-presenca falhando
+-- (<=5min, sem corrupcao de dado -- e' tudo transacional).
+--
+-- O DEFAULT '' serve só pra escritas de OUTRAS colunas desta tabela que por
+-- algum motivo nao passem por nenhum dos 2 caminhos acima nesta janela --
+-- rede de seguranca residual, nao a mitigacao principal. Linhas '' (se
+-- alguma aparecer) podem ser limpas com:
 --   DELETE FROM romaneio_cliente_codigo_geocode WHERE endereco_chave = '';
 
 -- Guarda: nenhuma linha pode sobrar sem endereco_chave.
