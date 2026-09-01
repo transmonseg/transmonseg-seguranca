@@ -19,6 +19,7 @@ import {
   agruparAlvosPorPlaca,
   agruparPontosPorPlaca,
   alvoMaisProximoQualquer,
+  alvoNaFaixaPerto,
   rumoGraus,
   haversineM,
   normalizar,
@@ -2471,11 +2472,16 @@ export async function POST(request: Request) {
           // ver sabadoDiurnoComRota abaixo) -- mesmo padrao de
           // bypass_entrega, que tambem nao tem esse gate.
           const leituraAlvosConfiavel = pos.fresco && pos.atraso <= 5 && alvosApiOk;
+          // BUG REAL 01/09 (TUO-1D10, "AURORA GOURMET 128"): aqui era
+          // `pendentes.find((pt, i) => distDestinosM[i] ...)` -- indice de
+          // `pendentes` casado com `distDestinosM`, que e indexado por
+          // `destinos` (pontosVeiculoParaDesvio + bases + escala). Alinhado
+          // ate 18/08; o commit a1965b6 trocou a fonte de `destinos` de
+          // `pendentes` pra `pontosVeiculoParaDesvio` (que NAO filtra
+          // presenca confirmada) e desalinhou os indices em silencio. Ver
+          // alvoNaFaixaPerto em unitrac.ts pro relato completo.
           const faixaPertoAgora = leituraAlvosConfiavel && alvoNoRaioAgora === null
-            ? pendentes.find((pt, i) => {
-                const d = distDestinosM[i];
-                return d > pt.raio && d <= pt.raio + PARADA_SEM_MARCACAO_RAIO_EXTRA_M;
-              }) ?? null
+            ? alvoNaFaixaPerto(pos.lat, pos.lng, pendentes, PARADA_SEM_MARCACAO_RAIO_EXTRA_M)
             : null;
           const codigoAnteriorFaixaPerto = anterior?.perto_sem_marcacao_codigo ?? null;
           const dwellFaixaPertoAnterior = anterior?.perto_sem_marcacao_segundos ?? 0;

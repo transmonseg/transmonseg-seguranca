@@ -456,6 +456,40 @@ export function alvoMaisProximoQualquer(
   return melhor;
 }
 
+// Primeiro ponto da lista na faixa "perto mas FORA do raio confirmado"
+// (raio < dist <= raio + raioExtraM) -- fonte de verdade do rastreio do
+// detector parada_sem_marcacao (ver detectarParadaSemMarcacao em
+// detectores.ts e o uso em api/motor/route.ts).
+//
+// Existe como funcao propria por causa de um bug REAL de producao
+// (achado 01/09, caso TUO-1D10 / "AURORA GOURMET 128"): route.ts fazia
+// `pendentes.find((pt, i) => distDestinosM[i] ...)`, casando o indice de
+// `pendentes` com um array `distDestinosM` indexado por OUTRO array
+// (`destinos`, montado a partir de pontosVeiculoParaDesvio). Os dois
+// arrays eram identicos ate 18/08 (commit a1965b6), que trocou a fonte de
+// `destinos` pra corrigir outro bug e, sem querer, desalinhou os indices:
+// `pendentes` remove os pontos com presenca ja confirmada, `destinos` nao.
+// Resultado: bastava UMA entrega ter presenca confirmada no dia pra que o
+// detector passasse a medir a distancia de um ponto contra o raio de
+// OUTRO -- disparando "saiu sem confirmar entrega" com o caminhao parado
+// dentro do cliente, e nunca zerando o dwell (voltou de ~2 alertas/dia
+// pra 12-50/dia na frota inteira a partir de 19/08). Calcular a distancia
+// junto do ponto, aqui dentro, torna esse desalinhamento impossivel por
+// construcao.
+export function alvoNaFaixaPerto(
+  lat: number,
+  lng: number,
+  pontos: PontoEntrega[] | undefined,
+  raioExtraM: number
+): PontoEntrega | null {
+  if (!pontos || pontos.length === 0) return null;
+  for (const p of pontos) {
+    const d = haversineM(lat, lng, p.lat, p.lng);
+    if (d > p.raio && d <= p.raio + raioExtraM) return p;
+  }
+  return null;
+}
+
 // Achado real 25/07 (redesign do detector de desvio): substitui a
 // heuristica "distancia liquida caindo cancela suspeita" (que gerava falso
 // positivo perto de cliente/base e escondia desvio real por rua errada

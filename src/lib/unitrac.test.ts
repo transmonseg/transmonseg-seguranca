@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, deveCorrigirComRomaneio, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, deveCorrigirComRomaneio, alvoNaFaixaPerto, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
 
 describe("distanciaAoSegmentoM", () => {
   const origem = { lat: -22.9000, lng: -43.2000 };
@@ -427,5 +427,56 @@ describe("deveCorrigirComRomaneio", () => {
   it("NÃO corrige com fonte='google'", () => {
     const romaneio = { lat: -22.9003, lng: -43.2 };
     expect(deveCorrigirComRomaneio(SP, romaneio, true, "google")).toBe(false);
+  });
+});
+
+describe("alvoNaFaixaPerto", () => {
+  // Caso real 01/09 (producao): caminhao TUO-1D10 parado em
+  // (-22.823285, -43.045122). "AURORA GOURMET 128" (pontoCodigo 68104,
+  // raio 50m) esta a ~81m dali -- na faixa (50, 200]. O pendente seguinte
+  // da lista, "J.L.F DOS SANTOS MERCADO" (181485), esta a ~2,6km.
+  const LAT = -22.823285;
+  const LNG = -43.045122;
+  const RAIO_EXTRA = 150;
+
+  function ponto(nome: string, pontoCodigo: number, lat: number, lng: number, raio = 50): PontoEntrega {
+    return {
+      lat, lng, raio, ordem: pontoCodigo, nome, feito: false, situacao: 0,
+      codigo: pontoCodigo, pontoCodigo, documento: null, identificador: null,
+      dataInicio: null, dataRealizado: null, observacoes: null, rota: null,
+    };
+  }
+
+  const aurora = ponto("AURORA GOURMET 128", 68104, -22.822580, -43.045500); // ~81m
+  const jlf = ponto("J.L.F DOS SANTOS MERCADO", 181485, -22.838283, -43.065418); // ~2,6km
+  const sabor = ponto("RESTAURANTE SABOR DA JE", 854105, -22.813808, -43.040895); // ~1,3km
+
+  it("acha o ponto que esta perto mas FORA do raio confirmado", () => {
+    expect(alvoNaFaixaPerto(LAT, LNG, [jlf, aurora, sabor], RAIO_EXTRA)?.pontoCodigo).toBe(68104);
+  });
+
+  it("ponto DENTRO do raio confirmado nao conta como 'na faixa'", () => {
+    const emCima = ponto("EM CIMA", 999, LAT, LNG);
+    expect(alvoNaFaixaPerto(LAT, LNG, [emCima], RAIO_EXTRA)).toBeNull();
+  });
+
+  it("ponto alem de raio+extra nao conta como 'na faixa'", () => {
+    expect(alvoNaFaixaPerto(LAT, LNG, [jlf, sabor], RAIO_EXTRA)).toBeNull();
+  });
+
+  it("lista vazia ou indefinida: null", () => {
+    expect(alvoNaFaixaPerto(LAT, LNG, [], RAIO_EXTRA)).toBeNull();
+    expect(alvoNaFaixaPerto(LAT, LNG, undefined, RAIO_EXTRA)).toBeNull();
+  });
+
+  // REGRESSAO do bug real: quando o ponto que estava na faixa sai da lista
+  // (presenca confirmada -> removido de `pendentes`), a resposta certa e
+  // "nenhum ponto na faixa" -- e NAO um vizinho a quilometros de distancia
+  // herdando a distancia do que saiu (era o efeito do indice desalinhado).
+  it("ponto na faixa removido da lista: retorna null, nao promove um vizinho distante", () => {
+    const antes = alvoNaFaixaPerto(LAT, LNG, [jlf, aurora, sabor], RAIO_EXTRA);
+    expect(antes?.pontoCodigo).toBe(68104);
+    const depois = alvoNaFaixaPerto(LAT, LNG, [jlf, sabor], RAIO_EXTRA);
+    expect(depois).toBeNull();
   });
 });
