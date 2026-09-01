@@ -3047,16 +3047,18 @@ export async function POST(request: Request) {
               // deixar de valer -- inclusive por o proprio streak alcancar o
               // limiar elevado, que e' a rede de seguranca do gate.
               //
-              // DESATIVADO de proposito (decisao do usuario, 31/08): a
-              // revisao independente achou 1 caso real (RQQ-1B52, mesmo dia)
-              // que este gate suprimiria -- confirmado pelo proprio grupo
-              // horas depois ("1B52 - Desvio correto, se afastando de todos
-              // os clientes"). Trade-off apresentado ao usuario (~1 desvio
-              // real perdido/20 dias vs ~115 supressoes de ruido/20 dias):
-              // usuario escolheu NAO aplicar. Codigo/migration ficam prontos
-              // (nao removidos) caso surja uma versao mais segura ou o
-              // usuario reconsidere -- so' a ATIVACAO fica desligada aqui.
-              const GATE_SAIDA_BASE_ATIVO = false;
+              // REATIVADO 01/09 (decisao do usuario): no dia seguinte o
+              // grupo confirmou volume generalizado ("Todos os carros do Pao
+              // e os carros que estao saindo da base estao apresentando
+              // desvio de rota" -- frota inteira, nao caso isolado) e sinal
+              // de fadiga da equipe ("Vou apenas desconsiderar. Nao vou
+              // postar aqui."). Apresentado de novo o trade-off conhecido
+              // (~1 desvio real perdido/20 dias, caso RQQ-1B52 confirmado
+              // pelo proprio grupo -- vs ~115 supressoes de ruido/20 dias, e
+              // o volume real de hoje sugere que o custo do ruido esta pior
+              // que o medido): usuario escolheu reativar. Migration 068
+              // aplicada em producao antes desta ativacao (01/09).
+              const GATE_SAIDA_BASE_ATIVO = true;
               if (GATE_SAIDA_BASE_ATIVO && alertaDesvioV2?.origemDesvio === "afastando_geral") {
                 try {
                   if (
