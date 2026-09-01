@@ -315,6 +315,33 @@ export async function POST(request: Request) {
 
   let doCacheClienteCodigo = 0;
 
+  // Extraida do loop principal (achado real 01/09, ver uso no fallback
+  // Unitrac mais abaixo): resolve ponto de referencia (bairro/cidade) e
+  // roda a cascata cnefe->local->google->nominatim pra um endereco. Sem
+  // resolver ancora de cliente_codigo nem gravar cache -- isso continua
+  // exclusivo do loop principal, que tem o contexto (cliente_id) pra
+  // decidir a ancora write-once.
+  const tentarGeocodeTexto = async (enderecoBruto: string): Promise<{ lat: number; lng: number; fonte: string } | null> => {
+    const cidadeBruta = extrairCidadeDoEndereco(enderecoBruto);
+    const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
+    const bairro = extrairBairroDoEndereco(enderecoBruto);
+    const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
+    const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
+    const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
+    return geocodificarEndereco(enderecoBruto, pontoReferencia, {
+      buscarCache,
+      salvarCache,
+      geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, municipioCodigo, {
+        buscarPorRuaNumero: buscarCnefePorRuaNumero,
+        buscarPorRua: buscarCnefePorRua,
+        buscarPorSimilaridade: buscarCnefePorSimilaridade,
+      }),
+      geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
+      geocodificarGoogle,
+      geocodificarNominatim: geocodificarNominatimThrottled,
+    });
+  };
+
   for (const linha of pendentes) {
     // Cache por (cliente_codigo, endereco) primeiro (migrations 052/069) --
     // se esse codigo ja resolveu ESTE endereco com sucesso em outro dia,
@@ -338,25 +365,7 @@ export async function POST(request: Request) {
     }
 
     if (!geocode) {
-      const cidadeBruta = extrairCidadeDoEndereco(linha.endereco_bruto);
-      const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
-      const bairro = extrairBairroDoEndereco(linha.endereco_bruto);
-      const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
-      const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
-      const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
-
-      geocode = await geocodificarEndereco(linha.endereco_bruto, pontoReferencia, {
-        buscarCache,
-        salvarCache,
-        geocodificarCnefeDep: (endereco, ponto) => geocodificarCnefe(endereco, ponto, municipioCodigo, {
-          buscarPorRuaNumero: buscarCnefePorRuaNumero,
-          buscarPorRua: buscarCnefePorRua,
-          buscarPorSimilaridade: buscarCnefePorSimilaridade,
-        }),
-        geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
-        geocodificarGoogle,
-        geocodificarNominatim: geocodificarNominatimThrottled,
-      });
+      geocode = await tentarGeocodeTexto(linha.endereco_bruto);
 
       // Grava a ancora write-once (nunca sobrescreve, ver migration 052)
       // so' quando veio FRESCO da cascata -- um hit de cache nao deve se
@@ -415,7 +424,7 @@ export async function POST(request: Request) {
   // volta ao comportamento de hoje (retentar sem limite) em vez de parar de
   // fazer o fallback por completo. Mesmo padrao ja usado pra coluna
   // `origem` em romaneio/status/route.ts.
-  type LinhaFallback = { id: string; nf: string; placa: string; veiculo_id: string | null; geocode_tentativas?: number | null };
+  type LinhaFallback = { id: string; nf: string; placa: string; veiculo_id: string | null; geocode_tentativas?: number | null; endereco_bruto: string };
   let tentativasDisponivel = true;
   let semGeocode: LinhaFallback[] | null = null;
 
@@ -442,7 +451,7 @@ export async function POST(request: Request) {
   // veiculo.
   const comLimite = await admin
     .from("romaneio_pontos")
-    .select("id, nf, placa, veiculo_id, geocode_tentativas")
+    .select("id, nf, placa, veiculo_id, geocode_tentativas, endereco_bruto")
     .eq("geocode_status", "falhou")
     .lt("geocode_tentativas", MAX_TENTATIVAS_FALLBACK_UNITRAC)
     .or(`geocode_ultima_tentativa_em.is.null,geocode_ultima_tentativa_em.lt.${tentavelAntesDe}`)
@@ -459,7 +468,7 @@ export async function POST(request: Request) {
     tentativasDisponivel = false;
     const semLimite = await admin
       .from("romaneio_pontos")
-      .select("id, nf, placa, veiculo_id")
+      .select("id, nf, placa, veiculo_id, endereco_bruto")
       .eq("geocode_status", "falhou")
       .limit(LOTE_FALLBACK_UNITRAC);
     semGeocode = semLimite.data as LinhaFallback[] | null;
@@ -471,6 +480,7 @@ export async function POST(request: Request) {
   let esgotaramTentativas = 0;
   let corrigidosViaRomaneio = 0;
   let veiculoIdReatribuido = 0;
+  let resolvidoViaRetentativaTexto = 0;
 
   // Conta uma tentativa que NAO resolveu (nem achou alvo da Unitrac, nem
   // recasou a placa com um veiculo) e, esgotado o limite, promove ao estado
@@ -539,8 +549,21 @@ export async function POST(request: Request) {
         // normal no proximo ciclo.
         continue;
       }
-      // Placa continua sem veiculo cadastrado: unica coisa possivel de
-      // tentar pra esta linha era o recasamento acima, ja' feito e falhou.
+      // Placa continua sem veiculo cadastrado: sem veiculo_id nao ha como
+      // tentar o fallback Unitrac (precisa de cv), mas a cascata de texto
+      // (achado real 01/09, mesmo raciocinio do fallback Unitrac abaixo)
+      // nao depende de veiculo nenhum -- tenta antes de contar a falha.
+      const textoResolvidoOrfao = await tentarGeocodeTexto(linha.endereco_bruto);
+      if (textoResolvidoOrfao) {
+        const { error: erroTextoOrfao } = await admin
+          .from("romaneio_pontos")
+          .update({ lat: textoResolvidoOrfao.lat, lng: textoResolvidoOrfao.lng, geocode_status: "ok" })
+          .eq("id", linha.id);
+        if (!erroTextoOrfao) {
+          resolvidoViaRetentativaTexto++;
+          continue;
+        }
+      }
       // Conta a tentativa igual ao fallback Unitrac.
       await registrarFalhaTentativa(linha);
     }
@@ -573,6 +596,32 @@ export async function POST(request: Request) {
               .eq("id", linha.id);
             if (!erroFallback) {
               fallbackUnitrac++;
+              continue;
+            }
+          }
+
+          // Achado real 01/09 (auditoria "porque continua cheio de
+          // pendente"): 152 linhas com geocode_tentativas=10 (o teto),
+          // enderecos perfeitamente geocodificaveis (confirmado manual:
+          // "RUA PROFESSOR ALVARO RODRIGUES,355 BOTAFOGO" e varias outras
+          // resolvem na hora via Nominatim puro) -- o orcamento inteiro de
+          // 10 tentativas era gasto SO esperando um alvo da Unitrac que
+          // nunca chega (cliente sem cadastro por documento na Unitrac,
+          // comum em conta DEMONSTRACAO/hortifruti pequeno), porque a
+          // cascata de texto (cnefe/local/google/nominatim) so' era
+          // tentada UMA vez, no upload -- uma falha unica (throttle,
+          // timeout pontual) nunca tinha segunda chance. Tenta de novo
+          // aqui, no MESMO ciclo de espera/orcamento que ja existia pro
+          // alvo Unitrac -- sucesso poupa a linha de esgotar as 10
+          // tentativas por um motivo que a Unitrac nunca ia resolver mesmo.
+          const textoResolvido = await tentarGeocodeTexto(linha.endereco_bruto);
+          if (textoResolvido) {
+            const { error: erroTexto } = await admin
+              .from("romaneio_pontos")
+              .update({ lat: textoResolvido.lat, lng: textoResolvido.lng, geocode_status: "ok" })
+              .eq("id", linha.id);
+            if (!erroTexto) {
+              resolvidoViaRetentativaTexto++;
               continue;
             }
           }
@@ -647,5 +696,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, limiteTentativasAtivo: tentativasDisponivel });
+  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, resolvidoViaRetentativaTexto, limiteTentativasAtivo: tentativasDisponivel });
 }
