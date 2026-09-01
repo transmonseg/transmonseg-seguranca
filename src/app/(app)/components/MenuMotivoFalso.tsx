@@ -50,9 +50,21 @@ export default function MenuMotivoFalso({
   if (!aberto) return null;
   return (
     <div ref={ref} style={{
-      position: "absolute", zIndex: 50, marginTop: 4,
+      // Achado real 01/09 (reclamacao da Rose no grupo DESVIO DE ROTA, com
+      // print: "consegue aumentar essa aba? para ler a frase toda" -- o
+      // print mostrava o menu cortado, "Nao foi ao cli...", "Confir..."):
+      // o botao "Falso" e' o ultimo de uma fileira (Focar/Correto/Falso), e
+      // este menu abria pra DIREITA a partir dele sem checar se cabia --
+      // em tela estreita (mobile) o menu vazava pra fora da viewport e
+      // ficava cortado pelo `overflow: hidden` do card. `right: 0` alinha a
+      // borda DIREITA do menu com a borda direita do botao, crescendo pra
+      // ESQUERDA -- funciona porque o botao "Falso" costuma estar perto da
+      // borda direita do card (ultimo da fileira), entao crescer pra
+      // esquerda mantem o menu dentro da area visivel.
+      position: "absolute", right: 0, zIndex: 50, marginTop: 4,
       background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8,
       boxShadow: "0 8px 24px rgba(0,0,0,0.25)", padding: 6, minWidth: compacto ? 200 : 260,
+      maxWidth: "min(92vw, 320px)",
       display: "flex", flexDirection: "column", gap: 3,
     }}>
       {CATEGORIAS_FALSO.map(c => {
@@ -87,6 +99,18 @@ export default function MenuMotivoFalso({
             color: "var(--text)", fontFamily: "inherit", boxSizing: "border-box",
           }}
         />
+        {/* Achado real 01/09 (reclamacao da Rose no grupo DESVIO DE ROTA:
+            "escrevemos e quando clica em confirmar, nao vai"): escrever so'
+            no texto livre sem clicar numa categoria acima deixa o botao
+            desabilitado SEM nenhum aviso -- parecia bug, era falta de
+            feedback. `detalhe` nunca substitui a categoria (ver comentario
+            de onEscolher acima), entao a regra continua a mesma -- so'
+            ficou visivel por que o botao nao reage. */}
+        {!selecionada && detalhe.trim().length > 0 && (
+          <div style={{ fontSize: 10.5, color: "var(--vermelho)", marginTop: 4, marginBottom: 2 }}>
+            Selecione uma opção acima também para confirmar
+          </div>
+        )}
         <button type="button"
           onClick={confirmar}
           disabled={!selecionada}

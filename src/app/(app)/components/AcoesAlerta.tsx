@@ -85,7 +85,14 @@ export default function AcoesAlerta({
           <MenuMotivoFalso
             aberto={menuFalsoAberto}
             onFechar={() => setMenuFalsoAberto(false)}
-            onEscolher={(categoria: CategoriaFalso) => exec(() => marcarFalsoComCategoria(id, categoria), true)}
+            // Achado real 01/09 (reclamacao da Rose no grupo DESVIO DE ROTA:
+            // "escrevemos e quando clica em confirmar, nao vai"): este
+            // callback so recebia `categoria`, descartando o `detalhe`
+            // (texto livre) que MenuMotivoFalso ja manda como 2o argumento --
+            // o outro call site (MonitorV2.tsx/handleFalso) ja repassava
+            // certo, so este estava quebrado.
+            onEscolher={(categoria: CategoriaFalso, detalhe: string) =>
+              exec(() => marcarFalsoComCategoria(id, categoria, "alertas", detalhe), true)}
           />
         </div>
         {pending && <span className="text-xs" style={{ color: "var(--text-dim)" }}>salvando...</span>}
