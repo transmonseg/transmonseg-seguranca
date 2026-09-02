@@ -31,13 +31,32 @@ const AMENITIES = [
 // saida_nao_autorizada parado, parada_fora_tapete) ficaram silenciosamente
 // mais permissivos (risco de recall) pra frota inteira por 3 dias, sem
 // ninguem perceber (poi_cache zerou de escritas novas nesse periodo).
-// Trocado pro mirror overpass.osm.ch (confirmado alcancavel e respondendo
-// dado real do VPS na mesma investigacao). Se este tambem parar de
-// responder no futuro, o comportamento de fail-open documentado acima
-// continua protegendo contra crash -- so' silencia os 3 detectores nesse
-// meio tempo, o que precisa de monitoramento ativo (nao ha alerta hoje pra
-// "Overpass fora do ar ha X dias").
-const OVERPASS_URL = "https://overpass.osm.ch/api/interpreter";
+// Trocado pro mirror overpass.osm.ch em 30/08 (confirmado alcancavel na
+// epoca) -- ACHADO REAL 02/09 (investigacao de "por que parada_anomala nao
+// voltou ao patamar antigo"): overpass.osm.ch e' um mirror REGIONAL, so'
+// cobre a Suica. `poi_cache` tinha 1956 linhas, ZERO com tem_poi=true, desde
+// 30/08 -- a checagem respondia HTTP 200 (nunca lancava, nunca disparava o
+// fail-open) mas SEMPRE devolvia total=0 pra qualquer coordenada do Brasil,
+// silenciosamente. Trocamos "sempre suprime" (Overpass banido) por "nunca
+// suprime" (Overpass mundial mas respondendo dado errado) -- pior ainda,
+// porque nao lanca excecao nenhuma, entao nenhum sinal de erro aparecia.
+//
+// Trocado pra overpass.mail.ru (maps.mail.ru), confirmado mundial de
+// verdade: retornou 13 postos reais no Rio (raio 5km centro), 266
+// restaurantes reais em SP (raio 2km centro), 0 no meio do oceano
+// atlantico (-25,-35). overpass-api.de (oficial) confirmado NAO mais
+// banido (sem connection refused), mas respondendo 504/dispatcher timeout
+// por sobrecarga do publico gratuito -- nao usado como principal por isso,
+// mas pode voltar a ser candidato se ficar estavel.
+//
+// LICAO: qualquer troca de mirror Overpass PRECISA de teste-canario com
+// coordenada de fora do pais de origem do mirror antes de confiar (nao
+// basta "respondeu 200" nem "respondeu com JSON valido" -- precisa
+// responder CERTO). Nao ha teste automatizado disso ainda -- considerar
+// adicionar um canario real (ex: checagem periodica que valida total>0 pra
+// uma coordenada brasileira conhecida) em vez de so' confiar visualmente
+// na proxima investigacao manual.
+const OVERPASS_URL = "https://maps.mail.ru/osm/tools/overpass/api/interpreter";
 const RAIO_M = 80;
 const CACHE_DIAS = 7;
 
