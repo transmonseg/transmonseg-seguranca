@@ -181,6 +181,13 @@ export default function PainelUploadRomaneio({
   const aoSoltar = (e: React.DragEvent<HTMLLabelElement>) => {
     e.preventDefault();
     setArrastando(false);
+    // Achado real 01/09 (varredura): soltar um 2o arquivo enquanto o 1o
+    // ainda esta processando sobrescrevia `arquivo` em silencio -- quando a
+    // resposta do 1o chegava, o sucesso zerava `arquivo` (linha ~99), e a
+    // selecao do 2o sumia sem nenhum aviso. Ignora solturas durante
+    // processamento -- o operador precisa esperar o 1o terminar antes de
+    // trocar o arquivo.
+    if (processando) return;
     const f = e.dataTransfer.files?.[0];
     if (!f) return;
     if (!extensaoAceita(f.name)) {
@@ -251,6 +258,10 @@ export default function PainelUploadRomaneio({
         type="file"
         accept={ACCEPT}
         onChange={(e) => {
+          // Mesma guarda de `aoSoltar` acima -- trocar pelo seletor nativo
+          // durante o processamento tem o mesmo risco de sobrescrever a
+          // selecao em silencio.
+          if (processando) return;
           setResultado(null);
           setArquivo(e.target.files?.[0] ?? null);
         }}
