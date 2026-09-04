@@ -1,0 +1,46 @@
+-- 070_remove_overload_similaridade_sem_filtro.sql
+--
+-- Achado real 04/09 (investigacao "motor de identificacao": endereco em
+-- Icarai/Niteroi -- "RUA CORONEL MOREIRA CESAR, 228 - ICARAI, NITEROI"
+-- geocodificado a ~29km, fora de Niteroi; mesmo padrao em varios outros
+-- casos confirmados: "AVENIDA JORNALISTA ALBERTO FRANCISCO TOR, ICARAI,
+-- NITEROI" foi parar em Itaborai (~29km); "RUA AIRTON DANTAS, PONTA
+-- D'AREIA, NITEROI" foi parar em Duque de Caxias (~26km); "TRAVESSA
+-- VIRGINIA DA SILVA, MOQUETA, NOVA IGUACU" foi parar no Rio de Janeiro
+-- capital; "RUA URANIO, COELHO DA ROCHA, SAO JOAO DE MERITI" foi parar em
+-- Guapimirim (~38km).
+--
+-- Causa raiz: a migration 045 criou `cnefe_buscar_por_similaridade(termo,
+-- limite, filtro_municipio_codigo)` via `create or replace function` --
+-- mas Postgres trata funcoes com QUANTIDADE DIFERENTE DE PARAMETROS como
+-- OVERLOADS DISTINTOS, nao como "a mesma funcao sendo substituida". A
+-- versao de 2 parametros da migration 023 (`cnefe_buscar_por_similaridade
+-- (termo, limite)`, SEM NENHUM filtro de municipio) nunca foi removida --
+-- continuou existindo em paralelo, e o Supabase-js/PostgREST pode
+-- resolver a chamada RPC pra ESSA versao antiga dependendo de como os
+-- argumentos sao serializados (municipioCodigo=null e' um caso comum,
+-- ver geocode/route.ts e processar-geocode/route.ts -- o app SEMPRE
+-- manda os 3 argumentos nomeados, mas a ambiguidade de overload no lado
+-- do Postgres/PostgREST e' o problema real).
+--
+-- Resultado: busca por similaridade (ultimo nivel do CNEFE, usado quando
+-- rua+numero e so-rua nao acham nada -- tipicamente nome de rua com
+-- variacao de abreviacao/truncamento) podia comparar contra TODO o RJ
+-- sem filtro nenhum de municipio, casando com uma rua de MESMO NOME em
+-- OUTRA cidade completamente diferente. Auditoria do cache (9085
+-- enderecos) achou ~114 casos com esse padrao, pelo menos 7 confirmados
+-- manualmente via reverse-geocode.
+--
+-- Fix: remove a versao de 2 parametros (SEM filtro), deixando so' a
+-- versao de 3 parametros (COM filtro, filtro_municipio_codigo=null
+-- continua permitindo "sem filtro" explicitamente quando a cidade nao
+-- resolveu -- comportamento existente preservado, so' sem overload
+-- ambiguo). Nenhum chamador na aplicacao usa a assinatura de 2
+-- parametros (confirmado via grep no codigo).
+--
+-- IMPORTANTE: roda como superuser (ex: `sudo -u postgres psql -d
+-- transmonseg -f <arquivo>`), mesmo motivo das migrations 034/044/045.
+
+drop function if exists cnefe_buscar_por_similaridade(text, integer);
+
+NOTIFY pgrst, 'reload schema';
