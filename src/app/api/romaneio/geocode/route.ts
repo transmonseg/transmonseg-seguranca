@@ -38,7 +38,19 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge } from "@/lib/romaneio-geocode-local";
 
-export const maxDuration = 60;
+// Achado real 03/09 (investigacao "geolocalizacao ruim" -- 2 tentativas
+// seguidas de geracao do KPI Nutry Max bateram "geocodificacao falhou
+// para 100% do lote"): sequencial (1 endereco por vez, throttle de
+// Nominatim), um lote com muitos enderecos rurais (sem CNEFE/OSM local
+// bom) pode no pior caso passar de qualquer prazo razoavel -- um teste
+// isolado de 1 UNICO endereco chegou a levar 35s (pico de lentidao
+// pontual do Nominatim publico). Sem controle de prazo, isso significa
+// perder TODOS os resultados do lote (fail-open virando fail-CLOSED na
+// pratica) -- o chamador so' sabe "a chamada inteira estourou o timeout
+// dele", nao "processei 30 dos 40". 280s deixa folga sob o
+// GEOCODE_TIMEOUT_MS=300_000 do lado do KPI (geocode.ts la).
+export const maxDuration = 280;
+const PRAZO_MAXIMO_MS = 280_000;
 
 // Mesmo throttle sequencial de processar-geocode/route.ts -- respeita a
 // politica real de 1 req/s do Nominatim publico, independente de quem
@@ -49,9 +61,9 @@ function esperar(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Teto defensivo por chamada -- o chamador (KPI) tem timeout de 20s do lado
-// dele (ver GEOCODE_TIMEOUT_MS em geocode.ts la) calibrado pro tamanho
-// tipico de um romaneio Nutry Max (dezenas de enderecos/dia). Rejeitar
+// Teto defensivo por chamada -- reduzido do lado do KPI (LOTE_MAX_ENDERECOS
+// em geocode.ts la, 120->40, mesma investigacao) especificamente pra
+// diminuir a chance de precisar do corte de prazo abaixo. Rejeitar
 // explicitamente acima disso (em vez de truncar em silencio) forca o
 // chamador a dividir em lotes menores se um dia precisar.
 const MAX_ENDERECOS_POR_CHAMADA = 300;
@@ -82,6 +94,8 @@ export async function POST(request: Request) {
 
   const lista = enderecos as string[];
   const admin = createAdminClient();
+  const inicioRequisicao = Date.now();
+  const prazoEsgotado = () => Date.now() - inicioRequisicao > PRAZO_MAXIMO_MS;
 
   // Cache de endereco -- SO' LEITURA aqui (nunca upsert, ver comentario no
   // topo do arquivo). Reaproveita o que o cron de producao ja resolveu,
@@ -127,6 +141,12 @@ export async function POST(request: Request) {
   )];
   const pontosCidade = new Map<string, { lat: number; lng: number }>();
   for (const cidade of cidadesUnicas) {
+    // Achado real 03/09 (ver PRAZO_MAXIMO_MS no topo): corta a resolucao
+    // de referencia ANTES do loop principal de enderecos consumir todo o
+    // prazo -- cidade sem ponto de referencia ainda geocodifica (so' sem
+    // a checagem de distancia, comportamento ja existente), nao trava a
+    // resposta inteira.
+    if (prazoEsgotado()) break;
     const chaveCidade = `CIDADE:${cidade.toUpperCase()}`;
     const doCache = await buscarCache(chaveCidade);
     if (doCache) {
@@ -149,6 +169,7 @@ export async function POST(request: Request) {
   )];
   const pontosBairro = new Map<string, { lat: number; lng: number }>();
   for (const chave of bairroCidadeUnicos) {
+    if (prazoEsgotado()) break;
     const [bairro, cidade] = chave.split("|");
     const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${cidade.toUpperCase()}`;
     const doCache = await buscarCache(chaveCache);
@@ -184,8 +205,17 @@ export async function POST(request: Request) {
     return data ?? [];
   };
 
+  // Achado real 03/09 (ver PRAZO_MAXIMO_MS no topo): resposta PARCIAL
+  // (array mais curto que `lista`) em vez de arriscar a chamada inteira
+  // estourar o timeout do chamador e perder TODOS os resultados ja
+  // calculados. O lado do KPI (geocode.ts la) ja e' defensivo pra isso --
+  // mapeia por indice contra a lista original e preenche null pro que
+  // faltar, nunca assume o mesmo tamanho de volta. Enderecos nao
+  // alcancados aqui ficam null nesta chamada, mas nao sao perdidos pra
+  // sempre: a proxima geracao/regeracao tenta de novo.
   const resultados: ({ lat: number; lng: number } | null)[] = [];
   for (const enderecoBruto of lista) {
+    if (prazoEsgotado()) break;
     const cidadeBruta = extrairCidadeDoEndereco(enderecoBruto);
     const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
     const bairro = extrairBairroDoEndereco(enderecoBruto);
