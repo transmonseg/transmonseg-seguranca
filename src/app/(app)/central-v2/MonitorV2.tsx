@@ -907,6 +907,17 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     muted: "#a8a29e",
     dim: "#57534e",
     accent: "#9fb3ce",
+    // Achado real 03/09 (reclamacao no grupo DESVIO DE ROTA: "problema
+    // antigo... tela fica assim" + print mostrando o rotulo "TODOS" do
+    // EscopoMapaSwitcher ilegivel): accent do tema escuro e' um azul PASTEL
+    // claro de proposito (contraste suave contra o fundo quase-preto), mas
+    // EscopoMapaSwitcher escrevia texto BRANCO fixo por cima do thumb
+    // (`color: "#fff"`/gradiente pra branco) assumindo que accent e' sempre
+    // escuro o bastante -- verdade no tema claro (accent #2b5ea7, azul
+    // saturado), falso aqui (branco sobre #9fb3ce e' quase ilegivel,
+    // confirmado reproduzindo ao vivo com Puppeteer). accentFg = a cor de
+    // texto que CONTRASTA com accent, nao a cor do tema em si.
+    accentFg: "#0a0a0a",
     accentDim: "#1e2a38",
     red: "#ef4444",
     yellow: "#f59e0b",
@@ -924,6 +935,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     muted: "#6b6359",
     dim: "#9c9288",
     accent: "#2b5ea7",
+    // Ver comentario da mesma chave no tema escuro acima -- aqui accent
+    // (#2b5ea7) e' saturado o bastante pra branco ler bem, entao accentFg
+    // continua branco (nunca teve o bug neste tema).
+    accentFg: "#ffffff",
     accentDim: "#dce8f5",
     red: "#c0202a",
     yellow: "#a05a00",
@@ -2783,6 +2798,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               onAbrirSeletor={() => setSeletorAberto(true)}
               tema={tema}
               accent={T.accent}
+              accentFg={T.accentFg}
               border={T.border}
               muted={T.muted}
             />

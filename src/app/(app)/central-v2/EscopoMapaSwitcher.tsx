@@ -22,6 +22,12 @@ type Props = {
   onAbrirSeletor: () => void;
   tema: "dark" | "light";
   accent: string;
+  // Achado real 03/09 (reclamacao no grupo + reproduzido ao vivo com
+  // Puppeteer): cor de texto que CONTRASTA com `accent` -- nao pode ser
+  // sempre branco fixo, porque o accent do tema escuro e' um azul pastel
+  // claro (branco sobre ele fica ilegivel). Ver comentario da definicao em
+  // MonitorV2.tsx.
+  accentFg: string;
   border: string;
   muted: string;
 };
@@ -41,7 +47,7 @@ const POSICAO: Record<EscopoMapa, number> = {
 
 export default function EscopoMapaSwitcher({
   modo, totalSelecionados, temSelecao, totalComRomaneio, onEscolher, onAbrirSeletor,
-  tema, accent, border, muted,
+  tema, accent, accentFg, border, muted,
 }: Props) {
   const x = useMotionValue(POSICAO[modo]);
   const arrastandoRef = useRef(false);
@@ -50,8 +56,8 @@ export default function EscopoMapaSwitcher({
   // extremos (todos/romaneio) tem esse efeito continuo; os 2 do meio
   // (ambos/selecionados) so trocam de cor no fim do arrasto (mesmo
   // comportamento que "ambos" ja tinha antes da 4a opcao existir).
-  const corTodos = useTransform(x, [0, QUARTO], ["#ffffff", muted]);
-  const corRomaneio = useTransform(x, [QUARTO * 2, QUARTO * 3], [muted, "#ffffff"]);
+  const corTodos = useTransform(x, [0, QUARTO], [accentFg, muted]);
+  const corRomaneio = useTransform(x, [QUARTO * 2, QUARTO * 3], [muted, accentFg]);
 
   useEffect(() => {
     if (arrastandoRef.current) return;
@@ -138,7 +144,7 @@ export default function EscopoMapaSwitcher({
         }}
       >
         <span style={{
-          position: "relative", zIndex: 3, color: modo === "ambos" ? "#fff" : muted,
+          position: "relative", zIndex: 3, color: modo === "ambos" ? accentFg : muted,
           fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}>
@@ -155,7 +161,7 @@ export default function EscopoMapaSwitcher({
         }}
       >
         <span style={{
-          position: "relative", zIndex: 3, color: modo === "selecionados" ? "#fff" : muted,
+          position: "relative", zIndex: 3, color: modo === "selecionados" ? accentFg : muted,
           fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}>
@@ -165,8 +171,8 @@ export default function EscopoMapaSwitcher({
           <span style={{
             position: "relative", zIndex: 3,
             fontSize: 9, fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-            background: modo === "selecionados" ? "rgba(255,255,255,0.22)" : `${accent}22`,
-            color: modo === "selecionados" ? "#fff" : accent,
+            background: modo === "selecionados" ? `color-mix(in srgb, ${accentFg} 22%, transparent)` : `${accent}22`,
+            color: modo === "selecionados" ? accentFg : accent,
             borderRadius: 8, padding: "1px 5px", fontWeight: 800,
           }}>
             {totalSelecionados}
@@ -193,8 +199,8 @@ export default function EscopoMapaSwitcher({
           <span style={{
             position: "relative", zIndex: 3,
             fontSize: 9, fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-            background: modo === "romaneio" ? "rgba(255,255,255,0.22)" : `${accent}22`,
-            color: modo === "romaneio" ? "#fff" : accent,
+            background: modo === "romaneio" ? `color-mix(in srgb, ${accentFg} 22%, transparent)` : `${accent}22`,
+            color: modo === "romaneio" ? accentFg : accent,
             borderRadius: 8, padding: "1px 5px", fontWeight: 800,
           }}>
             {totalComRomaneio}
