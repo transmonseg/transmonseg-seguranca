@@ -186,6 +186,25 @@ export async function POST(request: Request) {
     return geocodificarNominatim(enderecoBruto);
   };
 
+  // Achado real 03/09 (grupo KPI AJUSTES, geocode de Nutry Max do dia,
+  // reproduzido via /api/romaneio/geocode -- mesmo risco existe aqui):
+  // endereco em Carmo-RJ foi parar a ~90km, em Muriae-MG (outro estado).
+  // Rastreado ate a resolucao do PONTO DE CIDADE: quando falha (rede/
+  // rate-limit pontual do Nominatim), pontoCidade fica null, e
+  // escolherCandidatoMaisProximo (romaneio-geocode.ts) aceita um
+  // candidato UNICO sem NENHUMA validacao de distancia quando nao ha
+  // ponto de cidade pra comparar -- risco ja documentado la' (mesma
+  // classe do caso "MANGUINHOS, ARMAÇO DOS BZIO" de 12/08). Uma
+  // retentativa aqui cobre o caso comum (falha pontual, nao "cidade
+  // genuinamente irresolvivel") sem precisar de heuristica geografica
+  // (bounding box nao discrimina -- Muriae-MG fica na MESMA faixa de
+  // latitude que o norte do RJ, ex. Itaperuna).
+  const resolverPontoComRetry = async (termo: string) => {
+    const primeira = await geocodificarNominatimThrottled(termo);
+    if (primeira) return primeira;
+    return geocodificarNominatimThrottled(termo);
+  };
+
   // Resolve os pontos de referencia de cidade do lote, 1x cada (nao 1x
   // por endereco) -- cacheados em romaneio_geocode_cache com prefixo
   // "CIDADE:" pra nao colidir com chaves de endereco completo. Poucas
@@ -218,7 +237,7 @@ export async function POST(request: Request) {
       pontosCidade.set(cidade, { lat: doCache.lat, lng: doCache.lng });
       continue;
     }
-    const ponto = await geocodificarNominatimThrottled(termoCidade);
+    const ponto = await resolverPontoComRetry(termoCidade);
     if (ponto) {
       await salvarCache(chaveCidade, { ...ponto, fonte: "nominatim" });
       pontosCidade.set(cidade, ponto);
@@ -260,7 +279,10 @@ export async function POST(request: Request) {
       pontosBairro.set(chave, { lat: doCache.lat, lng: doCache.lng });
       continue;
     }
-    const ponto = await geocodificarNominatimThrottled(termoBairro);
+    // Mesma retentativa do ponto de cidade acima -- mesmo risco (falha
+    // transitoria vira "sem ponto de referencia", que por sua vez vira
+    // "candidato unico aceito sem checagem" em escolherCandidatoMaisProximo).
+    const ponto = await resolverPontoComRetry(termoBairro);
     if (ponto) {
       await salvarCache(chaveCache, { ...ponto, fonte: "nominatim" });
       pontosBairro.set(chave, ponto);
