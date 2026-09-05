@@ -4,7 +4,7 @@
 // api/motor/route.ts) -- mesma chave do Google, mesmo User-Agent do
 // Nominatim -- so na direcao contraria.
 
-import { extrairRuaDoEndereco, extrairNumeroDoEndereco, normalizarNomeRua, montarEnderecoParaGeocode } from "./romaneio-geocode-local";
+import { extrairRuaDoEndereco, extrairNumeroDoEndereco, normalizarNomeRua, montarVariantesParaGeocode } from "./romaneio-geocode-local";
 import { haversineM } from "./unitrac";
 
 export function normalizarEndereco(enderecoBruto: string): string {
@@ -249,22 +249,33 @@ export async function geocodificarEndereco(
   // 101") -- achado real 31/07: mandar isso pro geocoder direto atrapalha
   // mais do que ajuda. geocodificarLocalDep acima usa enderecoBruto original
   // de proposito (so extrai a rua, sufixo nao atrapalha esse parsing).
-  const enderecoParaGeocode = montarEnderecoParaGeocode(enderecoBruto);
+  // Variantes da consulta externa (completa -> sem bairro): achado 05/09,
+  // o bairro derrubava o match do Nominatim em cidade pequena do interior.
+  // Ver montarVariantesParaGeocode.
+  const variantes = montarVariantesParaGeocode(enderecoBruto);
+  const enderecoParaGeocode = variantes[0];
   // Achado real 12/08 (segunda rodada de melhoria pos-deploy): CNEFE/local
   // acima ja tem checagem de distancia contra pontoCidade
   // (escolherCandidatoMaisProximo, dentro de geocodificarCnefe/geocodificarLocal)
   // -- Google/Nominatim NUNCA tiveram essa protecao, aceitavam qualquer
   // resultado direto. Sem pontoCidade (endereco sem cidade reconhecida),
   // nada pra comparar, aceita como sempre.
-  const google = await deps.geocodificarGoogle(enderecoParaGeocode);
-  if (google && (!pontoCidade || haversineM(pontoCidade.lat, pontoCidade.lng, google.lat, google.lng) <= DISTANCIA_MAX_MATCH_LOCAL_M)) {
-    await deps.salvarCache(chave, { ...google, fonte: "google" });
-    return { ...google, fonte: "google" };
+  const perto = (p: { lat: number; lng: number }) =>
+    !pontoCidade || haversineM(pontoCidade.lat, pontoCidade.lng, p.lat, p.lng) <= DISTANCIA_MAX_MATCH_LOCAL_M;
+
+  for (const variante of variantes) {
+    const google = await deps.geocodificarGoogle(variante);
+    if (google && perto(google)) {
+      await deps.salvarCache(chave, { ...google, fonte: "google" });
+      return { ...google, fonte: "google" };
+    }
   }
-  const nominatim = await deps.geocodificarNominatim(enderecoParaGeocode);
-  if (nominatim && (!pontoCidade || haversineM(pontoCidade.lat, pontoCidade.lng, nominatim.lat, nominatim.lng) <= DISTANCIA_MAX_MATCH_LOCAL_M)) {
-    await deps.salvarCache(chave, { ...nominatim, fonte: "nominatim" });
-    return { ...nominatim, fonte: "nominatim" };
+  for (const variante of variantes) {
+    const nominatim = await deps.geocodificarNominatim(variante);
+    if (nominatim && perto(nominatim)) {
+      await deps.salvarCache(chave, { ...nominatim, fonte: "nominatim" });
+      return { ...nominatim, fonte: "nominatim" };
+    }
   }
   return null;
 }

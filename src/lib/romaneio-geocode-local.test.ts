@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   extrairRuaDoEndereco, extrairCidadeDoEndereco, normalizarNomeRua,
   extrairNumeroDoEndereco, extrairBairroDoEndereco, expandirCidadeTruncada,
-  montarEnderecoParaGeocode, municipioCodigoIbge, termoBuscaCidade,
+  montarEnderecoParaGeocode, montarVariantesParaGeocode, municipioCodigoIbge, termoBuscaCidade,
 } from "./romaneio-geocode-local";
 
 describe("extrairRuaDoEndereco", () => {
@@ -60,6 +60,39 @@ describe("extrairCidadeDoEndereco", () => {
     expect(extrairCidadeDoEndereco("ROD RJ 186 - KM 19, S/N - ARE, ITAPERUNA - CRUZAMENTO")).toBe("ITAPERUNA");
     expect(extrairCidadeDoEndereco("RUA ARISTIDES FALCAO - LOTE 32, S/N - BOA VISTA, CACHOEIRAS DE M - *")).toBe("CACHOEIRAS DE M");
     expect(extrairCidadeDoEndereco("RUA PEREIRA NUNES - DE 212 AO FIM - LADO, 388 - VILA ISABEL, RIO DE JANEIRO - SALADEIRA MIX ORIGINAL")).toBe("RIO DE JANEIRO");
+  });
+});
+
+describe("montarVariantesParaGeocode", () => {
+  // Achado real 05/09 (132 pendentes do KPI Nutry Max de 03/09 ficaram SEM
+  // coordenada, concentrados em cidade pequena do interior -- Valenca, Carmo,
+  // Areal, Duas Barras, Cambuci, Itaocara...): quando o CNEFE/OSM local nao
+  // tem a rua, o ultimo recurso e' o Nominatim -- e o BAIRRO na consulta
+  // estava justamente derrubando o match. Medido contra o Nominatim real:
+  //   "RUA MARIA JACOB, 149, CENTRO, Cambuci, RJ, Brasil"  -> vazio
+  //   "RUA MARIA JACOB, 149, Cambuci, RJ, Brasil"          -> acha
+  // (idem "RUA PAULO CESAR ERTHAL, 143 ... Itaocara"). A variante sem bairro
+  // e' tentada DEPOIS da completa, nunca no lugar dela.
+  it("primeira variante e' o endereco completo (comportamento de hoje, sem regressao)", () => {
+    expect(montarVariantesParaGeocode("RUA MARIA JACOB, 149 - CENTRO, CAMBUCI - *")[0])
+      .toBe(montarEnderecoParaGeocode("RUA MARIA JACOB, 149 - CENTRO, CAMBUCI - *"));
+  });
+
+  // cidade nao truncada mantem o caso original do romaneio (CAMBUCI); so' a
+  // truncada vira Title Case ao ser expandida -- ver expandirCidadeTruncada.
+  it("segunda variante tira o bairro, mantendo rua+numero+cidade", () => {
+    expect(montarVariantesParaGeocode("RUA MARIA JACOB, 149 - CENTRO, CAMBUCI - *"))
+      .toEqual(["RUA MARIA JACOB, 149, CENTRO, CAMBUCI, RJ, Brasil", "RUA MARIA JACOB, 149, CAMBUCI, RJ, Brasil"]);
+  });
+
+  it("endereco sem bairro nao gera variante duplicada", () => {
+    const v = montarVariantesParaGeocode("RUA MARIA JACOB, 149 - , CAMBUCI - *");
+    expect(new Set(v).size).toBe(v.length);
+  });
+
+  it("S/N continua sem numero na consulta, e a variante sem bairro tambem", () => {
+    expect(montarVariantesParaGeocode("ESTRADA DE AZEITONA, S/N - ACU, SAO JOAO DA BAR - ."))
+      .toEqual(["ESTRADA DE AZEITONA, ACU, São João da Barra, RJ, Brasil", "ESTRADA DE AZEITONA, São João da Barra, RJ, Brasil"]);
   });
 });
 

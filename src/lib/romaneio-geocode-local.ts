@@ -343,6 +343,24 @@ export function termoBuscaCidade(cidadeExpandida: string): string {
 // -- o formato de saida (separado por virgula simples) nao e' compativel
 // com o parsing dessas funcoes, que esperam o formato original do romaneio.
 export function montarEnderecoParaGeocode(enderecoBruto: string): string {
+  return montarVariantesParaGeocode(enderecoBruto)[0];
+}
+
+// Variantes de consulta pro geocoder externo (Google/Nominatim), da mais
+// especifica pra menos -- achado real 05/09: dos 380 pendentes do KPI Nutry
+// Max de 03/09, 132 ficaram SEM COORDENADA, concentrados em cidade pequena
+// do interior (Valenca, Carmo, Areal, Duas Barras, Cambuci, Itaocara...).
+// Nessas cidades o CNEFE/OSM local nao tem a rua e o Nominatim e' o ultimo
+// recurso -- e era o BAIRRO na consulta que derrubava o match. Medido contra
+// o Nominatim real:
+//   "RUA MARIA JACOB, 149, CENTRO, Cambuci, RJ, Brasil"      -> vazio
+//   "RUA MARIA JACOB, 149, Cambuci, RJ, Brasil"              -> acha
+//   "RUA PAULO CESAR ERTHAL, 143, CENTRO, Itaocara, ..."     -> vazio
+//   "RUA PAULO CESAR ERTHAL, 143, Itaocara, RJ, Brasil"      -> acha
+// A variante completa continua sendo tentada PRIMEIRO (o bairro ajuda a
+// desambiguar quando o Nominatim conhece o bairro); a sem-bairro so' entra
+// se a primeira nao achar nada.
+export function montarVariantesParaGeocode(enderecoBruto: string): string[] {
   const rua = extrairRuaDoEndereco(enderecoBruto);
   const numero = extrairNumeroDoEndereco(enderecoBruto);
   const bairro = extrairBairroDoEndereco(enderecoBruto);
@@ -350,9 +368,11 @@ export function montarEnderecoParaGeocode(enderecoBruto: string): string {
   const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
   const numeroValido = numero && !/^S\/?N$/i.test(numero) ? numero : null;
   const ruaComNumero = numeroValido ? `${rua}, ${numeroValido}` : rua;
-  return [ruaComNumero, bairro, cidade, "RJ", "Brasil"]
-    .filter((p): p is string => !!p)
-    .join(", ");
+  const montar = (comBairro: boolean) =>
+    [ruaComNumero, comBairro ? bairro : null, cidade, "RJ", "Brasil"]
+      .filter((p): p is string => !!p)
+      .join(", ");
+  return [...new Set([montar(true), montar(false)])];
 }
 
 // Tipos de via reconhecidos como PREFIXO do nome -- removidos por completo
