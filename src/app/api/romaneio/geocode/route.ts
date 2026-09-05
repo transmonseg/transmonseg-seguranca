@@ -35,8 +35,8 @@
 // -- chamada servidor-a-servidor, nunca do browser.
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim } from "@/lib/romaneio-geocode";
-import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge } from "@/lib/romaneio-geocode-local";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, escolherPontoReferencia } from "@/lib/romaneio-geocode";
+import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
 
 // Achado real 03/09 (investigacao "geolocalizacao ruim" -- 2 tentativas
 // seguidas de geracao do KPI Nutry Max bateram "geocodificacao falhou
@@ -147,13 +147,18 @@ export async function POST(request: Request) {
     // a checagem de distancia, comportamento ja existente), nao trava a
     // resposta inteira.
     if (prazoEsgotado()) break;
-    const chaveCidade = `CIDADE:${cidade.toUpperCase()}`;
+    // termoBuscaCidade acrescenta ", RJ, Brasil" quando a cidade e' do RJ
+    // -- a rota processar-geocode ja fazia assim; esta (a ponte do KPI)
+    // consultava so' o nome cru, o que joga o Nominatim pra cidade homonima
+    // de outro estado (achado 05/09).
+    const termoCidade = termoBuscaCidade(cidade);
+    const chaveCidade = `CIDADE:${termoCidade.toUpperCase()}`;
     const doCache = await buscarCache(chaveCidade);
     if (doCache) {
       pontosCidade.set(cidade, { lat: doCache.lat, lng: doCache.lng });
       continue;
     }
-    const ponto = await resolverPontoComRetry(cidade);
+    const ponto = await resolverPontoComRetry(termoCidade);
     if (ponto) pontosCidade.set(cidade, ponto);
   }
 
@@ -171,7 +176,8 @@ export async function POST(request: Request) {
   for (const chave of bairroCidadeUnicos) {
     if (prazoEsgotado()) break;
     const [bairro, cidade] = chave.split("|");
-    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${cidade.toUpperCase()}`;
+    const termoBairro = `${bairro}, ${termoBuscaCidade(cidade)}`;
+    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${termoBuscaCidade(cidade).toUpperCase()}`;
     const doCache = await buscarCache(chaveCache);
     if (doCache) {
       pontosBairro.set(chave, { lat: doCache.lat, lng: doCache.lng });
@@ -180,7 +186,7 @@ export async function POST(request: Request) {
     // Mesma retentativa do ponto de cidade acima -- mesmo risco (falha
     // transitoria vira "sem ponto de referencia", que por sua vez vira
     // "candidato unico aceito sem checagem" em escolherCandidatoMaisProximo).
-    const ponto = await resolverPontoComRetry(`${bairro}, ${cidade}`);
+    const ponto = await resolverPontoComRetry(termoBairro);
     if (ponto) pontosBairro.set(chave, ponto);
   }
 
@@ -234,7 +240,13 @@ export async function POST(request: Request) {
     const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
     const bairro = extrairBairroDoEndereco(enderecoBruto);
     const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
-    const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
+    // Ponto do bairro so' vale se estiver DENTRO da cidade -- ver
+    // escolherPontoReferencia (achado 05/09: "CENTRO, CAMBUCI" resolvia em
+    // Sao Paulo capital e derrubava o endereco certo pelo teto de 30km).
+    const pontoReferencia = escolherPontoReferencia(
+      (chaveBairro && pontosBairro.get(chaveBairro)) || null,
+      (cidade ? pontosCidade.get(cidade) : null) || null,
+    );
     const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
 
     const geocode = await geocodificarEndereco(enderecoBruto, pontoReferencia, {

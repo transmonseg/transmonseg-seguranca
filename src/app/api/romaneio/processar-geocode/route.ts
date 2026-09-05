@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, normalizarEndereco } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, normalizarEndereco, escolherPontoReferencia } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
@@ -362,7 +362,13 @@ export async function POST(request: Request) {
     const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
     const bairro = extrairBairroDoEndereco(enderecoBruto);
     const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
-    const pontoReferencia = (chaveBairro && pontosBairro.get(chaveBairro)) || (cidade ? pontosCidade.get(cidade) : null) || null;
+    // Ponto do bairro so' vale se estiver DENTRO da cidade -- ver
+    // escolherPontoReferencia (achado 05/09: "CENTRO, CAMBUCI" resolvia em
+    // Sao Paulo capital e derrubava o endereco certo pelo teto de 30km).
+    const pontoReferencia = escolherPontoReferencia(
+      (chaveBairro && pontosBairro.get(chaveBairro)) || null,
+      (cidade ? pontosCidade.get(cidade) : null) || null,
+    );
     const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
     return geocodificarEndereco(enderecoBruto, pontoReferencia, {
       buscarCache,

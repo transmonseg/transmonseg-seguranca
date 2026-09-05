@@ -73,6 +73,30 @@ function escolherPorNumeroMaisProximo(
   return melhor;
 }
 
+// Achado real 05/09: dos 380 pendentes do KPI Nutry Max de 03/09, 132
+// ficaram SEM COORDENADA -- concentrados em cidade pequena do interior. A
+// causa comum: o ponto de referencia (usado pra validar o geocode contra o
+// teto de 30km) e' o do BAIRRO, preferido sobre o da cidade, e o bairro e'
+// resolvido SOZINHO no Nominatim ("CENTRO, CAMBUCI"). Medido contra o
+// Nominatim real:
+//   "CENTRO, CAMBUCI"      -> Sao Paulo capital (~350km de Cambuci-RJ)
+//   "CENTRO, ITAOCARA"     -> Rua Itaocara, Duque de Caxias
+//   "VILA NOVA, MIRACEMA"  -> Rua Miracema, Nova Iguacu
+// Com a referencia errada, o endereco CERTO cai fora do teto e vira null.
+// Bairro fica DENTRO da propria cidade: se o ponto do bairro esta longe do
+// da cidade, e' ele que esta errado -- descarta e usa o da cidade.
+export const RAIO_MAX_BAIRRO_DA_CIDADE_M = 25_000;
+
+export function escolherPontoReferencia(
+  pontoBairro: { lat: number; lng: number } | null,
+  pontoCidade: { lat: number; lng: number } | null
+): { lat: number; lng: number } | null {
+  if (!pontoBairro) return pontoCidade;
+  if (!pontoCidade) return pontoBairro;
+  const d = haversineM(pontoCidade.lat, pontoCidade.lng, pontoBairro.lat, pontoBairro.lng);
+  return d <= RAIO_MAX_BAIRRO_DA_CIDADE_M ? pontoBairro : pontoCidade;
+}
+
 function escolherCandidatoMaisProximo(
   candidatos: { lat: number; lng: number }[],
   pontoCidade: { lat: number; lng: number } | null

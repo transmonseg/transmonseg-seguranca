@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarNominatim } from "./romaneio-geocode";
+import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarNominatim, escolherPontoReferencia } from "./romaneio-geocode";
 
 describe("normalizarEndereco", () => {
   it("maiuscula, sem espacos duplicados, sem espaco nas pontas", () => {
@@ -338,6 +338,43 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
       const r = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
       expect(r).toBeNull();
     });
+  });
+});
+
+describe("escolherPontoReferencia (achado real 05/09)", () => {
+  // Os 132 pendentes SEM COORDENADA do KPI Nutry Max de 03/09 (Valenca,
+  // Carmo, Areal, Duas Barras, Cambuci, Itaocara, Miracema...) tinham UMA
+  // causa comum: o ponto de referencia usado pra validar o geocode e' o do
+  // BAIRRO, preferido sobre o da cidade -- e o bairro e' resolvido sozinho
+  // ("CENTRO, CAMBUCI"), o que joga o Nominatim pra outro lugar. Medido:
+  //   "CENTRO, CAMBUCI"      -> Sao Paulo capital (~350km)
+  //   "CENTRO, ITAOCARA"     -> Rua Itaocara, Duque de Caxias
+  //   "VILA NOVA, MIRACEMA"  -> Rua Miracema, Nova Iguacu
+  // Com o ponto de referencia errado, o endereco CERTO cai fora do teto de
+  // 30km e vira null. Bairro fica dentro da propria cidade: se o ponto do
+  // bairro estiver longe do da cidade, ele esta errado -- usa o da cidade.
+  const cambuci = { lat: -21.4836, lng: -41.9071 };
+  const bairroReal = { lat: -21.49, lng: -41.91 };        // ~1km do centro da cidade
+  const bairroErrado = { lat: -23.5506, lng: -46.6182 };  // Sao Paulo capital
+
+  it("bairro perto da cidade: usa o bairro (mais preciso)", () => {
+    expect(escolherPontoReferencia(bairroReal, cambuci)).toEqual(bairroReal);
+  });
+
+  it("bairro longe da cidade: descarta o bairro e usa a cidade", () => {
+    expect(escolherPontoReferencia(bairroErrado, cambuci)).toEqual(cambuci);
+  });
+
+  it("sem bairro: usa a cidade", () => {
+    expect(escolherPontoReferencia(null, cambuci)).toEqual(cambuci);
+  });
+
+  it("sem cidade: usa o bairro (nao ha com o que comparar -- comportamento de hoje)", () => {
+    expect(escolherPontoReferencia(bairroReal, null)).toEqual(bairroReal);
+  });
+
+  it("sem nada: null", () => {
+    expect(escolherPontoReferencia(null, null)).toBeNull();
   });
 });
 
