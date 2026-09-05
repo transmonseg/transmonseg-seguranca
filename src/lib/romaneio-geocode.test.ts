@@ -274,13 +274,70 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
   it("cai pra so-rua COM o codigo de municipio tambem (nao perde o filtro no fallback)", async () => {
     const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
     await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, "3301009", deps);
-    expect(deps.buscarPorRua).toHaveBeenCalledWith(expect.any(String), "3301009");
+    // 3o arg = numero alvo, pro produtor ordenar pelo numero no banco (migration 074)
+    expect(deps.buscarPorRua).toHaveBeenCalledWith(expect.any(String), "3301009", 10);
   });
 
   it("cai pra similaridade COM o codigo de municipio tambem", async () => {
     const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: 5, lng: 6 }] });
     await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, "3305000", deps);
     expect(deps.buscarPorSimilaridade).toHaveBeenCalledWith(expect.any(String), "3305000");
+  });
+
+  // Achado real 05/09 (diagnostico dos 382 pendentes do KPI Nutry Max de
+  // 03/09): 226 deles tinham coordenada mas o caminhao NUNCA passou a menos
+  // de 1,5km dela -- media de 14km. Causa: no nivel "so rua", o CNEFE
+  // devolve ate 200 pontos da rua INTEIRA e a escolha era pela proximidade
+  // ao CENTRO DA CIDADE. Em via longa isso colapsa numeros distantes no
+  // mesmo ponto: "AV LUCIO COSTA, 2900 / 5700 / 16580" (avenida de ~18km na
+  // Barra) caiam TODOS em -23.01391,-43.31373; idem "ESTRADA DO MARINAS,
+  // 200 / 580" e 4 numeros diferentes da "R PROF ALICE KURI DA SILVA".
+  // Com o numero do romaneio em maos, o desempate certo e' pelo NUMERO mais
+  // proximo, nao pela distancia ao centro da cidade.
+  describe("nivel so-rua: desempate pelo numero mais proximo (achado 05/09)", () => {
+    const ruaLonga = [
+      { lat: -23.00, lng: -43.30, numero: "1000" },
+      { lat: -23.01, lng: -43.35, numero: "6000" },
+      { lat: -23.02, lng: -43.45, numero: "16000" },
+    ];
+
+    it("escolhe o ponto do numero mais proximo, nao o mais perto do centro da cidade", async () => {
+      const centroCidade = { lat: -22.90, lng: -43.20 }; // mais perto do numero 1000
+      const deps = mockDeps({ buscarPorRua: async () => ruaLonga });
+      const r = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
+      expect(r).toEqual({ lat: -23.02, lng: -43.45 });
+    });
+
+    it("numeros diferentes da MESMA rua nao colapsam mais no mesmo ponto", async () => {
+      const centroCidade = { lat: -22.90, lng: -43.20 };
+      const deps = mockDeps({ buscarPorRua: async () => ruaLonga });
+      const a = await geocodificarCnefe("AV LUCIO COSTA, 900 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
+      const b = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
+      expect(a).not.toEqual(b);
+      expect(a).toEqual({ lat: -23.00, lng: -43.30 });
+    });
+
+    it("sem numero no endereco (S/N): mantem o comportamento antigo (mais proximo do centro da cidade)", async () => {
+      const centroCidade = { lat: -22.90, lng: -43.20 };
+      const deps = mockDeps({ buscarPorRua: async () => ruaLonga });
+      const r = await geocodificarCnefe("AV LUCIO COSTA, S/N - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
+      expect(r).toEqual({ lat: -23.00, lng: -43.30 });
+    });
+
+    it("candidatos sem numero utilizavel: cai no comportamento antigo, nao quebra", async () => {
+      const centroCidade = { lat: -22.90, lng: -43.20 };
+      const deps = mockDeps({ buscarPorRua: async () => [{ lat: -23.00, lng: -43.30 }, { lat: -23.02, lng: -43.45 }] });
+      const r = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
+      expect(r).toEqual({ lat: -23.00, lng: -43.30 });
+    });
+
+    it("o desempate por numero ainda respeita o teto de distancia do ponto de cidade (rua homonima em cidade errada)", async () => {
+      const centroCidade = { lat: -22.90, lng: -43.20 };
+      // unico candidato, numero bate, mas fica a ~270km -- nao pode passar
+      const deps = mockDeps({ buscarPorRua: async () => [{ lat: -21.06, lng: -41.97, numero: "16580" }] });
+      const r = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
+      expect(r).toBeNull();
+    });
   });
 });
 

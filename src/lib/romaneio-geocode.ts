@@ -41,6 +41,38 @@ const DISTANCIA_MAX_MATCH_LOCAL_M = 30_000; // 30km -- nome bateu, mas e outra r
 // certo -- devolve null em vez de arriscar. Candidato UNICO sem
 // pontoCidade continua passando direto (nao muda, nada pra comparar
 // mesmo, ver teste "um candidato, sem ponto de cidade").
+// Achado real 05/09 (diagnostico dos pendentes do KPI Nutry Max de 03/09):
+// 226 dos 382 pendentes tinham coordenada mas o caminhao nunca passou a
+// menos de 1,5km dela -- media de 14km. No nivel "so rua" o CNEFE devolve
+// ate 200 pontos da rua INTEIRA e a escolha era pela proximidade ao CENTRO
+// DA CIDADE; em via longa, numeros bem distantes colapsavam no MESMO ponto
+// ("AV LUCIO COSTA, 2900 / 5700 / 16580", avenida de ~18km, todos em
+// -23.01391,-43.31373). Com o numero do romaneio em maos, o desempate certo
+// e' pelo NUMERO mais proximo. O teto de distancia do ponto de cidade
+// continua valendo depois (rua homonima em cidade errada segue barrada).
+function soDigitos(n: string | null | undefined): number | null {
+  if (!n) return null;
+  const so = String(n).replace(/\D/g, "");
+  if (!so) return null;
+  const v = Number(so);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function escolherPorNumeroMaisProximo(
+  candidatos: { lat: number; lng: number; numero?: string | null }[],
+  numeroAlvo: number
+): { lat: number; lng: number } | null {
+  let melhor: { lat: number; lng: number } | null = null;
+  let menorDif = Infinity;
+  for (const c of candidatos) {
+    const n = soDigitos(c.numero);
+    if (n === null) continue;
+    const dif = Math.abs(n - numeroAlvo);
+    if (dif < menorDif) { menorDif = dif; melhor = { lat: c.lat, lng: c.lng }; }
+  }
+  return melhor;
+}
+
 function escolherCandidatoMaisProximo(
   candidatos: { lat: number; lng: number }[],
   pontoCidade: { lat: number; lng: number } | null
@@ -54,7 +86,9 @@ function escolherCandidatoMaisProximo(
     const d = haversineM(pontoCidade.lat, pontoCidade.lng, c.lat, c.lng);
     if (d < menorDist) { menorDist = d; melhor = c; }
   }
-  return menorDist <= DISTANCIA_MAX_MATCH_LOCAL_M ? melhor : null;
+  // so' lat/lng: candidato do CNEFE pode vir com `numero` junto (usado no
+  // desempate) e isso nao deve vazar pro resultado/cache.
+  return menorDist <= DISTANCIA_MAX_MATCH_LOCAL_M ? { lat: melhor.lat, lng: melhor.lng } : null;
 }
 
 // Geocodificacao LOCAL via extrato OSM (vias_nomes) -- ver
@@ -97,7 +131,11 @@ export async function geocodificarCnefe(
   municipioCodigo: string | null,
   deps: {
     buscarPorRuaNumero: (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
-    buscarPorRua: (nomeNormalizado: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
+    // `numeroAlvo` (3o arg) permite ao produtor ORDENAR pelo numero no banco
+    // -- rua longa tem milhares de pontos no CNEFE e um LIMIT sem ordenacao
+    // pode nem trazer o numero certo (ver migration 074). `numero` na
+    // resposta e' OPCIONAL: sem ele, o desempate por numero nao se aplica.
+    buscarPorRua: (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null) => Promise<{ lat: number; lng: number; numero?: string | null }[]>;
     buscarPorSimilaridade: (nomeNormalizado: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
   }
 ): Promise<{ lat: number; lng: number } | null> {
@@ -111,7 +149,18 @@ export async function geocodificarCnefe(
     if (resultado) return resultado;
   }
 
-  const porRua = await deps.buscarPorRua(nomeNormalizado, municipioCodigo);
+  const numeroAlvo = soDigitos(numero);
+  const porRua = await deps.buscarPorRua(nomeNormalizado, municipioCodigo, numeroAlvo);
+  // Com numero do romaneio: desempata pelo numero mais proximo entre os
+  // pontos da rua (ver escolherPorNumeroMaisProximo). O ponto escolhido
+  // ainda passa pelo teto de distancia do ponto de cidade.
+  if (numeroAlvo !== null) {
+    const porNumero = escolherPorNumeroMaisProximo(porRua, numeroAlvo);
+    if (porNumero) {
+      const validado = escolherCandidatoMaisProximo([porNumero], pontoCidade);
+      if (validado) return validado;
+    }
+  }
   const resultadoRua = escolherCandidatoMaisProximo(porRua, pontoCidade);
   if (resultadoRua) return resultadoRua;
 

@@ -194,8 +194,22 @@ export async function POST(request: Request) {
     const { data } = await query;
     return data ?? [];
   };
-  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null) => {
-    let query = admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).limit(200);
+  // `numero` vem junto pro desempate por numero mais proximo em via longa
+  // (achado 05/09, ver escolherPorNumeroMaisProximo em romaneio-geocode.ts).
+  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null) => {
+    // Com numero: ordena PELO NUMERO no banco (migration 074) -- rua longa
+    // tem milhares de pontos e um LIMIT sem ordenacao pode nem trazer o
+    // numero certo. Sem numero (S/N): amostra da rua, como antes.
+    if (numeroAlvo !== null) {
+      const { data } = await admin.rpc("cnefe_buscar_por_rua_numero_proximo", {
+        nome: nomeNormalizado,
+        numero_alvo: numeroAlvo,
+        filtro_municipio_codigo: municipioCodigo,
+        limite: 5,
+      });
+      if (data && data.length > 0) return data;
+    }
+    let query = admin.from("cnefe_enderecos").select("lat, lng, numero").eq("nome_normalizado", nomeNormalizado).limit(200);
     if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
     const { data } = await query;
     return data ?? [];
