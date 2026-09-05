@@ -1,0 +1,143 @@
+import { createAdminClient } from "@/lib/supabase/admin";
+import { normalizarNomeRua } from "@/lib/romaneio-geocode-local";
+import {
+  resolverGrupoPorCoerencia,
+  municipiosDaZona,
+  zonasConhecidas,
+  type CandidatoCluster,
+  type ResultadoParada,
+} from "@/lib/romaneio-geocode-coerencia";
+
+// POST /api/romaneio/geocode-coerencia -- geocodificacao por COERENCIA DE
+// GRUPO pra romaneio que so' traz o NOME DA RUA por parada (sem numero,
+// bairro ou cidade) -- caso real Rio Quality, achado 05/09. Ver a lib
+// src/lib/romaneio-geocode-coerencia.ts (algoritmo, medicoes) e a migration
+// contabo/071 (funcoes SQL de candidatos).
+//
+// Corpo: { grupos: [{ id, zona?, ruas: string[] }] }
+//   - id: chave livre do chamador (placa, "placa|dia"...), so' devolvida de volta
+//   - zona: uma de zonasConhecidas() (CAPITAL, BAIXADA, LESTE, LAGOS, SERRANA,
+//     SUL_FLUMINENSE, NORTE_FLUMINENSE, COSTA_VERDE) -- prior FRACO; quem
+//     traduz o nome da rota do cliente ("SUDOESTE 2") pra zona e' o chamador
+//   - ruas: nomes crus como vem no romaneio ("AV. AUTOMOVEL CLUBE"), a ordem
+//     NAO importa (nao e' ordem de rota) mas e' preservada na resposta
+// Resposta: { grupos: [{ id, resultados: ResultadoParada[] }] } -- um
+// resultado por rua, na mesma ordem; lat/lng null quando sem candidato.
+//
+// Protegida por x-motor-key + MOTOR_SECRET como as outras rotas de ponte.
+// Sem efeito colateral (nao escreve cache) -- o chamador decide o que fazer
+// com "baixa"/"sem_candidato" (o KPI marca no relatorio em vez de inventar).
+
+export const maxDuration = 120;
+
+const MAX_GRUPOS = 150;
+const MAX_RUAS_TOTAL = 4000;
+const LIMITE_CLUSTERS_SIMILARIDADE = 40;
+
+type GrupoEntrada = { id: string; zona?: string | null; ruas: string[] };
+
+type LinhaExato = { nome: string; municipio_codigo: string; lat: number; lng: number; qtd: number };
+type LinhaSimilar = { nome_cnefe: string; similaridade: number; municipio_codigo: string; lat: number; lng: number; qtd: number };
+
+export async function POST(request: Request) {
+  const chave = request.headers.get("x-motor-key");
+  if (!chave || chave !== process.env.MOTOR_SECRET) {
+    return Response.json({ erro: "nao autorizado" }, { status: 401 });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ erro: "corpo invalido, esperado JSON" }, { status: 400 });
+  }
+
+  const grupos = (body as { grupos?: unknown })?.grupos;
+  if (!Array.isArray(grupos) || !grupos.every(ehGrupoValido)) {
+    return Response.json(
+      { erro: "'grupos' precisa ser um array de { id: string, zona?: string, ruas: string[] }" },
+      { status: 400 },
+    );
+  }
+  if (grupos.length > MAX_GRUPOS) {
+    return Response.json({ erro: `no maximo ${MAX_GRUPOS} grupos por chamada` }, { status: 400 });
+  }
+  const totalRuas = grupos.reduce((s, g) => s + g.ruas.length, 0);
+  if (totalRuas > MAX_RUAS_TOTAL) {
+    return Response.json({ erro: `no maximo ${MAX_RUAS_TOTAL} ruas no total por chamada` }, { status: 400 });
+  }
+  const zonaInvalida = grupos.find((g) => g.zona && !municipiosDaZona(g.zona));
+  if (zonaInvalida) {
+    return Response.json(
+      { erro: `zona desconhecida '${zonaInvalida.zona}'; use uma de: ${zonasConhecidas().join(", ")}` },
+      { status: 400 },
+    );
+  }
+  if (grupos.length === 0) return Response.json({ grupos: [] });
+
+  const admin = createAdminClient();
+
+  // 1) normaliza tudo e busca candidatos EXATOS em lote (uma RPC pra todos os grupos)
+  const nomesUnicos = new Set<string>();
+  const gruposNorm = grupos.map((g) => ({
+    ...g,
+    nomes: g.ruas.map((r) => normalizarNomeRua(r)),
+  }));
+  for (const g of gruposNorm) for (const n of g.nomes) if (n) nomesUnicos.add(n);
+
+  const candidatosPorNome = new Map<string, CandidatoCluster[]>();
+  const { data: exatos, error: erroExato } = await admin.rpc("cnefe_candidatos_por_rua", { nomes: [...nomesUnicos] });
+  if (erroExato) {
+    return Response.json({ erro: `cnefe_candidatos_por_rua: ${erroExato.message}` }, { status: 500 });
+  }
+  for (const l of (exatos ?? []) as LinhaExato[]) {
+    const lista = candidatosPorNome.get(l.nome) ?? [];
+    lista.push({ municipioCodigo: l.municipio_codigo, lat: Number(l.lat), lng: Number(l.lng), qtd: Number(l.qtd), similaridade: 1 });
+    candidatosPorNome.set(l.nome, lista);
+  }
+
+  // 2) similaridade so' pros nomes que o exato nao achou (uma RPC por nome, sequencial
+  //    -- pg_trgm em 8,8M linhas custa ~0,3-1s cada; nomes curtos (<6) nao valem o risco)
+  let viaSimilaridade = 0;
+  for (const nome of nomesUnicos) {
+    if (candidatosPorNome.has(nome) || nome.length < 6) continue;
+    const { data: similares, error: erroSim } = await admin.rpc("cnefe_candidatos_por_similaridade", {
+      nome,
+      limite_clusters: LIMITE_CLUSTERS_SIMILARIDADE,
+    });
+    if (erroSim || !similares || similares.length === 0) continue;
+    const linhas = similares as LinhaSimilar[];
+    // so' os aglomerados do nome CNEFE mais parecido (nao mistura ruas diferentes)
+    const melhor = Math.max(...linhas.map((l) => Number(l.similaridade)));
+    const lista: CandidatoCluster[] = linhas
+      .filter((l) => Number(l.similaridade) >= melhor - 0.05)
+      .map((l) => ({ municipioCodigo: l.municipio_codigo, lat: Number(l.lat), lng: Number(l.lng), qtd: Number(l.qtd), similaridade: Number(l.similaridade) }));
+    if (lista.length > 0) {
+      candidatosPorNome.set(nome, lista);
+      viaSimilaridade++;
+    }
+  }
+
+  // 3) resolve cada grupo (puro, em memoria)
+  const saida = gruposNorm.map((g) => {
+    const resultados: ResultadoParada[] = resolverGrupoPorCoerencia(
+      g.nomes.map((nomeNormalizado) => ({ nomeNormalizado })),
+      candidatosPorNome,
+      municipiosDaZona(g.zona),
+    );
+    return { id: g.id, resultados };
+  });
+
+  return Response.json({ grupos: saida, meta: { nomesUnicos: nomesUnicos.size, viaSimilaridade } });
+}
+
+function ehGrupoValido(g: unknown): g is GrupoEntrada {
+  if (!g || typeof g !== "object") return false;
+  const o = g as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    (o.zona === undefined || o.zona === null || typeof o.zona === "string") &&
+    Array.isArray(o.ruas) &&
+    o.ruas.every((r) => typeof r === "string")
+  );
+}
