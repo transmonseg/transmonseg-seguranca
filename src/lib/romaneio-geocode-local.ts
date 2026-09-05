@@ -397,9 +397,17 @@ const ABREVIACOES_TITULO = new Map([
 ]);
 
 export function normalizarNomeRua(rua: string): string {
+  // Ponto vira espaco ANTES de tokenizar -- achado real 05/09: o romaneio
+  // abrevia tipo de via/titulo com ponto ("AV. AUTOMOVEL CLUBE", "R. NOVE",
+  // "AV. DR. ORLANDO") e as vezes grudado no nome ("AV.JOAO RIBEIRO"). O
+  // token "AV." nao esta' em PREFIXOS_VIA (so' "AV"), entao o prefixo
+  // sobrava no nome e nunca batia com CNEFE/OSM. Em producao (Nutry Max):
+  // 174 romaneio_pontos + 42 entradas de cache comecam assim; no romaneio
+  // Rio Quality, 125 de 372 enderecos "sem candidato" eram so' isso.
   const semAcento = rua
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\./g, " ")
     .toUpperCase()
     .trim()
     .replace(/\s+/g, " ");

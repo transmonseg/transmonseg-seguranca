@@ -79,6 +79,22 @@ describe("normalizarNomeRua", () => {
     expect(normalizarNomeRua("PRACA DA SE")).toBe("SE");
   });
 
+  // Achado real 05/09 (romaneio Rio Quality + auditoria da Nutry Max: 174
+  // pontos de romaneio e 42 entradas de cache em producao): o romaneio
+  // abrevia o tipo de via COM PONTO -- "AV. AUTOMOVEL CLUBE", e as vezes
+  // ate' grudado no nome, "AV.JOAO RIBEIRO". O token "AV." nao esta' em
+  // PREFIXOS_VIA (so' "AV"), entao o prefixo ficava no nome e NUNCA batia
+  // com o CNEFE/OSM -- 125 de 372 enderecos "sem candidato" do romaneio
+  // Rio Quality eram so' isso. Ponto vira espaco antes de tokenizar.
+  it("abreviacao de tipo de via com ponto (solto ou grudado no nome) e' removida igual a sem ponto", () => {
+    expect(normalizarNomeRua("AV. AUTOMOVEL CLUBE")).toBe("AUTOMOVEL CLUBE");
+    expect(normalizarNomeRua("AV.JOAO RIBEIRO")).toBe("JOAO RIBEIRO");
+    expect(normalizarNomeRua("R. NOVE")).toBe("NOVE");
+    expect(normalizarNomeRua("EST. DO MENDANHA")).toBe("MENDANHA");
+    expect(normalizarNomeRua("AV. DR. ORLANDO OBERLAENDER")).toBe("DOUTOR ORLANDO OBERLAENDER");
+    expect(normalizarNomeRua("AV. AUTOMOVEL CLUBE")).toBe(normalizarNomeRua("AVENIDA AUTOMOVEL CLUBE"));
+  });
+
   it("bate igual independente de abreviacao (romaneio vs OSM)", () => {
     expect(normalizarNomeRua("AV AMARAL PEIXOTO")).toBe(normalizarNomeRua("Avenida Amaral Peixoto"));
   });
