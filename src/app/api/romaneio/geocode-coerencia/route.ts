@@ -33,6 +33,7 @@ export const maxDuration = 120;
 const MAX_GRUPOS = 150;
 const MAX_RUAS_TOTAL = 4000;
 const LIMITE_CLUSTERS_SIMILARIDADE = 40;
+const CONCORRENCIA_SIMILARIDADE = 4;
 
 type GrupoEntrada = { id: string; zona?: string | null; ruas: string[] };
 
@@ -96,16 +97,18 @@ export async function POST(request: Request) {
     candidatosPorNome.set(l.nome, lista);
   }
 
-  // 2) similaridade so' pros nomes que o exato nao achou (uma RPC por nome, sequencial
-  //    -- pg_trgm em 8,8M linhas custa ~0,3-1s cada; nomes curtos (<6) nao valem o risco)
+  // 2) similaridade so' pros nomes que o exato nao achou -- uma RPC por nome,
+  //    em paralelo com concorrencia limitada (achado real 05/09: ~0,5s cada
+  //    com o limiar fixado no indice pela migration 072; antes eram ~12s).
+  //    Nomes curtos (<6) nao valem o risco de casar rua errada.
+  const pendentes = [...nomesUnicos].filter((n) => !candidatosPorNome.has(n) && n.length >= 6);
   let viaSimilaridade = 0;
-  for (const nome of nomesUnicos) {
-    if (candidatosPorNome.has(nome) || nome.length < 6) continue;
+  const buscarSimilar = async (nome: string) => {
     const { data: similares, error: erroSim } = await admin.rpc("cnefe_candidatos_por_similaridade", {
       nome,
       limite_clusters: LIMITE_CLUSTERS_SIMILARIDADE,
     });
-    if (erroSim || !similares || similares.length === 0) continue;
+    if (erroSim || !similares || similares.length === 0) return;
     const linhas = similares as LinhaSimilar[];
     // so' os aglomerados do nome CNEFE mais parecido (nao mistura ruas diferentes)
     const melhor = Math.max(...linhas.map((l) => Number(l.similaridade)));
@@ -116,6 +119,9 @@ export async function POST(request: Request) {
       candidatosPorNome.set(nome, lista);
       viaSimilaridade++;
     }
+  };
+  for (let i = 0; i < pendentes.length; i += CONCORRENCIA_SIMILARIDADE) {
+    await Promise.all(pendentes.slice(i, i + CONCORRENCIA_SIMILARIDADE).map(buscarSimilar));
   }
 
   // 3) resolve cada grupo (puro, em memoria)
