@@ -99,11 +99,33 @@ export async function POST(request: Request) {
     candidatosPorNome.set(l.nome, lista);
   }
 
-  // 2) similaridade so' pros nomes que o exato nao achou -- uma RPC por nome,
+  // 2) similaridade pros nomes que o exato nao resolveu -- uma RPC por nome,
   //    em paralelo com concorrencia limitada (achado real 05/09: ~0,5s cada
   //    com o limiar fixado no indice pela migration 072; antes eram ~12s).
   //    Nomes curtos (<6) nao valem o risco de casar rua errada.
-  const pendentes = [...nomesUnicos].filter((n) => !candidatosPorNome.has(n) && n.length >= 6);
+  //
+  //    Entra aqui tambem o nome que TEM match exato mas NENHUM dentro da zona
+  //    do grupo (achado 05/09, conferencia manual da Rio Quality): "RUA
+  //    RAIMUNDO CORREIA" na rota SUL 1 (capital, rua de Copacabana) foi parar
+  //    em Duque de Caxias porque o CNEFE grafa "RAIMUNDO CORREA" no Rio --
+  //    sem match exato na capital, mas com exato em Caxias/Macae/Belford
+  //    Roxo. Match exato FORA da zona nao pode ganhar de nome parecido DENTRO
+  //    dela.
+  const semExatoNaZona = new Set<string>();
+  for (const g of gruposNorm) {
+    const zona = municipiosDaZona(g.zona);
+    if (!zona) continue;
+    for (const nome of g.nomes) {
+      const exatos = candidatosPorNome.get(nome);
+      if (exatos && exatos.length > 0 && !exatos.some((c) => zona.has(c.municipioCodigo))) {
+        semExatoNaZona.add(nome);
+      }
+    }
+  }
+  const candidatosSimilares = new Map<string, CandidatoCluster[]>();
+  const pendentes = [...nomesUnicos].filter(
+    (n) => (!candidatosPorNome.has(n) || semExatoNaZona.has(n)) && n.length >= 6,
+  );
   let viaSimilaridade = 0;
   const buscarSimilar = async (nome: string) => {
     const { data: similares, error: erroSim } = await admin.rpc("cnefe_candidatos_por_similaridade", {
@@ -118,7 +140,11 @@ export async function POST(request: Request) {
       .filter((l) => Number(l.similaridade) >= melhor - 0.05)
       .map((l) => ({ municipioCodigo: l.municipio_codigo, lat: Number(l.lat), lng: Number(l.lng), qtd: Number(l.qtd), similaridade: Number(l.similaridade) }));
     if (lista.length > 0) {
-      candidatosPorNome.set(nome, lista);
+      // guardado a parte: o exato continua valendo pra quem tem candidato na
+      // propria zona; o similar so' entra pra quem nao tem (ver montagem por
+      // grupo abaixo).
+      candidatosSimilares.set(nome, lista);
+      if (!candidatosPorNome.has(nome)) candidatosPorNome.set(nome, lista);
       viaSimilaridade++;
     }
   };
@@ -128,12 +154,23 @@ export async function POST(request: Request) {
   }
   const msSimilaridade = Date.now() - t1;
 
-  // 3) resolve cada grupo (puro, em memoria)
+  // 3) resolve cada grupo (puro, em memoria). Monta o mapa de candidatos DO
+  //    GRUPO: quando o exato nao tem nada na zona e a similaridade tem, usa a
+  //    similaridade (nunca vira ancora e a confianca ja' e' rebaixada na lib).
   const saida = gruposNorm.map((g) => {
+    const zona = municipiosDaZona(g.zona);
+    const doGrupo = new Map(candidatosPorNome);
+    if (zona) {
+      for (const nome of g.nomes) {
+        if (!semExatoNaZona.has(nome)) continue;
+        const similares = candidatosSimilares.get(nome);
+        if (similares?.some((c) => zona.has(c.municipioCodigo))) doGrupo.set(nome, similares);
+      }
+    }
     const resultados: ResultadoParada[] = resolverGrupoPorCoerencia(
       g.nomes.map((nomeNormalizado) => ({ nomeNormalizado })),
-      candidatosPorNome,
-      municipiosDaZona(g.zona),
+      doGrupo,
+      zona,
     );
     return { id: g.id, resultados };
   });

@@ -95,6 +95,60 @@ describe("POST /api/romaneio/geocode-coerencia", () => {
     expect(json.meta.viaSimilaridade).toBe(1);
   });
 
+  // Achado real 05/09 (conferencia manual de 20 entregas da Rio Quality):
+  // "RUA RAIMUNDO CORREIA" (rota SUL 1 = capital, e' rua de Copacabana) foi
+  // parar em Duque de Caxias. Motivo: o CNEFE grafa "RAIMUNDO CORREA" (sem o
+  // "i") no Rio, entao NAO ha match exato na capital -- mas ha match exato em
+  // Duque de Caxias, Macae, Belford Roxo... Como so' buscavamos similaridade
+  // pra nome SEM NENHUM match exato, o exato de fora da zona ganhava do
+  // parecido de dentro. Regra certa: match exato FORA da zona nao ganha de
+  // nome parecido DENTRO da zona.
+  it("nome com match exato so' FORA da zona: busca similaridade e prefere o candidato de dentro da zona", async () => {
+    rpcMock.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+      if (fn === "cnefe_candidatos_por_rua") {
+        return { data: [{ nome: "RAIMUNDO CORREIA", municipio_codigo: CAXIAS, lat: -22.78, lng: -43.32, qtd: 235 }], error: null }
+      }
+      if (fn === "cnefe_candidatos_por_similaridade") {
+        expect(args.nome).toBe("RAIMUNDO CORREIA")
+        return { data: [{ nome_cnefe: "RAIMUNDO CORREA", similaridade: 0.94, municipio_codigo: RIO, lat: -22.9707, lng: -43.1861, qtd: 531 }], error: null }
+      }
+      throw new Error("rpc inesperada " + fn)
+    })
+    const res = await POST(req({ grupos: [{ id: "LUN8I82", zona: "CAPITAL", ruas: ["RUA RAIMUNDO CORREIA"] }] }))
+    const [r] = (await res.json()).grupos[0].resultados
+    expect(r.municipioCodigo).toBe(RIO)
+    expect(r.lat).toBe(-22.9707)
+    // veio de similaridade: nunca "alta", e nao ancora sozinho
+    expect(r.ancora).toBe(false)
+  })
+
+  it("havendo match exato DENTRO da zona, nao gasta chamada de similaridade", async () => {
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "cnefe_candidatos_por_rua") {
+        return { data: [
+          { nome: "NOVE", municipio_codigo: RIO, lat: -22.9, lng: -43.2, qtd: 10 },
+          { nome: "NOVE", municipio_codigo: CAXIAS, lat: -22.78, lng: -43.32, qtd: 10 },
+        ], error: null }
+      }
+      throw new Error("nao deveria chamar " + fn)
+    })
+    const res = await POST(req({ grupos: [{ id: "g", zona: "CAPITAL", ruas: ["RUA NOVE"] }] }))
+    expect((await res.json()).grupos[0].resultados[0].municipioCodigo).toBe(RIO)
+    expect(rpcMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("sem zona declarada: mantem o comportamento de hoje (exato basta, nao busca similaridade)", async () => {
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "cnefe_candidatos_por_rua") {
+        return { data: [{ nome: "RAIMUNDO CORREIA", municipio_codigo: CAXIAS, lat: -22.78, lng: -43.32, qtd: 235 }], error: null }
+      }
+      throw new Error("nao deveria chamar " + fn)
+    })
+    const res = await POST(req({ grupos: [{ id: "g", ruas: ["RUA RAIMUNDO CORREIA"] }] }))
+    expect((await res.json()).grupos[0].resultados[0].municipioCodigo).toBe(CAXIAS)
+    expect(rpcMock).toHaveBeenCalledTimes(1)
+  })
+
   it("500 com mensagem se a rpc de exatos falhar", async () => {
     rpcMock.mockResolvedValue({ data: null, error: { message: "boom" } });
     const res = await POST(req({ grupos: [{ id: "g", ruas: ["RUA X"] }] }));
