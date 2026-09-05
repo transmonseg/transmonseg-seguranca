@@ -31,6 +31,8 @@ export type ParadaEntrada = { nomeNormalizado: string };
 
 export type Confianca = "alta" | "media" | "baixa" | "sem_candidato" | "isolado";
 
+export type PontoZona = { lat: number; lng: number; municipioCodigo: string };
+
 export type ResultadoParada = {
   lat: number | null;
   lng: number | null;
@@ -38,6 +40,12 @@ export type ResultadoParada = {
   confianca: Confianca;
   candidatos: number; // quantos candidatos restaram depois do prior de zona
   ancora: boolean;
+  // TODOS os candidatos da mesma rua dentro da zona (nao so' o escolhido) --
+  // pedido do usuario 06/09: "se disser a rua, e o caminhao parou naquela
+  // rua, conta como entrega", mesmo que a parada real fique longe do ponto
+  // que a coerencia escolheu (rua comprida, varios trechos no CNEFE). O
+  // chamador confirma contra QUALQUER um destes, nao so' o escolhido.
+  pontosZona: PontoZona[];
 };
 
 // Raio (m) pra promover uma escolha a ancora / confianca alta. 2,5km cobre
@@ -293,8 +301,9 @@ export function resolverGrupoPorCoerencia(
   // 5) confianca
   return paradas.map((_, i): ResultadoParada => {
     const c = escolha[i];
+    const pontosZona: PontoZona[] = cands[i].map((p) => ({ lat: p.lat, lng: p.lng, municipioCodigo: p.municipioCodigo }));
     if (!c) {
-      return { lat: null, lng: null, municipioCodigo: null, confianca: "sem_candidato", candidatos: cands[i].length, ancora: false };
+      return { lat: null, lng: null, municipioCodigo: null, confianca: "sem_candidato", candidatos: cands[i].length, ancora: false, pontosZona };
     }
     const outrasAncoras = escolha.filter((o, k): o is CandidatoCluster => k !== i && ancora[k] && o !== null);
     let confianca: Confianca;
@@ -311,6 +320,6 @@ export function resolverGrupoPorCoerencia(
       if (confianca === "alta") confianca = "media";
       else if (confianca === "media") confianca = "baixa";
     }
-    return { lat: c.lat, lng: c.lng, municipioCodigo: c.municipioCodigo, confianca, candidatos: cands[i].length, ancora: ancora[i] };
+    return { lat: c.lat, lng: c.lng, municipioCodigo: c.municipioCodigo, confianca, candidatos: cands[i].length, ancora: ancora[i], pontosZona };
   });
 }
