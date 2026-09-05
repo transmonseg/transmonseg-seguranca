@@ -44,6 +44,9 @@ export type ResultadoParada = {
 // um bairro grande; acima disso ate' 8km ainda e' "mesma regiao" (media).
 export const RAIO_ANCORA_M = 2_500;
 export const RAIO_MEDIA_M = 8_000;
+// Ancora a mais que isso de TODAS as outras ancoras (>= 3, e as outras
+// concordando entre si) e' tratada como errada -- ver passo 2b.
+export const RAIO_ANCORA_ISOLADA_M = 15_000;
 const ITERACOES_MAX = 6;
 
 // Zonas GENERICAS (geografia do RJ), nao o nome da rota de um cliente
@@ -198,6 +201,29 @@ export function resolverGrupoPorCoerencia(
     }
   }
 
+  // 2b) ancora ISOLADA -- achado real 05/09 ("RUA 37": unica no CNEFE, em
+  //     Itatiaia, mas a rua real do romaneio nao esta' no CNEFE; virou ancora
+  //     "alta" a 25km de todas as outras). Se ha >= 3 ancoras e uma fica a
+  //     mais de RAIO_ANCORA_ISOLADA_M de TODAS as outras -- que por sua vez
+  //     concordam entre si -- e' ela que esta' errada: sai do papel de ancora
+  //     e termina como "baixa". Com so' 2 ancoras discordantes nao da' pra
+  //     saber quem esta' certa: ninguem e' rebaixada.
+  const rebaixada: boolean[] = new Array(n).fill(false);
+  const idxAncoras = ancora.map((a, i) => (a ? i : -1)).filter((i) => i >= 0);
+  if (idxAncoras.length >= 3) {
+    const distMaisProxima = (i: number, entre: number[]) =>
+      Math.min(...entre.filter((k) => k !== i).map((k) => distanciaM(escolha[i]!, escolha[k]!)));
+    for (const i of idxAncoras) {
+      const outras = idxAncoras.filter((k) => k !== i);
+      const isolada = distMaisProxima(i, idxAncoras) > RAIO_ANCORA_ISOLADA_M;
+      const outrasConcordam = outras.filter((k) => distMaisProxima(k, outras) <= RAIO_ANCORA_ISOLADA_M).length >= 2;
+      if (isolada && outrasConcordam) {
+        ancora[i] = false;
+        rebaixada[i] = true;
+      }
+    }
+  }
+
   // 3) sem ancora nenhuma: semente = par de candidatos (de paradas diferentes)
   //    mais proximos entre si -- o aglomerado mais denso do grupo. Grupo
   //    semeado assim nunca passa de "media": duas ruas ambiguas proximas se
@@ -237,7 +263,7 @@ export function resolverGrupoPorCoerencia(
     if (pontosAncora.length === 0) break;
     let mudou = false;
     for (let i = 0; i < n; i++) {
-      if (ancora[i] || cands[i].length === 0) continue;
+      if (ancora[i] || rebaixada[i] || cands[i].length === 0) continue;
       let melhorC: CandidatoCluster | null = null;
       let melhorD = Infinity;
       for (const c of cands[i]) {
@@ -254,7 +280,7 @@ export function resolverGrupoPorCoerencia(
     }
     for (let i = 0; i < n; i++) {
       const c = escolha[i];
-      if (ancora[i] || !c || !ehExato(c)) continue;
+      if (ancora[i] || rebaixada[i] || !c || !ehExato(c)) continue;
       const d = Math.min(...pontosAncora.map((a) => distanciaM(a, c)));
       if (d <= RAIO_ANCORA_M) {
         ancora[i] = true;
@@ -279,6 +305,7 @@ export function resolverGrupoPorCoerencia(
       confianca = cands[i].length === 1 || d <= RAIO_ANCORA_M ? "alta" : d <= RAIO_MEDIA_M ? "media" : "baixa";
     }
     if (!temAncoraVerdadeira && confianca === "alta") confianca = "media";
+    if (rebaixada[i]) confianca = "baixa";
     // veio de similaridade: rebaixa um nivel (nunca "alta")
     if (!ehExato(c)) {
       if (confianca === "alta") confianca = "media";

@@ -87,7 +87,9 @@ export async function POST(request: Request) {
   for (const g of gruposNorm) for (const n of g.nomes) if (n) nomesUnicos.add(n);
 
   const candidatosPorNome = new Map<string, CandidatoCluster[]>();
+  const t0 = Date.now();
   const { data: exatos, error: erroExato } = await admin.rpc("cnefe_candidatos_por_rua", { nomes: [...nomesUnicos] });
+  const msExato = Date.now() - t0;
   if (erroExato) {
     return Response.json({ erro: `cnefe_candidatos_por_rua: ${erroExato.message}` }, { status: 500 });
   }
@@ -120,9 +122,11 @@ export async function POST(request: Request) {
       viaSimilaridade++;
     }
   };
+  const t1 = Date.now();
   for (let i = 0; i < pendentes.length; i += CONCORRENCIA_SIMILARIDADE) {
     await Promise.all(pendentes.slice(i, i + CONCORRENCIA_SIMILARIDADE).map(buscarSimilar));
   }
+  const msSimilaridade = Date.now() - t1;
 
   // 3) resolve cada grupo (puro, em memoria)
   const saida = gruposNorm.map((g) => {
@@ -134,7 +138,10 @@ export async function POST(request: Request) {
     return { id: g.id, resultados };
   });
 
-  return Response.json({ grupos: saida, meta: { nomesUnicos: nomesUnicos.size, viaSimilaridade } });
+  return Response.json({
+    grupos: saida,
+    meta: { nomesUnicos: nomesUnicos.size, viaSimilaridade, pendentesSimilaridade: pendentes.length, msExato, msSimilaridade },
+  });
 }
 
 function ehGrupoValido(g: unknown): g is GrupoEntrada {

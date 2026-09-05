@@ -132,6 +132,46 @@ describe("resolverGrupoPorCoerencia", () => {
     expect(r[1].confianca).toBe("baixa");
   });
 
+  // Achado real 05/09 (gabarito Rio Quality): "RUA 37" tem UM candidato no
+  // CNEFE (Itatiaia) mas a rua real do romaneio nao esta' no CNEFE -- o
+  // candidato unico virou ancora com confianca "alta" a 25km de todas as
+  // outras ancoras do caminhao. Rua unica no estado nao e' garantia: se ela
+  // fica longe de TODAS as outras ancoras (que concordam entre si), e' ela
+  // que esta' errada -- rebaixa pra "baixa" e nao deixa puxar as ambiguas.
+  it("ancora isolada (>15km de todas as outras ancoras, que concordam entre si) e' rebaixada e nao atrai as ambiguas", () => {
+    const longe = c(RIO, -22.90, -43.60); // "RUA 37": unica, mas a 40km do Leblon
+    const perto = c(RIO, -22.9850, -43.2235);
+    const r = resolverGrupoPorCoerencia(
+      [
+        { nomeNormalizado: "ATAULFO PAIVA" },
+        { nomeNormalizado: "DIAS FERREIRA" },
+        { nomeNormalizado: "RUA 37" },
+        { nomeNormalizado: "NOVE" },
+      ],
+      new Map([
+        ["ATAULFO PAIVA", [ATAULFO]],
+        ["DIAS FERREIRA", [DIAS_FERREIRA]],
+        ["RUA 37", [longe]],
+        ["NOVE", [c(RIO, -22.905, -43.605), perto]], // um candidato colado na ancora falsa, outro no Leblon
+      ]),
+      null,
+    );
+    expect(r[2].confianca).toBe("baixa");
+    expect(r[2].ancora).toBe(false);
+    expect(r[3].lat).toBe(perto.lat); // NOVE foi pro Leblon, nao pra perto da "RUA 37"
+  });
+
+  it("com so' 2 ancoras discordantes nao da' pra saber quem esta' errada: as duas ficam, ninguem e' rebaixada", () => {
+    const longe = c(RIO, -22.90, -43.60);
+    const r = resolverGrupoPorCoerencia(
+      [{ nomeNormalizado: "ATAULFO PAIVA" }, { nomeNormalizado: "RUA 37" }],
+      new Map([["ATAULFO PAIVA", [ATAULFO]], ["RUA 37", [longe]]]),
+      null,
+    );
+    expect(r[0].ancora).toBe(true);
+    expect(r[1].ancora).toBe(true);
+  });
+
   it("candidato vindo de similaridade (nao exato) nunca vira ancora sozinho e rebaixa a confianca um nivel", () => {
     const sim = c(RIO, -22.9850, -43.2230, 10, 0.72);
     const r = resolverGrupoPorCoerencia(
