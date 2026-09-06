@@ -362,14 +362,17 @@ export async function POST(request: Request) {
     const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
     const bairro = extrairBairroDoEndereco(enderecoBruto);
     const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
+    const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
     // Ponto do bairro so' vale se estiver DENTRO da cidade -- ver
     // escolherPontoReferencia (achado 05/09: "CENTRO, CAMBUCI" resolvia em
-    // Sao Paulo capital e derrubava o endereco certo pelo teto de 30km).
+    // Sao Paulo capital e derrubava o endereco certo pelo teto de 30km;
+    // achado 06/09: Rio capital ganha teto maior la' dentro, municipio
+    // gigante onde bairro correto pode ficar bem mais longe do "centro").
     const pontoReferencia = escolherPontoReferencia(
       (chaveBairro && pontosBairro.get(chaveBairro)) || null,
       (cidade ? pontosCidade.get(cidade) : null) || null,
+      municipioCodigo,
     );
-    const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
     return geocodificarEndereco(enderecoBruto, pontoReferencia, {
       buscarCache,
       salvarCache,

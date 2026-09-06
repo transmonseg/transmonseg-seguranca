@@ -376,6 +376,34 @@ describe("escolherPontoReferencia (achado real 05/09)", () => {
   it("sem nada: null", () => {
     expect(escolherPontoReferencia(null, null)).toBeNull();
   });
+
+  // Achado real 06/09 (KPI Rio Quality): Rio de Janeiro capital (3304557)
+  // tem ~60km de ponta a ponta -- um bairro da Zona Oeste (Campo Grande,
+  // Guaratiba) pode legitimamente estar a mais de 25km do ponto de cidade
+  // (perto do Centro) sem ser o mesmo tipo de erro do caso Cambuci/Itaocara/
+  // Miracema acima (Nominatim jogando o bairro pra OUTRO ESTADO). So' o
+  // municipio do Rio ganha teto maior; o resto do estado mantem 25km.
+  describe("Rio de Janeiro capital (3304557): teto maior pro bairro (achado real 06/09)", () => {
+    const centroDoRio = { lat: -22.9068, lng: -43.1729 };
+    const campoGrande = { lat: -22.9028, lng: -43.5606 }; // ~40km do Centro, Zona Oeste
+    const saoPauloCapital = { lat: -23.5506, lng: -46.6182 }; // ~350km, outro estado
+
+    it("bairro da Zona Oeste (>25km, <70km do Centro): usa o bairro quando o municipio e' o Rio", () => {
+      expect(escolherPontoReferencia(campoGrande, centroDoRio, "3304557")).toEqual(campoGrande);
+    });
+
+    it("mesmo bairro, SEM passar municipioCodigo: continua descartando (comportamento antigo preservado)", () => {
+      expect(escolherPontoReferencia(campoGrande, centroDoRio)).toEqual(centroDoRio);
+    });
+
+    it("municipio diferente do Rio: teto continua 25km (Cambuci nao ganha folga)", () => {
+      expect(escolherPontoReferencia(campoGrande, cambuci, "3300506")).toEqual(cambuci);
+    });
+
+    it("erro de outro ESTADO (350km) continua descartado mesmo com teto maior do Rio", () => {
+      expect(escolherPontoReferencia(saoPauloCapital, centroDoRio, "3304557")).toEqual(centroDoRio);
+    });
+  });
 });
 
 describe("geocodificarLocal", () => {

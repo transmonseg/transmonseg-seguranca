@@ -87,14 +87,40 @@ function escolherPorNumeroMaisProximo(
 // da cidade, e' ele que esta errado -- descarta e usa o da cidade.
 export const RAIO_MAX_BAIRRO_DA_CIDADE_M = 25_000;
 
+// Achado real 06/09 (KPI Rio Quality, 15 de 46 pendentes de UM so'
+// caminhao, rota inteira em Campo Grande/Guaratiba/Sepetiba/Santa Cruz --
+// Zona Oeste): "ESTRADA DO MATO ALTO" e "RUA BARROS ALARCAO" EXISTEM no
+// CNEFE, dentro do municipio certo (Rio de Janeiro capital, 3304557) -- mas
+// o ponto de BAIRRO (Campo Grande, ~40km do Centro) era descartado pelo
+// teto de 25km acima e o de CIDADE (perto do Centro) tambem rejeitava os
+// candidatos reais por estarem a mais de 30km dele
+// (DISTANCIA_MAX_MATCH_LOCAL_M). Rio capital tem ~1200km2, ~60km de ponta a
+// ponta -- bairro correto pode legitimamente estar bem mais longe do
+// "centro da cidade" do que em qualquer outro municipio do estado. Isso e'
+// DIFERENTE do erro que motivou o teto original (Nominatim resolvendo
+// "CENTRO, CAMBUCI" em Sao Paulo, ~350km, outro estado) -- teto maior aqui
+// nao reabre aquele buraco (350km >> mesmo o teto ampliado). So' o
+// municipio do Rio ganha folga; todo o resto do estado mantem o teto
+// original (cidade pequena com bairro a 40km+ do centro dela CONTINUA
+// sendo o mesmo tipo de erro de antes).
+const RAIO_MAX_BAIRRO_DA_CIDADE_GRANDE_M = 70_000;
+const MUNICIPIOS_GRANDES = new Set(["3304557"]); // Rio de Janeiro (capital)
+
+function raioMaxBairroDaCidade(municipioCodigo: string | null): number {
+  return municipioCodigo && MUNICIPIOS_GRANDES.has(municipioCodigo)
+    ? RAIO_MAX_BAIRRO_DA_CIDADE_GRANDE_M
+    : RAIO_MAX_BAIRRO_DA_CIDADE_M;
+}
+
 export function escolherPontoReferencia(
   pontoBairro: { lat: number; lng: number } | null,
-  pontoCidade: { lat: number; lng: number } | null
+  pontoCidade: { lat: number; lng: number } | null,
+  municipioCodigo: string | null = null
 ): { lat: number; lng: number } | null {
   if (!pontoBairro) return pontoCidade;
   if (!pontoCidade) return pontoBairro;
   const d = haversineM(pontoCidade.lat, pontoCidade.lng, pontoBairro.lat, pontoBairro.lng);
-  return d <= RAIO_MAX_BAIRRO_DA_CIDADE_M ? pontoBairro : pontoCidade;
+  return d <= raioMaxBairroDaCidade(municipioCodigo) ? pontoBairro : pontoCidade;
 }
 
 function escolherCandidatoMaisProximo(
