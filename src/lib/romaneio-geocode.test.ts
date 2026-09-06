@@ -221,10 +221,25 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
     expect(deps.buscarPorSimilaridade).not.toHaveBeenCalled();
   });
 
-  it("rua+numero e so-rua nao batem, cai pra similaridade (pg_trgm)", async () => {
+  it("rua+numero e so-rua nao batem, cai pra similaridade (pg_trgm) -- com ponto de cidade, aceita candidato unico", async () => {
+    const pontoCidade = { lat: -22.9, lng: -43.2 };
+    const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: -22.901, lng: -43.201 }] });
+    const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", pontoCidade, null, deps);
+    expect(r).toEqual({ lat: -22.901, lng: -43.201 });
+  });
+
+  // Achado real 06/09 (KPI Nutry Max, NF 2358062): sem ponto de cidade
+  // disponivel (falha transitoria de Nominatim), um candidato de
+  // SIMILARIDADE unico passava direto sem NENHUMA validacao geografica --
+  // "ESTRADA SANTA MARIA, 661" (existe EXATO no CNEFE, Campo Grande) foi
+  // parar em "SANTA MARIA ROSSELLO", ~35km de distancia, so' porque
+  // pontoCidade estava null naquele ciclo. Diferente de match EXATO (o
+  // nome ja' bate 100%) -- similaridade e' uma aposta de nome parecido,
+  // nunca deve passar as cegas.
+  it("achado real 06/09: similaridade SEM ponto de cidade -- rejeitado mesmo com candidato UNICO (nome so' parecido, nao exato)", async () => {
     const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: 5, lng: 6 }] });
     const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
-    expect(r).toEqual({ lat: 5, lng: 6 });
+    expect(r).toBeNull();
   });
 
   it("numero S/N: nao tenta buscar por rua+numero, vai direto pra so-rua", async () => {

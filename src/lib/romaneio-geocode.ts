@@ -123,12 +123,27 @@ export function escolherPontoReferencia(
   return d <= raioMaxBairroDaCidade(municipioCodigo) ? pontoBairro : pontoCidade;
 }
 
+// Achado real 06/09 (KPI Nutry Max, NF 2358062): quando a resolucao do
+// PONTO DE CIDADE falha por instabilidade transitoria do Nominatim (varios
+// processos concorrentes disputando o mesmo limite de 1 req/s no mesmo
+// dia), um candidato de SIMILARIDADE (pg_trgm, nome PARECIDO, nao exato)
+// UNICO passava direto sem nenhuma validacao -- "ESTRADA SANTA MARIA, 661"
+// (Campo Grande, existe EXATO no CNEFE) foi parar em "SANTA MARIA
+// ROSSELLO" (~35km de distancia, outro bairro) so' porque o pontoCidade
+// nao estava disponivel naquele ciclo. Diferente de um match EXATO (rua+
+// numero ou so'-rua) -- que ja' tem o nome batendo 100%, candidato unico
+// sem referencia e' aceitavel -- similaridade e' uma APOSTA de nome (pode
+// ser a rua errada com grafia parecida); exige `exigirReferencia=true` (so'
+// usado pelo chamador de similaridade) pra nunca aceitar as cegas: sem
+// ponto de referencia disponivel, similaridade sempre falha (fica pra
+// tentar de novo no proximo ciclo) em vez de arriscar a rua errada.
 function escolherCandidatoMaisProximo(
   candidatos: { lat: number; lng: number }[],
-  pontoCidade: { lat: number; lng: number } | null
+  pontoCidade: { lat: number; lng: number } | null,
+  exigirReferencia = false
 ): { lat: number; lng: number } | null {
   if (candidatos.length === 0) return null;
-  if (!pontoCidade) return candidatos.length === 1 ? candidatos[0] : null;
+  if (!pontoCidade) return !exigirReferencia && candidatos.length === 1 ? candidatos[0] : null;
 
   let melhor = candidatos[0];
   let menorDist = haversineM(pontoCidade.lat, pontoCidade.lng, melhor.lat, melhor.lng);
@@ -215,7 +230,7 @@ export async function geocodificarCnefe(
   if (resultadoRua) return resultadoRua;
 
   const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado, municipioCodigo);
-  return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade);
+  return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade, true);
 }
 
 // SEM fallback pra coordenada da Unitrac de proposito -- achado real 15/07:
