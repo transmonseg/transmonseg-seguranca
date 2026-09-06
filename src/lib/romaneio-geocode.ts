@@ -25,6 +25,18 @@ const DISTANCIA_MAX_MATCH_LOCAL_M = 30_000; // 30km -- nome bateu, mas e outra r
 // parecido a 20km ainda pode ser rua errada, mesmo em cidade gigante.
 const DISTANCIA_MAX_MATCH_SIMILARIDADE_M = 8_000; // 8km
 
+// Usado quando a referencia passada e' de BAIRRO (ver PontoReferencia/
+// escolherPontoReferencia acima) -- mais precisa que o ponto de cidade
+// inteira, entao o candidato tem que estar de fato perto dela. Achado
+// real 06/09 (KPI Nutry Max, "AV PARIS, 13 - BONSUCESSO"): candidato
+// errado (outro trecho da mesma rua, Rio capital) ficava a ~7,85km do
+// bairro certo -- 6km rejeita esse caso especifico. Mais estreito que
+// isso arrisca rejeitar endereco legitimo perto da borda de um bairro
+// grande (Campo Grande, Barra); aceitavel, porque rejeitar aqui so' cai
+// pro proximo nivel da cascata (similaridade/Nominatim), nunca perde o
+// endereco de vez.
+const DISTANCIA_MAX_MATCH_BAIRRO_M = 6_000; // 6km
+
 // Compartilhado entre geocodificarLocal (OSM) e geocodificarCnefe (IBGE) --
 // quando ha mais de um candidato (rua repetida em cidades diferentes),
 // escolhe o mais proximo do ponto de referencia da cidade (resolvido 1x
@@ -144,15 +156,33 @@ function raioMaxBairroDaCidade(municipioCodigo: string | null): number {
     : RAIO_MAX_BAIRRO_DA_CIDADE_M;
 }
 
+// Achado real 06/09 (KPI Nutry Max, placa RQV5F67, "AV PARIS, 13 -
+// BONSUCESSO"): rua+numero EXATO bateu num "Paris" real do CNEFE, so' que
+// a ~8km dali -- OUTRO trecho da mesma rua em bairro bem diferente do Rio
+// (municipio grande, MUNICIPIOS_GRANDES acima). O teto de aceite do
+// candidato (DISTANCIA_MAX_MATCH_LOCAL_M, 30km) nunca discriminou isso
+// porque sempre foi genereoso o bastante pra caber cidade inteira --
+// quando a REFERENCIA e' o BAIRRO (mais preciso que o ponto de cidade
+// inteira), o teto de aceite tem que ser bem mais estreito: informa pro
+// resto da cascata (geocodificarCnefe/geocodificarLocal) que a
+// referencia e' de bairro via o campo `precisao`, pra usar
+// DISTANCIA_MAX_MATCH_BAIRRO_M em vez do generico. So' aperta quando a
+// referencia E' o bairro -- cidade pequena sem bairro resolvido continua
+// com o teto largo de sempre (endereco legitimamente longe do "centro"
+// da cidade nao pode virar falso negativo).
+export type PontoReferencia = { ponto: { lat: number; lng: number }; precisao: "bairro" | "cidade" } | null;
+
 export function escolherPontoReferencia(
   pontoBairro: { lat: number; lng: number } | null,
   pontoCidade: { lat: number; lng: number } | null,
   municipioCodigo: string | null = null
-): { lat: number; lng: number } | null {
-  if (!pontoBairro) return pontoCidade;
-  if (!pontoCidade) return pontoBairro;
+): PontoReferencia {
+  if (!pontoBairro) return pontoCidade ? { ponto: pontoCidade, precisao: "cidade" } : null;
+  if (!pontoCidade) return { ponto: pontoBairro, precisao: "bairro" };
   const d = haversineM(pontoCidade.lat, pontoCidade.lng, pontoBairro.lat, pontoBairro.lng);
-  return d <= raioMaxBairroDaCidade(municipioCodigo) ? pontoBairro : pontoCidade;
+  return d <= raioMaxBairroDaCidade(municipioCodigo)
+    ? { ponto: pontoBairro, precisao: "bairro" }
+    : { ponto: pontoCidade, precisao: "cidade" };
 }
 
 // Achado real 06/09 (KPI Nutry Max, NF 2358062): quando a resolucao do
@@ -195,12 +225,16 @@ function escolherCandidatoMaisProximo(
 export async function geocodificarLocal(
   enderecoBruto: string,
   pontoCidade: { lat: number; lng: number } | null,
-  buscarCandidatosPorNome: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>
+  buscarCandidatosPorNome: (nomeNormalizado: string) => Promise<{ lat: number; lng: number }[]>,
+  // `precisaoBairro=true` quando `pontoCidade` na verdade veio do BAIRRO
+  // (ver PontoReferencia/escolherPontoReferencia) -- referencia mais
+  // precisa, aperta o teto de aceite do candidato.
+  precisaoBairro = false
 ): Promise<{ lat: number; lng: number } | null> {
   const rua = extrairRuaDoEndereco(enderecoBruto);
   const nomeNormalizado = normalizarNomeRua(rua);
   const candidatos = await buscarCandidatosPorNome(nomeNormalizado);
-  return escolherCandidatoMaisProximo(candidatos, pontoCidade);
+  return escolherCandidatoMaisProximo(candidatos, pontoCidade, false, precisaoBairro ? DISTANCIA_MAX_MATCH_BAIRRO_M : DISTANCIA_MAX_MATCH_LOCAL_M)
 }
 
 // Geocodificacao via CNEFE (IBGE, Censo 2022) -- achado real 31/07, ver
@@ -235,15 +269,23 @@ export async function geocodificarCnefe(
     // resposta e' OPCIONAL: sem ele, o desempate por numero nao se aplica.
     buscarPorRua: (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null) => Promise<{ lat: number; lng: number; numero?: string | null }[]>;
     buscarPorSimilaridade: (nomeNormalizado: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
-  }
+  },
+  // `precisaoBairro=true` quando `pontoCidade` na verdade veio do BAIRRO
+  // (ver PontoReferencia/escolherPontoReferencia) -- referencia mais
+  // precisa, aperta o teto de aceite do candidato nos niveis EXATOS
+  // (rua+numero, so-rua). Similaridade ja usa seu proprio teto estreito
+  // (DISTANCIA_MAX_MATCH_SIMILARIDADE_M) independente disso -- e' sempre
+  // uma aposta de nome, nao precisa saber se a referencia e' de bairro.
+  precisaoBairro = false
 ): Promise<{ lat: number; lng: number } | null> {
   const rua = extrairRuaDoEndereco(enderecoBruto);
   const nomeNormalizado = normalizarNomeRua(rua);
   const numero = extrairNumeroDoEndereco(enderecoBruto);
+  const maxDist = precisaoBairro ? DISTANCIA_MAX_MATCH_BAIRRO_M : DISTANCIA_MAX_MATCH_LOCAL_M;
 
   if (numero && !/^S\/?N$/i.test(numero)) {
     const porRuaNumero = await deps.buscarPorRuaNumero(nomeNormalizado, numero, municipioCodigo);
-    const resultado = escolherCandidatoMaisProximo(porRuaNumero, pontoCidade);
+    const resultado = escolherCandidatoMaisProximo(porRuaNumero, pontoCidade, false, maxDist);
     if (resultado) return resultado;
   }
 
@@ -255,11 +297,11 @@ export async function geocodificarCnefe(
   if (numeroAlvo !== null) {
     const porNumero = escolherPorNumeroMaisProximo(porRua, numeroAlvo);
     if (porNumero) {
-      const validado = escolherCandidatoMaisProximo([porNumero], pontoCidade);
+      const validado = escolherCandidatoMaisProximo([porNumero], pontoCidade, false, maxDist);
       if (validado) return validado;
     }
   }
-  const resultadoRua = escolherCandidatoMaisProximo(porRua, pontoCidade);
+  const resultadoRua = escolherCandidatoMaisProximo(porRua, pontoCidade, false, maxDist);
   if (resultadoRua) return resultadoRua;
 
   const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado, municipioCodigo);

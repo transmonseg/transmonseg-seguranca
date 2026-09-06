@@ -311,6 +311,36 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
     expect(deps.buscarPorSimilaridade).toHaveBeenCalledWith(expect.any(String), "3305000");
   });
 
+  // Achado real 06/09 (KPI Nutry Max, placa RQV5F67): rua+numero EXATO
+  // bateu numa "AV PARIS, 13" real do CNEFE, so' que ~8km longe de
+  // Bonsucesso (outro trecho da mesma rua, Rio capital -- municipio
+  // grande). O teto generico de 30km nunca rejeitava isso. Quando a
+  // referencia E' o bairro (`precisaoBairro=true`), o teto de aceite fica
+  // mais estreito mesmo pro match EXATO -- nao so' pra similaridade.
+  describe("precisaoBairro: teto mais estreito quando a referencia e' do BAIRRO (achado real 06/09)", () => {
+    const bonsucesso = { lat: -22.8607, lng: -43.2564 };
+    const outroTrechoDaRua = { lat: -22.805735, lng: -43.304516 }; // ~8km, achado real (AV PARIS)
+    const mesmoBairro = { lat: -22.8629, lng: -43.2531 }; // ~400m, achado real (parada verificada)
+
+    it("rua+numero a ~8km do bairro: rejeitado com precisaoBairro=true (aceito sem a flag, comportamento antigo)", async () => {
+      const semFlag = mockDeps({ buscarPorRuaNumero: async () => [outroTrechoDaRua] });
+      expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", semFlag)).toEqual(outroTrechoDaRua);
+
+      const comFlag = mockDeps({ buscarPorRuaNumero: async () => [outroTrechoDaRua] });
+      expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", comFlag, true)).toBeNull();
+    });
+
+    it("rua+numero perto do bairro: aceito normalmente com precisaoBairro=true", async () => {
+      const deps = mockDeps({ buscarPorRuaNumero: async () => [mesmoBairro] });
+      expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", deps, true)).toEqual(mesmoBairro);
+    });
+
+    it("nivel so-rua tambem respeita o teto estreito", async () => {
+      const deps = mockDeps({ buscarPorRua: async () => [outroTrechoDaRua] });
+      expect(await geocodificarCnefe("AV PARIS, SN - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", deps, true)).toBeNull();
+    });
+  });
+
   // Achado real 05/09 (diagnostico dos 382 pendentes do KPI Nutry Max de
   // 03/09): 226 deles tinham coordenada mas o caminhao NUNCA passou a menos
   // de 1,5km dela -- media de 14km. Causa: no nivel "so rua", o CNEFE
@@ -385,19 +415,19 @@ describe("escolherPontoReferencia (achado real 05/09)", () => {
   const bairroErrado = { lat: -23.5506, lng: -46.6182 };  // Sao Paulo capital
 
   it("bairro perto da cidade: usa o bairro (mais preciso)", () => {
-    expect(escolherPontoReferencia(bairroReal, cambuci)).toEqual(bairroReal);
+    expect(escolherPontoReferencia(bairroReal, cambuci)).toEqual({ ponto: bairroReal, precisao: "bairro" });
   });
 
   it("bairro longe da cidade: descarta o bairro e usa a cidade", () => {
-    expect(escolherPontoReferencia(bairroErrado, cambuci)).toEqual(cambuci);
+    expect(escolherPontoReferencia(bairroErrado, cambuci)).toEqual({ ponto: cambuci, precisao: "cidade" });
   });
 
   it("sem bairro: usa a cidade", () => {
-    expect(escolherPontoReferencia(null, cambuci)).toEqual(cambuci);
+    expect(escolherPontoReferencia(null, cambuci)).toEqual({ ponto: cambuci, precisao: "cidade" });
   });
 
   it("sem cidade: usa o bairro (nao ha com o que comparar -- comportamento de hoje)", () => {
-    expect(escolherPontoReferencia(bairroReal, null)).toEqual(bairroReal);
+    expect(escolherPontoReferencia(bairroReal, null)).toEqual({ ponto: bairroReal, precisao: "bairro" });
   });
 
   it("sem nada: null", () => {
@@ -416,19 +446,19 @@ describe("escolherPontoReferencia (achado real 05/09)", () => {
     const saoPauloCapital = { lat: -23.5506, lng: -46.6182 }; // ~350km, outro estado
 
     it("bairro da Zona Oeste (>25km, <70km do Centro): usa o bairro quando o municipio e' o Rio", () => {
-      expect(escolherPontoReferencia(campoGrande, centroDoRio, "3304557")).toEqual(campoGrande);
+      expect(escolherPontoReferencia(campoGrande, centroDoRio, "3304557")).toEqual({ ponto: campoGrande, precisao: "bairro" });
     });
 
     it("mesmo bairro, SEM passar municipioCodigo: continua descartando (comportamento antigo preservado)", () => {
-      expect(escolherPontoReferencia(campoGrande, centroDoRio)).toEqual(centroDoRio);
+      expect(escolherPontoReferencia(campoGrande, centroDoRio)).toEqual({ ponto: centroDoRio, precisao: "cidade" });
     });
 
     it("municipio diferente do Rio: teto continua 25km (Cambuci nao ganha folga)", () => {
-      expect(escolherPontoReferencia(campoGrande, cambuci, "3300506")).toEqual(cambuci);
+      expect(escolherPontoReferencia(campoGrande, cambuci, "3300506")).toEqual({ ponto: cambuci, precisao: "cidade" });
     });
 
     it("erro de outro ESTADO (350km) continua descartado mesmo com teto maior do Rio", () => {
-      expect(escolherPontoReferencia(saoPauloCapital, centroDoRio, "3304557")).toEqual(centroDoRio);
+      expect(escolherPontoReferencia(saoPauloCapital, centroDoRio, "3304557")).toEqual({ ponto: centroDoRio, precisao: "cidade" });
     });
   });
 
@@ -442,11 +472,11 @@ describe("escolherPontoReferencia (achado real 05/09)", () => {
     const frade = { lat: -23.02, lng: -44.62 }; // ~30km do Centro
 
     it("bairro de Frade (>25km, <70km do Centro): usa o bairro quando o municipio e' Angra dos Reis", () => {
-      expect(escolherPontoReferencia(frade, centroAngra, "3300100")).toEqual(frade);
+      expect(escolherPontoReferencia(frade, centroAngra, "3300100")).toEqual({ ponto: frade, precisao: "bairro" });
     });
 
     it("mesmo bairro, municipio diferente de Angra/Rio: continua descartando (25km)", () => {
-      expect(escolherPontoReferencia(frade, centroAngra, "3300506")).toEqual(centroAngra);
+      expect(escolherPontoReferencia(frade, centroAngra, "3300506")).toEqual({ ponto: centroAngra, precisao: "cidade" });
     });
   });
 });

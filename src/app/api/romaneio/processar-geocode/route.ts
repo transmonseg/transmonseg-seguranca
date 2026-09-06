@@ -368,11 +368,13 @@ export async function POST(request: Request) {
     // Sao Paulo capital e derrubava o endereco certo pelo teto de 30km;
     // achado 06/09: Rio capital ganha teto maior la' dentro, municipio
     // gigante onde bairro correto pode ficar bem mais longe do "centro").
-    const pontoReferencia = escolherPontoReferencia(
+    const referencia = escolherPontoReferencia(
       (chaveBairro && pontosBairro.get(chaveBairro)) || null,
       (cidade ? pontosCidade.get(cidade) : null) || null,
       municipioCodigo,
     );
+    const pontoReferencia = referencia?.ponto ?? null;
+    const precisaoBairro = referencia?.precisao === "bairro";
     return geocodificarEndereco(enderecoBruto, pontoReferencia, {
       buscarCache,
       salvarCache,
@@ -380,8 +382,8 @@ export async function POST(request: Request) {
         buscarPorRuaNumero: buscarCnefePorRuaNumero,
         buscarPorRua: buscarCnefePorRua,
         buscarPorSimilaridade: buscarCnefePorSimilaridade,
-      }),
-      geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome),
+      }, precisaoBairro),
+      geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome, precisaoBairro),
       geocodificarGoogle,
       geocodificarNominatim: geocodificarNominatimThrottled,
     });
