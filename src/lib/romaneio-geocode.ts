@@ -112,10 +112,18 @@ export const RAIO_MAX_BAIRRO_DA_CIDADE_M = 25_000;
 // enderecos geocodificou perto do trajeto do OUTRO caminhao por causa do
 // mesmo problema (bairro descartado, cai pro ponto de cidade errado pra um
 // municipio grande demais).
+// Achado real 06/09 (auditoria proativa, sem incidente ainda): Campos dos
+// Goytacazes e' o MAIOR municipio do estado (~4.030km2, mais de 3x o Rio
+// capital) -- a Nutry Max tem rotas inteiras la' (CAMPOS, CAMPOS 2, CAMPOS
+// 3, CAMPOS 4, alto volume diario). Mesmo raciocinio geometrico do Rio e
+// Angra: bairro correto pode estar bem mais longe do "centro" administrativo
+// do que o teto pequeno cobre. Adicionado preventivamente, mesmo sem um
+// caso de "carga transferida" que o tenha exposto ainda.
 const RAIO_MAX_BAIRRO_DA_CIDADE_GRANDE_M = 70_000;
 const MUNICIPIOS_GRANDES = new Set([
   "3304557", // Rio de Janeiro (capital)
   "3300100", // Angra dos Reis
+  "3301009", // Campos dos Goytacazes
 ]);
 
 function raioMaxBairroDaCidade(municipioCodigo: string | null): number {
