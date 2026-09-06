@@ -13,6 +13,18 @@ export function normalizarEndereco(enderecoBruto: string): string {
 
 const DISTANCIA_MAX_MATCH_LOCAL_M = 30_000; // 30km -- nome bateu, mas e outra regiao
 
+// Achado real 06/09 (KPI Rio Quality, placa KWY8H35/RUA NELSON MANDELA,
+// BOTAFOGO): 30km e' folga demais pra candidato de SIMILARIDADE (nome so'
+// PARECIDO, nao exato) num municipio grande -- o teto generico deixou
+// passar uma "Nelson Mandela" a ~20km de distancia, em bairro totalmente
+// diferente (a rua bateu por pg_trgm mas nao existe CNEFE dela em Botafogo
+// mesmo). Diferente do teto de bairro-vs-cidade (RAIO_MAX_BAIRRO_DA_
+// CIDADE_GRANDE_M, que so' decide qual REFERENCIA usar), este e' o teto de
+// aceite do candidato em si -- mais estreito de proposito, porque
+// similaridade ja' e' uma aposta de nome (ver exigirReferencia); nome
+// parecido a 20km ainda pode ser rua errada, mesmo em cidade gigante.
+const DISTANCIA_MAX_MATCH_SIMILARIDADE_M = 8_000; // 8km
+
 // Compartilhado entre geocodificarLocal (OSM) e geocodificarCnefe (IBGE) --
 // quando ha mais de um candidato (rua repetida em cidades diferentes),
 // escolhe o mais proximo do ponto de referencia da cidade (resolvido 1x
@@ -160,7 +172,8 @@ export function escolherPontoReferencia(
 function escolherCandidatoMaisProximo(
   candidatos: { lat: number; lng: number }[],
   pontoCidade: { lat: number; lng: number } | null,
-  exigirReferencia = false
+  exigirReferencia = false,
+  maxDistM = DISTANCIA_MAX_MATCH_LOCAL_M
 ): { lat: number; lng: number } | null {
   if (candidatos.length === 0) return null;
   if (!pontoCidade) return !exigirReferencia && candidatos.length === 1 ? candidatos[0] : null;
@@ -173,7 +186,7 @@ function escolherCandidatoMaisProximo(
   }
   // so' lat/lng: candidato do CNEFE pode vir com `numero` junto (usado no
   // desempate) e isso nao deve vazar pro resultado/cache.
-  return menorDist <= DISTANCIA_MAX_MATCH_LOCAL_M ? { lat: melhor.lat, lng: melhor.lng } : null;
+  return menorDist <= maxDistM ? { lat: melhor.lat, lng: melhor.lng } : null;
 }
 
 // Geocodificacao LOCAL via extrato OSM (vias_nomes) -- ver
@@ -250,7 +263,7 @@ export async function geocodificarCnefe(
   if (resultadoRua) return resultadoRua;
 
   const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado, municipioCodigo);
-  return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade, true);
+  return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade, true, DISTANCIA_MAX_MATCH_SIMILARIDADE_M);
 }
 
 // SEM fallback pra coordenada da Unitrac de proposito -- achado real 15/07:

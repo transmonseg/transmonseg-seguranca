@@ -242,6 +242,18 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
     expect(r).toBeNull();
   });
 
+  // Achado real 06/09 (KPI Rio Quality, placa KWY8H35/RUA NELSON MANDELA,
+  // BOTAFOGO): 30km (teto generico de escolherCandidatoMaisProximo) e' folga
+  // demais pra similaridade num municipio grande -- "Nelson Mandela" a ~20km
+  // de distancia (bairro errado) passava, mesmo com ponto de referencia
+  // valido. Teto de similaridade e' mais estreito (8km) de proposito.
+  it("achado real 06/09: similaridade a 20km do ponto de cidade -- rejeitado mesmo COM ponto de referencia (teto proprio de 8km, mais estreito que o generico de 30km)", async () => {
+    const pontoCidade = { lat: -22.9068, lng: -43.1729 } // Rio de Janeiro, centro
+    const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: -22.94, lng: -43.39 }] }) // ~20km
+    const r = await geocodificarCnefe("RUA NELSON MANDELA, - BOTAFOGO, RIO DE JANEIRO - RJ", pontoCidade, "3304557", deps)
+    expect(r).toBeNull()
+  });
+
   it("numero S/N: nao tenta buscar por rua+numero, vai direto pra so-rua", async () => {
     const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
     const r = await geocodificarCnefe("RUA X, S/N - BAIRRO, CIDADE - *", null, null, deps);
