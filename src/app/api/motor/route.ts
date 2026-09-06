@@ -2322,6 +2322,32 @@ export async function POST(request: Request) {
             presencaConfirmadaCiclo.push({ veiculo_id, nf: alvoNoRaioAgora.documento, lat: alvoNoRaioAgora.lat, lng: alvoNoRaioAgora.lng });
           }
 
+          // Achado real 06/09: o bloco acima SO' confirma via o ALVO da
+          // propria Unitrac (raio/dwell deles) -- se a Unitrac nao tem alvo
+          // pra essa NF, ou o alvo dela esta' mal posicionado (o de sempre,
+          // ver comentario acima: erro de 3km a 144km medido em 27/08),
+          // essa NF nunca confirma aqui, MESMO com o caminhao parado de
+          // verdade no endereco que O NOSSO geocode (romaneio_pontos, ja'
+          // mais preciso que o alvo deles) acertou. Medido em producao
+          // (01-05/09): 344 entregas/semana com dwell real >=120s no NOSSO
+          // ponto, coordenada correta, e mesmo assim pendente pra sempre --
+          // essa confirmacao nunca reprocessa retroativamente, so' pega ao
+          // vivo. Mesmo piso de raio/tempo do bloco de "parada no local"
+          // abaixo (RAIO_PRESENCA_MIN_M, paradoMin geral -- nao o dwell
+          // alvo-especifico de noRaioDwellSegundos, que so' existe quando ha'
+          // alvo). Grava a posicao ATUAL do veiculo (pos.lat/pos.lng) como
+          // coordenada provada -- mesma filosofia do bloco do alvo acima
+          // (sobrescreve o geocode pela posicao real confirmada por dwell).
+          if (romaneioDoVeiculo && pos.fresco && pos.velocidade === 0 && paradoMin * 60 >= ENTREGA_PRESENCA_MIN_SEG) {
+            for (const rp of romaneioDoVeiculo) {
+              if (rp.presencaConfirmadaEm) continue;
+              const distRomaneioM = haversineM(pos.lat, pos.lng, rp.lat, rp.lng);
+              if (distRomaneioM <= RAIO_PRESENCA_MIN_M) {
+                presencaConfirmadaCiclo.push({ veiculo_id, nf: rp.nf, lat: pos.lat, lng: pos.lng });
+              }
+            }
+          }
+
           // Parada no local conta como entregue (usuario, 01/08 -- ver
           // ENTREGA_PRESENCA_ATIVA no topo). Diferente do bloco de romaneio
           // acima, este vale pra QUALQUER ponto da Unitrac (com ou sem
