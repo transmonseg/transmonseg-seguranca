@@ -419,6 +419,24 @@ describe("escolherPontoReferencia (achado real 05/09)", () => {
       expect(escolherPontoReferencia(saoPauloCapital, centroDoRio, "3304557")).toEqual(centroDoRio);
     });
   });
+
+  // Achado real 06/09 (auditoria do KPI Nutry Max, par de placas RBG2D21/
+  // RQP4A68 "trocando carga" nos dois sentidos com os horarios das paradas
+  // se sobrepondo): mesmo padrao do Rio capital, em Angra dos Reis --
+  // municipio costeiro alongado (~825km2), "Centro" e "Frade (Cunhambebe)"
+  // ficam a ~30km um do outro.
+  describe("Angra dos Reis (3300100): teto maior pro bairro (achado real 06/09)", () => {
+    const centroAngra = { lat: -23.0067, lng: -44.3181 };
+    const frade = { lat: -23.02, lng: -44.62 }; // ~30km do Centro
+
+    it("bairro de Frade (>25km, <70km do Centro): usa o bairro quando o municipio e' Angra dos Reis", () => {
+      expect(escolherPontoReferencia(frade, centroAngra, "3300100")).toEqual(frade);
+    });
+
+    it("mesmo bairro, municipio diferente de Angra/Rio: continua descartando (25km)", () => {
+      expect(escolherPontoReferencia(frade, centroAngra, "3300506")).toEqual(centroAngra);
+    });
+  });
 });
 
 describe("geocodificarLocal", () => {

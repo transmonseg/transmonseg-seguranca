@@ -103,8 +103,20 @@ export const RAIO_MAX_BAIRRO_DA_CIDADE_M = 25_000;
 // municipio do Rio ganha folga; todo o resto do estado mantem o teto
 // original (cidade pequena com bairro a 40km+ do centro dela CONTINUA
 // sendo o mesmo tipo de erro de antes).
+//
+// Achado real 06/09 (auditoria do KPI Nutry Max, par RBG2D21/RQP4A68):
+// mesmo padrao em Angra dos Reis -- "Centro, Angra dos Reis" e "Frade
+// (Cunhambebe), Angra dos Reis" ficam a ~30km um do outro (municipio
+// costeiro alongado, ~825km2), e o par de placas so' "trocava carga" com
+// os HORARIOS DAS DUAS PARADAS SE SOBREPONDO -- sinal de que um dos dois
+// enderecos geocodificou perto do trajeto do OUTRO caminhao por causa do
+// mesmo problema (bairro descartado, cai pro ponto de cidade errado pra um
+// municipio grande demais).
 const RAIO_MAX_BAIRRO_DA_CIDADE_GRANDE_M = 70_000;
-const MUNICIPIOS_GRANDES = new Set(["3304557"]); // Rio de Janeiro (capital)
+const MUNICIPIOS_GRANDES = new Set([
+  "3304557", // Rio de Janeiro (capital)
+  "3300100", // Angra dos Reis
+]);
 
 function raioMaxBairroDaCidade(municipioCodigo: string | null): number {
   return municipioCodigo && MUNICIPIOS_GRANDES.has(municipioCodigo)
