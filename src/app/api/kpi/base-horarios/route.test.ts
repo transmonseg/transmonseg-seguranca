@@ -280,15 +280,45 @@ describe("acharVisitasPorPonto", () => {
     // RAIO_ENTREGA_M direto (500m) por desenho do teste.
     const LOJA_VIZINHA = { id: "NF_VIZINHA", lat: -22.0054, lng: -43.0 };
 
-    it("ponto nunca visitado, mas vizinho a <=800m foi confirmado: herda chegada/saida do vizinho, marcado viaVizinhanca", () => {
+    // Achado real 06/09 (RAIO_AMPLIADO_M, ver comentario la): as mesmas
+    // posicoes que confirmam LOJA_A (~600m de LOJA_VIZINHA) TAMBEM caem no
+    // raio ampliado (800m) do PROPRIO LOJA_VIZINHA -- dwell direto (mesmo
+    // que so' no raio ampliado) tem prioridade sobre emprestar do vizinho.
+    it("ponto com dwell so' no raio AMPLIADO (nao no normal): confirma marcado viaRaioAmpliado, nao viaVizinhanca", () => {
       const posicoes = [
         { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:00:00.000Z" }, // confirma LOJA_A
         { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:15:00.000Z" },
       ];
-      const [visitaA, visitaVizinha] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_VIZINHA]);
-      expect(visitaA).toEqual({ id: "NF1", chegada: "2026-08-30T10:00:00.000Z", saida: "2026-08-30T10:15:00.000Z" });
+      const [, visitaVizinha] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_VIZINHA]);
       expect(visitaVizinha).toEqual({
         id: "NF_VIZINHA",
+        chegada: "2026-08-30T10:00:00.000Z",
+        saida: "2026-08-30T10:15:00.000Z",
+        viaRaioAmpliado: true,
+      });
+    });
+
+    // Separacao limpa entre viaRaioAmpliado (contra as POSICOES cruas) e
+    // viaVizinhanca (contra o PONTO do vizinho ja confirmado) exige que a
+    // posicao que confirma o vizinho NAO coincida exatamente com o ponto
+    // dele (a maioria dos testes acima usa posicao==ponto de proposito,
+    // pra simplificar -- mas isso torna as duas distancias identicas e
+    // esconde a diferenca entre os dois raios). Aqui LOJA_D confirma a
+    // ~450m das suas PROPRIAS posicoes (raio normal), e o alvo fica a
+    // ~700m do PONTO de LOJA_D (dentro da vizinhanca) mas a ~833m das
+    // POSICOES de LOJA_D (fora do proprio raio ampliado) -- geometria em
+    // 2 eixos (lat+lng) pra desacoplar as duas distancias de proposito.
+    it("vizinho confirmado por perto, mas fora dos 800m das POSICOES do vizinho: ainda herda por vizinhanca (ponto do vizinho, nao a posicao)", () => {
+      const LOJA_D = { id: "NF_D", lat: -22.0, lng: -43.0 };
+      const ALVO_SO_VIZINHANCA = { id: "NF_ALVO", lat: -22.0063, lng: -43.0 }; // ~700m do PONTO de LOJA_D
+      const posicoes = [
+        { lat: -22.0, lng: -43.00437, criado_em: "2026-08-30T10:00:00.000Z" }, // ~450m de LOJA_D -- confirma LOJA_D no raio NORMAL
+        { lat: -22.0, lng: -43.00437, criado_em: "2026-08-30T10:15:00.000Z" },
+      ];
+      const [visitaD, visitaAlvo] = acharVisitasPorPonto(posicoes, [LOJA_D, ALVO_SO_VIZINHANCA]);
+      expect(visitaD).toEqual({ id: "NF_D", chegada: "2026-08-30T10:00:00.000Z", saida: "2026-08-30T10:15:00.000Z" });
+      expect(visitaAlvo).toEqual({
+        id: "NF_ALVO",
         chegada: "2026-08-30T10:00:00.000Z",
         saida: "2026-08-30T10:15:00.000Z",
         viaVizinhanca: true,

@@ -195,7 +195,7 @@ export function calcularKmContinuo(posicoesBrutas: Posicao[]): number | null {
 const RAIO_ENTREGA_M = 500;
 
 type PontoEntrega = { id: string; lat: number; lng: number };
-type VisitaPonto = { id: string; chegada: string | null; saida: string | null; viaVizinhanca?: boolean };
+type VisitaPonto = { id: string; chegada: string | null; saida: string | null; viaVizinhanca?: boolean; viaRaioAmpliado?: boolean };
 
 // Achado real 30/08 (mesma investigacao do bucket 500m-2km, ver
 // RAIO_VIZINHANCA_M em scripts/confirmar-presenca-romaneio.mjs): 27% dos
@@ -211,6 +211,22 @@ type VisitaPonto = { id: string; chegada: string | null; saida: string | null; v
 // pra Erica saber que o horario e aproximado/emprestado de outra entrega
 // proxima, nao a chegada/saida exatas desta loja.
 const RAIO_VIZINHANCA_M = 800;
+
+// Achado real 06/09 (KPI Nutry Max, auditoria completa dos 396 pendentes de
+// 05/09 pedida pelo usuario): 12 casos com parada real de 7-33min a
+// 508-791m do proprio ponto -- fora do RAIO_ENTREGA_M (500m), mas SEM
+// nenhum ponto vizinho confirmado por perto (viaVizinhanca tambem falhava).
+// montarVisitas.ts (KPI) ja tinha ganhado essa faixa ampliada no dia 05/09
+// (RAIO_CONFIRMACAO_AMPLIADO_METROS, so' usada quando esta ponte NAO
+// responde nada pra aquela NF) -- mas quando a ponte RESPONDE (fonte
+// preferida) e diz null, visitas.ts confia cegamente e APAGA qualquer
+// confirmacao que o algoritmo antigo tivesse achado, mesmo a ampliada.
+// Resultado: a ponte (mais precisa, olha posicao continua real) ficava
+// MAIS RESTRITIVA que o fallback que ela deveria substituir, ao inves de
+// so' mais precisa. Mesma faixa ampliada tem que existir aqui tambem,
+// senao a ponte "rouba" confirmacoes legitimas do fallback so' por ser a
+// fonte preferida.
+const RAIO_AMPLIADO_M = 800;
 
 /** Achado real 25/08 (mesma investigacao das duas funcoes acima):
  *  montarVisitas.ts (KPI) casa cada PARADA da Unitrac (ja clusterizada,
@@ -241,42 +257,60 @@ const RAIO_VIZINHANCA_M = 800;
  *  um ping isolado). */
 const DWELL_MINIMO_MS = 60_000
 
+function acharBlocoDentroDoRaio(pt: PontoEntrega, posicoes: Posicao[], raioM: number): { inicio: string; fim: string; durMs: number } | null {
+  type Bloco = { inicio: string; fim: string; durMs: number }
+  const blocos: Bloco[] = []
+  let atual: { inicio: string; fim: string } | null = null
+
+  for (const p of posicoes) {
+    const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM
+    if (dentro) {
+      if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em }
+      else atual.fim = p.criado_em
+    } else if (atual) {
+      blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() })
+      atual = null
+    }
+  }
+  if (atual) blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() })
+  if (blocos.length === 0) return null
+  const maior = blocos.reduce((a, b) => (b.durMs > a.durMs ? b : a))
+  return maior.durMs >= DWELL_MINIMO_MS ? maior : null
+}
+
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]): VisitaPonto[] {
   const diretas = pontos.map((pt) => {
-    type Bloco = { inicio: string; fim: string; durMs: number }
-    const blocos: Bloco[] = []
-    let atual: { inicio: string; fim: string } | null = null
+    const bloco = acharBlocoDentroDoRaio(pt, posicoes, RAIO_ENTREGA_M)
+    return bloco ? { id: pt.id, chegada: bloco.inicio, saida: bloco.fim } : { id: pt.id, chegada: null, saida: null }
+  })
 
-    for (const p of posicoes) {
-      const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= RAIO_ENTREGA_M
-      if (dentro) {
-        if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em }
-        else atual.fim = p.criado_em
-      } else if (atual) {
-        blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() })
-        atual = null
-      }
-    }
-    if (atual) blocos.push({ ...atual, durMs: new Date(atual.fim).getTime() - new Date(atual.inicio).getTime() })
-
-    if (blocos.length === 0) return { id: pt.id, chegada: null, saida: null }
-    const maior = blocos.reduce((a, b) => (b.durMs > a.durMs ? b : a))
-    if (maior.durMs < DWELL_MINIMO_MS) return { id: pt.id, chegada: null, saida: null }
-    return { id: pt.id, chegada: maior.inicio, saida: maior.fim }
+  // Achado real 06/09 (ver comentario de RAIO_AMPLIADO_M): antes da
+  // vizinhanca (que EMPRESTA horario de outro ponto), tenta o PROPRIO
+  // ponto com raio mais largo -- evidencia direta do proprio endereco
+  // sempre vale mais que emprestar de vizinho, mesmo que so' passe no
+  // raio ampliado. Marcado distinto (viaRaioAmpliado), nunca confirmacao
+  // igual a normal -- mesmo criterio de "nunca esconder que foi uma
+  // aproximacao" ja usado em viaVizinhanca.
+  const comAmpliado = diretas.map((v, i) => {
+    if (v.chegada !== null) return v
+    const bloco = acharBlocoDentroDoRaio(pontos[i], posicoes, RAIO_AMPLIADO_M)
+    if (!bloco) return v
+    return { id: v.id, chegada: bloco.inicio, saida: bloco.fim, viaRaioAmpliado: true }
   })
 
   // Passo 2: corroboracao por vizinhanca (ver comentario de
-  // RAIO_VIZINHANCA_M). So' pros pontos que o Passo 1 nao confirmou --
-  // dwell direto no PROPRIO endereco sempre tem prioridade.
+  // RAIO_VIZINHANCA_M). So' pros pontos que os passos acima nao confirmaram
+  // -- dwell direto no PROPRIO endereco (normal ou ampliado) sempre tem
+  // prioridade sobre emprestar de vizinho.
   const pontoPorId = new Map(pontos.map((pt) => [pt.id, pt]));
-  return diretas.map((v, i) => {
+  return comAmpliado.map((v, i) => {
     if (v.chegada !== null) return v;
     const pt = pontoPorId.get(v.id)!;
     let melhor: { chegada: string; saida: string } | null = null;
     let menorDist = Infinity;
-    for (let j = 0; j < diretas.length; j++) {
+    for (let j = 0; j < comAmpliado.length; j++) {
       if (j === i) continue;
-      const outro = diretas[j];
+      const outro = comAmpliado[j];
       if (outro.chegada === null || outro.saida === null) continue;
       const outroPt = pontos[j];
       const dist = haversineM(pt.lat, pt.lng, outroPt.lat, outroPt.lng);
