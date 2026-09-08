@@ -292,9 +292,16 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
   if (ultima.tSegundos - primeira.tSegundos < RETORNO_BASE_SPAN_MIN_S) return false;
   let caminhoM = 0;
   for (let i = 1; i < leituras.length; i++) {
-    // Queda ESTRITA em TODA leitura da janela -- uma unica leitura que
+    // Queda NAO-CRESCENTE em TODA leitura da janela -- uma unica leitura que
     // aumenta a distancia ate a base derruba o gate (ver comentario acima).
-    if (!(leituras[i].distBaseM < leituras[i - 1].distBaseM)) return false;
+    // <= (nao <) por design: a Unitrac manda a mesma coordenada repetida com
+    // frequencia (deslocamentoM=0, distBaseM identica) -- isso NAO e' um
+    // afastamento, e' ausencia de dado novo. Achado real 08/09 (TOS-3C21):
+    // com < estrito, uma unica leitura duplicada em qualquer ponto da janela
+    // derrubava o gate mesmo com queda real de 77km->49km sem interrupcao.
+    // Um AUMENTO real (por menor que seja) continua derrubando o gate --
+    // ver teste "UMA leitura que afasta" acima, intacto com <=.
+    if (!(leituras[i].distBaseM <= leituras[i - 1].distBaseM)) return false;
     caminhoM += leituras[i].deslocamentoM;
   }
   const quedaM = primeira.distBaseM - ultima.distBaseM;

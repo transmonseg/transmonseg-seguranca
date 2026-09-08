@@ -67,6 +67,43 @@ describe("ehRetornoSustentadoABase", () => {
     const dists = Array.from({ length: 15 }, (_, i) => 70_000 + i * 700);
     expect(ehRetornoSustentadoABase(janela(dists, 800))).toBe(false);
   });
+
+  it("caso real TOS-3C21 (08/09): GPS duplicado (mesma leitura repetida, deslocamento 0) não pode derrubar o gate -- só um aumento real derruba", () => {
+    // Trajeto real reconstruído de posicoes_historico: 77,6km -> 49,5km em
+    // ~15min, sem nenhum afastamento real, mas com leituras repetidas
+    // (Unitrac manda a mesma coordenada 2-3x seguidas com frequência).
+    const leituras = [
+      { tSegundos: 0, distBaseM: 70347, deslocamentoM: 0 },
+      { tSegundos: 30, distBaseM: 70347, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 55, distBaseM: 69864, deslocamentoM: 1300 },
+      { tSegundos: 82, distBaseM: 69864, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 112, distBaseM: 69864, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 147, distBaseM: 68873, deslocamentoM: 1200 },
+      { tSegundos: 180, distBaseM: 68653, deslocamentoM: 1100 },
+      { tSegundos: 217, distBaseM: 68653, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 233, distBaseM: 68602, deslocamentoM: 900 },
+      { tSegundos: 265, distBaseM: 68213, deslocamentoM: 800 },
+      { tSegundos: 299, distBaseM: 67934, deslocamentoM: 1000 },
+      { tSegundos: 332, distBaseM: 67934, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 378, distBaseM: 66579, deslocamentoM: 1600 },
+      { tSegundos: 418, distBaseM: 65595, deslocamentoM: 1300 },
+      { tSegundos: 445, distBaseM: 64612, deslocamentoM: 1100 },
+      { tSegundos: 486, distBaseM: 64612, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 502, distBaseM: 64612, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 539, distBaseM: 63280, deslocamentoM: 1400 },
+      { tSegundos: 574, distBaseM: 62263, deslocamentoM: 1100 },
+      { tSegundos: 601, distBaseM: 62263, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 625, distBaseM: 60984, deslocamentoM: 1400 },
+      { tSegundos: 672, distBaseM: 60984, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 724, distBaseM: 59919, deslocamentoM: 1200 },
+      { tSegundos: 751, distBaseM: 59919, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 775, distBaseM: 58625, deslocamentoM: 1400 },
+      { tSegundos: 812, distBaseM: 58625, deslocamentoM: 0 }, // duplicada
+      { tSegundos: 847, distBaseM: 57218, deslocamentoM: 1500 },
+      { tSegundos: 903, distBaseM: 55868, deslocamentoM: 1400 },
+    ];
+    expect(ehRetornoSustentadoABase(leituras)).toBe(true);
+  });
 });
 
 describe("ehSaltoDeReconciliacaoDeAtraso", () => {
