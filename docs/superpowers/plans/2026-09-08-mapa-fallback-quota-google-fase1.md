@@ -570,6 +570,12 @@ Em `src/app/(app)/central-v2/MapaLeafletV2.tsx`, dentro de `export interface Pro
 
 ```typescript
   onQuotaExceeded?: () => void;
+  // Chamado quando o mapa termina de instanciar (mesmo momento do onLoad
+  // interno). Task 9 (MapaComFallback) usa isso como ponto de partida pra
+  // decidir, com um sinal real (nao silencio ambiguo), se o retry ao
+  // Google teve sucesso -- ver nota na Decisao 7 da spec e Task 9 deste
+  // plano.
+  onMapLoaded?: () => void;
 ```
 
 - [ ] **Step 2: Importar e instalar o detector**
@@ -580,8 +586,27 @@ No topo do arquivo, junto aos outros imports:
 import { instalarDetectorCotaGoogle } from "@/lib/deteccao-cota-google";
 ```
 
-Dentro do componente principal (onde `map` já é lido via `useState<google.maps.Map | null>`),
-adicionar um `useEffect` que instala o detector quando `map` existir:
+O `onLoad` do `<GoogleMap>` já existe em `src/app/(app)/central-v2/MapaLeafletV2.tsx:493`:
+
+```typescript
+  const onLoad = useCallback((m: google.maps.Map) => {
+    setMap(m);
+    // Injeta CSS para sobrescrever o fundo branco nativo do InfoWindow do Google Maps
+    ...
+```
+
+Adicionar `onMapLoaded?.();` logo depois de `setMap(m);` nessa mesma função (não criar
+um segundo `onLoad`) — resultado:
+
+```typescript
+  const onLoad = useCallback((m: google.maps.Map) => {
+    setMap(m);
+    onMapLoaded?.();
+    // Injeta CSS para sobrescrever o fundo branco nativo do InfoWindow do Google Maps
+    ...
+```
+
+Depois, adicionar um `useEffect` que instala o detector quando `map` existir:
 
 ```typescript
   useEffect(() => {
@@ -880,9 +905,11 @@ git commit -m "feat(mapa-provider): mapa de fallback MapLibre+PMTiles (Fase 1, s
 - Create: `src/app/(app)/central-v2/MapaComFallback.tsx`
 
 **Interfaces:**
-- Consumes: `MapaLeafletV2` (default export) e `type Props` de `./MapaLeafletV2`;
-  `MapaFallbackOSM` de `./MapaFallbackOSM`; `type MapaProviderEstado`,
-  `deveTentarRetryAgora` de `@/lib/mapa-provider`.
+- Consumes: `MapaLeafletV2` (default export) e `type Props` de `./MapaLeafletV2`,
+  incluindo os dois props opcionais adicionados no Task 5
+  (`onQuotaExceeded?: () => void`, `onMapLoaded?: () => void`); `MapaFallbackOSM` de
+  `./MapaFallbackOSM`; `type MapaProviderEstado`, `deveTentarRetryAgora` de
+  `@/lib/mapa-provider`.
 - Produces: default export com a MESMA assinatura de `Props` de `MapaLeafletV2` —
   drop-in replacement pro `dynamic(() => import(...))` do `MonitorV2.tsx`.
 
@@ -924,6 +951,11 @@ async function postarEvento(evento: "quota_excedida" | "retry_sucesso" | "retry_
 export default function MapaComFallback(props: Props) {
   const [estado, setEstado] = useState<MapaProviderEstado | null>(null);
   const [tentandoRetry, setTentandoRetry] = useState(false);
+  // Timestamp de quando o probe oculto do Google confirmou onMapLoaded
+  // nesta tentativa de retry -- null enquanto nao carregou ainda (ou antes
+  // de iniciar). Ver ProbeRetry mais abaixo pra como isso decide
+  // sucesso/falha do retry com um sinal real.
+  const [mapaCarregouEm, setMapaCarregouEm] = useState<number | null>(null);
 
   useEffect(() => {
     let ativo = true;
@@ -941,6 +973,7 @@ export default function MapaComFallback(props: Props) {
   }, []);
 
   const iniciarRetry = useCallback(() => {
+    setMapaCarregouEm(null);
     setTentandoRetry(true);
   }, []);
 
@@ -980,27 +1013,60 @@ export default function MapaComFallback(props: Props) {
           <MapaLeafletV2
             {...props}
             onQuotaExceeded={onRetryFalhou}
+            onMapLoaded={() => setMapaCarregouEm(Date.now())}
           />
-          <TimeoutRetry onTimeout={onRetryFalhou} onSucessoAssumido={onRetrySucesso} />
+          <ProbeRetry
+            mapaCarregouEm={mapaCarregouEm}
+            onFalhaConfirmada={onRetryFalhou}
+            onSucessoConfirmado={onRetrySucesso}
+          />
         </div>
       )}
     </>
   );
 }
 
-// Se nem sucesso nem erro de cota disparar em 8s, trata como falha
-// (conservador -- nunca "flapping" pra um estado que nao foi de fato
-// confirmado). Sucesso e' assumido se NENHUM erro disparou ate o timeout
-// -- nao ha' evento de "carregou com sucesso" explicito no
-// @react-google-maps/api pra afirmar isso de forma mais direta.
-function TimeoutRetry({ onTimeout, onSucessoAssumido }: { onTimeout: () => void; onSucessoAssumido: () => void }) {
+// Decide se o retry teve sucesso usando um sinal REAL (onMapLoaded do
+// MapaLeafletV2), nao silencio ambiguo -- correcao de um defeito achado na
+// varredura pre-execucao deste plano (ver ledger): uma versao anterior
+// deste componente tratava "nenhum erro em 8s" como sucesso a partir do
+// MOUNT do probe, o que e' ambiguo (o Google pode so' nao ter tentado
+// renderizar ainda). Design corrigido, ancorado no incidente real de 08/09
+// (o erro de cota apareceu ~1s depois do mapa instanciar, nao depois de
+// segundos incertos):
+//   - so' comeca a contar depois que mapaCarregouEm (via onMapLoaded) tem
+//     um valor -- ou seja, depois que o SDK do Google de fato instanciou
+//     o mapa, no' so' carregou o script;
+//   - 5s depois disso (5x a margem sobre o ~1s observado no incidente
+//     real) sem erro de cota = sucesso CONFIRMADO, nao assumido;
+//   - se onMapLoaded nunca disparar dentro de 15s do mount (rede lenta,
+//     script travado por outro motivo), trata como falha -- nao da' pra
+//     confirmar nada, e o padrao seguro deste projeto (mesma filosofia do
+//     detector de desvio, recall > precisao) e' ficar no fallback que já
+//     funciona em vez de arriscar voltar pro que pode continuar quebrado.
+function ProbeRetry({
+  mapaCarregouEm,
+  onFalhaConfirmada,
+  onSucessoConfirmado,
+}: {
+  mapaCarregouEm: number | null;
+  onFalhaConfirmada: () => void;
+  onSucessoConfirmado: () => void;
+}) {
   useEffect(() => {
-    const t = setTimeout(onSucessoAssumido, 8000);
-    return () => clearTimeout(t);
-  }, [onTimeout, onSucessoAssumido]);
+    if (mapaCarregouEm == null) {
+      const tOuter = setTimeout(onFalhaConfirmada, 15_000);
+      return () => clearTimeout(tOuter);
+    }
+    const tInner = setTimeout(onSucessoConfirmado, 5_000);
+    return () => clearTimeout(tInner);
+  }, [mapaCarregouEm, onFalhaConfirmada, onSucessoConfirmado]);
   return null;
 }
 ```
+
+(`mapaCarregouEm` e o reset em `iniciarRetry` já estão declarados mais acima, junto
+com `estado`/`tentandoRetry` — não duplicar essas declarações aqui.)
 
 - [ ] **Step 2: Verificar tipos**
 
