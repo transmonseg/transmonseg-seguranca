@@ -856,7 +856,7 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
       <div
         style={{
           position: "absolute", top: 8, left: 8, zIndex: 10,
-          background: mapTokens.corFundoPainel ?? "#222", color: "#fff",
+          background: mapTokens.card, color: mapTokens.text,
           padding: "4px 10px", borderRadius: 6, fontSize: 12,
         }}
       >
@@ -868,11 +868,10 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
 }
 ```
 
-Nota: `mapTokens.corFundoPainel` é um palpite de nome de campo — checar o `type
-MapTokens` real em `src/app/(app)/central-v2/tokens.ts` antes de escrever este código
-e ajustar pro nome de campo que existir de fato (se não existir nenhum campo de cor de
-painel, usar um valor fixo tipo `"#222"` e remover a dependência de `mapTokens` nesse
-badge — não é crítico, é só o aviso visual do modo fallback).
+Nota: `mapTokens.card`/`mapTokens.text` são campos reais confirmados em
+`src/app/(app)/central-v2/tokens.ts` (`export interface MapTokens { bg, card, border,
+text, muted, accent, red, yellow, green, parado, dim, tileUrl, tileSubdomains }`) — não
+precisa checar de novo, só usar como está.
 
 Nota 2: `pmtiles://` como protocolo de URL de source do MapLibre requer registrar o
 protocol handler da lib `pmtiles` (pacote `pmtiles`, não confundir com o formato de
