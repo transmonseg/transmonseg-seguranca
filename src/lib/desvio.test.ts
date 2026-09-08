@@ -235,6 +235,26 @@ describe("avaliarAfastandoDeTudo", () => {
     expect(r.streak).toBe(0);
     expect(r.disparou).toBe(false);
   });
+
+  it("pisoAfastandoM=0 (padrão) mantém comportamento atual -- caso real RQV-8A12 (08/09) dispara mesmo sendo recuo pequeno", () => {
+    // Ciclo real do disparo: cliente 9362,8m->9684,8m, base 27642,5m->27964,5m
+    // (os dois +322m exatos -- marca de recuo fisico breve, nao divergencia).
+    const r = avaliarAfastandoDeTudo([9684.8, 27964.5], [9362.8, 27642.5], 1);
+    expect(r.streak).toBe(2);
+    expect(r.disparou).toBe(true);
+  });
+
+  it("pisoAfastandoM acima do delta real filtra o recuo breve do RQV-8A12 sem exigir ciclo extra", () => {
+    const r = avaliarAfastandoDeTudo([9684.8, 27964.5], [9362.8, 27642.5], 1, { pisoAfastandoM: 400 });
+    expect(r.streak).toBe(0); // nem decai -- nao aproximou de nenhum, mas nao afastou de todos c/ piso
+    expect(r.disparou).toBe(false);
+  });
+
+  it("pisoAfastandoM não mascara divergência real acima do piso", () => {
+    const r = avaliarAfastandoDeTudo([1500, 2500], [1000, 2000], 1, { pisoAfastandoM: 200 });
+    expect(r.streak).toBe(2); // +500 nos dois, bem acima do piso de 200
+    expect(r.disparou).toBe(true);
+  });
 });
 
 describe("avaliarRuaRara", () => {

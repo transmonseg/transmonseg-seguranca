@@ -65,9 +65,13 @@ const GATE_MOVIMENTO_MINIMO = process.env.GATE_MOVIMENTO_MINIMO === "1";
 const GATE_RECONCILIACAO = process.env.GATE_RECONCILIACAO === "1";
 const MODELAR_BASES = process.env.MODELAR_BASES === "1";
 const GATE_RETORNO_BASE = process.env.GATE_RETORNO_BASE === "1";
+// PISO_AFASTANDO_M (08/09, achado RQV-8A12): candidato de piso minimo de
+// aumento por destino em avaliarAfastandoDeTudo, pra medir contra dia real
+// antes de decidir valor -- 0 (padrao) preserva o baseline de sempre.
+const PISO_AFASTANDO_M = Number(process.env.PISO_AFASTANDO_M ?? 0);
 const LIMIAR_DESTINO_RELEVANTE_M = 50_000;
 const LIMIAR_MOVIMENTO_MINIMO_M = 50;
-console.log(`Gates: GATE_MOVIMENTO_MINIMO=${GATE_MOVIMENTO_MINIMO} GATE_RECONCILIACAO=${GATE_RECONCILIACAO} MODELAR_BASES=${MODELAR_BASES} GATE_RETORNO_BASE=${GATE_RETORNO_BASE}`);
+console.log(`Gates: GATE_MOVIMENTO_MINIMO=${GATE_MOVIMENTO_MINIMO} GATE_RECONCILIACAO=${GATE_RECONCILIACAO} MODELAR_BASES=${MODELAR_BASES} GATE_RETORNO_BASE=${GATE_RETORNO_BASE} PISO_AFASTANDO_M=${PISO_AFASTANDO_M}`);
 if (GATE_RETORNO_BASE && !MODELAR_BASES) { console.error("GATE_RETORNO_BASE=1 exige MODELAR_BASES=1"); process.exit(1); }
 
 // Centroide da base igual ao centroideGeo() de src/lib/unitrac.ts (media dos
@@ -226,7 +230,7 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
       continue;
     }
 
-    const afastando = avaliarAfastandoDeTudo(distAtuais, distAnteriores, afastandoStreak);
+    const afastando = avaliarAfastandoDeTudo(distAtuais, distAnteriores, afastandoStreak, { pisoAfastandoM: PISO_AFASTANDO_M });
     afastandoStreak = afastando.streak;
 
     const celula = celulaDe(pos.lat, pos.lng);

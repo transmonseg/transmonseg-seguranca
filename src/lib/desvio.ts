@@ -460,7 +460,7 @@ export function avaliarAfastandoDeTudo(
   distanciasAtuais: number[],
   distanciasAnteriores: number[],
   streakAnterior: number,
-  opts?: { limiarTransitoLongoM?: number }
+  opts?: { limiarTransitoLongoM?: number; pisoAfastandoM?: number }
 ): ResultadoAfastando {
   if (
     distanciasAtuais.length === 0 ||
@@ -470,10 +470,27 @@ export function avaliarAfastandoDeTudo(
     return { streak: 0, disparou: false, aproximandoAlgum: false };
   }
 
+  // pisoAfastandoM (padrao 0 -- NAO USADO EM PRODUCAO, resultado negativo
+  // testado e descartado em 08/09). Hipotese original (caso RQV-8A12: dois
+  // destinos com +322m EXATOS no mesmo ciclo, marca de recuo fisico breve
+  // tipo dar re/contorno): ignorar aumento menor que um piso em CADA
+  // destino filtraria essa manobra sem exigir ciclo extra de confirmacao.
+  // Validado contra scripts/simular-dia-desvio-v2.mjs (PISO_AFASTANDO_M=300)
+  // em dois dias reais completos -- NAO GENERALIZOU: 07/09 zero mudanca (60
+  // disparos identicos com piso=0 e piso=300); 08/09 levemente PIOR (1029 vs
+  // 1027, efeito colateral do reset de streak deslocando outros disparos) e
+  // os 5 disparos que o piso removeu NAO incluiam nem RQU-0B47 nem RQV-8A12
+  // -- a reconstrucao offline (pendentes_snapshot_log) dispara pra esses
+  // veiculos muitas vezes mais que a producao real (RQV-8A12: 8x na
+  // simulacao contra 1 alerta real), entao nem o caso motivador foi
+  // reproduzido fielmente. Parametro mantido (default 0, sem efeito em
+  // producao) so' pra documentar o resultado negativo e a ferramenta de
+  // teste -- nao re-tentar essa ideia sem dado novo que mude o quadro.
+  const piso = opts?.pisoAfastandoM ?? 0;
   const aproximandoAlgum = distanciasAtuais.some((d, i) => d < distanciasAnteriores[i]);
   const emTransitoLongo =
     Math.min(...distanciasAtuais) > (opts?.limiarTransitoLongoM ?? LIMIAR_TRANSITO_LONGO_M);
-  const afastouDeTodos = !emTransitoLongo && distanciasAtuais.every((d, i) => d > distanciasAnteriores[i]);
+  const afastouDeTodos = !emTransitoLongo && distanciasAtuais.every((d, i) => d > distanciasAnteriores[i] + piso);
 
   // Achado real 13/08 (analise do dia inteiro via desvio_disparo_log, apos
   // ja ter filtrado ruido de GPS/movimento insignificante e destino
