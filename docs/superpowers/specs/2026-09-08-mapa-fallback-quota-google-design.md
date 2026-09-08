@@ -154,6 +154,22 @@ cheio.
   rua sumir inteiro, essa fase já cobre isso).
 - **Fase 2** (completude visual): Decisão 5, camada satélite Sentinel/Landsat.
 
+## Decisão 9 — achado durante a investigação: CARTO e hotlink Google em outras 2 telas
+
+`MapaMonitor.tsx`/`MapaFrota.tsx` (react-leaflet, telas separadas da Central) usam hoje
+`https://{s}.basemaps.cartocdn.com/dark_all/...` sem registro (mesmo problema de ToS
+que motivou este documento — CARTO proíbe uso comercial/asset-tracking no tier grátis)
+e, quando `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` está setada (está, em produção),
+`https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}` como satélite — **hotlink direto
+ao tile interno do Google, sem API/SDK/chave real nenhuma**, mais arriscado que a Demo
+Key (sem aviso de erro, pode ser bloqueado silenciosamente a qualquer momento).
+
+Usuário aprovou incluir a correção no escopo deste plano (não era o incidente
+original, mas reaproveita a mesma infra `rj.pmtiles`/Caddy dos Tasks 6-7). Satélite
+dessas 2 telas é **removido sem substituto** até a Fase 2 — trocar por outro provedor
+"grátis" (Esri etc.) só trocaria um risco de ToS por outro, o problema que esta
+investigação inteira existe pra evitar. Ver plano de implementação, Task 11.
+
 ## Fora de escopo
 
 - Migrar `MapaMonitor.tsx`/`MapaFrota.tsx` (já usam `react-leaflet`/OSM hoje, por outro
