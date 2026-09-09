@@ -17,7 +17,7 @@ import { TIPOS_ABA_DESVIOS, TIPOS_REVISAO_INDIVIDUAL } from "./tipos-alerta";
 import { delayEntradaEscalonada } from "@/lib/stagger";
 import { motion, AnimatePresence } from "framer-motion";
 
-const MapaLeafletV2 = dynamic(() => import("./MapaLeafletV2"), { ssr: false });
+const MapaLeafletV2 = dynamic(() => import("./MapaComFallback"), { ssr: false });
 
 // ── Types ──────────────────────────────────────────────────────────────
 interface AlertaEnriquecido {
