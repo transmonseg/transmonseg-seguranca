@@ -128,6 +128,14 @@ mesmo `rj.pmtiles` via `CamadaPMTiles.tsx` (Leaflet + `protomaps-leaflet`). Sat�
 removido dessas 2 telas até existir substituto próprio (Fase 2, Sentinel/Landsat
 self-hospedado — ainda não implementada).
 
+⚠️ **`MapaMonitor.tsx`/`MapaFrota.tsx` (junto com `MonitorWrapper.tsx`/`PainelCentral.tsx`/
+`MapaWrapper.tsx`) são código ÓRFÃO** — não são importados por nenhuma rota real do app
+hoje (confirmado via grep exaustivo em `src/app`, sem `pages/` router legado). O fix de
+CARTO/hotlink Google nesses arquivos é válido e deployado, mas não pôde ser validado
+visualmente em produção porque não existe URL que monte esses componentes. Considerar
+deletar esses 5 arquivos (~2900 linhas) num follow-up, já que mantê-los vivos significa
+que qualquer auditoria futura de segurança/ToS precisa revisitá-los sem necessidade.
+
 ## Próximos passos (retomar aqui)
 - [ ] **Observar em produção o resultado da fusão de sinais/redução de conservadorismo** (commit `e39c6da`, deployado 12/07/2026): volume de alertas corroborados (motivo contendo "corroborado por"), se a Camada 3 religada gerou volume aceitável em rotas rurais, e se os limiares de parada anômala (12/20) não reproduziram ruído de trânsito pesado.
 - [ ] **Fase 5b — RBAC por cliente (quando precisar):** cliente Nutry/Benassi logar e ver só a frota dele (policies RLS + claim de cliente). Hoje só central. Destrava Realtime full.

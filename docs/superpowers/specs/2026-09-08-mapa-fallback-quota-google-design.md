@@ -77,6 +77,24 @@ estourou. Design escolhido:
   — quando `provider='fallback'`, troca pro mapa OSM (Decisão 4) instantaneamente pra
   TODOS os operadores ao mesmo tempo, sem exigir F5.
 
+> **Correção pós-implementação (revisão final da branch):** o último bullet acima
+> **não** foi o que a implementação real fez. Em vez de dobrar no polling existente do
+> `MonitorV2`, foram criados um endpoint dedicado (`/api/mapa-provider`) **e** um
+> segundo `setInterval` de 30s próprio dentro de `MapaComFallback.tsx`. Desvio
+> deliberado: manter `MapaComFallback` um drop-in de fato (1 linha de mudança em
+> `MonitorV2.tsx`, mesma assinatura de Props de `MapaLeafletV2`) em vez de espalhar o
+> estado do mapa pelo pipeline de dados do monitor. **Custo aceito:** dobra o polling
+> de banco por aba aberta, e cada `GET` abre/fecha um `pg.Pool` novo — com 5
+> operadores isso é da ordem de ~14 mil ciclos de conexão por dia. Se isso virar
+> problema de carga, o caminho é um pool de módulo reutilizado (ou dobrar no polling
+> do monitor, como a decisão original dizia), não reverter o drop-in.
+>
+> **Correção pós-implementação (mesma revisão):** a coluna `atualizado_por` prevista
+> aqui foi esquecida na migração `075` e adicionada depois pela `076`
+> (`scripts/migrations/contabo/076_mapa_provider_estado_atualizado_por.sql`). Ela
+> existe no banco mas ainda **não é preenchida** — a rota não tem identificação de
+> operador disponível para gravar.
+
 ## Decisão 4 — Fallback de mapa de rua: OSM self-hospedado via PMTiles + MapLibre
 
 Rejeitado: apontar pros servidores públicos `tile.openstreetmap.org` (violaria a
@@ -145,6 +163,25 @@ Frequência de 20min (dentro da janela 15-30min aprovada) escolhida pra equilibr
 hora" — num dia inteiro de fallback (pior caso), são ~40-50 tentativas extras, muito
 abaixo de qualquer teto razoável de cota mesmo se cada tentativa contasse como load
 cheio.
+
+> **Correção pós-implementação (revisão final da branch):** a suposição de "pior caso
+> são 2 clientes tentando no mesmo segundo" está ERRADA para o código que foi
+> escrito. `proxima_tentativa_em` só avança quando o probe **termina**, não quando
+> começa — então a janela vulnerável não é "o mesmo segundo", é a **duração inteira do
+> probe**: 5s no caminho de sucesso, até 15s no caminho de falha (ver `ProbeRetry` em
+> `MapaComFallback.tsx`). Toda aba de operador que rodar seu ciclo de 30s dentro dessa
+> janela vê o mesmo estado vencido e monta seu próprio probe oculto do Google. Pior
+> caso real: **~N carregamentos simultâneos do Google Maps por ciclo de retry, onde N
+> é o número de operadores online** — com 5 operadores, ~5, não 1.
+>
+> Isso continua **aceito** (raro: só durante fallback, a cada 20min; e o custo
+> absoluto de ~5 loads é irrelevante perto do volume normal da Central). Mas a
+> caracterização honesta não é mais "quase nunca acontece" — é "acontece toda vez que
+> houver operadores suficientes online durante o retry". Resolver de verdade exigiria
+> eleição real, ex.: um `UPDATE ... SET proxima_tentativa_em = <novo> WHERE id = 1 AND
+> proxima_tentativa_em = <valor lido>` condicional, e só o cliente cujo UPDATE afetou
+> 1 linha monta o probe. Não feito nesta fase — documentação errada é pior que a race
+> em si, então a suposição fica corrigida aqui.
 
 ## Decisão 8 — Fases de entrega
 
