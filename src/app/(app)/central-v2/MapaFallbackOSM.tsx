@@ -14,27 +14,52 @@ import type { StyleSpecification } from "@maplibre/maplibre-gl-style-spec";
 import type { VeiculoMapa } from "./MapaLeafletV2";
 import type { MapTokens } from "./tokens";
 
-// Registro do protocolo pmtiles:// -- precisa acontecer uma vez por app,
-// antes de qualquer new maplibregl.Map() usar uma source "pmtiles://...".
+// Setup do protocolo pmtiles:// -- precisa acontecer uma vez por app, antes
+// de qualquer new maplibregl.Map() usar uma source "pmtiles://...".
 //
-// IMPORTANTE (achado via investigacao real pos-QA, nao so' pela doc do README):
-// maplibre-gl@6 despacha o FETCH de tiles vetoriais pra dentro de um Web Worker
-// (dist/maplibre-gl-worker.mjs), que mantem seu PROPRIO registro de protocolos
-// (`self.addProtocol`), separado do registro do thread principal. Chamar so'
-// `maplibregl.addProtocol` aqui registra o protocolo so' pro carregamento inicial
-// do TileJSON (que roda no thread principal) -- os pedidos de tile de dado real
-// (z/x/y), que rodam dentro do worker, falham silenciosamente (sem erro visivel,
-// sem requisicao de rede) porque o worker nunca teve "pmtiles" registrado nele.
-// A propria doc do maplibre-gl (dist/maplibre-gl.d.ts, funcao importScriptInWorkers)
-// confirma: "you might need to also register the protocol on the main thread" --
-// ou seja, o inverso tambem e' verdade: registrar so' no thread principal nao basta.
-// Fix: usar maplibregl.importScriptInWorkers() pra rodar o registro TAMBEM dentro
-// do worker, carregando public/pmtiles-worker-protocol.js (bundle UMD do pacote
-// `pmtiles`, node_modules/pmtiles/dist/pmtiles.js, + uma linha de
-// self.addProtocol) -- gerado uma vez e versionado em public/ porque
-// importScriptInWorkers precisa de uma URL estatica pro worker importar via
-// fetch+eval, nao de um modulo ES com specifiers "nus" tipo `import "pmtiles"`
-// (que o worker nao consegue resolver sem bundler).
+// IMPORTANTE (achado via investigacao real pos-QA, nao so' por doc/README --
+// ver task-8-report.md pro historico completo de 3 rodadas de bug):
+//
+// 1) maplibre-gl@6 despacha o FETCH de tiles vetoriais pra dentro de um Web
+//    Worker (dist/maplibre-gl-worker.mjs), que mantem seu PROPRIO registro de
+//    protocolos (`self.addProtocol`), separado do thread principal. So'
+//    `maplibregl.addProtocol` no thread principal resolve o TileJSON inicial,
+//    mas nao os pedidos de tile real (z/x/y), que rodam dentro do worker.
+//    Fix: `maplibregl.importScriptInWorkers(...)` roda o registro TAMBEM
+//    dentro do worker.
+//
+// 2) POREM: nada disso importa se o worker nunca chega a ser criado. Em
+//    producao (Next.js + Turbopack), confirmado ao vivo via Proxy em
+//    `window.Worker` que ZERO workers eram instanciados durante todo o ciclo
+//    de vida do componente. Causa: por padrao, maplibre-gl calcula a URL do
+//    seu proprio bundle de worker a partir de `import.meta.url` do modulo
+//    principal (funcao interna que so' funciona se isso for uma URL
+//    http(s)://... valida) -- sob Turbopack esse valor nao bate o formato
+//    esperado, a funcao devolve uma URL vazia, e a criacao do worker nunca
+//    acontece (nem chega a lancar erro visivel). Fix: apontar explicitamente
+//    via `maplibregl.setWorkerUrl(...)` pro bundle do worker, servido como
+//    asset estatico. Confirmado localmente (fora de producao, via Playwright
+//    + servidor local espelhando os mesmos arquivos que vao pra public/) que
+//    com `setWorkerUrl` setado, o Worker É instanciado de verdade, tiles reais
+//    sao buscados (Range requests que aumentam conforme zoom) e o mapa
+//    renderiza ruas/agua corretamente.
+//
+// Os arquivos estaticos usados abaixo (versionados em public/, nao gerados no
+// build):
+// - public/maplibre-gl-worker.mjs + public/maplibre-gl-shared.mjs: copia
+//   direta de node_modules/maplibre-gl/dist/{maplibre-gl-worker,maplibre-gl-shared}.mjs
+//   (o worker importa o "shared" via specifier relativo "./maplibre-gl-shared.mjs",
+//   por isso os dois precisam estar juntos no mesmo diretorio).
+// - public/pmtiles-worker-protocol.js: bundle UMD do pacote `pmtiles`
+//   (node_modules/pmtiles/dist/pmtiles.js) + uma linha de `self.addProtocol`,
+//   carregado via importScriptInWorkers (que faz fetch+eval da URL dentro do
+//   worker -- um `import "pmtiles"` com specifier "nu" nao resolveria ali sem
+//   bundler).
+// Esses 3 arquivos tambem precisaram ser excluidos do proxy.ts de autenticacao
+// (ver src/proxy.ts) -- sem isso, um pedido anonimo a eles e' redirecionado
+// pro /login, e o Worker (que faz fetch com credentials:"same-origin", nao
+// necessariamente com a mesma robustez de um <script> de pagina) pode falhar.
+maplibregl.setWorkerUrl("/maplibre-gl-worker.mjs");
 const protocol = new Protocol();
 maplibregl.addProtocol("pmtiles", protocol.tile);
 maplibregl.importScriptInWorkers("/pmtiles-worker-protocol.js").catch((err) => {
