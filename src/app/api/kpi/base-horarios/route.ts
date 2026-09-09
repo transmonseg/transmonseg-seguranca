@@ -278,9 +278,28 @@ function acharBlocoDentroDoRaio(pt: PontoEntrega, posicoes: Posicao[], raioM: nu
   return maior.durMs >= DWELL_MINIMO_MS ? maior : null
 }
 
-export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]): VisitaPonto[] {
+// Achado real 08/09 (KPI Nutry Max, placa RQV5F67/KINHA BAR): o caminhao
+// ficou parado a 81m da PROPRIA BASE a noite inteira (23:55-02:48) --
+// nunca saiu pra rua -- mas o cliente "Kinha Bar" fica coincidentemente a
+// ~508m da base (mesmo bairro, Penha), dentro de RAIO_ENTREGA_M. Sem
+// excluir as posicoes DENTRO da base, qualquer cliente cadastrado perto o
+// bastante do CD (ou dos 2 CDs -- Penha e Campos, ver BASE_COORD_NUTRIMAX*
+// no lado do KPI) confirma "entrega" TODA NOITE so' pelo caminhao estar
+// estacionado na garagem, nunca por ter saido de verdade. montarVisitas.ts
+// (o fallback antigo, do lado do KPI) ja' filtrava isso desde sempre
+// (`paradas.filter(p => p.classificacao === 'FORA_BASE')`) -- esta ponte
+// (posicao continua, mais fina e' por isso mais suscetivel a esse
+// problema especifico) nunca ganhou o mesmo filtro. `basesCentro` opcional
+// (default vazio) preserva o comportamento antigo pra quem nao passar.
+function filtrarForaDaBase(posicoes: Posicao[], basesCentro: BaseCentro[]): Posicao[] {
+  if (basesCentro.length === 0) return posicoes
+  return posicoes.filter((p) => !basesCentro.some((b) => haversineM(b.lat, b.lng, p.lat, p.lng) <= RAIO_BASE_M))
+}
+
+export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
+  const posicoesForaDaBase = filtrarForaDaBase(posicoes, basesCentro)
   const diretas = pontos.map((pt) => {
-    const bloco = acharBlocoDentroDoRaio(pt, posicoes, RAIO_ENTREGA_M)
+    const bloco = acharBlocoDentroDoRaio(pt, posicoesForaDaBase, RAIO_ENTREGA_M)
     return bloco ? { id: pt.id, chegada: bloco.inicio, saida: bloco.fim } : { id: pt.id, chegada: null, saida: null }
   })
 
@@ -293,7 +312,7 @@ export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]
   // aproximacao" ja usado em viaVizinhanca.
   const comAmpliado = diretas.map((v, i) => {
     if (v.chegada !== null) return v
-    const bloco = acharBlocoDentroDoRaio(pontos[i], posicoes, RAIO_AMPLIADO_M)
+    const bloco = acharBlocoDentroDoRaio(pontos[i], posicoesForaDaBase, RAIO_AMPLIADO_M)
     if (!bloco) return v
     return { id: v.id, chegada: bloco.inicio, saida: bloco.fim, viaRaioAmpliado: true }
   })
@@ -457,7 +476,7 @@ export async function POST(request: Request) {
     const { saidaBase, chegadaBase } = acharSaidaEChegadaBase(posicoes, basesCentro);
     const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const pontos = pontosPorPlaca.get(placaNorm);
-    const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos) : undefined;
+    const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos, basesCentro) : undefined;
     resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido, ...(visitas ? { visitas } : {}) });
   }
 

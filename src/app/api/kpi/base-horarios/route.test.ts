@@ -389,4 +389,45 @@ describe("acharVisitasPorPonto", () => {
       expect(visita).toEqual({ id: "NF1", chegada: "2026-08-27T14:00:00.000Z", saida: "2026-08-27T14:20:00.000Z" });
     });
   });
+
+  // Achado real 08/09 (KPI Nutry Max, placa RQV5F67/KINHA BAR): caminhao
+  // ficou parado na PROPRIA BASE a noite inteira (81m do centro dela) --
+  // nunca saiu pra rua -- mas o cliente fica coincidentemente a ~508m da
+  // base (mesmo bairro), dentro do raio de confirmacao. Sem excluir
+  // posicoes DENTRO da base, qualquer cliente perto o bastante do CD
+  // "confirma entrega" toda noite so' pelo caminhao estar na garagem.
+  describe("exclusao de posicoes dentro da base (achado real 08/09, placa RQV5F67/KINHA BAR)", () => {
+    // Cliente a ~508m da base (mesma geometria do caso real: distancia
+    // logo ACIMA do raio de base de 500m, mas dentro do raio de entrega).
+    const CLIENTE_PERTO_DA_BASE = { id: "NF_BASE", lat: -22.816007, lng: -43.2725 };
+
+    it("caminhao so' esteve DENTRO da base a noite toda: NAO confirma cliente proximo, mesmo com posicoes dentro do raio de entrega dele", () => {
+      const posicoesNaBase = [
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T02:00:00.000Z" }, // 0m da base
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T05:00:00.000Z" }, // 3h depois, ainda na base
+      ];
+      const [visita] = acharVisitasPorPonto(posicoesNaBase, [CLIENTE_PERTO_DA_BASE], [BASE]);
+      expect(visita).toEqual({ id: "NF_BASE", chegada: null, saida: null });
+    });
+
+    it("mesmo cenario SEM passar basesCentro (parametro opcional): comportamento antigo preservado, confirma (potencialmente errado, mas e' o default documentado)", () => {
+      const posicoesNaBase = [
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T02:00:00.000Z" },
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T05:00:00.000Z" },
+      ];
+      const [visita] = acharVisitasPorPonto(posicoesNaBase, [CLIENTE_PERTO_DA_BASE]);
+      expect(visita.chegada).not.toBeNull();
+    });
+
+    it("caminhao sai da base e faz uma parada real perto do cliente: confirma normalmente (a exclusao so' remove o trecho DENTRO da base)", () => {
+      const posicoes = [
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T02:00:00.000Z" }, // na base
+        { lat: -22.816007, lng: -43.2725, criado_em: "2026-08-27T08:00:00.000Z" }, // saiu, parou perto do cliente (mesmo ponto do cliente)
+        { lat: -22.816007, lng: -43.2725, criado_em: "2026-08-27T08:15:00.000Z" },
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T20:00:00.000Z" }, // voltou pra base
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [CLIENTE_PERTO_DA_BASE], [BASE]);
+      expect(visita).toEqual({ id: "NF_BASE", chegada: "2026-08-27T08:00:00.000Z", saida: "2026-08-27T08:15:00.000Z" });
+    });
+  });
 });
