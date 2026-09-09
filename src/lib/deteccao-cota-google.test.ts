@@ -18,8 +18,24 @@ describe("matchErroCotaGoogle", () => {
     expect(matchErroCotaGoogle("Google Maps JavaScript API error: ApiNotActivatedMapError")).toBe(true);
   });
 
-  it("reconhece qualquer mencao generica a 'quota' vinda do dominio googleapis", () => {
-    expect(matchErroCotaGoogle("dadosRouboCarga: falha ao atualizar, servindo cache antigo se houver: quota exceeded")).toBe(true);
+  it("reconhece mencao generica a 'quota' quando ha co-sinal do Google no mesmo texto", () => {
+    expect(matchErroCotaGoogle("Google Maps JavaScript API: quota exceeded for this project")).toBe(true);
+  });
+
+  it("nao reconhece QuotaExceededError nativo do navegador (localStorage cheio)", () => {
+    expect(
+      matchErroCotaGoogle(
+        "Failed to execute 'setItem' on 'Storage': Setting the value of 'x' exceeded the quota."
+      )
+    ).toBe(false);
+  });
+
+  it("nao reconhece 'quota' vinda de outro subsistema do app", () => {
+    expect(
+      matchErroCotaGoogle(
+        "dadosRouboCarga: falha ao atualizar, servindo cache antigo se houver: quota exceeded"
+      )
+    ).toBe(false);
   });
 
   it("nao reconhece mensagem de erro nao relacionada", () => {
