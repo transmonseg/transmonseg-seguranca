@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Marker, Popup, GeoJSON, LayersControl, LayerGroup, useMap } from "react-leaflet";
+import { MapContainer, CircleMarker, Marker, Popup, GeoJSON, LayersControl, LayerGroup, useMap } from "react-leaflet";
 import type { Layer } from "leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import CamadaPMTiles from "./CamadaPMTiles";
 
 type Veiculo = {
   placa: string; cv: string; lat: number; lng: number; nivel: string;
@@ -129,7 +130,6 @@ export default function MapaFrota({
   tiposAtivos?: string[];
   soProblema?: boolean;
 }) {
-  const googleApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
   const [dados, setDados] = useState<Dados | null>(null);
   const [favelas, setFavelas] = useState<GeoJSON.FeatureCollection | null>(null);
   const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
@@ -204,19 +204,7 @@ export default function MapaFrota({
     <div style={{ height: altura, borderRadius: "1rem", overflow: "hidden", border: "1px solid var(--border)" }}>
       <MapContainer center={centro} zoom={10} preferCanvas style={{ height: "100%", width: "100%", background: "#0a0a0a" }}>
         <AjustarVista pontos={comPos.map((v) => [v.lat, v.lng])} favelas={favelas} bases={dados.bases} cliente={cliente} />
-        {googleApiKey ? (
-          <TileLayer
-            url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
-            attribution="&copy; Google Maps"
-            maxNativeZoom={20}
-            maxZoom={21}
-          />
-        ) : (
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            attribution="&copy; OpenStreetMap &copy; CARTO"
-          />
-        )}
+        <CamadaPMTiles tema="dark" />
         {/* Camadas de risco toggleáveis pelo operador (controle no canto). */}
         <LayersControl position="topright">
           {favelas && (

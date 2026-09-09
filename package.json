@@ -21,6 +21,7 @@
     "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
     "pmtiles": "^4.5.0",
+    "protomaps-leaflet": "^5.1.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-leaflet": "^5.0.0",
