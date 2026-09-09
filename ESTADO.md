@@ -91,6 +91,51 @@ Piloto: Nutry Max. Apresentação da ideia: https://transmonseg-seguranca.trifor
   - **Auditoria adversarial pré-merge (12/07) achou bug crítico na Tarefa 6 e corrigiu antes de mergear:** `arbitrarCandidatos` era chamada duas vezes em cadeia (uma dentro de `avaliar()`, outra em `route.ts` ao combinar com os extras) — quando o mesmo tipo (ex: "desvio", vindo de `detectarDesvio` E de `alertaCerca`, fontes diferentes) aparecia nas duas chamadas, o bônus de corroboração era somado 2x (score inflado, motivo duplicado "corroborado por: desvio (corroborado por: desvio)"). Fix: `avaliar()` virou wrapper fino sobre uma nova função exportada `montarCandidatosCore` (retorna os candidatos crus, sem arbitrar); `route.ts` agora monta candidatos core + extras e arbitra **uma única vez**, removendo o candidato "desvio" da lista crua quando o corredor real já suprimiu (senão ele reaparecia na arbitragem final). Também corrigido, no mesmo achado: o segmento de calibração por corredor (`corredor_veredito:X`) só é aplicado quando o vencedor final realmente é o desvio comportamental (não o `alertaCerca`, que tem seu próprio veredito de corredor, sem relação com `corredorInfo`) — evita misturar amostras de calibração de fontes diferentes sob a mesma chave. E o `emRodovia` do trânsito inferido trocou de `bufferPorVelocidade(pos.velocidade) === 200` (número mágico, quebraria silenciosamente se o buffer mudar) pra `pos.velocidade >= 60` (direto).
   - Segunda auditoria adversarial (focada só no commit de correção `e39c6da`) não achou nada crítico/importante, confirmou o fix correto. **Mergeada (fast-forward) na main e pushada em 12/07/2026** (commit `e39c6da`), deploy automático via Vercel.
 
+## Fallback automático de mapa (Google Maps → OSM self-hospedado)
+
+Feature completa implementada e validada ao vivo em produção (setembro/2026, branch
+`feat/mapa-fallback-quota-google`): quando a cota diária da chave `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`
+(Demo Key sem billing) estourar, a Central troca automaticamente pro mapa de rua OSM
+self-hospedado (sem F5, sincronizado entre todos os operadores via `mapa_provider_estado`),
+e volta sozinha pro Google quando a cota resetar. Ver spec completa em
+`docs/superpowers/specs/2026-09-08-mapa-fallback-quota-google-design.md` e plano em
+`docs/superpowers/plans/2026-09-08-mapa-fallback-quota-google-fase1.md`.
+
+**Infra fora do repo (Contabo, `transmonseg-vps`):**
+- `/srv/transmonseg/tiles/rj.pmtiles` (375MB) — tiles vetoriais da região RJ+SP+MG+ES
+  (recortada pra bbox real da frota: `-47.9,-23.9,-40.5,-20.5`), gerado a partir do extrato
+  aberto OpenStreetMap (Geofabrik, região "sudeste") via `planetiler` rodando em Docker
+  (`docker run --rm -v /srv/transmonseg/tiles-build:/data ghcr.io/onthegomap/planetiler:latest
+  --download=true --osm-path=/data/sudeste-latest.osm.pbf --bounds=-47.9,-23.9,-40.5,-20.5
+  --output=/data/rj.pmtiles`). Batch job, não é serviço — atualizar só se o mapa de rua
+  precisar refletir mudanças reais do OSM (não crítico, dado geográfico muda pouco).
+- Servido como arquivo estático pelo Caddy (`/etc/caddy/Caddyfile`, bloco
+  `monitoramento.transmonseg.com.br`, rota `handle_path /tiles/*`), com suporte a
+  HTTP range-request (obrigatório pro formato PMTiles).
+- `public/maplibre-gl-worker.mjs` + `public/maplibre-gl-shared.mjs` (versionados no repo,
+  cópia do bundle real de `node_modules/maplibre-gl/dist/`) — MapLibre GL não consegue
+  resolver a URL do próprio Web Worker sob Turbopack (`import.meta.url` não bate o padrão
+  esperado), precisa de `maplibregl.setWorkerUrl(...)` apontando pra essas cópias estáticas.
+  `public/pmtiles-worker-protocol.js` — registra o protocolo `pmtiles://` também dentro do
+  worker (registro no thread principal via `addProtocol` não alcança o worker sozinho).
+  Todos os 3 liberados do gate de autenticação em `src/proxy.ts` (arquivo estático, sem
+  dado sensível).
+
+**Achado lateral (mesma investigação, corrigido junto):** `MapaMonitor.tsx`/`MapaFrota.tsx`
+usavam CARTO sem registro e hotlink direto ao tile interno do Google
+(`mt1.google.com/vt/lyrs=y...`, sem API/chave real) — ambos removidos, reaproveitando o
+mesmo `rj.pmtiles` via `CamadaPMTiles.tsx` (Leaflet + `protomaps-leaflet`). Satélite
+removido dessas 2 telas até existir substituto próprio (Fase 2, Sentinel/Landsat
+self-hospedado — ainda não implementada).
+
+⚠️ **`MapaMonitor.tsx`/`MapaFrota.tsx` (junto com `MonitorWrapper.tsx`/`PainelCentral.tsx`/
+`MapaWrapper.tsx`) são código ÓRFÃO** — não são importados por nenhuma rota real do app
+hoje (confirmado via grep exaustivo em `src/app`, sem `pages/` router legado). O fix de
+CARTO/hotlink Google nesses arquivos é válido e deployado, mas não pôde ser validado
+visualmente em produção porque não existe URL que monte esses componentes. Considerar
+deletar esses 5 arquivos (~2900 linhas) num follow-up, já que mantê-los vivos significa
+que qualquer auditoria futura de segurança/ToS precisa revisitá-los sem necessidade.
+
 ## Próximos passos (retomar aqui)
 - [ ] **Observar em produção o resultado da fusão de sinais/redução de conservadorismo** (commit `e39c6da`, deployado 12/07/2026): volume de alertas corroborados (motivo contendo "corroborado por"), se a Camada 3 religada gerou volume aceitável em rotas rurais, e se os limiares de parada anômala (12/20) não reproduziram ruído de trânsito pesado.
 - [ ] **Fase 5b — RBAC por cliente (quando precisar):** cliente Nutry/Benassi logar e ver só a frota dele (policies RLS + claim de cliente). Hoje só central. Destrava Realtime full.

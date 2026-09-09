@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, TrafficLayer, useJsApiLoader } from "@react-google-maps/api";
 import { type MapTokens } from "./tokens";
+import { instalarDetectorCotaGoogle } from "@/lib/deteccao-cota-google";
 
 export interface VeiculoMapa {
   placa: string;
@@ -110,6 +111,13 @@ export interface Props {
   satelite: boolean;
   trafego?: boolean;
   onZoomChange?: (zoom: number) => void;
+  onQuotaExceeded?: () => void;
+  // Chamado quando o mapa termina de instanciar (mesmo momento do onLoad
+  // interno). Task 9 (MapaComFallback) usa isso como ponto de partida pra
+  // decidir, com um sinal real (nao silencio ambiguo), se o retry ao
+  // Google teve sucesso -- ver nota na Decisao 7 da spec e Task 9 deste
+  // plano.
+  onMapLoaded?: () => void;
 }
 
 const CENTER_DEFAULT = { lat: -22.9, lng: -43.2 };
@@ -440,6 +448,7 @@ export default function MapaLeafletV2({
   seguir, gatilhoFrota, flyPara, zoomCmd,
   onVeiculoClick, onMapaVazioClick, onAlvoClick,
   mapTokens, tema, satelite, trafego, onZoomChange,
+  onQuotaExceeded, onMapLoaded,
 }: Props) {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "",
@@ -492,6 +501,7 @@ export default function MapaLeafletV2({
 
   const onLoad = useCallback((m: google.maps.Map) => {
     setMap(m);
+    onMapLoaded?.();
     // Injeta CSS para sobrescrever o fundo branco nativo do InfoWindow do Google Maps
     if (!document.getElementById("tmsg-iw-dark")) {
       const s = document.createElement("style");
@@ -507,6 +517,12 @@ export default function MapaLeafletV2({
     }
   }, []);
   const onUnmount = useCallback(() => setMap(null), []);
+
+  useEffect(() => {
+    if (!map || !onQuotaExceeded) return;
+    const container = map.getDiv();
+    return instalarDetectorCotaGoogle(container, onQuotaExceeded);
+  }, [map, onQuotaExceeded]);
 
   useEffect(() => {
     if (!map || !flyPara || flyPara.gatilho === prevFlyG.current) return;

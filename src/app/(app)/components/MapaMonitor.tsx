@@ -11,7 +11,6 @@ import { useEffect, useRef, useState, useCallback, type ReactNode, type MutableR
 import Link from "next/link";
 import {
   MapContainer,
-  TileLayer,
   Polyline,
   CircleMarker,
   Marker,
@@ -26,6 +25,7 @@ import {
 import type { Layer } from "leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import CamadaPMTiles from "./CamadaPMTiles";
 
 // Guard de módulo: impede que ClicarMapaVazio dispare ao clicar num marcador de veículo.
 let _ultimoCliqueMarcador = 0;
@@ -976,11 +976,6 @@ export default function MapaMonitor({
   /* Basemap                                                              */
   /* ------------------------------------------------------------------ */
 
-  const googleApiKey =
-    typeof process !== "undefined"
-      ? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
-      : undefined;
-
   /* ------------------------------------------------------------------ */
   /* Grupos filtrados pela busca                                          */
   /* ------------------------------------------------------------------ */
@@ -1879,19 +1874,7 @@ export default function MapaMonitor({
             <CapturadorZoom onZoom={setZoomMapa} />
             <ClicarMapaVazio onClicarVazio={limparSelecao} />
 
-            {googleApiKey ? (
-              <TileLayer
-                url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
-                attribution="&copy; Google Maps"
-                maxNativeZoom={20}
-                maxZoom={21}
-              />
-            ) : (
-              <TileLayer
-                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                attribution="&copy; OpenStreetMap &copy; CARTO"
-              />
-            )}
+            <CamadaPMTiles tema="dark" />
 
             <LayersControl position="topright">
               {favelas && (
