@@ -5,8 +5,10 @@
 -- quando a cota da chave do Google Maps estourar. Ver spec
 -- docs/superpowers/specs/2026-09-08-mapa-fallback-quota-google-design.md.
 --
--- Roda como app_service (mesmo usuario ja usado nas outras migracoes desta
--- sessao): psql "$DATABASE_URL" -f 075_mapa_provider_estado.sql
+-- Roda como postgres (app_service nao tem permissao de DDL), mesmo padrao das
+-- migracoes 070-074:
+--   ssh transmonseg-vps "sudo -u postgres psql -d transmonseg -f -" \
+--     < scripts/migrations/contabo/075_mapa_provider_estado.sql
 
 create table if not exists mapa_provider_estado (
   id smallint primary key default 1 check (id = 1),
