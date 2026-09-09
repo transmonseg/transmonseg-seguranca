@@ -21,12 +21,29 @@ async function buscarEstado(): Promise<MapaProviderEstado | null> {
   return r.json();
 }
 
-async function postarEvento(evento: "quota_excedida" | "retry_sucesso" | "retry_falhou") {
-  await fetch("/api/mapa-provider", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ evento }),
-  }).catch(() => {});
+// Retorna o `novoEstado` que a rota ja calculou e persistiu (via
+// transicionar()) direto no corpo da resposta do POST. Usar esse valor pra
+// atualizar o estado local de forma SINCRONA com o evento evita uma race:
+// se em vez disso esperassemos um GET /api/mapa-provider separado, haveria
+// uma janela onde o componente ja comitou tentandoRetry=false mas o estado
+// local ainda e' o antigo (com proximaTentativaEm ja vencido, motivo de o
+// retry ter comecado) -- o efeito de "hora de tentar retry?" rodaria de
+// novo nessa janela e disparava outro retry imediato, sem respeitar o
+// backoff de RETRY_INTERVALO_MIN. Ver revisao do Task 9.
+async function postarEvento(
+  evento: "quota_excedida" | "retry_sucesso" | "retry_falhou"
+): Promise<MapaProviderEstado | null> {
+  try {
+    const r = await fetch("/api/mapa-provider", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ evento }),
+    });
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
 }
 
 export default function MapaComFallback(props: Props) {
@@ -50,7 +67,7 @@ export default function MapaComFallback(props: Props) {
   }, []);
 
   const onQuotaExceeded = useCallback(() => {
-    postarEvento("quota_excedida").then(async () => setEstado(await buscarEstado()));
+    postarEvento("quota_excedida").then(async (novoEstado) => setEstado(novoEstado ?? (await buscarEstado())));
   }, []);
 
   const iniciarRetry = useCallback(() => {
@@ -58,14 +75,27 @@ export default function MapaComFallback(props: Props) {
     setTentandoRetry(true);
   }, []);
 
+  // `setTentandoRetry(false)` so' acontece DEPOIS que o `estado` novo
+  // (vindo direto do corpo do POST, ja com proximaTentativaEm recalculado)
+  // esta disponivel -- as duas atualizacoes de estado saem juntas no mesmo
+  // callback assincrono, entao o React comita as duas no mesmo render. Isso
+  // fecha a race apontada na revisao: antes, `setTentandoRetry(false)`
+  // rodava sincronamente antes do POST resolver, deixando uma janela em
+  // que o efeito de retry via `tentandoRetry=false` + `estado` ainda velho
+  // (com proximaTentativaEm ja vencido) e disparava outra tentativa
+  // imediata, sem respeitar os 20min de backoff.
   const onRetrySucesso = useCallback(() => {
-    setTentandoRetry(false);
-    postarEvento("retry_sucesso").then(async () => setEstado(await buscarEstado()));
+    postarEvento("retry_sucesso").then(async (novoEstado) => {
+      setEstado(novoEstado ?? (await buscarEstado()));
+      setTentandoRetry(false);
+    });
   }, []);
 
   const onRetryFalhou = useCallback(() => {
-    setTentandoRetry(false);
-    postarEvento("retry_falhou").then(async () => setEstado(await buscarEstado()));
+    postarEvento("retry_falhou").then(async (novoEstado) => {
+      setEstado(novoEstado ?? (await buscarEstado()));
+      setTentandoRetry(false);
+    });
   }, []);
 
   useEffect(() => {
