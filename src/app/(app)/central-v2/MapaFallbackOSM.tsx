@@ -31,11 +31,20 @@ const CENTER_DEFAULT: [number, number] = [-43.2, -22.9];
 // Estilo minimo apontando pro PMTiles self-hospedado -- fonte "rj" e' o
 // arquivo gerado no Task 6/servido no Task 7. Paleta escura por padrao
 // (ver mapTokens pra variar por tema no futuro, Fase 1 fixa em um so').
+//
+// IMPORTANTE: o formato oficial de source pmtiles:// do MapLibre exige uma
+// URL ABSOLUTA depois do prefixo (ex. "pmtiles://https://host/arquivo.pmtiles"),
+// nao um path relativo (ver README do pacote `pmtiles`, secao "MapLibre GL JS").
+// Um path relativo faz o Protocol.tile falhar silenciosamente -- sem erro no
+// console e sem nenhuma requisicao de rede -- por isso montamos a URL a
+// partir de `window.location.origin` em runtime (funcao so' roda client-side,
+// dentro de useEffect), evitando hardcode do dominio de producao.
 function estiloMapLibre(): StyleSpecification {
+  const pmtilesUrl = `pmtiles://${window.location.origin}/tiles/rj.pmtiles`;
   return {
     version: 8,
     sources: {
-      rj: { type: "vector", url: "pmtiles:///tiles/rj.pmtiles" },
+      rj: { type: "vector", url: pmtilesUrl },
     },
     layers: [
       { id: "fundo", type: "background", paint: { "background-color": "#1a1a1a" } },
