@@ -24,9 +24,21 @@ export default function CamadaPMTiles({ tema }: { tema: "dark" | "light" }) {
     // do @types/leaflet de forma estrutural completa (é um L.GridLayer.extend
     // dinâmico) -- addTo/removeLayer funcionam em runtime normalmente.
     const layer = protomapsL.leafletLayer({
+      // URL RELATIVA e' segura AQUI, ao contrario do MapaFallbackOSM.tsx (que
+      // precisa montar uma URL absoluta a partir de window.location.origin).
+      // A diferenca nao e' estilistica: la' o `maplibre-gl` usa o protocolo
+      // CUSTOMIZADO `pmtiles://`, e o parser dele exige uma URL absoluta
+      // depois do prefixo -- um path relativo faz o Protocol.tile falhar
+      // silenciosamente (sem erro no console, sem requisicao de rede).
+      // `protomaps-leaflet` nao usa protocolo customizado nenhum: busca o
+      // arquivo com o `fetch()` normal do navegador, que resolve path
+      // relativo contra a origem atual sem problema.
       url: "/tiles/rj.pmtiles",
       flavor: tema === "dark" ? "dark" : "light",
       lang: "pt",
+      // Licenca ODbL do OSM exige atribuicao visivel. O Leaflet repassa esta
+      // opcao pro attributionControl padrao do mapa (ligado por default).
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
     }) as unknown as Layer;
     layer.addTo(map);
     return () => {

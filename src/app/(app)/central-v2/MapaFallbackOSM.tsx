@@ -116,7 +116,16 @@ function estiloMapLibre(): StyleSpecification {
   return {
     version: 8,
     sources: {
-      rj: { type: "vector", url: pmtilesUrl },
+      // `attribution` na source e' o que alimenta o AttributionControl padrao
+      // do MapLibre (ligado por padrao quando `attributionControl` nao e'
+      // explicitamente `false`). Sem isso, o controle nao teria NADA de OSM
+      // pra exibir -- e a licenca ODbL do OpenStreetMap exige atribuicao
+      // visivel, inclusive pro dado self-hospedado em rj.pmtiles.
+      rj: {
+        type: "vector",
+        url: pmtilesUrl,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+      },
     },
     layers: [
       { id: "fundo", type: "background", paint: { "background-color": "#1a1a1a" } },
@@ -162,12 +171,18 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
           style: estiloMapLibre(),
           center: CENTER_DEFAULT,
           zoom: 9,
+          // Explicito (o default ja' seria ligado) pra deixar registrado que
+          // a atribuicao OSM/ODbL declarada na source `rj` PRECISA aparecer.
+          attributionControl: { compact: true },
         });
         setMapaPronto(true);
       });
     return () => {
       cancelado = true;
       mapRef.current?.remove();
+      // map.remove() ja' destroi os Marker, mas o array continuaria segurando
+      // referencias a objetos mortos ate' o proximo render dos marcadores.
+      markersRef.current = [];
       mapRef.current = null;
       setMapaPronto(false);
     };
@@ -197,7 +212,14 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
           padding: "4px 10px", borderRadius: 6, fontSize: 12,
         }}
       >
-        Mapa de reserva (Google indisponível) — satélite indisponível neste modo
+        {/* O modo fallback perde MUITO mais do que satelite: flyPara/zoomCmd/
+            seguir (clicar num veiculo na lista lateral nao centraliza o mapa),
+            onMapaVazioClick, rastro, alvos de entrega, favelas e tiroteios.
+            Se o banner so' falasse de satelite, o operador clicaria num veiculo,
+            nada aconteceria, e ele reportaria como bug -- exatamente o mesmo
+            "erro de banco de dados" que motivou toda esta investigacao. */}
+        Mapa de reserva (Google indisponível) — modo reduzido: sem satélite, sem
+        rastro/alvos e sem centralizar automaticamente no veículo selecionado
       </div>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
     </div>
