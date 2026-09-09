@@ -6,7 +6,7 @@
 // Sem rastro/alvos/favela/tiroteio/roubo-carga nesta fase -- ver
 // Global Constraints do plano de implementacao.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Protocol } from "pmtiles";
@@ -59,12 +59,37 @@ import type { MapTokens } from "./tokens";
 // (ver src/proxy.ts) -- sem isso, um pedido anonimo a eles e' redirecionado
 // pro /login, e o Worker (que faz fetch com credentials:"same-origin", nao
 // necessariamente com a mesma robustez de um <script> de pagina) pode falhar.
-maplibregl.setWorkerUrl("/maplibre-gl-worker.mjs");
-const protocol = new Protocol();
-maplibregl.addProtocol("pmtiles", protocol.tile);
-maplibregl.importScriptInWorkers("/pmtiles-worker-protocol.js").catch((err) => {
-  console.error("[MapaFallbackOSM] falha ao registrar protocolo pmtiles no worker:", err);
-});
+//
+// 3) POR QUE ISSO NAO RODA MAIS NO ESCOPO DO MODULO (rodada 4, achado real):
+//    `importScriptInWorkers` NAO e' uma chamada inerte -- por dentro ela faz
+//    `getGlobalDispatcher().broadcast(...)`, o que JA CRIA o worker pool
+//    (`new Worker(WORKER_URL)`) na hora. Com isso no escopo do modulo, o
+//    worker nascia no LOAD da pagina (o modulo entra no mesmo chunk do
+//    wrapper Google/fallback, que carrega sempre), muito antes do fallback
+//    montar. Dois efeitos ruins:
+//      (a) diagnostico: quem instrumenta `window.Worker` pelo devtools DEPOIS
+//          do load (unica forma pratica) media ZERO workers e concluia que o
+//          worker nunca era criado -- falso negativo que custou uma rodada
+//          inteira de investigacao. Reproduzido 1:1 num build de producao real
+//          (`next build` + `next start`, Turbopack): com o Proxy instalado
+//          pos-load o contador fica em 0, enquanto o worker do maplibre existe
+//          e 35 requisicoes Range de tile acontecem normalmente.
+//      (b) desperdicio: todo usuario da Central pagava 1-3 Web Workers +
+//          ~500KB de `maplibre-gl-shared.mjs` + o script do protocolo mesmo
+//          no modo Google normal, sem nunca usar o fallback.
+//    Agora o setup e' preguicoso (so' quando o fallback monta de fato),
+//    idempotente (uma promise memoizada por page load) e AGUARDADO antes de
+//    `new maplibregl.Map(...)` -- o que tambem elimina a corrida teorica entre
+//    o registro do protocolo dentro do worker e o primeiro pedido de tile.
+let setupPromise: Promise<void> | null = null;
+function garantirSetupMapLibre(): Promise<void> {
+  setupPromise ??= (async () => {
+    maplibregl.setWorkerUrl("/maplibre-gl-worker.mjs");
+    maplibregl.addProtocol("pmtiles", new Protocol().tile);
+    await maplibregl.importScriptInWorkers("/pmtiles-worker-protocol.js");
+  })();
+  return setupPromise;
+}
 
 export interface PropsFallback {
   veiculosMapa: VeiculoMapa[];
@@ -117,19 +142,34 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  // So' pra re-disparar o efeito dos marcadores quando o mapa fica pronto
+  // (a criacao virou assincrona por causa do setup preguicoso acima).
+  const [mapaPronto, setMapaPronto] = useState(false);
 
   useEffect(() => {
-    if (!containerRef.current) return;
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: estiloMapLibre(),
-      center: CENTER_DEFAULT,
-      zoom: 9,
-    });
-    mapRef.current = map;
+    let cancelado = false;
+    garantirSetupMapLibre()
+      .catch((err) => {
+        // Nao aborta: sem o protocolo no worker o mapa ainda monta (fundo +
+        // marcadores), so' nao carrega a camada vetorial -- melhor que tela
+        // preta. O erro fica registrado pra diagnostico.
+        console.error("[MapaFallbackOSM] falha no setup do MapLibre/pmtiles:", err);
+      })
+      .then(() => {
+        if (cancelado || !containerRef.current) return;
+        mapRef.current = new maplibregl.Map({
+          container: containerRef.current,
+          style: estiloMapLibre(),
+          center: CENTER_DEFAULT,
+          zoom: 9,
+        });
+        setMapaPronto(true);
+      });
     return () => {
-      map.remove();
+      cancelado = true;
+      mapRef.current?.remove();
       mapRef.current = null;
+      setMapaPronto(false);
     };
   }, []);
 
@@ -146,7 +186,7 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
         el.addEventListener("click", () => onVeiculoClick(vm));
         return new maplibregl.Marker({ element: el }).setLngLat([vm.lng as number, vm.lat as number]).addTo(map);
       });
-  }, [veiculosMapa, onVeiculoClick]);
+  }, [veiculosMapa, onVeiculoClick, mapaPronto]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
