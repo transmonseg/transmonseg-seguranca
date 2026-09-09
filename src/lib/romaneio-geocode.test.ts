@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarNominatim, escolherPontoReferencia } from "./romaneio-geocode";
+import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarNominatim, escolherPontoReferencia } from "./romaneio-geocode";
 
 describe("normalizarEndereco", () => {
   it("maiuscula, sem espacos duplicados, sem espaco nas pontas", () => {
@@ -31,6 +31,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     salvarCache: () => Promise<void>;
     geocodificarCnefeDep: () => Promise<{ lat: number; lng: number } | null>;
     geocodificarLocalDep: () => Promise<{ lat: number; lng: number } | null>;
+    geocodificarCnefeBairroDep: (() => Promise<{ lat: number; lng: number } | null>) | undefined;
     geocodificarGoogle: () => Promise<{ lat: number; lng: number } | null>;
     geocodificarNominatim: () => Promise<{ lat: number; lng: number } | null>;
   }> = {}) => ({
@@ -38,6 +39,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     salvarCache: vi.fn(overrides.salvarCache ?? (async () => {})),
     geocodificarCnefeDep: vi.fn(overrides.geocodificarCnefeDep ?? (async () => null)),
     geocodificarLocalDep: vi.fn(overrides.geocodificarLocalDep ?? (async () => null)),
+    geocodificarCnefeBairroDep: "geocodificarCnefeBairroDep" in overrides ? overrides.geocodificarCnefeBairroDep && vi.fn(overrides.geocodificarCnefeBairroDep) : vi.fn(async () => null),
     geocodificarGoogle: vi.fn(overrides.geocodificarGoogle ?? (async () => null)),
     geocodificarNominatim: vi.fn(overrides.geocodificarNominatim ?? (async () => null)),
   });
@@ -77,6 +79,40 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     expect(r).toEqual({ lat: 3, lng: 4, fonte: "google" });
     expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), { lat: 3, lng: 4, fonte: "google" });
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
+  });
+
+  // Achado real 08/09 (auditoria KPI Nutry Max, "os enderecos que nao foram,
+  // precisamos cadastrar"): centroide do bairro/localidade no CNEFE como
+  // ultimo recurso ANTES de sair pra rede (Google/Nominatim ja' tinham
+  // falhado nesses 46 casos reais tambem) -- ver geocodificarCnefePorBairro.
+  describe("geocodificarCnefeBairroDep (achado real 08/09)", () => {
+    it("CNEFE e local falham, bairro funciona: usa o bairro (fonte cnefe_bairro), nao chega a chamar Google/Nominatim", async () => {
+      const deps = mockDeps({ geocodificarCnefeBairroDep: async () => ({ lat: 11, lng: 12 }) });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade", null, deps);
+      expect(r).toEqual({ lat: 11, lng: 12, fonte: "cnefe_bairro" });
+      expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), { lat: 11, lng: 12, fonte: "cnefe_bairro" });
+      expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
+      expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
+    });
+
+    it("CNEFE local (rua) funciona: NAO chega a chamar o fallback de bairro (rua e' sempre mais precisa)", async () => {
+      const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 7, lng: 8 }), geocodificarCnefeBairroDep: async () => ({ lat: 11, lng: 12 }) });
+      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(r).toEqual({ lat: 7, lng: 8, fonte: "local" });
+      expect(deps.geocodificarCnefeBairroDep).not.toHaveBeenCalled();
+    });
+
+    it("dep nao fornecido (undefined): pula direto pra Google/Nominatim, comportamento antigo preservado", async () => {
+      const deps = mockDeps({ geocodificarCnefeBairroDep: undefined, geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
+      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(r).toEqual({ lat: 3, lng: 4, fonte: "google" });
+    });
+
+    it("bairro tambem falha (null): cai pra Google normalmente", async () => {
+      const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
+      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(r).toEqual({ lat: 3, lng: 4, fonte: "google" });
+    });
   });
 
   it("CNEFE, local e Google falham, Nominatim funciona: usa Nominatim e salva no cache", async () => {
@@ -186,6 +222,44 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
       await geocodificarEndereco("Rua X, 1", null, deps);
       expect(warn).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("geocodificarCnefePorBairro (achado real 08/09, centroide do bairro/localidade -- ver comentario em romaneio-geocode.ts)", () => {
+  it("bairro extraivel + municipioCodigo + resultado com pontos suficientes: devolve o centroide", async () => {
+    const buscar = vi.fn(async () => ({ lat: -22.4, lng: -41.8, qtd: 6495 }));
+    const r = await geocodificarCnefePorBairro("RUA ALM DO ACUDE, 423 - GRANJA DOS CAVALEIRO, MACAE - *", "3302403", buscar);
+    expect(r).toEqual({ lat: -22.4, lng: -41.8 });
+    expect(buscar).toHaveBeenCalledWith("GRANJA DOS CAVALEIRO", "3302403");
+  });
+
+  // Achado real 08/09: localidade com pouquissimos pontos pode ser
+  // coincidencia de substring (ILIKE) batendo um bairro vizinho errado,
+  // nao a localidade certa -- exige uma amostra minima (10 pontos).
+  it("resultado com poucos pontos (< 10): rejeita, nao confia no centroide", async () => {
+    const buscar = vi.fn(async () => ({ lat: -22.0, lng: -41.0, qtd: 2 }));
+    const r = await geocodificarCnefePorBairro("RUA X, 1 - Bairro, Cidade", "3300100", buscar);
+    expect(r).toBeNull();
+  });
+
+  it("sem municipioCodigo: nunca chama o produtor, devolve null direto (sem filtro de municipio, risco de bairro homonimo em cidade errada)", async () => {
+    const buscar = vi.fn(async () => ({ lat: -22.0, lng: -41.0, qtd: 100 }));
+    const r = await geocodificarCnefePorBairro("RUA X, 1 - Bairro, Cidade", null, buscar);
+    expect(r).toBeNull();
+    expect(buscar).not.toHaveBeenCalled();
+  });
+
+  it("endereco sem bairro extraivel: null, sem chamar o produtor", async () => {
+    const buscar = vi.fn(async () => ({ lat: -22.0, lng: -41.0, qtd: 100 }));
+    const r = await geocodificarCnefePorBairro("endereco sem formato reconhecivel", "3300100", buscar);
+    expect(r).toBeNull();
+    expect(buscar).not.toHaveBeenCalled();
+  });
+
+  it("produtor nao acha nenhum ponto (null): devolve null", async () => {
+    const buscar = vi.fn(async () => null);
+    const r = await geocodificarCnefePorBairro("RUA X, 1 - Bairro, Cidade", "3300100", buscar);
+    expect(r).toBeNull();
   });
 });
 

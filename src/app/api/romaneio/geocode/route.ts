@@ -35,7 +35,7 @@
 // -- chamada servidor-a-servidor, nunca do browser.
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, escolherPontoReferencia, normalizarEndereco } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarNominatim, escolherPontoReferencia, normalizarEndereco } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade, extrairRuaDoEndereco, normalizarNomeRua } from "@/lib/romaneio-geocode-local";
 
 // Achado real 03/09 (investigacao "geolocalizacao ruim" -- 2 tentativas
@@ -137,6 +137,22 @@ export async function POST(request: Request) {
   const buscarCnefePorSimilaridade = async (nomeNormalizado: string, municipioCodigo: string | null) => {
     const { data } = await admin.rpc("cnefe_buscar_por_similaridade", { termo: nomeNormalizado, limite: 5, filtro_municipio_codigo: municipioCodigo });
     return data ?? [];
+  };
+  // Achado real 08/09 (ver geocodificarCnefePorBairro em romaneio-geocode.ts):
+  // ultimo recurso antes de sair pra rede -- centroide dos pontos do CNEFE
+  // cujo campo `localidade` bate com o bairro do endereco (ILIKE, mesmo
+  // espirito impreciso do bairro/cidade que ja usamos pra ponto de
+  // referencia -- aqui vira a resposta final, nao so' referencia).
+  const buscarCnefePorLocalidade = async (bairro: string, municipioCodigo: string) => {
+    const { data } = await admin
+      .from("cnefe_enderecos")
+      .select("lat, lng")
+      .eq("municipio_codigo", municipioCodigo)
+      .ilike("localidade", `%${bairro}%`);
+    if (!data || data.length === 0) return null;
+    const lat = data.reduce((s, p) => s + p.lat, 0) / data.length;
+    const lng = data.reduce((s, p) => s + p.lng, 0) / data.length;
+    return { lat, lng, qtd: data.length };
   };
 
   // Achado real 06/09 (KPI Rio Quality, arquivo com cidade/bairro em quase
@@ -339,6 +355,7 @@ export async function POST(request: Request) {
         buscarPorSimilaridade: buscarCnefePorSimilaridade,
       }, precisaoBairro),
       geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome, precisaoBairro),
+      geocodificarCnefeBairroDep: (endereco) => geocodificarCnefePorBairro(endereco, municipioCodigo, buscarCnefePorLocalidade),
       geocodificarGoogle,
       geocodificarNominatim: geocodificarNominatimThrottled,
     });

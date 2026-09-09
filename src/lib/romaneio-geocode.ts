@@ -4,7 +4,7 @@
 // api/motor/route.ts) -- mesma chave do Google, mesmo User-Agent do
 // Nominatim -- so na direcao contraria.
 
-import { extrairRuaDoEndereco, extrairNumeroDoEndereco, normalizarNomeRua, montarVariantesParaGeocode } from "./romaneio-geocode-local";
+import { extrairRuaDoEndereco, extrairNumeroDoEndereco, normalizarNomeRua, montarVariantesParaGeocode, extrairBairroDoEndereco } from "./romaneio-geocode-local";
 import { haversineM } from "./unitrac";
 
 export function normalizarEndereco(enderecoBruto: string): string {
@@ -308,6 +308,39 @@ export async function geocodificarCnefe(
   return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade, true, DISTANCIA_MAX_MATCH_SIMILARIDADE_M);
 }
 
+// Achado real 08/09 (auditoria completa do KPI Nutry Max, pedido do
+// usuario "os enderecos que nao foram, precisamos cadastrar"): 46
+// enderecos sem geocode no dia -- pra 15 deles a RUA genuinamente nao
+// existe em nenhuma fonte (nem CNEFE nem OSM), mas o BAIRRO/localidade
+// existe no CNEFE com centenas ou milhares de pontos reais de campo do
+// Censo (ex. "GRANJA DOS CAVALEIROS, MACAE", 6495 pontos -- so' a rua
+// "RUA ALM DO ACUDE" que nao esta' la). O centroide desses pontos e' uma
+// resposta MUITO melhor que "sem geocode pra sempre": localiza o bairro
+// certo, so' com precisao de bairro (~1-3km) em vez de rua. Resolvido
+// manualmente hoje pra 15 enderecos (cadastro direto no cache) -- esta
+// funcao torna isso automatico pra qualquer geracao futura, sem precisar
+// de intervencao manual toda vez.
+//
+// Minimo de pontos pra confiar no centroide: localidade com so' 1-2
+// pontos no CNEFE pode ser coincidencia de substring (ILIKE) batendo um
+// bairro vizinho errado, nao a localidade certa -- exigir uma amostra
+// razoavel (>=10) reduz bastante esse risco (na pratica, os 15 casos
+// resolvidos hoje tinham entre 349 e 8927 pontos).
+const CNEFE_BAIRRO_MIN_PONTOS = 10;
+
+export async function geocodificarCnefePorBairro(
+  enderecoBruto: string,
+  municipioCodigo: string | null,
+  buscarPorLocalidade: (bairro: string, municipioCodigo: string) => Promise<{ lat: number; lng: number; qtd: number } | null>
+): Promise<{ lat: number; lng: number } | null> {
+  if (!municipioCodigo) return null;
+  const bairro = extrairBairroDoEndereco(enderecoBruto);
+  if (!bairro) return null;
+  const resultado = await buscarPorLocalidade(bairro, municipioCodigo);
+  if (!resultado || resultado.qtd < CNEFE_BAIRRO_MIN_PONTOS) return null;
+  return { lat: resultado.lat, lng: resultado.lng };
+}
+
 // SEM fallback pra coordenada da Unitrac de proposito -- achado real 15/07:
 // no romaneio de teste (22 pontos, veiculo TUL1C38), 18 cairiam no fallback
 // da Unitrac (Nominatim gratuito nao cobre a maioria das ruas de cidade
@@ -316,13 +349,23 @@ export async function geocodificarCnefe(
 // coordenada "as vezes errada" que o romaneio existe pra evitar. Decisao
 // explicita do usuario: se nao geocodificar, o ponto fica sem coordenada
 // (excluido da lista de pendentes pelo motor) em vez de reusar a Unitrac.
-export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" } | null;
+export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro" } | null;
 
 type Deps = {
   buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string } | null>;
   salvarCache: (chave: string, r: { lat: number; lng: number; fonte: string }) => Promise<void>;
   geocodificarCnefeDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
   geocodificarLocalDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
+  // Achado real 08/09 (auditoria KPI Nutry Max, 46 pendentes sem geocode --
+  // rua nao existe em NENHUMA fonte, mas o BAIRRO existe no CNEFE com
+  // centenas/milhares de pontos de campo, ex. "GRANJA DOS CAVALEIROS,
+  // MACAE" com 6495 pontos): quando rua+numero, so-rua e similaridade (os
+  // 3 niveis de geocodificarCnefe) falham TODOS, o centroide dos pontos do
+  // bairro/localidade do CNEFE ainda e' uma resposta muito melhor que
+  // nada -- coordenada real do dado de campo do Censo, so' com precisao de
+  // bairro em vez de rua. Optional: undefined preserva o comportamento
+  // antigo pra quem nao passar (nunca quebra teste existente).
+  geocodificarCnefeBairroDep?: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
   geocodificarGoogle: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
   geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
 };
@@ -363,7 +406,7 @@ export async function geocodificarEndereco(
 ): Promise<ResultadoGeocode> {
   const chave = normalizarEndereco(enderecoBruto);
   const doCache = await deps.buscarCache(chave);
-  if (doCache) return { lat: doCache.lat, lng: doCache.lng, fonte: doCache.fonte as "google" | "nominatim" | "local" | "cnefe" };
+  if (doCache) return { lat: doCache.lat, lng: doCache.lng, fonte: doCache.fonte as "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro" };
 
   // CNEFE roda ANTES do OSM (geocodificarLocalDep) -- achado real 31/07:
   // endereco+coordenada real de campo (IBGE) e' mais preciso que o extrato
@@ -383,6 +426,22 @@ export async function geocodificarEndereco(
     await deps.salvarCache(chave, { ...local, fonte: "local" });
     return { ...local, fonte: "local" };
   }
+
+  // Ultimo recurso ANTES de sair pra rede (Google/Nominatim): centroide do
+  // bairro/localidade no CNEFE (ver comentario de geocodificarCnefeBairroDep
+  // em Deps). Roda depois de CNEFE rua-level e OSM local (os dois mais
+  // precisos) falharem -- so' quando a rua genuinamente nao existe em
+  // nenhuma fonte local, mas o bairro sim. Fonte propria ("cnefe_bairro",
+  // nao "cnefe") pra quem consumir saber que a precisao aqui e' de bairro
+  // (~1-3km), nao de rua -- nunca confundir com um match exato.
+  if (deps.geocodificarCnefeBairroDep) {
+    const cnefeBairro = await deps.geocodificarCnefeBairroDep(enderecoBruto);
+    if (cnefeBairro) {
+      await deps.salvarCache(chave, { ...cnefeBairro, fonte: "cnefe_bairro" });
+      return { ...cnefeBairro, fonte: "cnefe_bairro" };
+    }
+  }
+
   // Google/Nominatim recebem uma string enxuta (rua+numero, bairro, cidade
   // -- com cidade cortada ja expandida -- RJ, Brasil), SEM o sufixo de
   // complemento de entrega do romaneio (ex. "LOJA 02", "KM 270 QUADRA F
