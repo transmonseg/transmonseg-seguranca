@@ -16,8 +16,30 @@ import type { MapTokens } from "./tokens";
 
 // Registro do protocolo pmtiles:// -- precisa acontecer uma vez por app,
 // antes de qualquer new maplibregl.Map() usar uma source "pmtiles://...".
+//
+// IMPORTANTE (achado via investigacao real pos-QA, nao so' pela doc do README):
+// maplibre-gl@6 despacha o FETCH de tiles vetoriais pra dentro de um Web Worker
+// (dist/maplibre-gl-worker.mjs), que mantem seu PROPRIO registro de protocolos
+// (`self.addProtocol`), separado do registro do thread principal. Chamar so'
+// `maplibregl.addProtocol` aqui registra o protocolo so' pro carregamento inicial
+// do TileJSON (que roda no thread principal) -- os pedidos de tile de dado real
+// (z/x/y), que rodam dentro do worker, falham silenciosamente (sem erro visivel,
+// sem requisicao de rede) porque o worker nunca teve "pmtiles" registrado nele.
+// A propria doc do maplibre-gl (dist/maplibre-gl.d.ts, funcao importScriptInWorkers)
+// confirma: "you might need to also register the protocol on the main thread" --
+// ou seja, o inverso tambem e' verdade: registrar so' no thread principal nao basta.
+// Fix: usar maplibregl.importScriptInWorkers() pra rodar o registro TAMBEM dentro
+// do worker, carregando public/pmtiles-worker-protocol.js (bundle UMD do pacote
+// `pmtiles`, node_modules/pmtiles/dist/pmtiles.js, + uma linha de
+// self.addProtocol) -- gerado uma vez e versionado em public/ porque
+// importScriptInWorkers precisa de uma URL estatica pro worker importar via
+// fetch+eval, nao de um modulo ES com specifiers "nus" tipo `import "pmtiles"`
+// (que o worker nao consegue resolver sem bundler).
 const protocol = new Protocol();
 maplibregl.addProtocol("pmtiles", protocol.tile);
+maplibregl.importScriptInWorkers("/pmtiles-worker-protocol.js").catch((err) => {
+  console.error("[MapaFallbackOSM] falha ao registrar protocolo pmtiles no worker:", err);
+});
 
 export interface PropsFallback {
   veiculosMapa: VeiculoMapa[];
