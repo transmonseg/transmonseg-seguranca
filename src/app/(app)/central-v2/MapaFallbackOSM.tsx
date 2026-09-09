@@ -96,6 +96,15 @@ export interface PropsFallback {
   onVeiculoClick: (vm: VeiculoMapa) => void;
   mapTokens: MapTokens;
   tema: "dark" | "light";
+  // Mesma semântica de MapaLeafletV2 (Props em MapaLeafletV2.tsx) -- reaproveitados
+  // aqui pra fechar a lacuna "clicar num veículo não centraliza o mapa" do banner
+  // de modo reduzido. `cvSelecionado`/`seguir` seguem o veículo continuamente;
+  // `flyPara`/`zoomCmd` são comandos de disparo único (o campo `gatilho`/`g` muda
+  // a cada clique, mesmo que lat/lng/zoom repita, pra sempre re-disparar o efeito).
+  cvSelecionado?: string | null;
+  seguir?: boolean;
+  flyPara?: { lat: number; lng: number; gatilho: number } | null;
+  zoomCmd?: { zoom: number; g: number } | null;
 }
 
 const CENTER_DEFAULT: [number, number] = [-43.2, -22.9];
@@ -147,13 +156,21 @@ function estiloMapLibre(): StyleSpecification {
   };
 }
 
-export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapTokens }: PropsFallback) {
+export default function MapaFallbackOSM({
+  veiculosMapa, onVeiculoClick, mapTokens, cvSelecionado, seguir, flyPara, zoomCmd,
+}: PropsFallback) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   // So' pra re-disparar o efeito dos marcadores quando o mapa fica pronto
   // (a criacao virou assincrona por causa do setup preguicoso acima).
   const [mapaPronto, setMapaPronto] = useState(false);
+  // Mesmo padrao de "gatilho ja processado" de MapaLeafletV2.tsx (prevFlyG/
+  // prevZoomG/lastPanKey) -- evita reprocessar o mesmo comando de novo quando
+  // o componente re-renderiza por outro motivo (ex: veiculosMapa atualizando).
+  const prevFlyG = useRef(-1);
+  const prevZoomG = useRef(0);
+  const lastPanKey = useRef("");
 
   useEffect(() => {
     let cancelado = false;
@@ -203,6 +220,31 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
       });
   }, [veiculosMapa, onVeiculoClick, mapaPronto]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !flyPara || flyPara.gatilho === prevFlyG.current) return;
+    prevFlyG.current = flyPara.gatilho;
+    map.panTo([flyPara.lng, flyPara.lat]);
+    map.setZoom(16);
+  }, [flyPara, mapaPronto]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !zoomCmd || zoomCmd.g === prevZoomG.current) return;
+    prevZoomG.current = zoomCmd.g;
+    map.setZoom(zoomCmd.zoom);
+  }, [zoomCmd, mapaPronto]);
+
+  const vmSelecionado = cvSelecionado ? veiculosMapa.find((v) => v.cv === cvSelecionado) : null;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !seguir || !vmSelecionado?.lat || !vmSelecionado?.lng) return;
+    const k = `${vmSelecionado.lat.toFixed(5)},${vmSelecionado.lng.toFixed(5)}`;
+    if (k === lastPanKey.current) return;
+    lastPanKey.current = k;
+    map.panTo([vmSelecionado.lng, vmSelecionado.lat]);
+  }, [seguir, vmSelecionado, mapaPronto]);
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <div
@@ -212,14 +254,13 @@ export default function MapaFallbackOSM({ veiculosMapa, onVeiculoClick, mapToken
           padding: "4px 10px", borderRadius: 6, fontSize: 12,
         }}
       >
-        {/* O modo fallback perde MUITO mais do que satelite: flyPara/zoomCmd/
-            seguir (clicar num veiculo na lista lateral nao centraliza o mapa),
-            onMapaVazioClick, rastro, alvos de entrega, favelas e tiroteios.
-            Se o banner so' falasse de satelite, o operador clicaria num veiculo,
-            nada aconteceria, e ele reportaria como bug -- exatamente o mesmo
-            "erro de banco de dados" que motivou toda esta investigacao. */}
-        Mapa de reserva (Google indisponível) — modo reduzido: sem satélite, sem
-        rastro/alvos e sem centralizar automaticamente no veículo selecionado
+        {/* flyPara/zoomCmd/seguir ja funcionam aqui (clicar num veiculo
+            centraliza normal) -- o que falta ainda e' rastro/alvos de
+            entrega/favelas/tiroteios, escopo Fase 1 (ver Global Constraints
+            do plano de implementacao). Satelite fica pra Fase 2
+            (spec Decisao 5, Sentinel-2 self-hospedado). */}
+        Mapa de reserva (Google indisponível) — modo reduzido: sem satélite,
+        sem rastro/alvos de entrega
       </div>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
     </div>

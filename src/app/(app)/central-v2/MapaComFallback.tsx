@@ -126,6 +126,10 @@ export default function MapaComFallback(props: Props) {
         onVeiculoClick={props.onVeiculoClick}
         mapTokens={props.mapTokens}
         tema={props.tema}
+        cvSelecionado={props.cvSelecionado}
+        seguir={props.seguir}
+        flyPara={props.flyPara}
+        zoomCmd={props.zoomCmd}
       />
       {tentandoRetry && (
         // Instancia oculta do mapa real, so' pra testar se o Google voltou --
