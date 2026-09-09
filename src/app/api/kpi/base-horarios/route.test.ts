@@ -430,4 +430,43 @@ describe("acharVisitasPorPonto", () => {
       expect(visita).toEqual({ id: "NF_BASE", chegada: "2026-08-27T08:00:00.000Z", saida: "2026-08-27T08:15:00.000Z" });
     });
   });
+
+  // Achado real 09/09 (auditoria do fix acima, cruzando o cache de
+  // geocodificacao com as coordenadas das 2 bases da Nutry Max): a base da
+  // Penha fica no meio de um bairro industrial ("Penha Circular") com
+  // varios clientes reais cadastrados a MENOS de 500m dela (ex.: "RUA DO
+  // FEIJAO, 760" a so' 16m do centro da base). O filtro CEGO por raio
+  // absoluto (remover toda posicao a <=500m de QUALQUER base antes de
+  // checar qualquer ponto) tornava esses clientes estruturalmente
+  // inconfirmaveis -- os 2 circulos de 500m (base e cliente) praticamente
+  // coincidem quando a distancia entre eles e' so' de dezenas de metros,
+  // entao nenhuma posicao real de entrega sobrava. Corrigido pra
+  // comparacao relativa (`estaMaisPertoDaBaseQueDoPonto`): so' descarta a
+  // posicao se ela estiver mais perto da base do que do proprio ponto.
+  describe("cliente muito perto da base (achado real 09/09, bairro Penha Circular)", () => {
+    // ~273m da base -- DENTRO do raio de exclusao de base (500m), geometria
+    // real observada no cache de geocodificacao (varios clientes entre 16m
+    // e 500m da base da Penha).
+    const CLIENTE_MUITO_PERTO_DA_BASE = { id: "NF_VIZINHO_BASE", lat: -22.816007, lng: -43.275163 };
+
+    it("caminhao para literalmente na porta do cliente (mais perto dele que da base): confirma, mesmo a posicao caindo dentro do raio de exclusao de base", () => {
+      const posicoes = [
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T02:00:00.000Z" }, // na base
+        { lat: -22.816007, lng: -43.275163, criado_em: "2026-08-27T09:00:00.000Z" }, // parou exatamente no cliente
+        { lat: -22.816007, lng: -43.275163, criado_em: "2026-08-27T09:10:00.000Z" },
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T20:00:00.000Z" }, // voltou pra base
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [CLIENTE_MUITO_PERTO_DA_BASE], [BASE]);
+      expect(visita).toEqual({ id: "NF_VIZINHO_BASE", chegada: "2026-08-27T09:00:00.000Z", saida: "2026-08-27T09:10:00.000Z" });
+    });
+
+    it("caminhao so' fica na base a noite toda (nunca chega mais perto do cliente do que da base): NAO confirma", () => {
+      const posicoes = [
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T02:00:00.000Z" },
+        { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T05:00:00.000Z" },
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [CLIENTE_MUITO_PERTO_DA_BASE], [BASE]);
+      expect(visita).toEqual({ id: "NF_VIZINHO_BASE", chegada: null, saida: null });
+    });
+  });
 });

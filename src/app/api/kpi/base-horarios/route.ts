@@ -257,13 +257,18 @@ const RAIO_AMPLIADO_M = 800;
  *  um ping isolado). */
 const DWELL_MINIMO_MS = 60_000
 
-function acharBlocoDentroDoRaio(pt: PontoEntrega, posicoes: Posicao[], raioM: number): { inicio: string; fim: string; durMs: number } | null {
+function acharBlocoDentroDoRaio(
+  pt: PontoEntrega,
+  posicoes: Posicao[],
+  raioM: number,
+  basesCentro: BaseCentro[] = [],
+): { inicio: string; fim: string; durMs: number } | null {
   type Bloco = { inicio: string; fim: string; durMs: number }
   const blocos: Bloco[] = []
   let atual: { inicio: string; fim: string } | null = null
 
   for (const p of posicoes) {
-    const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM
+    const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM && !estaMaisPertoDaBaseQueDoPonto(p, pt, basesCentro)
     if (dentro) {
       if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em }
       else atual.fim = p.criado_em
@@ -289,17 +294,36 @@ function acharBlocoDentroDoRaio(pt: PontoEntrega, posicoes: Posicao[], raioM: nu
 // (o fallback antigo, do lado do KPI) ja' filtrava isso desde sempre
 // (`paradas.filter(p => p.classificacao === 'FORA_BASE')`) -- esta ponte
 // (posicao continua, mais fina e' por isso mais suscetivel a esse
-// problema especifico) nunca ganhou o mesmo filtro. `basesCentro` opcional
-// (default vazio) preserva o comportamento antigo pra quem nao passar.
-function filtrarForaDaBase(posicoes: Posicao[], basesCentro: BaseCentro[]): Posicao[] {
-  if (basesCentro.length === 0) return posicoes
-  return posicoes.filter((p) => !basesCentro.some((b) => haversineM(b.lat, b.lng, p.lat, p.lng) <= RAIO_BASE_M))
+// problema especifico) nunca ganhou o mesmo filtro.
+//
+// Achado real 09/09 (auditoria do proprio fix acima): a base da Penha tem
+// VARIOS clientes reais cadastrados no MESMO bairro industrial (Penha
+// Circular -- ruas "do Feijao", "da Batata", "do Arroz" etc.), alguns a
+// menos de 20m do centro da base. Um filtro CEGO (remover toda posicao a
+// <=RAIO_BASE_M de QUALQUER base, antes de checar qualquer ponto)
+// tornaria essas entregas genuinas estruturalmente inconfirmaveis pela
+// ponte -- os dois circulos de 500m (base e cliente) quase se sobrepoem
+// por completo quando cliente e base ficam a poucos metros um do outro,
+// entao NENHUMA posicao real de entrega sobraria pra confirmar. Trocado
+// por comparacao relativa por ponto (`estaMaisPertoDaBaseQueDoPonto`):
+// so' descarta a posicao pra ESTE ponto especifico se ela estiver mais
+// perto da base do que do proprio ponto -- preserva a exclusao pro caso
+// RQV5F67 (posicao a 81m da base e' MUITO mais perto da base que dos
+// 508m do Kinha Bar) sem quebrar confirmacao de cliente vizinho legitimo
+// (posicao literalmente na porta do cliente fica mais perto DELE que da
+// base, mesmo a poucos metros dela).
+function estaMaisPertoDaBaseQueDoPonto(p: Posicao, pt: PontoEntrega, basesCentro: BaseCentro[]): boolean {
+  return basesCentro.some((b) => {
+    const distBase = haversineM(b.lat, b.lng, p.lat, p.lng)
+    if (distBase > RAIO_BASE_M) return false
+    const distPonto = haversineM(pt.lat, pt.lng, p.lat, p.lng)
+    return distBase <= distPonto
+  })
 }
 
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
-  const posicoesForaDaBase = filtrarForaDaBase(posicoes, basesCentro)
   const diretas = pontos.map((pt) => {
-    const bloco = acharBlocoDentroDoRaio(pt, posicoesForaDaBase, RAIO_ENTREGA_M)
+    const bloco = acharBlocoDentroDoRaio(pt, posicoes, RAIO_ENTREGA_M, basesCentro)
     return bloco ? { id: pt.id, chegada: bloco.inicio, saida: bloco.fim } : { id: pt.id, chegada: null, saida: null }
   })
 
@@ -312,7 +336,7 @@ export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]
   // aproximacao" ja usado em viaVizinhanca.
   const comAmpliado = diretas.map((v, i) => {
     if (v.chegada !== null) return v
-    const bloco = acharBlocoDentroDoRaio(pontos[i], posicoesForaDaBase, RAIO_AMPLIADO_M)
+    const bloco = acharBlocoDentroDoRaio(pontos[i], posicoes, RAIO_AMPLIADO_M, basesCentro)
     if (!bloco) return v
     return { id: v.id, chegada: bloco.inicio, saida: bloco.fim, viaRaioAmpliado: true }
   })
