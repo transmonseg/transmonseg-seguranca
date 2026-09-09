@@ -15,7 +15,16 @@ import { deveTentarRetryAgora, type MapaProviderEstado } from "@/lib/mapa-provid
 
 const POLL_MS = 30_000; // mesmo intervalo ja usado pelo resto da Central
 
-async function buscarEstado(): Promise<MapaProviderEstado | null> {
+// Resposta HTTP da rota = estado puro do reducer + o relogio do SERVIDOR.
+// O reducer (src/lib/mapa-provider.ts) continua puro e sem esse campo -- ele
+// e' so' do transporte. Motivo: `proximaTentativaEm` e' escrito pelo relogio
+// do servidor; comparar contra `new Date()` do NAVEGADOR faria uma estacao de
+// operador com relogio adiantado ver todo deadline recem-gravado como ja'
+// vencido e entrar em loop de retry a cada 5-15s (duracao do probe),
+// queimando cota real do Google exatamente durante o incidente.
+type RespostaMapaProvider = MapaProviderEstado & { agora: string };
+
+async function buscarEstado(): Promise<RespostaMapaProvider | null> {
   const r = await fetch("/api/mapa-provider");
   if (!r.ok) return null;
   return r.json();
@@ -32,7 +41,7 @@ async function buscarEstado(): Promise<MapaProviderEstado | null> {
 // backoff de RETRY_INTERVALO_MIN. Ver revisao do Task 9.
 async function postarEvento(
   evento: "quota_excedida" | "retry_sucesso" | "retry_falhou"
-): Promise<MapaProviderEstado | null> {
+): Promise<RespostaMapaProvider | null> {
   try {
     const r = await fetch("/api/mapa-provider", {
       method: "POST",
@@ -47,7 +56,7 @@ async function postarEvento(
 }
 
 export default function MapaComFallback(props: Props) {
-  const [estado, setEstado] = useState<MapaProviderEstado | null>(null);
+  const [estado, setEstado] = useState<RespostaMapaProvider | null>(null);
   const [tentandoRetry, setTentandoRetry] = useState(false);
   // Timestamp de quando o probe oculto do Google confirmou onMapLoaded
   // nesta tentativa de retry -- null enquanto nao carregou ainda (ou antes
@@ -100,7 +109,10 @@ export default function MapaComFallback(props: Props) {
 
   useEffect(() => {
     if (!estado || tentandoRetry) return;
-    if (deveTentarRetryAgora(estado, new Date().toISOString())) iniciarRetry();
+    // `estado.agora` (relogio do servidor, vindo na mesma resposta que
+    // trouxe proximaTentativaEm), nao o relogio do navegador -- ver
+    // RespostaMapaProvider acima.
+    if (deveTentarRetryAgora(estado, estado.agora)) iniciarRetry();
   }, [estado, tentandoRetry, iniciarRetry]);
 
   if (!estado || estado.provider === "google") {

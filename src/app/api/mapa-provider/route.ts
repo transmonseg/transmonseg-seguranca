@@ -11,16 +11,24 @@ import { createClient } from "@/lib/supabase/server";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { transicionar, type EventoMapaProvider, type MapaProviderEstado } from "@/lib/mapa-provider";
 
+// O driver `pg` (node-postgres) devolve OBJETOS Date pra colunas timestamptz,
+// nao string -- por isso a linha crua e' tipada com Date e a conversao pra
+// ISO string e' explicita aqui. MapaProviderEstado e' o contrato HTTP da rota
+// e continua sendo string (serializavel/comparavel no cliente).
 function linhaParaEstado(row: {
   provider: string;
-  quota_excedida_em: string | null;
-  proxima_tentativa_em: string | null;
+  quota_excedida_em: Date | null;
+  proxima_tentativa_em: Date | null;
 }): MapaProviderEstado {
   return {
     provider: row.provider as MapaProviderEstado["provider"],
-    quotaExcedidaEm: row.quota_excedida_em,
-    proximaTentativaEm: row.proxima_tentativa_em,
+    quotaExcedidaEm: row.quota_excedida_em?.toISOString() ?? null,
+    proximaTentativaEm: row.proxima_tentativa_em?.toISOString() ?? null,
   };
+}
+
+function erro500(err: unknown) {
+  return Response.json({ erro: "erro ao consultar estado do mapa: " + String(err) }, { status: 500 });
 }
 
 export async function GET() {
@@ -28,17 +36,27 @@ export async function GET() {
   const { data: { user } } = await auth.auth.getUser();
   if (!user) return Response.json({ erro: "nao autorizado" }, { status: 401 });
 
-  const pool = new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL), max: 2 });
   try {
-    const { rows } = await pool.query(
-      `SELECT provider, quota_excedida_em, proxima_tentativa_em FROM mapa_provider_estado WHERE id = 1`
-    );
-    if (rows.length === 0) {
-      return Response.json({ erro: "estado do mapa nao inicializado (migracao 075 rodou?)" }, { status: 500 });
+    const pool = new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL), max: 2 });
+    try {
+      const { rows } = await pool.query(
+        `SELECT provider, quota_excedida_em, proxima_tentativa_em FROM mapa_provider_estado WHERE id = 1`
+      );
+      if (rows.length === 0) {
+        return Response.json({ erro: "estado do mapa nao inicializado (migracao 075 rodou?)" }, { status: 500 });
+      }
+      // `agora` = relogio do SERVIDOR. O cliente PRECISA usar esse valor (e
+      // nao `new Date()` do navegador) pra comparar contra proximaTentativaEm,
+      // que tambem foi escrito pelo relogio do servidor: uma estacao de
+      // operador com relogio adiantado veria todo proximaTentativaEm recem
+      // gravado como ja' vencido e entraria em loop de retry a cada ciclo de
+      // probe (5-15s), queimando cota real do Google durante o incidente.
+      return Response.json({ ...linhaParaEstado(rows[0]), agora: new Date().toISOString() });
+    } finally {
+      await pool.end();
     }
-    return Response.json(linhaParaEstado(rows[0]));
-  } finally {
-    await pool.end();
+  } catch (err) {
+    return erro500(err);
   }
 }
 
@@ -55,26 +73,32 @@ export async function POST(request: Request) {
     return Response.json({ erro: `evento invalido, esperado um de: ${EVENTOS_VALIDOS.join(", ")}` }, { status: 400 });
   }
 
-  const pool = new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL), max: 2 });
   try {
-    const { rows } = await pool.query(
-      `SELECT provider, quota_excedida_em, proxima_tentativa_em FROM mapa_provider_estado WHERE id = 1`
-    );
-    if (rows.length === 0) {
-      return Response.json({ erro: "estado do mapa nao inicializado (migracao 075 rodou?)" }, { status: 500 });
-    }
-    const estadoAtual = linhaParaEstado(rows[0]);
-    const agoraIso = new Date().toISOString();
-    const novoEstado = transicionar(estadoAtual, evento, agoraIso);
+    const pool = new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL), max: 2 });
+    try {
+      const { rows } = await pool.query(
+        `SELECT provider, quota_excedida_em, proxima_tentativa_em FROM mapa_provider_estado WHERE id = 1`
+      );
+      if (rows.length === 0) {
+        return Response.json({ erro: "estado do mapa nao inicializado (migracao 075 rodou?)" }, { status: 500 });
+      }
+      const estadoAtual = linhaParaEstado(rows[0]);
+      const agoraIso = new Date().toISOString();
+      const novoEstado = transicionar(estadoAtual, evento, agoraIso);
 
-    await pool.query(
-      `UPDATE mapa_provider_estado
-          SET provider = $1, quota_excedida_em = $2, proxima_tentativa_em = $3, atualizado_em = now()
-        WHERE id = 1`,
-      [novoEstado.provider, novoEstado.quotaExcedidaEm, novoEstado.proximaTentativaEm]
-    );
-    return Response.json(novoEstado);
-  } finally {
-    await pool.end();
+      await pool.query(
+        `UPDATE mapa_provider_estado
+            SET provider = $1, quota_excedida_em = $2, proxima_tentativa_em = $3, atualizado_em = now()
+          WHERE id = 1`,
+        [novoEstado.provider, novoEstado.quotaExcedidaEm, novoEstado.proximaTentativaEm]
+      );
+      // Mesmo contrato do GET: o cliente troca o estado local por este e
+      // continua comparando contra o relogio do servidor.
+      return Response.json({ ...novoEstado, agora: agoraIso });
+    } finally {
+      await pool.end();
+    }
+  } catch (err) {
+    return erro500(err);
   }
 }
