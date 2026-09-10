@@ -74,7 +74,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, LIMIAR_MIN_PARADA_FORA_DE_ROTA, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, LIMIAR_MIN_PARADA_FORA_DE_ROTA, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, ehRetornoABaseHorarioAvancado, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
@@ -3066,7 +3066,24 @@ export async function POST(request: Request) {
                       distBaseM: Math.min(...centroidesBases.map((b) => haversineM(p.lat, p.lng, b.lat, b.lng))),
                       deslocamentoM: i === 0 ? 0 : haversineM(pontosJanela[i - 1].lat, pontosJanela[i - 1].lng, p.lat, p.lng),
                     }));
-                    if (ehRetornoSustentadoABase(leiturasRetorno)) {
+                    // Achado real 10/09 (RQV-9E67, retorno pela RJ-101 em
+                    // velocidade de rodovia): o gate estrito acima exige
+                    // monotonicidade ponto-a-ponto, que uma geometria real de
+                    // rodovia (alcas/contornos) quebra mesmo em retorno
+                    // legitimo. Pedido do usuario (09/09): a partir de um
+                    // horario avancado do dia, base conta como "entrega" --
+                    // tendencia liquida da mesma janela basta. So' avalia como
+                    // fallback (gate estrito continua tentando primeiro, sem
+                    // custo extra de horario fora da faixa).
+                    const partesHoraSP = new Intl.DateTimeFormat("pt-BR", {
+                      timeZone: "America/Sao_Paulo", hour: "numeric", minute: "numeric", hour12: false,
+                    }).formatToParts(agora);
+                    const horaAgoraSP = parseInt(partesHoraSP.find((p) => p.type === "hour")?.value ?? "0", 10);
+                    const minutoAgoraSP = parseInt(partesHoraSP.find((p) => p.type === "minute")?.value ?? "0", 10);
+                    const suprimirRetorno =
+                      ehRetornoSustentadoABase(leiturasRetorno) ||
+                      ehRetornoABaseHorarioAvancado(leiturasRetorno, { hora: horaAgoraSP, minuto: minutoAgoraSP });
+                    if (suprimirRetorno) {
                       // Auditoria com tipo_disparo proprio, mesmo padrao do
                       // gate de reconciliacao: os scripts de validacao filtram
                       // por tipo_disparo='afastando_geral' e nao sao afetados.

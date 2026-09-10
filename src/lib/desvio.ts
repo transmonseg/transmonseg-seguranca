@@ -288,17 +288,6 @@ export const RETORNO_BASE_SPAN_MIN_S = 600;
 export const RETORNO_BASE_MIN_LEITURAS = 5;
 export const RETORNO_BASE_QUEDA_MIN_M = 1000;
 export const RETORNO_BASE_FRACAO_CAMINHO_MIN = 0.5;
-// Achado real 09/09 (RQV-6C22): mesmo com <= (fix de 08/09 pra GPS duplicado),
-// um aumento REAL de ~39m numa unica leitura -- ruido de GPS/distancia real
-// de rua com o veiculo quase parado, nao afastamento -- ainda derrubava o
-// gate inteiro apesar de queda liquida de ~5km em 15min (fracao do caminho
-// bem acima do minimo). Mesmo piso de ruido ja usado em outro lugar deste
-// projeto pra distancia real de rua via OSRM (LIMIAR_MOVIMENTO_MINIMO_M,
-// motor/route.ts) -- calibrado pro mesmo tipo de jitter, nao um numero novo
-// inventado pra este caso. Validado (scripts/simular-dia-desvio-v2.mjs) que
-// nao esconde desvio real: um aumento genuino continua derrubando o gate,
-// so' oscilacao pequena dentro deste piso e' tolerada.
-export const RETORNO_BASE_TOLERANCIA_RUIDO_M = 50;
 
 export type LeituraRetornoBase = {
   // epoch em segundos (ordem crescente)
@@ -316,23 +305,66 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
   if (ultima.tSegundos - primeira.tSegundos < RETORNO_BASE_SPAN_MIN_S) return false;
   let caminhoM = 0;
   for (let i = 1; i < leituras.length; i++) {
-    // Queda NAO-CRESCENTE (com tolerancia de ruido) em TODA leitura da
-    // janela. Historico de 2 achados reais sucessivos sobre o que conta como
-    // "aumentou de verdade":
-    //   08/09 (TOS-3C21): GPS duplicado (deslocamentoM=0, distBaseM
-    //   IDENTICA) nao e' afastamento, e' ausencia de dado novo -- por isso
-    //   <= em vez de < estrito.
-    //   09/09 (RQV-6C22): um aumento pequeno de verdade (nao empate exato)
-    //   tambem pode ser so' ruido de GPS/distancia real de rua, nao
-    //   afastamento -- por isso a tolerancia RETORNO_BASE_TOLERANCIA_RUIDO_M
-    //   soma no lado direito. Um aumento MAIOR que a tolerancia continua
-    //   derrubando o gate de qualquer jeito -- ver teste "UM aumento REAL"
-    //   acima, intacto com a tolerancia.
-    if (!(leituras[i].distBaseM <= leituras[i - 1].distBaseM + RETORNO_BASE_TOLERANCIA_RUIDO_M)) return false;
+    // Queda NAO-CRESCENTE em TODA leitura da janela. 08/09 (TOS-3C21): GPS
+    // duplicado (deslocamentoM=0, distBaseM IDENTICA) nao e' afastamento, e'
+    // ausencia de dado novo -- por isso <= em vez de < estrito.
+    //
+    // 09/09 (RQV-6C22) tentou-se somar uma tolerancia de ruido (50m) pra um
+    // aumento REAL pequeno numa leitura isolada. REVERTIDO no mesmo dia 10/09
+    // apos reler o comentario de 28/08 logo acima (janela/monotonia): essa
+    // exata ideia ja tinha sido testada e REJEITADA -- tolerar passos <50m
+    // triplica a superficie do gate e mascara 11 incidentes reais (25
+    // disparos) nos mesmos 5 dias historicos. A validacao do fix de 09/09 so'
+    // cobriu 1 dia contra 1 caso conhecido, sem o rigor do teste original.
+    // Prioridade e' recall (ver [[feedback_desvio_priorizar_recall]]) -- fica
+    // estrito. RQV-6C22 volta a ser falso positivo ocasional; ver regra de
+    // horario abaixo (ehRetornoABaseHorarioAvancado) pro caso de tarde/fim de
+    // rota, que resolve sem reabrir esse risco.
+    if (!(leituras[i].distBaseM <= leituras[i - 1].distBaseM)) return false;
     caminhoM += leituras[i].deslocamentoM;
   }
   const quedaM = primeira.distBaseM - ultima.distBaseM;
   if (quedaM < RETORNO_BASE_QUEDA_MIN_M) return false;
+  if (!(caminhoM > 0)) return false;
+  return quedaM / caminhoM >= RETORNO_BASE_FRACAO_CAMINHO_MIN;
+}
+
+// ─── Regra de horario avancado: base vira "entrega" a partir das 14:30 ───
+// Achado real 10/09 (RQV-9E67, retorno pela RJ-101 em velocidade de rodovia):
+// o gate estrito acima (ehRetornoSustentadoABase) exige queda MONOTONICA
+// ponto-a-ponto, o que e' realista pra veiculo quase parado mas nao pra
+// retorno rapido por rodovia -- geometria real de rua (alcas, contornos)
+// faz a distancia-a-base oscilar por leitura mesmo indo pra base de verdade,
+// e qualquer oscilacao > 0 derruba o gate estrito. Pedido original do
+// usuario (09/09): a partir de um horario avancado do dia, tratar a base
+// como se fosse mais um destino de entrega -- se a TENDENCIA LIQUIDA da
+// janela e' de aproximacao franca da base, nao exige monotonicidade fina.
+// Peso do recall: so' vale DEPOIS do horario de corte (retorno a base de
+// manha/inicio de tarde e' historicamente mais associado a desvio real --
+// motorista voltando sem terminar a rota -- entao continua exigindo o gate
+// estrito nesse periodo) e exige queda liquida grande (mesmo piso de
+// RETORNO_BASE_QUEDA_MIN_M) numa janela igual a RETORNO_BASE_JANELA_S, sem
+// nenhuma leitura MIN_LEITURAS abaixo do minimo -- mesma robustez de
+// amostra do gate estrito, so' sem a exigencia ponto-a-ponto.
+export const HORARIO_AVANCADO_BASE_ENTREGA_HORA = 14;
+export const HORARIO_AVANCADO_BASE_ENTREGA_MINUTO = 30;
+
+export function ehRetornoABaseHorarioAvancado(
+  leituras: LeituraRetornoBase[],
+  agoraLocal: { hora: number; minuto: number }
+): boolean {
+  const depoisDoCorte =
+    agoraLocal.hora > HORARIO_AVANCADO_BASE_ENTREGA_HORA ||
+    (agoraLocal.hora === HORARIO_AVANCADO_BASE_ENTREGA_HORA &&
+      agoraLocal.minuto >= HORARIO_AVANCADO_BASE_ENTREGA_MINUTO);
+  if (!depoisDoCorte) return false;
+  if (leituras.length < RETORNO_BASE_MIN_LEITURAS) return false;
+  const primeira = leituras[0];
+  const ultima = leituras[leituras.length - 1];
+  if (ultima.tSegundos - primeira.tSegundos < RETORNO_BASE_SPAN_MIN_S) return false;
+  const quedaM = primeira.distBaseM - ultima.distBaseM;
+  if (quedaM < RETORNO_BASE_QUEDA_MIN_M) return false;
+  const caminhoM = leituras.slice(1).reduce((soma, l) => soma + l.deslocamentoM, 0);
   if (!(caminhoM > 0)) return false;
   return quedaM / caminhoM >= RETORNO_BASE_FRACAO_CAMINHO_MIN;
 }

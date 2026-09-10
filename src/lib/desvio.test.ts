@@ -5,6 +5,7 @@ import {
   montarAlertaDesvio,
   ehSaltoDeReconciliacaoDeAtraso,
   ehRetornoSustentadoABase,
+  ehRetornoABaseHorarioAvancado,
   ehSaidaDeBaseSemDestinoAvaliavel,
 } from "./desvio";
 
@@ -31,18 +32,17 @@ describe("ehRetornoSustentadoABase", () => {
     expect(ehRetornoSustentadoABase(janela(dists, 800))).toBe(true);
   });
 
-  it("UM aumento REAL (acima do ruido de GPS/rua) no meio da janela derruba o gate -- protege contra mascarar desvio local real (achado 13/08)", () => {
+  it("UM aumento REAL no meio da janela derruba o gate -- protege contra mascarar desvio local real (achado 13/08)", () => {
     const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 700);
-    dists[7] = dists[6] + 500; // afastamento real, acima de RETORNO_BASE_TOLERANCIA_RUIDO_M
+    dists[7] = dists[6] + 500; // afastamento real
     expect(ehRetornoSustentadoABase(janela(dists, 800))).toBe(false);
   });
 
-  it("um aumento PEQUENO (dentro do ruido de GPS/distancia real de rua) nao derruba o gate -- caso real RQV-6C22 (09/09): unica leitura +39m no meio de 15min caindo 5km sem mais interrupcao", () => {
+  it("caso real RQV-6C22 (09/09): mesmo uma unica leitura +39m (ruido de GPS/distancia real de rua, veiculo quase parado) derruba o gate estrito -- tolerancia foi tentada e REVERTIDA no mesmo dia 10/09 por contradizer achado historico de 28/08 (mascarava 11 incidentes reais em 5 dias); ver ehRetornoABaseHorarioAvancado pro caso de tarde", () => {
     // Trajeto real reconstruido de posicoes_historico: 128,2km -> 123,4km em
     // ~15min. TODAS as outras leituras caem; so' uma sobe 39m (jitter de GPS/
-    // malha viaria com o veiculo quase parado) -- com < ou <= estrito isso
-    // derrubava o gate inteiro mesmo com queda liquida de ~5km e fracao do
-    // caminho bem acima do minimo.
+    // malha viaria com o veiculo quase parado) -- o gate estrito nao suprime
+    // esse caso (falso positivo ocasional aceito conscientemente).
     const leituras = [
       { tSegundos: 0, distBaseM: 128212.1, deslocamentoM: 0 },
       { tSegundos: 26, distBaseM: 127288.6, deslocamentoM: 1174.4 },
@@ -71,7 +71,7 @@ describe("ehRetornoSustentadoABase", () => {
       { tSegundos: 848, distBaseM: 124145.4, deslocamentoM: 1317.4 },
       { tSegundos: 878, distBaseM: 123430.2, deslocamentoM: 974.7 },
     ];
-    expect(ehRetornoSustentadoABase(leituras)).toBe(true);
+    expect(ehRetornoSustentadoABase(leituras)).toBe(false);
   });
 
   it("não vale com janela curta: 15min é onde a calibração cruza zero desvio real suprimido (5 leituras em 4min não bastam)", () => {
@@ -140,6 +140,80 @@ describe("ehRetornoSustentadoABase", () => {
       { tSegundos: 903, distBaseM: 55868, deslocamentoM: 1400 },
     ];
     expect(ehRetornoSustentadoABase(leituras)).toBe(true);
+  });
+});
+
+describe("ehRetornoABaseHorarioAvancado", () => {
+  it("caso real RQV-6C22 (09/09, ~18h): antes das 14:30 nao suprime mesmo com queda liquida boa", () => {
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 700);
+    dists[7] = dists[6] + 500; // oscilacao real, tolerada so' pela tendencia liquida
+    expect(
+      ehRetornoABaseHorarioAvancado(janela(dists, 800), { hora: 10, minuto: 0 })
+    ).toBe(false);
+  });
+
+  it("caso real RQV-6C22 (09/09): a partir das 14:30, tendencia liquida da janela basta -- nao exige monotonicidade ponto-a-ponto", () => {
+    const leituras = [
+      { tSegundos: 0, distBaseM: 128212.1, deslocamentoM: 0 },
+      { tSegundos: 26, distBaseM: 127288.6, deslocamentoM: 1174.4 },
+      { tSegundos: 61, distBaseM: 127288.6, deslocamentoM: 0 },
+      { tSegundos: 95, distBaseM: 126656.6, deslocamentoM: 634.9 },
+      { tSegundos: 127, distBaseM: 126656.6, deslocamentoM: 0 },
+      { tSegundos: 155, distBaseM: 126571.7, deslocamentoM: 169.1 },
+      { tSegundos: 178, distBaseM: 126571.7, deslocamentoM: 0 },
+      { tSegundos: 206, distBaseM: 126445.2, deslocamentoM: 205.5 },
+      { tSegundos: 242, distBaseM: 126445.2, deslocamentoM: 0 },
+      { tSegundos: 269, distBaseM: 126287.7, deslocamentoM: 252.2 },
+      { tSegundos: 298, distBaseM: 126287.7, deslocamentoM: 0 },
+      { tSegundos: 325, distBaseM: 126098.7, deslocamentoM: 230.9 },
+      { tSegundos: 363, distBaseM: 126098.7, deslocamentoM: 0 },
+      { tSegundos: 394, distBaseM: 126069.4, deslocamentoM: 38.5 },
+      { tSegundos: 424, distBaseM: 126069.4, deslocamentoM: 0 },
+      { tSegundos: 447, distBaseM: 126069.4, deslocamentoM: 0 },
+      { tSegundos: 478, distBaseM: 126069.4, deslocamentoM: 0 },
+      { tSegundos: 506, distBaseM: 126069.4, deslocamentoM: 0 },
+      { tSegundos: 541, distBaseM: 126069.4, deslocamentoM: 0 },
+      { tSegundos: 582, distBaseM: 126069.4, deslocamentoM: 0 },
+      { tSegundos: 630, distBaseM: 125975.3, deslocamentoM: 120.2 },
+      { tSegundos: 683, distBaseM: 126014.8, deslocamentoM: 196.2 }, // +39,5m -- ruido
+      { tSegundos: 738, distBaseM: 125116.9, deslocamentoM: 1170.7 },
+      { tSegundos: 792, distBaseM: 125116.9, deslocamentoM: 0 },
+      { tSegundos: 848, distBaseM: 124145.4, deslocamentoM: 1317.4 },
+      { tSegundos: 878, distBaseM: 123430.2, deslocamentoM: 974.7 },
+    ];
+    expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 18, minuto: 32 })).toBe(true);
+    expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 14, minuto: 30 })).toBe(true);
+    expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 14, minuto: 29 })).toBe(false);
+  });
+
+  it("caso real RQV-9E67 (10/09, ~15h30, retorno por rodovia RJ-101): tendencia liquida de queda franca basta mesmo com oscilacoes maiores que 50m ponto-a-ponto", () => {
+    // Perfil de retorno rapido por rodovia: cada leitura pode oscilar
+    // centenas de metros por causa de alcas/contornos reais, mas a queda
+    // liquida ao longo da janela e' grande e a fracao do caminho e' alta.
+    const dists = [
+      60_000, 58_500, 59_100, 56_800, 54_200, 55_000, 51_300, 48_900, 47_500,
+      44_800, 42_100, 43_000, 39_400, 36_700, 34_100,
+    ];
+    expect(
+      ehRetornoABaseHorarioAvancado(janela(dists, 1600), { hora: 15, minuto: 30 })
+    ).toBe(true);
+    // O gate estrito (de sempre, qualquer horario) nao suprime esse mesmo
+    // trajeto -- e' exatamente o buraco que a regra de horario resolve.
+    expect(ehRetornoSustentadoABase(janela(dists, 1600))).toBe(false);
+  });
+
+  it("nao suprime desvio real so' porque e' tarde -- ainda exige queda liquida grande e fracao do caminho alta", () => {
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 60); // queda total < 1km
+    expect(
+      ehRetornoABaseHorarioAvancado(janela(dists, 70), { hora: 16, minuto: 0 })
+    ).toBe(false);
+  });
+
+  it("nao suprime desvio real se a distancia-a-base esta subindo (afastando de verdade), mesmo de tarde", () => {
+    const dists = Array.from({ length: 15 }, (_, i) => 70_000 + i * 700);
+    expect(
+      ehRetornoABaseHorarioAvancado(janela(dists, 800), { hora: 16, minuto: 0 })
+    ).toBe(false);
   });
 });
 
