@@ -1011,6 +1011,62 @@ export default async function AnalisePage({
             );
           })()}
         </div>
+
+        <div className="mt-6">
+          <h4 className="text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Taxa de acerto por dia (revisão individual)</h4>
+          <p className="text-[11px] mb-3" style={{ color: "var(--text-dim)" }}>
+            % de correto entre os alertas revisados individualmente, dia a dia — pedido do time (grupo
+            "DESVIO DE ROTA", 09/09) pra saber se está melhorando, não só o total do período. Mesma
+            ressalva de volume da série acima (cooldown de re-disparo) pode afetar quantos casos entram
+            na conta em cada dia, sem necessariamente mudar a qualidade real do detector.
+          </p>
+          {(() => {
+            const pontos = qualidade.serieDiariaCorretoFalso
+              .map((s) => ({ ...s, total: s.corretos + s.falsos }))
+              .filter((s) => s.total > 0);
+            if (pontos.length === 0) {
+              return <p className="text-xs" style={{ color: "var(--text-muted)" }}>Sem revisão individual no período.</p>;
+            }
+            const W = 640, H = 120, PAD_X = 8, PAD_Y = 12;
+            const passoX = pontos.length > 1 ? (W - 2 * PAD_X) / (pontos.length - 1) : 0;
+            const yDe = (pct: number) => PAD_Y + (1 - pct / 100) * (H - 2 * PAD_Y);
+            const coords = pontos.map((p, i) => ({
+              x: PAD_X + i * passoX,
+              y: yDe((p.corretos / p.total) * 100),
+              pct: (p.corretos / p.total) * 100,
+              ...p,
+            }));
+            const linha = coords.map((c) => `${c.x},${c.y}`).join(" ");
+            const label = (dia: string) => new Date(`${dia}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+            return (
+              <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: 640, height: "auto" }} role="img"
+                   aria-label="Percentual de acerto por dia entre alertas de revisão individual">
+                {/* Grades horizontais recessivas em 0/50/100% -- so' orientacao, sem numero por linha (o eixo nao e' o foco, a tendencia e). */}
+                {[0, 50, 100].map((pct) => (
+                  <line key={pct} x1={PAD_X} x2={W - PAD_X} y1={yDe(pct)} y2={yDe(pct)}
+                        stroke="var(--border)" strokeWidth={1} />
+                ))}
+                <polyline points={linha} fill="none" stroke="#22c55e" strokeWidth={2}
+                          strokeLinecap="round" strokeLinejoin="round" />
+                {coords.map((c) => (
+                  <circle key={c.dia} cx={c.x} cy={c.y} r={4} fill="#22c55e" stroke="var(--bg)" strokeWidth={1.5}>
+                    <title>{`${label(c.dia)}: ${c.pct.toFixed(0)}% correto (${c.corretos} corretos, ${c.falsos} falsos)`}</title>
+                  </circle>
+                ))}
+                {/* Rotulo direto so' no primeiro e ultimo ponto (regra de "rotulagem seletiva",
+                    nunca um numero em cada ponto -- o hover/title cobre o resto). */}
+                <text x={coords[0].x} y={coords[0].y - 10} fontSize={10} textAnchor="start" fill="var(--text-muted)">
+                  {coords[0].pct.toFixed(0)}%
+                </text>
+                {coords.length > 1 && (
+                  <text x={coords[coords.length - 1].x} y={coords[coords.length - 1].y - 10} fontSize={10} textAnchor="end" fill="var(--text-muted)">
+                    {coords[coords.length - 1].pct.toFixed(0)}%
+                  </text>
+                )}
+              </svg>
+            );
+          })()}
+        </div>
         </>
         )}
       </div>

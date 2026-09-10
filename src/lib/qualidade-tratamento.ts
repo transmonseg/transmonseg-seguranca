@@ -65,6 +65,13 @@ export type ResumoQualidade = {
   porOperador: { operador: string; balde: string; n: number }[];
   latencia: { amostras: number; medianaMin: number | null; p90Min: number | null };
   serieDiaria: { dia: string; balde: string; n: number }[];
+  // Pedido real do time via áudio no grupo "DESVIO DE ROTA" (09/09, 18:20-18:27):
+  // reclamação de que "todo dia tem um problema" e não dá pra saber se está
+  // melhorando, hoje só dá pra medir "pelas tratativas" (manual, caso a caso).
+  // Mesmo recorte de individualCorretoFalso (correto/falso dentro do balde
+  // 'individual' -- ver comentário do tipo acima), só que quebrado por dia em
+  // vez de agregado no período inteiro, pra dar tendência real.
+  serieDiariaCorretoFalso: { dia: string; corretos: number; falsos: number }[];
 };
 
 // Mesma classificacao de classificarBalde (acima), expressa em SQL pra
@@ -134,7 +141,7 @@ export async function apurarQualidade(
         AND desde >= now() - ($1::int * interval '1 day')
         AND ($2::text IS NULL OR tipo = $2::text)
         AND ($3::text IS NULL OR nivel = $3::text)`;
-    const [baldes, corretoFalso, falsos, porOperador, latencia, serie] = await Promise.all([
+    const [baldes, corretoFalso, falsos, porOperador, latencia, serie, serieCorretoFalso] = await Promise.all([
       client.query<{ balde: string; n: string }>(
         `SELECT ${SQL_BALDE} AS balde, count(*)::text AS n ${filtroBase} GROUP BY 1`, params),
       // Correto vs falso dentro de 'individual' (ver comentario do tipo
@@ -169,6 +176,14 @@ export async function apurarQualidade(
       client.query<{ dia: string; balde: string; n: string }>(
         `SELECT to_char(date_trunc('day', desde AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS dia,
                 ${SQL_BALDE} AS balde, count(*)::text AS n ${filtroBase} GROUP BY 1, 2 ORDER BY 1`, params),
+      // Mesmo criterio correto/falso da query "corretoFalso" acima, so' que
+      // quebrado por dia -- pedido real do time (ver comentario do campo
+      // serieDiariaCorretoFalso em ResumoQualidade).
+      client.query<{ dia: string; resultado: string; n: string }>(
+        `SELECT to_char(date_trunc('day', desde AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS dia,
+                (CASE WHEN status = 'falso_positivo' THEN 'falso' ELSE 'correto' END) AS resultado,
+                count(*)::text AS n
+         ${filtroBase} AND ${SQL_BALDE} = 'individual' GROUP BY 1, 2 ORDER BY 1`, params),
     ]);
     const minutos = latencia.rows.map((r) => Number(r.minutos)).filter((n) => Number.isFinite(n) && n >= 0);
     const mapaCorretoFalso = Object.fromEntries(corretoFalso.rows.map((r) => [r.resultado, Number(r.n)]));
@@ -182,6 +197,18 @@ export async function apurarQualidade(
       porOperador: porOperador.rows.map((r) => ({ operador: r.operador, balde: r.balde, n: Number(r.n) })),
       latencia: { amostras: minutos.length, medianaMin: mediana(minutos), p90Min: percentil90(minutos) },
       serieDiaria: serie.rows.map((r) => ({ dia: r.dia, balde: r.balde, n: Number(r.n) })),
+      serieDiariaCorretoFalso: (() => {
+        const porDia = new Map<string, { corretos: number; falsos: number }>();
+        for (const r of serieCorretoFalso.rows) {
+          const e = porDia.get(r.dia) ?? { corretos: 0, falsos: 0 };
+          if (r.resultado === "correto") e.corretos = Number(r.n);
+          else e.falsos = Number(r.n);
+          porDia.set(r.dia, e);
+        }
+        return [...porDia.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([dia, v]) => ({ dia, ...v }));
+      })(),
     };
   } finally {
     await client.end();
