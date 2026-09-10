@@ -37,6 +37,19 @@ export const LIMIAR_TRANSITO_LONGO_M = 300_000;
 // do detector de desvio inteiro (os 2 sinais) enquanto ainda perto da base.
 export const LIMIAR_CARENCIA_BASE_M = 1200;
 
+// Achado real 09/09 (grupo "DESVIO DE ROTA", RQU-9D10 e TOS-0F89: "com
+// desvio na Unitrac mas nao acionou em nosso sistema"): ambos ficaram
+// PARADOS (nao em movimento) longe de qualquer cliente pendente ou base --
+// nem o sinal A (afastando) nem o B (rua rara) cobrem isso, os dois
+// exigem movimento pra acumular streak (paradoSemSeMover suspende os 2
+// assim que o veiculo para). So' instrumentacao por ora (ver migration
+// 077): simulado contra o dia inteiro de hoje, esse criterio sozinho
+// (parado >=10min, longe de tudo) da' 206 episodios/dia na frota Nutry
+// Max -- alto demais pra virar alerta 'critico' sem mais filtro (mesmo
+// erro de volume ja' vivido com rua_rara). Grava no desvio_disparo_log
+// pra acumular dado real antes de calibrar um alerta de verdade.
+export const LIMIAR_MIN_PARADA_FORA_DE_ROTA = 10;
+
 // Achado real 28/08 (reclamacao no grupo "DESVIO DE ROTA" sobre volume de
 // desvio incorreto na Central Unitrac; 2 dos 16 falso-positivos do dia,
 // TTJ-9I18 e RQV-6I51, tem esta assinatura). Padrao no dado bruto de

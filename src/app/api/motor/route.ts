@@ -74,7 +74,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, LIMIAR_MIN_PARADA_FORA_DE_ROTA, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
@@ -597,6 +597,10 @@ export async function POST(request: Request) {
   // ainda nao estiver aplicada, so' esta auditoria se desliga; a supressao em
   // si nao depende dela.
   const logSaidaBase = { habilitado: true };
+  // Idem pro log de instrumentacao de "parada fora de rota" (09/09,
+  // migration 077, ver LIMIAR_MIN_PARADA_FORA_DE_ROTA em lib/desvio.ts) --
+  // NUNCA cria alerta, so' acumula dado real pra calibracao futura.
+  const logParadaForaDeRota = { habilitado: true };
   // Populado por cliente (candidatos deste ciclo, ver preencherGeocodeCacheCandidatos
   // e a pre-passada de cada cliente) — nao busca a tabela inteira (ver comentario ali).
   const cacheGeocode = new Map<string, string>();
@@ -1947,6 +1951,45 @@ export async function POST(request: Request) {
           const chegouEmDestinoConhecido =
             idxMaisProximo >= 0 &&
             suspenderPorChegada(distDestinosM[idxMaisProximo], raioDestinoMaisProximo, false);
+
+          // Achado real 09/09 (ver LIMIAR_MIN_PARADA_FORA_DE_ROTA em
+          // lib/desvio.ts pro achado completo): instrumentacao pura, sem
+          // criar alerta -- so' grava no desvio_disparo_log quando o veiculo
+          // esta parado ha' >=10min longe de qualquer destino/base
+          // conhecido (mesma logica de "chegou" -- suspensoPorChegada/
+          // emPontoSeguro -- ja usada no resto do arquivo, sem gate novo).
+          // Grava 1x por CICLO (nao 1x por episodio) de proposito: o volume
+          // exato por ciclo e' justamente o dado que falta pra calibrar o
+          // limiar de verdade depois.
+          if (
+            pos.fresco &&
+            pos.velocidade === 0 &&
+            paradoMin >= LIMIAR_MIN_PARADA_FORA_DE_ROTA &&
+            !suspensoPorChegada &&
+            !emPontoSeguro &&
+            logParadaForaDeRota.habilitado
+          ) {
+            try {
+              await pool.query(
+                `INSERT INTO desvio_disparo_log
+                   (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula, parado_min)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [
+                  veiculo_id,
+                  "parada_fora_de_rota_instrumentacao",
+                  JSON.stringify({ distDestinoMaisProximoM: idxMaisProximo >= 0 ? Math.round(distDestinosM[idxMaisProximo]) : null }),
+                  0,
+                  0,
+                  celulaDe(pos.lat, pos.lng),
+                  celulasFrequenciaCliente.get(celulaDe(pos.lat, pos.lng)) ?? 0,
+                  paradoMin,
+                ]
+              );
+            } catch (errParadaForaDeRota) {
+              logParadaForaDeRota.habilitado = false;
+              erros.push(`Aviso: log de parada fora de rota desligado neste ciclo (migration 077 aplicada?) -- primeira falha no veiculo ${veiculo_id}: ${String(errParadaForaDeRota)}`);
+            }
+          }
 
           // ─── Tiroteio próximo: dist ao tiroteio ATIVO mais perto ────────
           let distTiroteioM: number | null = null;
