@@ -288,6 +288,17 @@ export const RETORNO_BASE_SPAN_MIN_S = 600;
 export const RETORNO_BASE_MIN_LEITURAS = 5;
 export const RETORNO_BASE_QUEDA_MIN_M = 1000;
 export const RETORNO_BASE_FRACAO_CAMINHO_MIN = 0.5;
+// Achado real 09/09 (RQV-6C22): mesmo com <= (fix de 08/09 pra GPS duplicado),
+// um aumento REAL de ~39m numa unica leitura -- ruido de GPS/distancia real
+// de rua com o veiculo quase parado, nao afastamento -- ainda derrubava o
+// gate inteiro apesar de queda liquida de ~5km em 15min (fracao do caminho
+// bem acima do minimo). Mesmo piso de ruido ja usado em outro lugar deste
+// projeto pra distancia real de rua via OSRM (LIMIAR_MOVIMENTO_MINIMO_M,
+// motor/route.ts) -- calibrado pro mesmo tipo de jitter, nao um numero novo
+// inventado pra este caso. Validado (scripts/simular-dia-desvio-v2.mjs) que
+// nao esconde desvio real: um aumento genuino continua derrubando o gate,
+// so' oscilacao pequena dentro deste piso e' tolerada.
+export const RETORNO_BASE_TOLERANCIA_RUIDO_M = 50;
 
 export type LeituraRetornoBase = {
   // epoch em segundos (ordem crescente)
@@ -305,16 +316,19 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
   if (ultima.tSegundos - primeira.tSegundos < RETORNO_BASE_SPAN_MIN_S) return false;
   let caminhoM = 0;
   for (let i = 1; i < leituras.length; i++) {
-    // Queda NAO-CRESCENTE em TODA leitura da janela -- uma unica leitura que
-    // aumenta a distancia ate a base derruba o gate (ver comentario acima).
-    // <= (nao <) por design: a Unitrac manda a mesma coordenada repetida com
-    // frequencia (deslocamentoM=0, distBaseM identica) -- isso NAO e' um
-    // afastamento, e' ausencia de dado novo. Achado real 08/09 (TOS-3C21):
-    // com < estrito, uma unica leitura duplicada em qualquer ponto da janela
-    // derrubava o gate mesmo com queda real de 77km->49km sem interrupcao.
-    // Um AUMENTO real (por menor que seja) continua derrubando o gate --
-    // ver teste "UMA leitura que afasta" acima, intacto com <=.
-    if (!(leituras[i].distBaseM <= leituras[i - 1].distBaseM)) return false;
+    // Queda NAO-CRESCENTE (com tolerancia de ruido) em TODA leitura da
+    // janela. Historico de 2 achados reais sucessivos sobre o que conta como
+    // "aumentou de verdade":
+    //   08/09 (TOS-3C21): GPS duplicado (deslocamentoM=0, distBaseM
+    //   IDENTICA) nao e' afastamento, e' ausencia de dado novo -- por isso
+    //   <= em vez de < estrito.
+    //   09/09 (RQV-6C22): um aumento pequeno de verdade (nao empate exato)
+    //   tambem pode ser so' ruido de GPS/distancia real de rua, nao
+    //   afastamento -- por isso a tolerancia RETORNO_BASE_TOLERANCIA_RUIDO_M
+    //   soma no lado direito. Um aumento MAIOR que a tolerancia continua
+    //   derrubando o gate de qualquer jeito -- ver teste "UM aumento REAL"
+    //   acima, intacto com a tolerancia.
+    if (!(leituras[i].distBaseM <= leituras[i - 1].distBaseM + RETORNO_BASE_TOLERANCIA_RUIDO_M)) return false;
     caminhoM += leituras[i].deslocamentoM;
   }
   const quedaM = primeira.distBaseM - ultima.distBaseM;
