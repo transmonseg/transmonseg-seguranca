@@ -739,6 +739,116 @@ async function processarJammerIndependente(ctx: {
 // degradar de verdade.
 const LIMIAR_AVISO_DURACAO_MS = 45_000;
 
+// Achado real (grupo DESVIO DE ROTA, mes de 08/26 a 09/08, ~30 mensagens
+// tipo "cliente sem marcacao em nosso sistema"/"nao acusou no sistema
+// novo"): boa parte NAO era bug de deteccao -- era veiculo genuinamente
+// EM ROTA (GPS fresco, fora da base) sem NENHUMA linha em `romaneio_pontos`
+// pro dia (caso confirmado: TTI-6E43 em 05/09, 0 linhas de romaneio o dia
+// inteiro, avistado em Sao Goncalo "sem marcacao nenhuma"). Antes disso, o
+// motor simplesmente pulava esses veiculos em silencio (o loop principal so
+// itera `romaneioPorVeiculo`, que so existe pra quem TEM romaneio) -- pro
+// operador, "sem marcacao" parecia bug do sistema, quando na verdade era o
+// manifesto do dia nunca ter chegado pra aquele veiculo especifico.
+//
+// Decisao deliberada, por causa da regra permanente desta rota ("Central
+// Romaneio nunca le alvo/marcacao da Unitrac", ver
+// docs/superpowers/plans/2026-08-27-romaneio-fonte-unica-plano-geral.md):
+// NAO tenta adivinhar o destino via Unitrac pra preencher o buraco. Só
+// TORNA O BURACO VISIVEL -- alerta proprio, nivel "atencao" (e' uma falha
+// de dado/processo, nao um evento de risco), motivo aponta pra conferir o
+// manifesto, nunca inventa coordenada. Roda ANTES do early-return de
+// romaneio vazio (linhasRomaneio.length===0) porque precisa detectar
+// exatamente esse caso -- dia sem NENHUM romaneio ainda e' o pior caso, nao
+// deve ficar mais escondido que o de "alguns veiculos faltando".
+async function sinalizarRomaneioAusente(ctx: {
+  pool: pg.Pool;
+  admin: ReturnType<typeof createAdminClient>;
+  hoje: string;
+  agora: Date;
+  erros: string[];
+}): Promise<void> {
+  const { pool, admin, hoje, agora, erros } = ctx;
+  try {
+    const codigosUnitrac = [...CLIENTES_COM_MOTOR_ROMANEIO_PARALELO];
+    if (codigosUnitrac.length === 0) return;
+
+    const { rows: semRomaneio } = await pool.query<{
+      veiculo_id: string;
+      cliente_id: string;
+      lat: number;
+      lng: number;
+    }>(
+      `SELECT v.id AS veiculo_id, v.cliente_id, pa.lat, pa.lng
+         FROM veiculos v
+         JOIN clientes c ON c.id = v.cliente_id
+         JOIN posicoes_atuais pa ON pa.veiculo_id = v.id
+         LEFT JOIN romaneio_pontos rp ON rp.veiculo_id = v.id AND rp.romaneio_data = $3::date
+        WHERE c.cod_user_unitrac = ANY($1::text[])
+          AND pa.atraso_min IS NOT NULL AND pa.atraso_min < $2
+          AND rp.id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM bases b
+             WHERE b.cliente_id = v.cliente_id AND ST_Contains(b.geom::geometry, pa.geom::geometry)
+          )`,
+      [codigosUnitrac, LIMIAR_ATRASO_FRESCO_MIN, hoje]
+    );
+
+    const veiculosAtivosSemRomaneio = new Set(semRomaneio.map((r) => r.veiculo_id));
+
+    // Uma query só pros já abertos (mesmo padrão de alertasAbertosPorVeiculo
+    // no resto do arquivo), não uma por veículo -- mais barato e mais fácil
+    // de mockar em teste. Reusada tanto pro dedup do insert quanto pro
+    // auto-resolve abaixo.
+    const { data: abertos, error: erroAbertos } = await admin
+      .from("alertas_romaneio")
+      .select("id, veiculo_id")
+      .eq("tipo", "romaneio_ausente")
+      .eq("status", "ativo");
+    if (erroAbertos) {
+      erros.push(`Aviso: falha ao checar romaneio_ausente existentes: ${erroAbertos.message}`);
+      return;
+    }
+    const veiculosComAlertaAberto = new Set((abertos ?? []).map((a) => a.veiculo_id as string));
+
+    for (const r of semRomaneio) {
+      if (veiculosComAlertaAberto.has(r.veiculo_id)) continue;
+      const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
+        cliente_id: r.cliente_id,
+        veiculo_id: r.veiculo_id,
+        nivel: "atencao",
+        tipo: "romaneio_ausente",
+        motivo: "Veiculo em rota (GPS ativo, fora da base) sem romaneio de hoje carregado no sistema -- conferir manifesto/upload do dia",
+        score: 20,
+        status: "ativo",
+        lat: r.lat,
+        lng: r.lng,
+        contexto: {},
+        desde: agora.toISOString(),
+      });
+      if (erroInsert) {
+        erros.push(`Aviso: falha ao inserir romaneio_ausente pro veiculo ${r.veiculo_id}: ${erroInsert.message}`);
+      }
+    }
+
+    // Fecha sozinho quando o romaneio chega (ou o veiculo volta pra base/
+    // perde sinal) -- mesmo marcador auto_resolvido usado no resto do
+    // arquivo, nunca fica pendurado esperando acao manual pra um problema
+    // que se resolveu sozinho.
+    for (const a of abertos ?? []) {
+      if (veiculosAtivosSemRomaneio.has(a.veiculo_id as string)) continue;
+      const { error: erroResolve } = await admin
+        .from("alertas_romaneio")
+        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto: { auto_resolvido: true } })
+        .eq("id", a.id);
+      if (erroResolve) {
+        erros.push(`Aviso: falha ao resolver romaneio_ausente ${a.id}: ${erroResolve.message}`);
+      }
+    }
+  } catch (e) {
+    erros.push(`Aviso: sinalizacao de romaneio ausente desligada neste ciclo: ${String(e)}`);
+  }
+}
+
 export async function POST(request: Request) {
   // Marco de duração do ciclo -- tomado ANTES do lease, porque a espera de
   // conexão do pool também consome o orçamento de maxDuration.
@@ -853,6 +963,10 @@ export async function POST(request: Request) {
 
   try {
     const hoje = hojeSP();
+
+    // Roda ANTES de qualquer early-return (inclusive o de romaneio vazio
+    // logo abaixo) -- ver comentario de sinalizarRomaneioAusente.
+    await sinalizarRomaneioAusente({ pool, admin, hoje, agora, erros });
 
     // Só veículos com romaneio utilizável de hoje (ver task-2-brief.md, Step 3).
     // NÃO filtra por geocode_status/lat/lng aqui (removido na task-5, ver

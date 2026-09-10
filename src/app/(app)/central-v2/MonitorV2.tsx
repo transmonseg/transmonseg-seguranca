@@ -74,6 +74,7 @@ const NOME_TIPO: Record<string, string> = {
   retorno_tardio: "Retorno tardio", aceleracao: "Acel. brusca", sem_comunicacao: "Sem comunicação",
   parada_sem_marcacao: "Parada sem marcação",
   baseline_veiculo: "Anomalia de velocidade",
+  romaneio_ausente: "Sem romaneio hoje",
 };
 function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 
@@ -84,7 +85,7 @@ function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 const TIPO_PRIORITY: Record<string, number> = {
   desvio: 15, parada_fora_tapete: 15, parada_sem_marcacao: 14, panico: 12, saida_nao_autorizada: 10, jammer: 9,
   bau: 8, parada_cliente: 8, tiroteio: 7, parada_anomala: 6, ignicao_noturna: 5,
-  retorno_tardio: 4, aceleracao: 3, favela: 2, parada_longa: 1,
+  retorno_tardio: 4, aceleracao: 3, favela: 2, parada_longa: 1, romaneio_ausente: 11,
 };
 function prioAlerta(a: { nivel: string; tipo: string }): number {
   return (a.nivel === "critico" ? 100 : 0) + (TIPO_PRIORITY[a.tipo] ?? 0);
