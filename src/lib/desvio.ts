@@ -508,6 +508,47 @@ export function ehSaidaDeBaseSemDestinoAvaliavel(args: {
   return streakAfastando < LIMIAR_STREAK_SEM_DESTINO_AVALIAVEL;
 }
 
+// ─── Gate de ruido de "ultima milha" do OSRM (achado real 13/08, generalizado 10/09) ───
+//
+// Achado original 13/08 (RBG-5G18 e outros 3 casos): quando o veiculo mal se
+// move entre duas leituras (GPS com poucos metros de jitter, manobra de
+// patio), o par de pontos pode colar em nos DIFERENTES da malha viaria local
+// do OSRM, e essa diferenca de "ultima milha" se propaga quase igual pra
+// TODAS as rotas adiante (compartilham o mesmo corredor) -- o delta de
+// distancia (atual - anterior) fica PRATICAMENTE IDENTICO pra TODOS os
+// destinos simultaneamente, mesmo entre destinos a 6,9km e a 287km um do
+// outro. Isso e' matematicamente impossivel pra divergencia real de rota
+// (movimento real produz deltas DIFERENTES, proporcionais a geometria de
+// cada rota). Motor de hoje so' detecta esse caso indiretamente, via
+// LIMIAR_MOVIMENTO_MINIMO_M (deslocamento real < 50m) -- um proxy pra "o
+// veiculo mal se moveu, entao o par nao e' confiavel".
+//
+// Achado real 10/09 (cluster "carro do pao" -- RQU-5G33 e RQU-0B47, grupo
+// DESVIO DE ROTA, classificados falso pelo operador): MESMO mecanismo, so'
+// que com deslocamento real BEM ACIMA de 50m (o veiculo se moveu de
+// verdade) -- RQU-5G33 com 16 pendentes subiu exatos +353m em TODOS
+// simultaneamente (3,9km a 8,3km de distancia entre si); RQU-0B47 com 20
+// pendentes subiu exatos +888m em TODOS (6,3km a 41,2km entre si). O proxy
+// de movimento minimo nao pega esse caso porque o deslocamento real nao era
+// pequeno -- so' o ruido de ultima milha do OSRM cresceu proporcionalmente
+// junto. A assinatura real do ruido nunca foi "pouco movimento", e' "delta
+// uniforme entre destinos muito diferentes" -- checa isso diretamente em vez
+// de inferir pela magnitude do movimento bruto.
+export const RUIDO_ULTIMA_MILHA_MIN_DESTINOS = 3;
+export const RUIDO_ULTIMA_MILHA_TOLERANCIA_SPREAD_M = 20;
+
+export function ehRuidoUltimaMilhaOsrm(distanciasAtuais: number[], distanciasAnteriores: number[]): boolean {
+  if (
+    distanciasAtuais.length < RUIDO_ULTIMA_MILHA_MIN_DESTINOS ||
+    distanciasAtuais.length !== distanciasAnteriores.length
+  ) {
+    return false;
+  }
+  const deltas = distanciasAtuais.map((d, i) => d - distanciasAnteriores[i]);
+  const spread = Math.max(...deltas) - Math.min(...deltas);
+  return spread <= RUIDO_ULTIMA_MILHA_TOLERANCIA_SPREAD_M;
+}
+
 export type ResultadoAfastando = { streak: number; disparou: boolean; aproximandoAlgum: boolean };
 
 // Sinal A: o veiculo se afastou (distancia REAL de rua, ja calculada pelo

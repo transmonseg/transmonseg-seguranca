@@ -30,7 +30,7 @@
 //                               aproximando ininterruptamente da propria base e
 //                               todas as bases estao alem do filtro de 50km.
 import pg from "pg";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, ehRetornoABaseHorarioAvancado, RETORNO_BASE_JANELA_S } from "../src/lib/desvio.ts";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, ehRetornoABaseHorarioAvancado, ehRuidoUltimaMilhaOsrm, RETORNO_BASE_JANELA_S } from "../src/lib/desvio.ts";
 import { celulaDe } from "../src/lib/celulas.ts";
 import { buscarDistanciasReais } from "../src/lib/distancia-real.ts";
 
@@ -62,6 +62,10 @@ const { rows: veiculos } = await client.query(
 console.log(`Veículos com posição nesse dia: ${veiculos.length}`);
 
 const GATE_MOVIMENTO_MINIMO = process.env.GATE_MOVIMENTO_MINIMO === "1";
+// GATE_RUIDO_ULTIMA_MILHA=1 -> ehRuidoUltimaMilhaOsrm (achado 10/09): delta
+// de distancia quase identico entre TODOS os destinos no mesmo ciclo (ruido
+// de snap-to-road do OSRM), independente da magnitude do movimento.
+const GATE_RUIDO_ULTIMA_MILHA = process.env.GATE_RUIDO_ULTIMA_MILHA === "1";
 const GATE_RECONCILIACAO = process.env.GATE_RECONCILIACAO === "1";
 const MODELAR_BASES = process.env.MODELAR_BASES === "1";
 const GATE_RETORNO_BASE = process.env.GATE_RETORNO_BASE === "1";
@@ -71,7 +75,7 @@ const GATE_RETORNO_BASE = process.env.GATE_RETORNO_BASE === "1";
 const PISO_AFASTANDO_M = Number(process.env.PISO_AFASTANDO_M ?? 0);
 const LIMIAR_DESTINO_RELEVANTE_M = 50_000;
 const LIMIAR_MOVIMENTO_MINIMO_M = 50;
-console.log(`Gates: GATE_MOVIMENTO_MINIMO=${GATE_MOVIMENTO_MINIMO} GATE_RECONCILIACAO=${GATE_RECONCILIACAO} MODELAR_BASES=${MODELAR_BASES} GATE_RETORNO_BASE=${GATE_RETORNO_BASE} PISO_AFASTANDO_M=${PISO_AFASTANDO_M}`);
+console.log(`Gates: GATE_MOVIMENTO_MINIMO=${GATE_MOVIMENTO_MINIMO} GATE_RECONCILIACAO=${GATE_RECONCILIACAO} MODELAR_BASES=${MODELAR_BASES} GATE_RETORNO_BASE=${GATE_RETORNO_BASE} GATE_RUIDO_ULTIMA_MILHA=${GATE_RUIDO_ULTIMA_MILHA} PISO_AFASTANDO_M=${PISO_AFASTANDO_M}`);
 if (GATE_RETORNO_BASE && !MODELAR_BASES) { console.error("GATE_RETORNO_BASE=1 exige MODELAR_BASES=1"); process.exit(1); }
 
 // Centroide da base igual ao centroideGeo() de src/lib/unitrac.ts (media dos
@@ -104,6 +108,7 @@ function haversineM(lat1, lng1, lat2, lng2) {
 
 let totalSuprimidosMovimento = 0;
 let totalSuprimidosReconciliacao = 0;
+let totalSuprimidosRuidoUltimaMilha = 0;
 let totalSuprimidosRetornoBase = 0;
 
 const eventos = [];
@@ -222,9 +227,14 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
     const suprimidoPorReconciliacao =
       GATE_RECONCILIACAO &&
       ehSaltoDeReconciliacaoDeAtraso(anterior.atraso_min, pos.atraso_min, movimentoRealM, dtParSegundos);
-    if (suprimidoPorMovimento || suprimidoPorReconciliacao) {
+    // Achado real 10/09 (cluster "carro do pao" -- ver ehRuidoUltimaMilhaOsrm
+    // em lib/desvio.ts): roda DEPOIS do OSRM (precisa das distancias), mas
+    // ANTES de avaliarAfastandoDeTudo -- mesma ordem do motor real.
+    const suprimidoPorRuidoUltimaMilha = GATE_RUIDO_ULTIMA_MILHA && ehRuidoUltimaMilhaOsrm(distAtuais, distAnteriores);
+    if (suprimidoPorMovimento || suprimidoPorReconciliacao || suprimidoPorRuidoUltimaMilha) {
       if (suprimidoPorMovimento) totalSuprimidosMovimento++;
-      else totalSuprimidosReconciliacao++;
+      else if (suprimidoPorReconciliacao) totalSuprimidosReconciliacao++;
+      else totalSuprimidosRuidoUltimaMilha++;
       distAnteriores = distAtuais;
       anterior = pos;
       continue;
@@ -313,6 +323,7 @@ console.log(`\nCiclos avaliados (com >=2 leituras e pendentes): ${totalCiclosAva
 console.log(`Falhas de OSRM (ciclos pulados): ${totalFalhasOSRM}`);
 console.log(`Ciclos suprimidos por movimento < ${LIMIAR_MOVIMENTO_MINIMO_M}m: ${totalSuprimidosMovimento}`);
 console.log(`Ciclos suprimidos por salto de reconciliacao de atraso: ${totalSuprimidosReconciliacao}`);
+console.log(`Ciclos suprimidos por ruido de ultima milha do OSRM: ${totalSuprimidosRuidoUltimaMilha}`);
 console.log(`Disparos segurados por retorno sustentado a base: ${totalSuprimidosRetornoBase}`);
 console.log(`\nTotal de desvios que teriam disparado no dia ${diaAlvo}: ${eventos.length}`);
 console.log(`  afastando_geral: ${eventos.filter((e) => e.tipo === "afastando_geral").length}`);

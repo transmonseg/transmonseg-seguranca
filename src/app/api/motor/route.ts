@@ -74,7 +74,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { atualizarBaselineWelford, classificarTipoViagem, decidirAdmissaoBaseline, BASELINE_FROTA_N_MAXIMO, BASELINE_MIN_AMOSTRAS_PROPRIO, type Baseline } from "@/lib/baseline-veiculo";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, LIMIAR_MIN_PARADA_FORA_DE_ROTA, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, ehRetornoABaseHorarioAvancado, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, LIMIAR_MIN_PARADA_FORA_DE_ROTA, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, ehRetornoABaseHorarioAvancado, ehRuidoUltimaMilhaOsrm, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
 
 type PontoComId = { id: string; lat: number; lng: number };
@@ -3005,6 +3005,52 @@ export async function POST(request: Request) {
                 : null;
 
             if (distAtuaisReais && distAnterioresReais) {
+              // Achado real 10/09 (cluster "carro do pao" -- RQU-5G33,
+              // RQU-0B47) -- ver ehRuidoUltimaMilhaOsrm em lib/desvio.ts pro
+              // achado completo. Roda ANTES de avaliarAfastandoDeTudo porque
+              // precisa das distancias OSRM ja calculadas (diferente de
+              // movimentoInsignificante/saltoDeReconciliacaoDeAtraso, que
+              // decidem so' com GPS bruto, sem custo de OSRM). Restaura o
+              // streak anterior explicitamente (nao deixa nascer em 0) --
+              // mesma correcao da 2a revisao independente de 28/08 pro gate
+              // de reconciliacao: este gate tambem atua sobre veiculo em
+              // MOVIMENTO real (350-900m no achado de 10/09), podendo estar
+              // no meio de uma divergencia real de verdade.
+              const ruidoUltimaMilha = ehRuidoUltimaMilhaOsrm(distAtuaisReais, distAnterioresReais);
+              if (ruidoUltimaMilha) {
+                if (logSupressaoDesvio.habilitado) {
+                  try {
+                    const celulaSuprimida = celulaDe(pos.lat, pos.lng);
+                    await pool.query(
+                      `INSERT INTO desvio_disparo_log
+                         (veiculo_id, tipo_disparo, destinos, streak_afastando, streak_rua_rara, celula, n_visitas_celula)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                      [
+                        veiculo_id,
+                        "suprimido_ruido_ultima_milha",
+                        JSON.stringify(
+                          destinosRelevantes.map((d, i) => ({
+                            codigo: d.codigo,
+                            lat: d.lat,
+                            lng: d.lng,
+                            distAtualM: distAtuaisReais[i],
+                            distAnteriorM: distAnterioresReais[i],
+                          }))
+                        ),
+                        estadoDesvioAnterior.afastandoStreak,
+                        estadoDesvioAnterior.ruaRaraStreak,
+                        celulaSuprimida,
+                        celulasFrequenciaCliente.get(celulaSuprimida) ?? 0,
+                      ]
+                    );
+                  } catch (errSupressaoLog) {
+                    logSupressaoDesvio.habilitado = false;
+                    erros.push(`Aviso: log de supressao de ruido de ultima milha desligado neste ciclo (migration 063 aplicada?) -- primeira falha no veiculo ${veiculo_id}: ${String(errSupressaoLog)}`);
+                  }
+                }
+                afastandoStreakNovo = estadoDesvioAnterior.afastandoStreak;
+                ruaRaraStreakNovo = estadoDesvioAnterior.ruaRaraStreak;
+              } else {
               const afastando = avaliarAfastandoDeTudo(distAtuaisReais, distAnterioresReais, estadoDesvioAnterior.afastandoStreak);
               afastandoStreakNovo = afastando.streak;
 
@@ -3367,6 +3413,7 @@ export async function POST(request: Request) {
                   erros.push(`Aviso: falha ao gravar desvio_disparo_log pro veiculo ${veiculo_id}: ${String(errDisparoLog)}`);
                 }
               }
+              } // fecha o `else` do gate ehRuidoUltimaMilhaOsrm (achado 10/09)
             } else {
               afastandoStreakNovo = estadoDesvioAnterior.afastandoStreak;
               ruaRaraStreakNovo = estadoDesvioAnterior.ruaRaraStreak;

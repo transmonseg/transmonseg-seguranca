@@ -6,6 +6,7 @@ import {
   ehSaltoDeReconciliacaoDeAtraso,
   ehRetornoSustentadoABase,
   ehRetornoABaseHorarioAvancado,
+  ehRuidoUltimaMilhaOsrm,
   ehSaidaDeBaseSemDestinoAvaliavel,
 } from "./desvio";
 
@@ -288,6 +289,40 @@ describe("ehSaltoDeReconciliacaoDeAtraso", () => {
     expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 20000, 0)).toBe(false);
     expect(ehSaltoDeReconciliacaoDeAtraso(20, 1, 20000, -5)).toBe(false);
     expect(ehSaltoDeReconciliacaoDeAtraso(undefined, undefined, undefined, undefined)).toBe(false);
+  });
+});
+
+describe("ehRuidoUltimaMilhaOsrm", () => {
+  it("caso real RQU-5G33 (10/09): 16 pendentes de 3,9km a 8,3km, TODOS sobem exatos +353m -- ruido de ultima milha do OSRM", () => {
+    const distanciasAnteriores = [3900, 4200, 4800, 5100, 5400, 5700, 6000, 6300, 6600, 6900, 7200, 7500, 7700, 7900, 8100, 8300];
+    const distanciasAtuais = distanciasAnteriores.map((d) => d + 353);
+    expect(ehRuidoUltimaMilhaOsrm(distanciasAtuais, distanciasAnteriores)).toBe(true);
+  });
+
+  it("caso real RQU-0B47 (10/09): 20 pendentes de 6,3km a 41,2km, TODOS sobem exatos +888m -- delta identico entre destinos tao distintos e impossivel pra divergencia real", () => {
+    const distanciasAnteriores = Array.from({ length: 20 }, (_, i) => 6_300 + i * 1_836); // espalha ate ~41,2km
+    const distanciasAtuais = distanciasAnteriores.map((d) => d + 888);
+    expect(ehRuidoUltimaMilhaOsrm(distanciasAtuais, distanciasAnteriores)).toBe(true);
+  });
+
+  it("divergencia real: deltas DIFERENTES entre destinos (proporcionais a geometria de cada rota) nao e' ruido", () => {
+    const distanciasAnteriores = [3_900, 6_900, 41_200];
+    const distanciasAtuais = [4_400, 7_000, 41_900]; // +500, +100, +700 -- espalhados
+    expect(ehRuidoUltimaMilhaOsrm(distanciasAtuais, distanciasAnteriores)).toBe(false);
+  });
+
+  it("menos de 3 destinos nunca suprime -- amostra pequena demais pra distinguir de coincidencia", () => {
+    expect(ehRuidoUltimaMilhaOsrm([4_353, 6_453], [4_000, 6_100])).toBe(false);
+  });
+
+  it("quantidade de destinos diferente entre os dois arrays nunca suprime", () => {
+    expect(ehRuidoUltimaMilhaOsrm([4_353, 6_453, 8_000], [4_000, 6_100])).toBe(false);
+  });
+
+  it("delta uniforme mas NEGATIVO (aproximando de todos por igual) tambem conta como ruido -- nao importa a direcao, so' a impossibilidade geometrica", () => {
+    const distanciasAnteriores = [10_000, 20_000, 30_000];
+    const distanciasAtuais = distanciasAnteriores.map((d) => d - 200);
+    expect(ehRuidoUltimaMilhaOsrm(distanciasAtuais, distanciasAnteriores)).toBe(true);
   });
 });
 
