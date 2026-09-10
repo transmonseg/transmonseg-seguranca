@@ -30,7 +30,7 @@
 //                               aproximando ininterruptamente da propria base e
 //                               todas as bases estao alem do filtro de 50km.
 import pg from "pg";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, RETORNO_BASE_JANELA_S } from "../src/lib/desvio.ts";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, ehRetornoABaseHorarioAvancado, RETORNO_BASE_JANELA_S } from "../src/lib/desvio.ts";
 import { celulaDe } from "../src/lib/celulas.ts";
 import { buscarDistanciasReais } from "../src/lib/distancia-real.ts";
 
@@ -243,12 +243,20 @@ async function processarVeiculo({ veiculo_id, placa, cliente_id }) {
     // sem interrupcao ha 15min. Mesma ordem do motor: roda depois de
     // avaliarAfastandoDeTudo, so' quando o alerta ja ia sair.
     const distBaseAgoraM = distBaseDe(pos);
+    // horario local (America/Sao_Paulo) da leitura, pra ehRetornoABaseHorarioAvancado
+    // (achado 10/09, RQV-9E67 -- ver desvio.ts).
+    const partesHoraSP = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Sao_Paulo", hour: "numeric", minute: "numeric", hour12: false,
+    }).formatToParts(pos.criado_em);
+    const horaSP = parseInt(partesHoraSP.find((p) => p.type === "hour")?.value ?? "0", 10);
+    const minutoSP = parseInt(partesHoraSP.find((p) => p.type === "minute")?.value ?? "0", 10);
     const retornoSustentado =
       GATE_RETORNO_BASE &&
       afastando.disparou &&
       distBaseAgoraM != null &&
       distBaseAgoraM > LIMIAR_DESTINO_RELEVANTE_M &&
-      ehRetornoSustentadoABase(janelaBase);
+      (ehRetornoSustentadoABase(janelaBase) ||
+        ehRetornoABaseHorarioAvancado(janelaBase, { hora: horaSP, minuto: minutoSP }));
     if (retornoSustentado) {
       totalSuprimidosRetornoBase++;
       distAnteriores = distAtuais;
