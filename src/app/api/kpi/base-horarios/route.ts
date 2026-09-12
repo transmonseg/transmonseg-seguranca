@@ -40,7 +40,7 @@ const RAIO_BASE_M = 500;
 
 const MAX_PLACAS_POR_CHAMADA = 200;
 
-type Posicao = { lat: number; lng: number; criado_em: string };
+type Posicao = { lat: number; lng: number; criado_em: string; velocidade: number };
 type BaseCentro = { lat: number; lng: number };
 
 /** Dado o historico continuo (ordenado por tempo) e os centros de base do
@@ -257,6 +257,18 @@ const RAIO_AMPLIADO_M = 800;
  *  um ping isolado). */
 const DWELL_MINIMO_MS = 60_000
 
+// Achado real 11/09 (KPI Nutry Max, NF 2365070/TRIBUNAL RESTAURANTE): o
+// caminhao TTH6G37 nunca parou perto do cliente -- passou reto a 368-757m
+// a 49-53km/h -- mas o raio ampliado (800m) e o DWELL_MINIMO_MS (so' 1min)
+// bastam pra uma passagem rapida em rua movimentada satisfazer "bloco
+// contiguo dentro do raio por >=1min" sem o veiculo jamais ter ficado
+// parado: a 50km/h da pra atravessar 800m de raio em bem menos de 1min,
+// e leituras a cada ~30-40s continuam "dentro" por varios ciclos mesmo em
+// movimento constante. Falta checar VELOCIDADE, so' distancia nao basta
+// pra provar parada. Limiar generoso (nunca visto GPS parado passar disso
+// mesmo em deriva) pra nao rejeitar dwell real por 1 leitura ruidosa.
+const VELOCIDADE_MAX_PARADO_KMH = 5
+
 function acharBlocoDentroDoRaio(
   pt: PontoEntrega,
   posicoes: Posicao[],
@@ -268,7 +280,10 @@ function acharBlocoDentroDoRaio(
   let atual: { inicio: string; fim: string } | null = null
 
   for (const p of posicoes) {
-    const dentro = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM && !estaMaisPertoDaBaseQueDoPonto(p, pt, basesCentro)
+    const dentro =
+      haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM &&
+      p.velocidade <= VELOCIDADE_MAX_PARADO_KMH &&
+      !estaMaisPertoDaBaseQueDoPonto(p, pt, basesCentro)
     if (dentro) {
       if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em }
       else atual.fim = p.criado_em
@@ -487,7 +502,7 @@ export async function POST(request: Request) {
     const basesCentro = basesPorCliente.get(v.cliente_id) ?? [];
     const { data: posicoesRows, error: erroPosicoes } = await admin
       .from("posicoes_historico")
-      .select("lat, lng, criado_em")
+      .select("lat, lng, criado_em, velocidade")
       .eq("veiculo_id", v.id)
       .gte("criado_em", inicioUTC.toISOString())
       .lt("criado_em", fimUTC.toISOString())
