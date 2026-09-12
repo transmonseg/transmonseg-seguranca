@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validarTerritorio, RAIO_MAXIMO_VIZINHO_CNEFE_M } from "./territorio";
+import { validarTerritorio, LIMIAR_DISTANCIA_BAIRRO_M } from "./territorio";
 
 const semBairro = { municipioCodigo: "3304557", bairro: null };
 
@@ -8,7 +8,7 @@ describe("validarTerritorio - municipio", () => {
     const r = await validarTerritorio(
       { lat: -22.9, lng: -43.2 },
       semBairro,
-      { municipioDaCoordenada: async () => "3304557", bairroDaCoordenada: async () => null },
+      { municipioDaCoordenada: async () => "3304557", distanciaAoBairro: async () => null },
     );
     expect(r).toEqual({ ok: true });
   });
@@ -19,7 +19,7 @@ describe("validarTerritorio - municipio", () => {
     const r = await validarTerritorio(
       { lat: -22.83, lng: -43.05 },
       semBairro,
-      { municipioDaCoordenada: async () => "3304904", bairroDaCoordenada: async () => null },
+      { municipioDaCoordenada: async () => "3304904", distanciaAoBairro: async () => null },
     );
     expect(r).toEqual({ ok: false, motivo: "municipio_divergente" });
   });
@@ -30,7 +30,7 @@ describe("validarTerritorio - municipio", () => {
     const r = await validarTerritorio(
       { lat: -22.9, lng: -43.2 },
       { municipioCodigo: null, bairro: null },
-      { municipioDaCoordenada: async () => "3304904", bairroDaCoordenada: async () => null },
+      { municipioDaCoordenada: async () => "3304904", distanciaAoBairro: async () => null },
     );
     expect(r).toEqual({ ok: true });
   });
@@ -39,7 +39,7 @@ describe("validarTerritorio - municipio", () => {
     const r = await validarTerritorio(
       { lat: -20.8, lng: -41.9 },
       semBairro,
-      { municipioDaCoordenada: async () => null, bairroDaCoordenada: async () => null },
+      { municipioDaCoordenada: async () => null, distanciaAoBairro: async () => null },
     );
     expect(r).toEqual({ ok: true });
   });
@@ -48,7 +48,7 @@ describe("validarTerritorio - municipio", () => {
     const r = await validarTerritorio(
       { lat: -22.9, lng: -43.2 },
       semBairro,
-      { municipioDaCoordenada: async () => { throw new Error("banco fora"); }, bairroDaCoordenada: async () => null },
+      { municipioDaCoordenada: async () => { throw new Error("banco fora"); }, distanciaAoBairro: async () => null },
     );
     expect(r).toEqual({ ok: true });
   });
@@ -56,44 +56,63 @@ describe("validarTerritorio - municipio", () => {
 
 const municipioOk = { municipioDaCoordenada: async () => "3304557" };
 
-describe("validarTerritorio - bairro", () => {
-  it("reprova o caso Galeao: municipio certo, bairro errado", async () => {
+// Valores medidos em producao (ver migration 083 / relatorio da Task 4b):
+// distancia_ao_bairro(lat, lng, bairro_normalizado).
+describe("validarTerritorio - bairro (distancia ao hull cnefe_bairros)", () => {
+  it("reprova o Galeao com coordenada ruim: 3603m do hull do bairro pedido", async () => {
     // Caso real: AVENIDA VINTE DE JANEIRO, S/N - GALEAO, RIO DE JANEIRO caiu em
-    // -22.811137,-43.297583, cujo vizinho CNEFE a 0m tem localidade PARADA DE
-    // LUCAS. Municipio identico (3304557), 5.014m do endereco real.
+    // -22.811137,-43.297583, medido a 3603m do hull convexo de GALEAO no CNEFE.
+    // Municipio identico (3304557) -- so' o bairro diverge.
     const r = await validarTerritorio(
       { lat: -22.811137, lng: -43.297583 },
       { municipioCodigo: "3304557", bairro: "GALEAO" },
-      { ...municipioOk, bairroDaCoordenada: async () => ({ localidade: "PARADA DE LUCAS", distanciaM: 0 }) },
+      { ...municipioOk, distanciaAoBairro: async () => 3603 },
     );
     expect(r).toEqual({ ok: false, motivo: "bairro_divergente" });
   });
 
-  it("aprova quando o bairro bate", async () => {
+  it("aprova o Galeao com coordenada boa (Estrada das Canarias): 0m do hull do bairro", async () => {
     const r = await validarTerritorio(
-      { lat: -22.811, lng: -43.228 },
+      { lat: -22.811147, lng: -43.227995 },
       { municipioCodigo: "3304557", bairro: "GALEAO" },
-      { ...municipioOk, bairroDaCoordenada: async () => ({ localidade: "GALEAO", distanciaM: 40 }) },
+      { ...municipioOk, distanciaAoBairro: async () => 0 },
     );
     expect(r).toEqual({ ok: true });
   });
 
-  it("aprova ignorando acento e caixa", async () => {
+  it("aprova Copacabana: 0m do hull do bairro", async () => {
+    const r = await validarTerritorio(
+      { lat: -22.971177, lng: -43.182543 },
+      { municipioCodigo: "3304557", bairro: "COPACABANA" },
+      { ...municipioOk, distanciaAoBairro: async () => 0 },
+    );
+    expect(r).toEqual({ ok: true });
+  });
+
+  it("reprova quando a distancia excede o limiar calibrado", async () => {
     const r = await validarTerritorio(
       { lat: -22.8, lng: -43.2 },
-      { municipioCodigo: "3304557", bairro: "JARDIM GUANABARA" },
-      { ...municipioOk, bairroDaCoordenada: async () => ({ localidade: "Jardim Guanabará", distanciaM: 50 }) },
+      { municipioCodigo: "3304557", bairro: "GALEAO" },
+      { ...municipioOk, distanciaAoBairro: async () => LIMIAR_DISTANCIA_BAIRRO_M + 1 },
+    );
+    expect(r).toEqual({ ok: false, motivo: "bairro_divergente" });
+  });
+
+  it("aprova quando a distancia esta exatamente no limiar ou abaixo", async () => {
+    const r = await validarTerritorio(
+      { lat: -22.8, lng: -43.2 },
+      { municipioCodigo: "3304557", bairro: "GALEAO" },
+      { ...municipioOk, distanciaAoBairro: async () => LIMIAR_DISTANCIA_BAIRRO_M },
     );
     expect(r).toEqual({ ok: true });
   });
 
-  it("aprova quando o vizinho CNEFE esta longe demais pra julgar", async () => {
-    // Area rural sem cobertura CNEFE densa: o vizinho mais proximo pode ser de
-    // outro bairro so' por ser o unico ponto cadastrado na regiao.
+  it("aprova quando o bairro do romaneio nao existe no CNEFE -- distancia null, nada pra comparar", async () => {
+    // 942 dos 8.725 enderecos em cache tem bairro desconhecido do CNEFE.
     const r = await validarTerritorio(
-      { lat: -22.1, lng: -41.4 },
-      { municipioCodigo: "3304557", bairro: "GALEAO" },
-      { ...municipioOk, bairroDaCoordenada: async () => ({ localidade: "OUTRO", distanciaM: RAIO_MAXIMO_VIZINHO_CNEFE_M + 1 }) },
+      { lat: -22.9, lng: -43.2 },
+      { municipioCodigo: "3304557", bairro: "BAIRRO INEXISTENTE NO CNEFE" },
+      { ...municipioOk, distanciaAoBairro: async () => null },
     );
     expect(r).toEqual({ ok: true });
   });
@@ -102,25 +121,16 @@ describe("validarTerritorio - bairro", () => {
     const r = await validarTerritorio(
       { lat: -22.9, lng: -43.2 },
       { municipioCodigo: "3304557", bairro: null },
-      { ...municipioOk, bairroDaCoordenada: async () => ({ localidade: "QUALQUER", distanciaM: 10 }) },
+      { ...municipioOk, distanciaAoBairro: async () => 5000 },
     );
     expect(r).toEqual({ ok: true });
   });
 
-  it("aprova quando nao ha vizinho CNEFE nenhum", async () => {
+  it("aprova quando a consulta de distancia falha -- fail-open", async () => {
     const r = await validarTerritorio(
       { lat: -22.9, lng: -43.2 },
       { municipioCodigo: "3304557", bairro: "GALEAO" },
-      { ...municipioOk, bairroDaCoordenada: async () => null },
-    );
-    expect(r).toEqual({ ok: true });
-  });
-
-  it("aprova quando a consulta de bairro falha -- fail-open", async () => {
-    const r = await validarTerritorio(
-      { lat: -22.9, lng: -43.2 },
-      { municipioCodigo: "3304557", bairro: "GALEAO" },
-      { ...municipioOk, bairroDaCoordenada: async () => { throw new Error("banco fora"); } },
+      { ...municipioOk, distanciaAoBairro: async () => { throw new Error("banco fora"); } },
     );
     expect(r).toEqual({ ok: true });
   });
@@ -131,7 +141,7 @@ describe("validarTerritorio - bairro", () => {
       { municipioCodigo: "3304557", bairro: "GALEAO" },
       {
         municipioDaCoordenada: async () => "3304904",
-        bairroDaCoordenada: async () => ({ localidade: "OUTRO", distanciaM: 10 }),
+        distanciaAoBairro: async () => 5000,
       },
     );
     expect(r).toEqual({ ok: false, motivo: "municipio_divergente" });

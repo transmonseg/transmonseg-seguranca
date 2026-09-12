@@ -20,18 +20,27 @@ describe("montarDepsTerritorio", () => {
     expect(await deps.municipioDaCoordenada(-22.9, -43.2)).toBeNull();
   });
 
-  it("bairroDaCoordenada devolve localidade e distancia do vizinho mais proximo", async () => {
-    const rpc = async () => ({ data: [{ localidade: "PARADA DE LUCAS", distancia_m: 0 }], error: null });
+  it("distanciaAoBairro devolve a distancia em metros ate o hull do bairro", async () => {
+    const rpc = async () => ({ data: 3603, error: null });
     const deps = montarDepsTerritorio({ rpc } as never);
-    expect(await deps.bairroDaCoordenada(-22.811137, -43.297583)).toEqual({
-      localidade: "PARADA DE LUCAS",
-      distanciaM: 0,
-    });
+    expect(await deps.distanciaAoBairro(-22.811137, -43.297583, "GALEAO")).toBe(3603);
   });
 
-  it("bairroDaCoordenada devolve null quando nao ha vizinho", async () => {
-    const rpc = async () => ({ data: [], error: null });
+  it("distanciaAoBairro devolve 0 quando o ponto esta dentro do hull", async () => {
+    const rpc = async () => ({ data: 0, error: null });
     const deps = montarDepsTerritorio({ rpc } as never);
-    expect(await deps.bairroDaCoordenada(-22.9, -43.2)).toBeNull();
+    expect(await deps.distanciaAoBairro(-22.971177, -43.182543, "COPACABANA")).toBe(0);
+  });
+
+  it("distanciaAoBairro devolve null quando o bairro nao existe no CNEFE", async () => {
+    const rpc = async () => ({ data: null, error: null });
+    const deps = montarDepsTerritorio({ rpc } as never);
+    expect(await deps.distanciaAoBairro(-22.9, -43.2, "BAIRRO INEXISTENTE")).toBeNull();
+  });
+
+  it("distanciaAoBairro devolve null quando a consulta erra -- deixa o fail-open pra validarTerritorio", async () => {
+    const rpc = async () => ({ data: null, error: { message: "boom" } });
+    const deps = montarDepsTerritorio({ rpc } as never);
+    expect(await deps.distanciaAoBairro(-22.9, -43.2, "GALEAO")).toBeNull();
   });
 });

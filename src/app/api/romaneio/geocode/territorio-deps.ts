@@ -12,12 +12,17 @@ export function montarDepsTerritorio(admin: SupabaseClient): DepsTerritorio {
       const codigo = (data[0] as { municipio_codigo?: unknown }).municipio_codigo;
       return typeof codigo === "string" ? codigo : null;
     },
-    async bairroDaCoordenada(lat, lng) {
-      const { data, error } = await admin.rpc("bairro_da_coordenada", { p_lat: lat, p_lng: lng });
-      if (error || !Array.isArray(data) || data.length === 0) return null;
-      const linha = data[0] as { localidade?: unknown; distancia_m?: unknown };
-      if (typeof linha.localidade !== "string" || typeof linha.distancia_m !== "number") return null;
-      return { localidade: linha.localidade, distanciaM: linha.distancia_m };
+    // bairroNormalizado ja chega acentos-fora/maiusculo (normalizarBairro em
+    // src/lib/territorio.ts) -- mesma normalizacao usada pra gravar
+    // localidade_norm em cnefe_bairros, entao a comparacao no banco e' exata.
+    async distanciaAoBairro(lat, lng, bairroNormalizado) {
+      const { data, error } = await admin.rpc("distancia_ao_bairro", {
+        p_lat: lat,
+        p_lng: lng,
+        p_bairro: bairroNormalizado,
+      });
+      if (error) return null;
+      return typeof data === "number" ? data : null;
     },
   };
 }
