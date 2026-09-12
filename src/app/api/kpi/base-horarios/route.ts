@@ -336,6 +336,65 @@ function estaMaisPertoDaBaseQueDoPonto(p: Posicao, pt: PontoEntrega, basesCentro
   })
 }
 
+// Achado real 12/09 (auditoria KPI Nutry Max): o feed de paradas da Unitrac
+// (/mapa_servicos/stops) so' alcanca 48h -- passou disso, nao da' pra
+// reprocessar dia nenhum. Foi o que impediu de medir o efeito das correcoes
+// de geocode no relatorio de 10/09: no dia 12 o dia 10 ja tinha saido da
+// janela. Este projeto guarda posicao continua PERMANENTE
+// (posicoes_historico, ~30-40s de cadencia) -- da' pra derivar as paradas
+// daqui pra qualquer data, sem depender do feed agregado da Unitrac (que,
+// alem de efemero, e' opaco e ja mostrou divergir do dado bruto).
+//
+// Cluster de permanencia: leituras CONSECUTIVAS com velocidade baixa que
+// ficam dentro de RAIO_CLUSTER_PARADA_M do ancora (1a leitura do grupo).
+// Mesmos limiares ja validados no resto do fluxo: <=5km/h conta como parado
+// (ver VELOCIDADE_MAX_PARADO_KMH) e 5min de permanencia minima (mesmo piso
+// que consolidaParadasApi usa pra cluster sem geofence do lado do KPI).
+const RAIO_CLUSTER_PARADA_M = 150;
+const DUR_MINIMA_PARADA_MS = 300_000; // 5min
+
+export type ParadaDerivada = {
+  chegada: string;
+  saida: string;
+  duracaoSeg: number;
+  lat: number;
+  lng: number;
+  classificacao: "BASE" | "FORA_BASE";
+};
+
+export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = []): ParadaDerivada[] {
+  const paradas: ParadaDerivada[] = [];
+  let atual: { inicio: string; fim: string; lats: number[]; lngs: number[] } | null = null;
+
+  const fechar = () => {
+    if (!atual) return;
+    const durMs = new Date(atual.fim).getTime() - new Date(atual.inicio).getTime();
+    if (durMs >= DUR_MINIMA_PARADA_MS) {
+      const lat = atual.lats.reduce((a, b) => a + b, 0) / atual.lats.length;
+      const lng = atual.lngs.reduce((a, b) => a + b, 0) / atual.lngs.length;
+      const naBase = basesCentro.some((b) => haversineM(b.lat, b.lng, lat, lng) <= RAIO_BASE_M);
+      paradas.push({
+        chegada: atual.inicio,
+        saida: atual.fim,
+        duracaoSeg: Math.round(durMs / 1000),
+        lat,
+        lng,
+        classificacao: naBase ? "BASE" : "FORA_BASE",
+      });
+    }
+    atual = null;
+  };
+
+  for (const p of posicoes) {
+    if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) { fechar(); continue; }
+    if (atual && haversineM(atual.lats[0], atual.lngs[0], p.lat, p.lng) > RAIO_CLUSTER_PARADA_M) fechar();
+    if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em, lats: [p.lat], lngs: [p.lng] };
+    else { atual.fim = p.criado_em; atual.lats.push(p.lat); atual.lngs.push(p.lng); }
+  }
+  fechar();
+  return paradas;
+}
+
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
   const diretas = pontos.map((pt) => {
     const bloco = acharBlocoDentroDoRaio(pt, posicoes, RAIO_ENTREGA_M, basesCentro)
@@ -399,9 +458,10 @@ export async function POST(request: Request) {
     return Response.json({ erro: "corpo invalido, esperado JSON" }, { status: 400 });
   }
 
-  const { placas, data, pontosPorPlaca: pontosPorPlacaBruto } = body as {
+  const { placas, data, pontosPorPlaca: pontosPorPlacaBruto, incluirParadas: incluirParadasBruto } = body as {
     placas?: unknown;
     data?: unknown;
+    incluirParadas?: unknown;
     // Opcional (achado real 25/08, extensao pra CHEGADA/SAIDA NA LOJA):
     // { [placa]: {id, lat, lng}[] } -- id e' o identificador que o
     // chamador quer de volta (KPI usa o numero da NF). Placa ausente
@@ -422,6 +482,8 @@ export async function POST(request: Request) {
   if (placas.length === 0) {
     return Response.json({ resultados: [] });
   }
+
+  const incluirParadas = incluirParadasBruto === true;
 
   const pontosPorPlaca = new Map<string, PontoEntrega[]>();
   if (pontosPorPlacaBruto !== undefined) {
@@ -491,6 +553,7 @@ export async function POST(request: Request) {
     chegadaBase: string | null;
     kmPercorrido: number | null;
     visitas?: VisitaPonto[];
+    paradas?: ParadaDerivada[];
   }[] = [];
   for (const placaBruta of placas) {
     const placaNorm = normPlaca(placaBruta);
@@ -516,7 +579,11 @@ export async function POST(request: Request) {
     const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const pontos = pontosPorPlaca.get(placaNorm);
     const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos, basesCentro) : undefined;
-    resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido, ...(visitas ? { visitas } : {}) });
+    // Paradas derivadas so' quando pedidas (`incluirParadas`) -- payload
+    // cresce bastante e o consumidor normal (saida/chegada/km/visitas) nao
+    // precisa. O KPI pede quando o dia caiu fora da janela de 48h da Unitrac.
+    const paradas = incluirParadas ? derivarParadas(posicoes, basesCentro) : undefined;
+    resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido, ...(visitas ? { visitas } : {}), ...(paradas ? { paradas } : {}) });
   }
 
   return Response.json({ resultados });

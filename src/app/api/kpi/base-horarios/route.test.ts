@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto } from "./route";
+import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas } from "./route";
 
 const BASE = { lat: -22.816007, lng: -43.277827 };
 // ~50km da base -- claramente fora do raio de 500m.
@@ -517,5 +517,58 @@ describe("acharVisitasPorPonto", () => {
       const [visita] = acharVisitasPorPonto(posicoes, [CLIENTE_MUITO_PERTO_DA_BASE], [BASE]);
       expect(visita).toEqual({ id: "NF_VIZINHO_BASE", chegada: null, saida: null });
     });
+  });
+});
+
+// Achado real 12/09: o feed de paradas da Unitrac morre em 48h -- no dia 12
+// nao dava mais pra reprocessar o dia 10 pra medir o efeito das correcoes de
+// geocode. Como este projeto guarda posicao continua permanente, da' pra
+// derivar as paradas daqui pra qualquer data.
+describe("derivarParadas (paradas a partir do historico permanente de posicao)", () => {
+  const BASE_C = { lat: -22.816007, lng: -43.277827 };
+  const p = (min: number, lat: number, lng: number, velocidade = 0) => ({
+    lat, lng, velocidade,
+    criado_em: `2026-09-10T${String(9 + Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}:00.000Z`,
+  });
+
+  it("permanencia parada de 10min vira uma parada FORA_BASE, com centro medio e duracao reais", () => {
+    const paradas = derivarParadas([
+      p(0, -22.9, -43.2, 40),   // chegando, em movimento -- nao entra
+      p(1, -22.9001, -43.2001), // parou
+      p(6, -22.9002, -43.2002),
+      p(11, -22.9001, -43.2001),
+      p(13, -22.8, -43.1, 55),  // foi embora
+    ], [BASE_C]);
+
+    expect(paradas).toHaveLength(1);
+    expect(paradas[0].classificacao).toBe("FORA_BASE");
+    expect(paradas[0].duracaoSeg).toBe(600);
+    expect(paradas[0].lat).toBeCloseTo(-22.9001, 3);
+  });
+
+  it("passagem rapida (velocidade alta) nao vira parada, mesmo ficando muito tempo no raio", () => {
+    const paradas = derivarParadas([p(0, -22.9, -43.2, 50), p(10, -22.9, -43.2, 48), p(20, -22.9, -43.2, 52)], []);
+    expect(paradas).toEqual([]);
+  });
+
+  it("permanencia curta (< 5min) e descartada -- mesmo piso do consolidaParadasApi", () => {
+    const paradas = derivarParadas([p(0, -22.9, -43.2), p(3, -22.9, -43.2), p(9, -23.5, -44.5, 60)], []);
+    expect(paradas).toEqual([]);
+  });
+
+  it("parada dentro do raio da base sai classificada como BASE", () => {
+    const paradas = derivarParadas([p(0, BASE_C.lat, BASE_C.lng), p(30, BASE_C.lat, BASE_C.lng)], [BASE_C]);
+    expect(paradas).toHaveLength(1);
+    expect(paradas[0].classificacao).toBe("BASE");
+  });
+
+  it("duas permanencias em locais diferentes viram duas paradas separadas", () => {
+    const paradas = derivarParadas([
+      p(0, -22.9, -43.2), p(10, -22.9, -43.2),
+      p(20, -22.7, -43.0), p(35, -22.7, -43.0),
+    ], []);
+    expect(paradas).toHaveLength(2);
+    expect(paradas[0].duracaoSeg).toBe(600);
+    expect(paradas[1].duracaoSeg).toBe(900);
   });
 });
