@@ -23,7 +23,27 @@ export type DepsTerritorio = {
   /** Codigo IBGE de 7 digitos do municipio que CONTEM o ponto, ou null se
    *  nenhum poligono da malha carregada o contiver. */
   municipioDaCoordenada: (lat: number, lng: number) => Promise<string | null>;
+  /** Localidade (bairro) do endereco CNEFE mais proximo do ponto, com a
+   *  distancia ate ele -- null quando nao ha nenhum. */
+  bairroDaCoordenada: (lat: number, lng: number) => Promise<{ localidade: string; distanciaM: number } | null>;
 };
+
+/** Acima disso o vizinho CNEFE mais proximo nao diz nada util sobre o bairro
+ *  do ponto -- area rural ou trecho sem cobertura do Censo tem vizinho unico a
+ *  quilometros, de qualquer bairro. Conservador de proposito: a checagem de
+ *  bairro compara NOME (localidade do CNEFE contra o bairro do romaneio) e
+ *  nome de bairro varia de grafia, entao ela so' pode marcar suspeita quando a
+ *  evidencia e' inequivoca. */
+export const RAIO_MAXIMO_VIZINHO_CNEFE_M = 300;
+
+function normalizarBairro(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 export async function validarTerritorio(
   ponto: { lat: number; lng: number },
@@ -41,5 +61,22 @@ export async function validarTerritorio(
       return { ok: false, motivo: "municipio_divergente" };
     }
   }
+
+  if (esperado.bairro) {
+    let vizinho: { localidade: string; distanciaM: number } | null;
+    try {
+      vizinho = await deps.bairroDaCoordenada(ponto.lat, ponto.lng);
+    } catch {
+      return { ok: true };
+    }
+    if (
+      vizinho &&
+      vizinho.distanciaM <= RAIO_MAXIMO_VIZINHO_CNEFE_M &&
+      normalizarBairro(vizinho.localidade) !== normalizarBairro(esperado.bairro)
+    ) {
+      return { ok: false, motivo: "bairro_divergente" };
+    }
+  }
+
   return { ok: true };
 }
