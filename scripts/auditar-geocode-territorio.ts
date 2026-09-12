@@ -90,13 +90,18 @@ async function main() {
         );
         return r.rows[0]?.municipio_codigo ?? null;
       },
-      async bairroDaCoordenada(lat: number, lng: number) {
-        const r = await monit.query<{ localidade: string; distancia_m: number }>(
-          "SELECT * FROM bairro_da_coordenada($1, $2)",
-          [lat, lng],
+      // bairroNormalizado ja chega normalizado por validarTerritorio (que usa
+      // a mesma normalizarBairro de @/lib/territorio antes de chamar esta
+      // funcao) -- este script nunca reimplementa a normalizacao, so' repassa
+      // o parametro pra funcao SQL, igual ao adapter da rota
+      // (src/app/api/romaneio/geocode/territorio-deps.ts).
+      async distanciaAoBairro(lat: number, lng: number, bairroNormalizado: string) {
+        const r = await monit.query<{ distancia_ao_bairro: number | null }>(
+          "SELECT distancia_ao_bairro($1, $2, $3) AS distancia_ao_bairro",
+          [lat, lng, bairroNormalizado],
         );
-        const v = r.rows[0];
-        return v ? { localidade: v.localidade, distanciaM: v.distancia_m } : null;
+        const v = r.rows[0]?.distancia_ao_bairro;
+        return typeof v === "number" ? v : null;
       },
     };
 
