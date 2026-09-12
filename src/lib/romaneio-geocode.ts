@@ -349,11 +349,18 @@ export async function geocodificarCnefePorBairro(
 // coordenada "as vezes errada" que o romaneio existe pra evitar. Decisao
 // explicita do usuario: se nao geocodificar, o ponto fica sem coordenada
 // (excluido da lista de pendentes pelo motor) em vez de reusar a Unitrac.
-export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro" } | null;
+// `validado` = a coordenada passou pela checagem de distancia contra o ponto
+// de referencia da CIDADE. false significa "aceita na fe": ou nao havia ponto
+// de cidade pra comparar (endereco truncado/corrompido no romaneio), ou a
+// fonte e' de precisao de bairro por natureza (cnefe_bairro). Achado real
+// 11-12/09: e' exatamente por aqui que entram os erros grosseiros (22km,
+// 27km, 131km -- rua homonima de outro municipio), entao quem consome precisa
+// saber a diferenca. Ver migration 078 e avisarSemPontoCidade abaixo.
+export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro"; validado: boolean } | null;
 
 type Deps = {
-  buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string } | null>;
-  salvarCache: (chave: string, r: { lat: number; lng: number; fonte: string }) => Promise<void>;
+  buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string; validado?: boolean } | null>;
+  salvarCache: (chave: string, r: { lat: number; lng: number; fonte: string; validado: boolean }) => Promise<void>;
   geocodificarCnefeDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
   geocodificarLocalDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
   // Achado real 08/09 (auditoria KPI Nutry Max, 46 pendentes sem geocode --
@@ -405,8 +412,17 @@ export async function geocodificarEndereco(
   deps: Deps
 ): Promise<ResultadoGeocode> {
   const chave = normalizarEndereco(enderecoBruto);
+  // `validado` so' passou a ser gravado a partir da migration 078 -- linha
+  // antiga (undefined) assume true, mesmo default da coluna, pra nao
+  // reclassificar em massa cache legado como suspeito.
+  const validadoCidade = pontoCidade != null;
   const doCache = await deps.buscarCache(chave);
-  if (doCache) return { lat: doCache.lat, lng: doCache.lng, fonte: doCache.fonte as "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro" };
+  if (doCache) return {
+    lat: doCache.lat,
+    lng: doCache.lng,
+    fonte: doCache.fonte as "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro",
+    validado: doCache.validado ?? true,
+  };
 
   // CNEFE roda ANTES do OSM (geocodificarLocalDep) -- achado real 31/07:
   // endereco+coordenada real de campo (IBGE) e' mais preciso que o extrato
@@ -416,15 +432,15 @@ export async function geocodificarEndereco(
   const cnefe = await deps.geocodificarCnefeDep(enderecoBruto, pontoCidade);
   if (cnefe) {
     avisarSemPontoCidade("cnefe", enderecoBruto, cnefe, pontoCidade);
-    await deps.salvarCache(chave, { ...cnefe, fonte: "cnefe" });
-    return { ...cnefe, fonte: "cnefe" };
+    await deps.salvarCache(chave, { ...cnefe, fonte: "cnefe", validado: validadoCidade });
+    return { ...cnefe, fonte: "cnefe", validado: validadoCidade };
   }
 
   const local = await deps.geocodificarLocalDep(enderecoBruto, pontoCidade);
   if (local) {
     avisarSemPontoCidade("local", enderecoBruto, local, pontoCidade);
-    await deps.salvarCache(chave, { ...local, fonte: "local" });
-    return { ...local, fonte: "local" };
+    await deps.salvarCache(chave, { ...local, fonte: "local", validado: validadoCidade });
+    return { ...local, fonte: "local", validado: validadoCidade };
   }
 
   // Ultimo recurso ANTES de sair pra rede (Google/Nominatim): centroide do
@@ -437,8 +453,8 @@ export async function geocodificarEndereco(
   if (deps.geocodificarCnefeBairroDep) {
     const cnefeBairro = await deps.geocodificarCnefeBairroDep(enderecoBruto);
     if (cnefeBairro) {
-      await deps.salvarCache(chave, { ...cnefeBairro, fonte: "cnefe_bairro" });
-      return { ...cnefeBairro, fonte: "cnefe_bairro" };
+      await deps.salvarCache(chave, { ...cnefeBairro, fonte: "cnefe_bairro", validado: false });
+      return { ...cnefeBairro, fonte: "cnefe_bairro", validado: false };
     }
   }
 
@@ -465,15 +481,15 @@ export async function geocodificarEndereco(
   for (const variante of variantes) {
     const google = await deps.geocodificarGoogle(variante);
     if (google && perto(google)) {
-      await deps.salvarCache(chave, { ...google, fonte: "google" });
-      return { ...google, fonte: "google" };
+      await deps.salvarCache(chave, { ...google, fonte: "google", validado: validadoCidade });
+      return { ...google, fonte: "google", validado: validadoCidade };
     }
   }
   for (const variante of variantes) {
     const nominatim = await deps.geocodificarNominatim(variante);
     if (nominatim && perto(nominatim)) {
-      await deps.salvarCache(chave, { ...nominatim, fonte: "nominatim" });
-      return { ...nominatim, fonte: "nominatim" };
+      await deps.salvarCache(chave, { ...nominatim, fonte: "nominatim", validado: validadoCidade });
+      return { ...nominatim, fonte: "nominatim", validado: validadoCidade };
     }
   }
   return null;

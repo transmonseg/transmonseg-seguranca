@@ -44,10 +44,48 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     geocodificarNominatim: vi.fn(overrides.geocodificarNominatim ?? (async () => null)),
   });
 
+  describe("flag `validado` (achado real 11-12/09: erros de 22km/27km/131km entraram sem validacao de cidade)", () => {
+    const PONTO_CIDADE = { lat: -22.9, lng: -43.2 };
+    const PERTO = { lat: -22.91, lng: -43.21 }; // ~1.5km do ponto de cidade
+
+    it("COM ponto de cidade (validacao de distancia rodou): validado=true", async () => {
+      const deps = mockDeps({ geocodificarCnefeDep: async () => PERTO });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade", PONTO_CIDADE, deps);
+      expect(r).toMatchObject({ fonte: "cnefe", validado: true });
+      expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ validado: true }));
+    });
+
+    it("SEM ponto de cidade (aceito na fe -- rua homonima de outro municipio passa aqui): validado=false", async () => {
+      const deps = mockDeps({ geocodificarCnefeDep: async () => PERTO });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, CidadeTruncad", null, deps);
+      expect(r).toMatchObject({ fonte: "cnefe", validado: false });
+      expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ validado: false }));
+    });
+
+    it("cnefe_bairro e' sempre validado=false, mesmo com ponto de cidade (precisao de bairro por natureza)", async () => {
+      const deps = mockDeps({ geocodificarCnefeBairroDep: async () => PERTO });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade", PONTO_CIDADE, deps);
+      expect(r).toMatchObject({ fonte: "cnefe_bairro", validado: false });
+    });
+
+    it("mesma regra vale pro OSM local e pro Nominatim, nao so pro CNEFE", async () => {
+      const local = await geocodificarEndereco("Rua X, 1", null, mockDeps({ geocodificarLocalDep: async () => PERTO }));
+      expect(local).toMatchObject({ fonte: "local", validado: false });
+      const nom = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade", PONTO_CIDADE, mockDeps({ geocodificarNominatim: async () => PERTO }));
+      expect(nom).toMatchObject({ fonte: "nominatim", validado: true });
+    });
+
+    it("cache legado (linha gravada antes da migration 078, sem a coluna): assume validado=true, nao reclassifica em massa", async () => {
+      const deps = mockDeps({ buscarCache: async () => ({ lat: 1, lng: 2, fonte: "cnefe" }) });
+      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(r).toMatchObject({ validado: true });
+    });
+  });
+
   it("cache hit: nao chama nenhuma API", async () => {
     const deps = mockDeps({ buscarCache: async () => ({ lat: 1, lng: 2, fonte: "google" }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
-    expect(r).toEqual({ lat: 1, lng: 2, fonte: "google" });
+    expect(r).toMatchObject({ lat: 1, lng: 2, fonte: "google" });
     expect(deps.geocodificarCnefeDep).not.toHaveBeenCalled();
     expect(deps.geocodificarLocalDep).not.toHaveBeenCalled();
     expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
@@ -57,8 +95,8 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
   it("cache miss, CNEFE funciona: usa CNEFE e salva no cache, nao chama local/Google/Nominatim -- achado real 31/07, CNEFE roda primeiro por ser mais preciso", async () => {
     const deps = mockDeps({ geocodificarCnefeDep: async () => ({ lat: 9, lng: 10 }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
-    expect(r).toEqual({ lat: 9, lng: 10, fonte: "cnefe" });
-    expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), { lat: 9, lng: 10, fonte: "cnefe" });
+    expect(r).toMatchObject({ lat: 9, lng: 10, fonte: "cnefe" });
+    expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 9, lng: 10, fonte: "cnefe" }));
     expect(deps.geocodificarLocalDep).not.toHaveBeenCalled();
     expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
@@ -67,8 +105,8 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
   it("CNEFE falha, local funciona: usa local e salva no cache", async () => {
     const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 7, lng: 8 }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
-    expect(r).toEqual({ lat: 7, lng: 8, fonte: "local" });
-    expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), { lat: 7, lng: 8, fonte: "local" });
+    expect(r).toMatchObject({ lat: 7, lng: 8, fonte: "local" });
+    expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 7, lng: 8, fonte: "local" }));
     expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
   });
@@ -76,8 +114,8 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
   it("CNEFE e local falham, Google funciona: usa Google e salva no cache", async () => {
     const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
-    expect(r).toEqual({ lat: 3, lng: 4, fonte: "google" });
-    expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), { lat: 3, lng: 4, fonte: "google" });
+    expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
+    expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 3, lng: 4, fonte: "google" }));
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
   });
 
@@ -89,8 +127,8 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     it("CNEFE e local falham, bairro funciona: usa o bairro (fonte cnefe_bairro), nao chega a chamar Google/Nominatim", async () => {
       const deps = mockDeps({ geocodificarCnefeBairroDep: async () => ({ lat: 11, lng: 12 }) });
       const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade", null, deps);
-      expect(r).toEqual({ lat: 11, lng: 12, fonte: "cnefe_bairro" });
-      expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), { lat: 11, lng: 12, fonte: "cnefe_bairro" });
+      expect(r).toMatchObject({ lat: 11, lng: 12, fonte: "cnefe_bairro" });
+      expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 11, lng: 12, fonte: "cnefe_bairro" }));
       expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
       expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
     });
@@ -98,27 +136,27 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     it("CNEFE local (rua) funciona: NAO chega a chamar o fallback de bairro (rua e' sempre mais precisa)", async () => {
       const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 7, lng: 8 }), geocodificarCnefeBairroDep: async () => ({ lat: 11, lng: 12 }) });
       const r = await geocodificarEndereco("Rua X, 1", null, deps);
-      expect(r).toEqual({ lat: 7, lng: 8, fonte: "local" });
+      expect(r).toMatchObject({ lat: 7, lng: 8, fonte: "local" });
       expect(deps.geocodificarCnefeBairroDep).not.toHaveBeenCalled();
     });
 
     it("dep nao fornecido (undefined): pula direto pra Google/Nominatim, comportamento antigo preservado", async () => {
       const deps = mockDeps({ geocodificarCnefeBairroDep: undefined, geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
       const r = await geocodificarEndereco("Rua X, 1", null, deps);
-      expect(r).toEqual({ lat: 3, lng: 4, fonte: "google" });
+      expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
     });
 
     it("bairro tambem falha (null): cai pra Google normalmente", async () => {
       const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
       const r = await geocodificarEndereco("Rua X, 1", null, deps);
-      expect(r).toEqual({ lat: 3, lng: 4, fonte: "google" });
+      expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
     });
   });
 
   it("CNEFE, local e Google falham, Nominatim funciona: usa Nominatim e salva no cache", async () => {
     const deps = mockDeps({ geocodificarNominatim: async () => ({ lat: 5, lng: 6 }) });
     const r = await geocodificarEndereco("Rua X, 1", null, deps);
-    expect(r).toEqual({ lat: 5, lng: 6, fonte: "nominatim" });
+    expect(r).toMatchObject({ lat: 5, lng: 6, fonte: "nominatim" });
   });
 
   it("todas as fontes falham: null (NUNCA cai pra coordenada da Unitrac -- decisao explicita do usuario, o ponto todo do romaneio e nao reusar coordenada que pode estar errada)", async () => {
@@ -156,13 +194,13 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
         geocodificarNominatim: async () => pertoDoPontoCidade,
       });
       const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", pontoCidade, deps);
-      expect(r).toEqual({ ...pertoDoPontoCidade, fonte: "nominatim" });
+      expect(r).toMatchObject({ ...pertoDoPontoCidade, fonte: "nominatim" });
     });
 
     it("Google perto do ponto de referencia: aceita normalmente", async () => {
       const deps = mockDeps({ geocodificarGoogle: async () => pertoDoPontoCidade });
       const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", pontoCidade, deps);
-      expect(r).toEqual({ ...pertoDoPontoCidade, fonte: "google" });
+      expect(r).toMatchObject({ ...pertoDoPontoCidade, fonte: "google" });
     });
 
     it("Nominatim longe do ponto de referencia (ultima fonte da cadeia): rejeita, resultado final e' null", async () => {
@@ -175,7 +213,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     it("sem ponto de referencia (null): aceita qualquer resultado, sem checagem -- comportamento de hoje preservado", async () => {
       const deps = mockDeps({ geocodificarGoogle: async () => longeDoPontoCidade });
       const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", null, deps);
-      expect(r).toEqual({ ...longeDoPontoCidade, fonte: "google" });
+      expect(r).toMatchObject({ ...longeDoPontoCidade, fonte: "google" });
     });
   });
 
@@ -194,7 +232,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const deps = mockDeps({ geocodificarCnefeDep: async () => ({ lat: 1, lng: 2 }) });
       const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", null, deps);
-      expect(r).toEqual({ lat: 1, lng: 2, fonte: "cnefe" });
+      expect(r).toMatchObject({ lat: 1, lng: 2, fonte: "cnefe" });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0][0]).toContain("SEM ponto de referencia");
       expect(warn.mock.calls[0][0]).toContain("fonte=cnefe");
@@ -204,7 +242,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const deps = mockDeps({ geocodificarLocalDep: async () => ({ lat: 1, lng: 2 }) });
       const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", null, deps);
-      expect(r).toEqual({ lat: 1, lng: 2, fonte: "local" });
+      expect(r).toMatchObject({ lat: 1, lng: 2, fonte: "local" });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0][0]).toContain("fonte=local");
     });

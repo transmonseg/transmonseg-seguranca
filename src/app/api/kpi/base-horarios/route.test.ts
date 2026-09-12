@@ -101,6 +101,7 @@ describe("calcularKmContinuo", () => {
       lat: -22.816007,
       lng: -43.277827,
       criado_em: `2026-08-25T09:0${i}:00.000Z`,
+      velocidade: 0,
     }));
     const km = calcularKmContinuo(posicoes);
     expect(km).not.toBeNull();
@@ -172,6 +173,7 @@ describe("calcularKmContinuo", () => {
         lat: -22.816007,
         lng: -43.277827,
         criado_em: `2026-08-25T09:0${i}:00.000Z`,
+        velocidade: 0,
       }));
       const km = calcularKmContinuo(posicoes);
       expect(km).not.toBeNull();
@@ -220,6 +222,7 @@ describe("filtrarJanelaRota (achado real 27/08, usuario: km deve ser so' saida->
         lat: -22.1 + i * 0.0005,
         lng: -43.0,
         criado_em: `2026-08-25T${String(13 + Math.floor(i / 4)).padStart(2, "0")}:${String((i % 4) * 15).padStart(2, "0")}:00.000Z`,
+        velocidade: 0,
       })),
     ];
     const janela = filtrarJanelaRota(posicoes, "2026-08-25T09:00:00.000Z", "2026-08-25T12:00:00.000Z");

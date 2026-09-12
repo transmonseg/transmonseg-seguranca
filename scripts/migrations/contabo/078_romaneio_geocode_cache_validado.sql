@@ -1,0 +1,29 @@
+-- Achado real 11-12/09 (auditoria do KPI Nutry Max com a Ana, dias 09 e 10/09):
+-- coordenadas com erro de 22km (Praca Santos Dumont/Gavea), 27km (Rua
+-- Equador/Santo Cristo) e ate 131km (Av Santos Dumont/Piabeta -- foi parar em
+-- Resende) estavam cacheadas como se fossem match exato. Todas entraram pelo
+-- mesmo buraco: quando o ponto de referencia da CIDADE nao resolve
+-- (truncamento/corrupcao do romaneio, bairro ambiguo), a validacao de
+-- distancia de escolherCandidatoMaisProximo NAO roda e uma rua homonima de
+-- outro municipio passa direto -- ver avisarSemPontoCidade em
+-- src/lib/romaneio-geocode.ts, que ja alertava disso no log desde 27/08 mas
+-- sem nenhum efeito no dado.
+--
+-- Efeito pratico no KPI: coordenada errada faz a entrega real nao confirmar
+-- (a placa de origem entregou no lugar certo, longe do ponto errado) e ainda
+-- dispara "CARGA TRANSFERIDA" falsa quando qualquer outra placa da frota passa
+-- perto do ponto errado. A Ana pegou 25 casos assim num unico dia (10/09), 100%
+-- falsos.
+--
+-- Esta coluna carrega a informacao que faltava: se a coordenada passou pela
+-- validacao de distancia contra a cidade (validado=true) ou foi aceita na fe
+-- (validado=false). Quem consome (ponte /api/romaneio/geocode -> KPI) usa isso
+-- pra nao tirar conclusao negativa ("nao foi ao cliente") nem atribuir entrega
+-- a outra placa em cima de coordenada que nao da pra confiar.
+--
+-- Default true nas linhas existentes: o backfill correto exige re-resolver o
+-- ponto de cidade de cada endereco (caro, ~2900 linhas com throttle de
+-- Nominatim), e as linhas ruins conhecidas ja estao sendo reescritas na
+-- auditoria. Linhas novas gravam o valor real.
+ALTER TABLE romaneio_geocode_cache
+  ADD COLUMN IF NOT EXISTS validado boolean NOT NULL DEFAULT true;

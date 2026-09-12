@@ -268,12 +268,12 @@ export async function POST(request: Request) {
     }),
     ...lista.map((e) => normalizarEndereco(e)),
   ];
-  const cacheMap = new Map<string, { lat: number; lng: number; fonte: string }>();
+  const cacheMap = new Map<string, { lat: number; lng: number; fonte: string; validado: boolean }>();
   const TAMANHO_LOTE_CACHE = 150; // margem confortavel abaixo de qualquer teto de URL/params do PostgREST
   for (let i = 0; i < chavesCache.length; i += TAMANHO_LOTE_CACHE) {
     const lote = [...new Set(chavesCache.slice(i, i + TAMANHO_LOTE_CACHE))];
-    const { data } = await admin.from("romaneio_geocode_cache").select("endereco_normalizado, lat, lng, fonte").in("endereco_normalizado", lote);
-    for (const row of data ?? []) cacheMap.set(row.endereco_normalizado as string, { lat: row.lat as number, lng: row.lng as number, fonte: row.fonte as string });
+    const { data } = await admin.from("romaneio_geocode_cache").select("endereco_normalizado, lat, lng, fonte, validado").in("endereco_normalizado", lote);
+    for (const row of data ?? []) cacheMap.set(row.endereco_normalizado as string, { lat: row.lat as number, lng: row.lng as number, fonte: row.fonte as string, validado: (row as { validado?: boolean }).validado ?? true });
   }
   const buscarCache = async (chaveNormalizada: string) => cacheMap.get(chaveNormalizada) ?? null;
 
@@ -326,7 +326,14 @@ export async function POST(request: Request) {
   // faltar, nunca assume o mesmo tamanho de volta. Enderecos nao
   // alcancados aqui ficam null nesta chamada, mas nao sao perdidos pra
   // sempre: a proxima geracao/regeracao tenta de novo.
-  const resultados: ({ lat: number; lng: number } | null)[] = [];
+  // Achado real 11-12/09 (auditoria KPI Nutry Max): `fonte` e `validado`
+  // passam a viajar junto com a coordenada. Sem isso o KPI nao tinha como
+  // distinguir match exato de rua de um chute de bairro (ou de uma rua
+  // homonima em outro municipio, aceita sem validacao de cidade) -- e
+  // tratava os dois como verdade, gerando "carga transferida" falsa e
+  // "nao foi ao cliente" em cima de ponto errado. Campos ADITIVOS: chamador
+  // antigo que so' le lat/lng continua funcionando igual.
+  const resultados: ({ lat: number; lng: number; fonte: string; validado: boolean } | null)[] = [];
   for (const enderecoBruto of lista) {
     if (prazoEsgotado()) break;
     const cidade = cidadePorEndereco.get(enderecoBruto) ?? null;
@@ -360,7 +367,7 @@ export async function POST(request: Request) {
       geocodificarNominatim: geocodificarNominatimThrottled,
     });
 
-    resultados.push(geocode ? { lat: geocode.lat, lng: geocode.lng } : null);
+    resultados.push(geocode ? { lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, validado: geocode.validado } : null);
   }
 
   return Response.json({ resultados });
