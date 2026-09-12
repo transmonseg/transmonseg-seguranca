@@ -37,6 +37,8 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarNominatim, escolherPontoReferencia, normalizarEndereco } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade, extrairRuaDoEndereco, normalizarNomeRua } from "@/lib/romaneio-geocode-local";
+import { validarTerritorio, type MotivoTerritorio } from "@/lib/territorio";
+import { montarDepsTerritorio } from "./territorio-deps";
 
 // Achado real 03/09 (investigacao "geolocalizacao ruim" -- 2 tentativas
 // seguidas de geracao do KPI Nutry Max bateram "geocodificacao falhou
@@ -91,6 +93,11 @@ export async function POST(request: Request) {
   if (enderecos.length === 0) {
     return Response.json({ resultados: [] });
   }
+
+  // Guarda territorial: OPT-IN. Rio Quality, Porte Frio e o motor de desvio
+  // usam esta mesma rota e nao podem mudar de comportamento -- so' a geracao
+  // do Nutry Max liga. Ver a secao "Nao-objetivos" da spec de 12/09.
+  const validarTerritorioLigado = (body as { validarTerritorio?: unknown })?.validarTerritorio === true;
 
   const lista = enderecos as string[];
   const admin = createAdminClient();
@@ -333,7 +340,8 @@ export async function POST(request: Request) {
   // tratava os dois como verdade, gerando "carga transferida" falsa e
   // "nao foi ao cliente" em cima de ponto errado. Campos ADITIVOS: chamador
   // antigo que so' le lat/lng continua funcionando igual.
-  const resultados: ({ lat: number; lng: number; fonte: string; validado: boolean } | null)[] = [];
+  const resultados: ({ lat: number; lng: number; fonte: string; validado: boolean; motivo?: MotivoTerritorio } | null)[] = [];
+  const depsTerritorio = montarDepsTerritorio(admin);
   for (const enderecoBruto of lista) {
     if (prazoEsgotado()) break;
     const cidade = cidadePorEndereco.get(enderecoBruto) ?? null;
@@ -367,7 +375,24 @@ export async function POST(request: Request) {
       geocodificarNominatim: geocodificarNominatimThrottled,
     });
 
-    resultados.push(geocode ? { lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, validado: geocode.validado } : null);
+    if (!geocode) {
+      resultados.push(null);
+      continue;
+    }
+    let validado = geocode.validado;
+    let motivo: MotivoTerritorio | undefined;
+    if (validarTerritorioLigado) {
+      const t = await validarTerritorio(
+        { lat: geocode.lat, lng: geocode.lng },
+        { municipioCodigo, bairro },
+        depsTerritorio,
+      );
+      if (!t.ok) {
+        validado = false;
+        motivo = t.motivo;
+      }
+    }
+    resultados.push({ lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, validado, motivo });
   }
 
   return Response.json({ resultados });
