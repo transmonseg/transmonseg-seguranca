@@ -551,9 +551,17 @@ describe("derivarParadas (paradas a partir do historico permanente de posicao)",
     expect(paradas).toEqual([]);
   });
 
-  it("permanencia curta (< 5min) e descartada -- mesmo piso do consolidaParadasApi", () => {
-    const paradas = derivarParadas([p(0, -22.9, -43.2), p(3, -22.9, -43.2), p(9, -23.5, -44.5, 60)], []);
+  it("permanencia curta (< 2min) e descartada", () => {
+    const paradas = derivarParadas([p(0, -22.9, -43.2), p(1, -22.9, -43.2), p(9, -23.5, -44.5, 60)], []);
     expect(paradas).toEqual([]);
+  });
+
+  // Medido no dia 09/09: com piso de 5min, 97 entregas confirmadas se
+  // perdiam. O ruido aqui ja e' barrado pela exigencia de velocidade baixa.
+  it("permanencia de 3min conta (piso de 2min, alinhado ao DWELL_MINIMO_MS da confirmacao por ponto)", () => {
+    const paradas = derivarParadas([p(0, -22.9, -43.2), p(3, -22.9, -43.2), p(9, -23.5, -44.5, 60)], []);
+    expect(paradas).toHaveLength(1);
+    expect(paradas[0].duracaoSeg).toBe(180);
   });
 
   it("parada dentro do raio da base sai classificada como BASE", () => {

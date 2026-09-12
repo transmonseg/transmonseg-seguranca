@@ -351,7 +351,15 @@ function estaMaisPertoDaBaseQueDoPonto(p: Posicao, pt: PontoEntrega, basesCentro
 // (ver VELOCIDADE_MAX_PARADO_KMH) e 5min de permanencia minima (mesmo piso
 // que consolidaParadasApi usa pra cluster sem geofence do lado do KPI).
 const RAIO_CLUSTER_PARADA_M = 150;
-const DUR_MINIMA_PARADA_MS = 300_000; // 5min
+// Medido na 1a execucao real (dia 09/09, 2361 NFs): com piso de 5min --
+// herdado do consolidaParadasApi, que precisa dele pra filtrar RUIDO do feed
+// agregado da Unitrac -- 97 entregas confirmadas se perderam contra o mesmo
+// dia pelo caminho antigo. Aqui o ruido ja e' filtrado antes, pela exigencia
+// de velocidade <=5km/h em TODAS as leituras do bloco (o feed da Unitrac nao
+// tem essa informacao). 2min e' o mesmo piso que a confirmacao de visita por
+// ponto ja usa nesta rota (DWELL_MINIMO_MS), entao os dois passam a falar a
+// mesma lingua.
+const DUR_MINIMA_PARADA_MS = 120_000; // 2min
 
 export type ParadaDerivada = {
   chegada: string;
