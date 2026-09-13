@@ -29,16 +29,48 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { Client } from "pg";
 import { validarTerritorio, type DepsTerritorio } from "@/lib/territorio";
-import { expandirCidadeTruncada, municipioCodigoIbge } from "@/lib/romaneio-geocode-local";
+import {
+  expandirCidadeTruncada,
+  municipioCodigoIbge,
+  extrairBairroDoEndereco,
+  extrairCidadeDoEndereco,
+  extrairNumeroDoEndereco,
+} from "@/lib/romaneio-geocode-local";
 
 type LinhaCache = { endereco: string; lat: number; lng: number };
 
-/** "VIA, NUM - BAIRRO, CIDADE - complemento" -> bairro e cidade. */
-function partesDoEndereco(e: string): { bairro: string | null; cidade: string | null } {
-  const seg = e.split(" - ");
-  if (seg.length < 2 || !seg[1].includes(",")) return { bairro: null, cidade: null };
-  const i = seg[1].lastIndexOf(",");
-  return { bairro: seg[1].slice(0, i).trim(), cidade: seg[1].slice(i + 1).trim() };
+// Fix 12/09 (Finding 6): usar as MESMAS funcoes que a rota de geocode de
+// verdade usa (extrairBairroDoEndereco/extrairCidadeDoEndereco em
+// romaneio-geocode-local.ts) em vez de um parser local proprio
+// (partesDoEndereco, removido). O parser local divergia quando o proprio
+// NOME DA RUA tinha " - " embutido (faixa de numeracao CNEFE, ex. "RUA
+// PEREIRA NUNES - DE 212 AO FIM - LADO") -- ancorava no primeiro " - " do
+// endereco inteiro em vez de a partir da primeira virgula, lia bairro/cidade
+// do segmento errado, nao achava hull nem codigo IBGE e aprovava em
+// silencio (fail-open escondendo divergencia real). Usar a biblioteca
+// garante que os dois nunca podem divergir de novo.
+
+// Fix 12/09 (Finding 2): kpi_romaneio_geocode_cache e' uma tabela UNICA
+// compartilhada por Nutry Max e Rio Quality (chave so' `endereco`, sem
+// coluna de cliente) -- e o escopo combinado com o usuario pra guarda
+// territorial e' SO' Nutry Max (ver src/lib/territorio.ts). Rio Quality
+// monta o endereco bruto de geocodificacao com montarEnderecoBrutoCompleto
+// (KPI/src/lib/kpi-rioquality/parse-planilhas.ts): `"${rua}, - ${bairro},
+// ${cidade} - ${uf}"` -- SEM numero (Rio Quality nunca manda numero de
+// casa), diferente de todo endereco da Nutry Max (parse-romaneio.ts: linha
+// bruta do PDF, sempre com numero real ou "S/N"). extrairNumeroDoEndereco
+// retorna null exatamente quando o segmento entre a 1a virgula e o " - "
+// esta vazio -- o unico jeito de isso acontecer e' o produtor da Rio
+// Quality. Confirmado em producao (12/09, kpi_transmonseg, read-only):
+// exatamente 416 das 8.744 linhas do cache tem numero vazio, e as MESMAS
+// 416 (nenhuma a mais, nenhuma a menos) terminam em " - RJ" (o sufixo fixo
+// que montarEnderecoBrutoCompleto grava no lugar do complemento de entrega
+// da Nutry Max) -- os dois criterios colapsam pro mesmo conjunto exato,
+// confirmando que e' o discriminador certo, nao coincidencia dos 2 exemplos
+// do achado. Os 3 anchors de verificacao (GALEAO/PACIENCIA/PEDRA, todos com
+// numero real ou "S/N") sobrevivem ao filtro.
+export function enderecoDaRioQuality(endereco: string): boolean {
+  return extrairNumeroDoEndereco(endereco) === null;
 }
 
 function lerTsv(caminho: string): LinhaCache[] {
@@ -76,8 +108,14 @@ async function main() {
     process.exit(1);
   }
 
-  const rows = lerTsv(tsvPath);
-  console.log(`cache: ${rows.length} enderecos (lido de ${tsvPath})`);
+  const todasAsLinhas = lerTsv(tsvPath);
+  const rows = todasAsLinhas.filter((r) => !enderecoDaRioQuality(r.endereco));
+  const excluidosRioQuality = todasAsLinhas.length - rows.length;
+  console.log(
+    `cache: ${todasAsLinhas.length} enderecos (lido de ${tsvPath}) -- ` +
+      `${excluidosRioQuality} excluidos por serem formato Rio Quality (fora de escopo, Finding 2), ` +
+      `${rows.length} considerados (formato Nutry Max)`,
+  );
 
   const monit = new Client({ connectionString: process.env.DATABASE_URL });
   await monit.connect();
@@ -113,7 +151,8 @@ async function main() {
       const lote = rows.slice(i, i + TAMANHO_LOTE);
       const resultados = await Promise.all(
         lote.map(async (r) => {
-          const { bairro, cidade } = partesDoEndereco(r.endereco);
+          const bairro = extrairBairroDoEndereco(r.endereco);
+          const cidade = extrairCidadeDoEndereco(r.endereco);
           const municipioCodigo = cidade
             ? municipioCodigoIbge(expandirCidadeTruncada(cidade)) ?? null
             : null;
@@ -156,7 +195,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (process.env.VITEST !== "true") {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

@@ -130,6 +130,12 @@ async function main() {
 
     const total = await client.query(`SELECT count(*)::bigint AS n FROM cnefe_enderecos`);
     console.log("total de linhas em cnefe_enderecos:", total.rows[0].n);
+    // Fix 12/09 (Finding 7): cnefe_bairros (migration 082) e' snapshot
+    // derivado de cnefe_enderecos -- fica silenciosamente desatualizado
+    // depois desta ingestao. Reconstrua rodando de novo
+    // scripts/migrations/contabo/082_cnefe_bairros.sql (DROP+CREATE, seguro
+    // re-rodar).
+    console.log("IMPORTANTE: re-rode scripts/migrations/contabo/082_cnefe_bairros.sql agora -- ele e' um snapshot derivado deste dado e nao se atualiza sozinho.");
   } finally {
     client.release();
     await pool.end();
