@@ -2711,7 +2711,24 @@ export async function POST(request: Request) {
                   jaParedoNoCicloAnterior,
                   rumoBase,
                   distBaseM,
-                  usaMotorRomaneioParalelo: CLIENTES_COM_MOTOR_ROMANEIO_PARALELO.has(cliente.cod_user_unitrac),
+                  // Achado real 14/09 (auditoria "o que piorou desde o
+                  // periodo bom"): o desligamento era por CLIENTE inteiro
+                  // (todo veiculo da Nutry Max), mas a Central Romaneio so
+                  // avalia veiculo COM romaneio carregado no dia
+                  // (motor-romaneio/route.ts, veiculoIds vem das chaves do
+                  // Map de romaneio). Medido em producao: 97 de 163
+                  // veiculos (59,5%) SEM romaneio hoje ficavam sem NENHUM
+                  // detector de parada anomala em nenhum dos dois motores
+                  // -- 18 dias corridos zerados (parada_anomala/parada_longa
+                  // sumiram de vez desde 28/08). Fix: desliga por VEICULO,
+                  // so quando ELE especificamente tem romaneio hoje
+                  // (romaneioDoVeiculo, ja calculado acima nesta mesma
+                  // iteracao) -- sem romaneio, a Central Unitrac volta a
+                  // cobrir esse veiculo como sempre cobriu antes de 31/07.
+                  usaMotorRomaneioParalelo:
+                    CLIENTES_COM_MOTOR_ROMANEIO_PARALELO.has(cliente.cod_user_unitrac) &&
+                    !!romaneioDoVeiculo &&
+                    romaneioDoVeiculo.length > 0,
                 })
             // jammer continua valendo mesmo com atraso > 60min (caso que
             // montarCandidatosCore() nao cobre, ja que so roda com fresco).

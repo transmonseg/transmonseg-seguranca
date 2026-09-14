@@ -1126,6 +1126,15 @@ export type CtxAvaliacao = {
   // Central tem visão completa dos clientes via Unitrac) ficam desligados
   // aqui, evitando ruído duplicado/conflitante com o que o motor-romaneio
   // já resolve corretamente pra esse cliente.
+  //
+  // Achado real 14/09: a flag é calculada por VEÍCULO em route.ts (só true
+  // quando ESSE veículo tem romaneio carregado hoje), não mais por cliente
+  // inteiro -- a Central Romaneio só cobre veículo com romaneio no dia
+  // (motor-romaneio/route.ts itera as chaves do Map de romaneio), então
+  // desligar por cliente deixava todo veículo SEM romaneio no dia sem
+  // nenhum dos dois motores rodando os 3 detectores abaixo. Medido: 97 de
+  // 163 veículos da Nutry Max (59,5%) caíam nesse buraco, zerando
+  // parada_anomala/parada_longa por 18 dias corridos (desde 28/08).
   usaMotorRomaneioParalelo?: boolean;
 };
 
