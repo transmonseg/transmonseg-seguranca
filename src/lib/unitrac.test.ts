@@ -488,8 +488,8 @@ describe("pontoRomaneioMaisProximoParaConfirmarPresenca", () => {
   // um do outro. O bug original (achado 14/09) confirmava os 3 de uma vez
   // quando o caminhao parava perto de qualquer um deles.
   const hotelItajuba = { nf: "2367573", lat: -22.9071, lng: -43.1780, presencaConfirmadaEm: null };
-  const senadorGrill = { nf: "2367577", lat: -22.9074, lng: -43.1783, presencaConfirmadaEm: null }; // ~40m
-  const literatoCafe = { nf: "2367578", lat: -22.9090, lng: -43.1795, presencaConfirmadaEm: null }; // ~230m
+  const senadorGrill = { nf: "2367577", lat: -22.9074, lng: -43.1783, presencaConfirmadaEm: null }; // ~45m do hotel
+  const literatoCafe = { nf: "2367578", lat: -22.9090, lng: -43.1795, presencaConfirmadaEm: null }; // ~261m do hotel
 
   it("confirma so' o mais proximo, nao todos os pontos dentro do raio (regressao do bug real 11/09)", () => {
     const resultado = pontoRomaneioMaisProximoParaConfirmarPresenca(
@@ -507,6 +507,21 @@ describe("pontoRomaneioMaisProximoParaConfirmarPresenca", () => {
       100
     );
     expect(resultado).toBeNull();
+  });
+
+  it("fronteira exata do raio: ~149m confirma, ~151m nao confirma (mesmo ponto, so' o raio muda)", () => {
+    // 0.00001 grau de latitude ~= 1,11m nesta longitude -- desloca o ponto
+    // exatamente 149m e 151m do caminhao (mesmo delta puramente em
+    // latitude, sem variar longitude, pra distancia bater com precisao).
+    const base = { nf: "X", lat: -22.9071, lng: -43.1780, presencaConfirmadaEm: null };
+    const dentro = { ...base, nf: "DENTRO", lat: base.lat + 149 / 111_320 };
+    const fora = { ...base, nf: "FORA", lat: base.lat + 151 / 111_320 };
+    expect(
+      pontoRomaneioMaisProximoParaConfirmarPresenca(base.lat, base.lng, [dentro], 150)?.ponto.nf
+    ).toBe("DENTRO");
+    expect(
+      pontoRomaneioMaisProximoParaConfirmarPresenca(base.lat, base.lng, [fora], 150)
+    ).toBeNull();
   });
 
   it("pula pontos ja confirmados e considera o proximo mais perto", () => {
