@@ -329,7 +329,7 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
   return quedaM / caminhoM >= RETORNO_BASE_FRACAO_CAMINHO_MIN;
 }
 
-// ─── Regra de horario avancado: base vira "entrega" a partir das 12:30 ───
+// ─── Regra de horario avancado: base vira "entrega" a partir das 14:30 ───
 // Achado real 10/09 (RQV-9E67, retorno pela RJ-101 em velocidade de rodovia):
 // o gate estrito acima (ehRetornoSustentadoABase) exige queda MONOTONICA
 // ponto-a-ponto, o que e' realista pra veiculo quase parado mas nao pra
@@ -340,27 +340,22 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
 // como se fosse mais um destino de entrega -- se a TENDENCIA LIQUIDA da
 // janela e' de aproximacao franca da base, nao exige monotonicidade fina.
 // Peso do recall: so' vale DEPOIS do horario de corte (retorno a base de
-// manha e' historicamente mais associado a desvio real -- motorista
-// voltando sem terminar a rota -- entao continua exigindo o gate estrito
-// nesse periodo) e exige queda liquida grande (mesmo piso de
+// manha/inicio de tarde e' historicamente mais associado a desvio real --
+// motorista voltando sem terminar a rota -- entao continua exigindo o gate
+// estrito nesse periodo) e exige queda liquida grande (mesmo piso de
 // RETORNO_BASE_QUEDA_MIN_M) numa janela igual a RETORNO_BASE_JANELA_S, sem
 // nenhuma leitura MIN_LEITURAS abaixo do minimo -- mesma robustez de
 // amostra do gate estrito, so' sem a exigencia ponto-a-ponto.
 //
-// Corte movido de 14:30 pra 12:30 (14/09, pedido explicito do usuario apos
-// piora real e sustentada de qualidade 09/09-14/09 -- ver serie diaria em
-// /analise). Validado contra os 36 desvios reais (status=resolvido,
-// origem_acao=resolver_individual) com "da base" no motivo entre 12:30 e
-// 14:00 dos ultimos 21 dias, RECONSTRUINDO o predicado exato do gate
-// (posicoes_historico reais na janela de 900s antes de cada alerta, queda
-// primeira-vs-ultima leitura e fracao do caminho -- nao so' um proxy de
-// "distancia aumentou no ultimo passo", que superestima seguranca porque o
-// gate olha a janela inteira, nao o ultimo delta): so' 3 dos 36 teriam sido
-// suprimidos (TTM-2F99 25/08 13:36, TOS-3C21 26/08 13:24, RQU-6G55 08/09
-// 13:07) -- os 3 tinham fracao de aproximacao liquida real (0,59/0,53/0,93)
-// mesmo sendo desvio de verdade. Risco de recall aceito explicitamente pelo
-// usuario dado o quadro de qualidade em queda.
-export const HORARIO_AVANCADO_BASE_ENTREGA_HORA = 12;
+// 14/09: chegou a ser movido pra 12:30 (pedido do usuario apos piora real
+// de qualidade 09/09-14/09), validado contra 36 desvios reais confirmados
+// entre 12:30-14:00 (so' 3/36 teriam sido suprimidos). REVERTIDO no mesmo
+// dia -- pedido original do usuario era manter 14:30, mudanca foi mal-
+// interpretada. Volta ao valor original; a causa real da piora de
+// qualidade identificada e corrigida separadamente foi o bug de
+// confirmacao de presenca em massa (afa06f5/6dc2d8b/a79b63b/ca73f5a), nao
+// o corte de horario deste gate.
+export const HORARIO_AVANCADO_BASE_ENTREGA_HORA = 14;
 export const HORARIO_AVANCADO_BASE_ENTREGA_MINUTO = 30;
 
 export function ehRetornoABaseHorarioAvancado(
