@@ -2381,13 +2381,38 @@ export async function POST(request: Request) {
           // alvo). Grava a posicao ATUAL do veiculo (pos.lat/pos.lng) como
           // coordenada provada -- mesma filosofia do bloco do alvo acima
           // (sobrescreve o geocode pela posicao real confirmada por dwell).
+          // Achado real 14/09 (investigando a piora geral de qualidade): o
+          // loop original confirmava TODOS os pontos do romaneio dentro de
+          // 500m da parada, nao so' o visitado. Em area densa (ex: Centro do
+          // Rio -- HOTEL ITAJUBA/SENADOR GRILL/LITERATO CAFE, 3 clientes com
+          // enderecos DIFERENTES a <500m um do outro) uma unica parada
+          // confirmava dezenas de NFs de uma vez (caso real 11/09, veiculo
+          // 6e60408b: 22 NFs confirmadas no mesmo minuto, todas com a MESMA
+          // coordenada -- a posicao do caminhao, sobrescrevendo o geocode
+          // originalmente correto e distinto de cada uma). Medido em
+          // producao: 09-10 e 09-11 (os 2 piores dias de qualidade do
+          // periodo) tiveram 519 e 409 confirmacoes falsas estimadas assim.
+          // Isso encolhe artificialmente o conjunto de "clientes pendentes"
+          // que alimenta o desvio "afastando de todos os pendentes e da
+          // base" -- menos pendente real facilita o disparo falso. Fix:
+          // confirma so' o ponto MAIS PROXIMO ainda nao confirmado dentro do
+          // raio, nao todos -- uma parada real com multiplas entregas
+          // sequenciais no mesmo lugar ainda confirma uma por vez a cada
+          // ciclo (60s), so nao confirma em lote pontos nao visitados.
           if (romaneioDoVeiculo && pos.fresco && pos.velocidade === 0 && paradoMin * 60 >= ENTREGA_PRESENCA_MIN_SEG) {
+            let maisPertoNaoConfirmado: { nf: string; distM: number } | null = null;
             for (const rp of romaneioDoVeiculo) {
               if (rp.presencaConfirmadaEm) continue;
               const distRomaneioM = haversineM(pos.lat, pos.lng, rp.lat, rp.lng);
-              if (distRomaneioM <= RAIO_PRESENCA_MIN_M) {
-                presencaConfirmadaCiclo.push({ veiculo_id, nf: rp.nf, lat: pos.lat, lng: pos.lng });
+              if (
+                distRomaneioM <= RAIO_PRESENCA_MIN_M &&
+                (maisPertoNaoConfirmado === null || distRomaneioM < maisPertoNaoConfirmado.distM)
+              ) {
+                maisPertoNaoConfirmado = { nf: rp.nf, distM: distRomaneioM };
               }
+            }
+            if (maisPertoNaoConfirmado) {
+              presencaConfirmadaCiclo.push({ veiculo_id, nf: maisPertoNaoConfirmado.nf, lat: pos.lat, lng: pos.lng });
             }
           }
 
