@@ -182,8 +182,8 @@ describe("ehRetornoABaseHorarioAvancado", () => {
       { tSegundos: 878, distBaseM: 123430.2, deslocamentoM: 974.7 },
     ];
     expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 18, minuto: 32 })).toBe(true);
-    expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 14, minuto: 30 })).toBe(true);
-    expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 14, minuto: 29 })).toBe(false);
+    expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 12, minuto: 30 })).toBe(true);
+    expect(ehRetornoABaseHorarioAvancado(leituras, { hora: 12, minuto: 29 })).toBe(false);
   });
 
   it("caso real RQV-9E67 (10/09, ~15h30, retorno por rodovia RJ-101): tendencia liquida de queda franca basta mesmo com oscilacoes maiores que 50m ponto-a-ponto", () => {

@@ -329,7 +329,7 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
   return quedaM / caminhoM >= RETORNO_BASE_FRACAO_CAMINHO_MIN;
 }
 
-// ─── Regra de horario avancado: base vira "entrega" a partir das 14:30 ───
+// ─── Regra de horario avancado: base vira "entrega" a partir das 12:30 ───
 // Achado real 10/09 (RQV-9E67, retorno pela RJ-101 em velocidade de rodovia):
 // o gate estrito acima (ehRetornoSustentadoABase) exige queda MONOTONICA
 // ponto-a-ponto, o que e' realista pra veiculo quase parado mas nao pra
@@ -340,13 +340,25 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
 // como se fosse mais um destino de entrega -- se a TENDENCIA LIQUIDA da
 // janela e' de aproximacao franca da base, nao exige monotonicidade fina.
 // Peso do recall: so' vale DEPOIS do horario de corte (retorno a base de
-// manha/inicio de tarde e' historicamente mais associado a desvio real --
-// motorista voltando sem terminar a rota -- entao continua exigindo o gate
-// estrito nesse periodo) e exige queda liquida grande (mesmo piso de
+// manha e' historicamente mais associado a desvio real -- motorista
+// voltando sem terminar a rota -- entao continua exigindo o gate estrito
+// nesse periodo) e exige queda liquida grande (mesmo piso de
 // RETORNO_BASE_QUEDA_MIN_M) numa janela igual a RETORNO_BASE_JANELA_S, sem
 // nenhuma leitura MIN_LEITURAS abaixo do minimo -- mesma robustez de
 // amostra do gate estrito, so' sem a exigencia ponto-a-ponto.
-export const HORARIO_AVANCADO_BASE_ENTREGA_HORA = 14;
+//
+// Corte movido de 14:30 pra 12:30 (14/09, pedido explicito do usuario apos
+// piora real e sustentada de qualidade 09/09-14/09 -- ver serie diaria em
+// /analise). Validado contra os 35 desvios reais (status=resolvido,
+// origem_acao=resolver_individual) com "da base" no motivo entre 12:30 e
+// 14:00 dos ultimos 21 dias: 32 dos 35 tem distancia-a-base AUMENTANDO no
+// disparo (veiculo se afastando, nao aproximando) -- o gate de TENDENCIA
+// LIQUIDA de aproximacao nao dispara nesses casos porque a condicao central
+// (queda liquida >= RETORNO_BASE_QUEDA_MIN_M com fracao >= 0.5) exige
+// aproximacao real, que a maioria nao tem. So' 3 casos (RQU-0B47, RQV-9B26,
+// TOS-4J82) mostravam aproximacao real nessa janela -- risco de recall
+// aceito explicitamente pelo usuario dado o quadro de qualidade em queda.
+export const HORARIO_AVANCADO_BASE_ENTREGA_HORA = 12;
 export const HORARIO_AVANCADO_BASE_ENTREGA_MINUTO = 30;
 
 export function ehRetornoABaseHorarioAvancado(
