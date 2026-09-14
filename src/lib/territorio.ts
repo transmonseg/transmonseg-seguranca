@@ -137,7 +137,13 @@ export async function validarTerritorio(
     let real: string | null;
     try {
       real = await deps.municipioDaCoordenada(ponto.lat, ponto.lng);
-    } catch {
+    } catch (err) {
+      // Fix 2 (Fase 2, 13/09): fail-open continua igual, mas agora e'
+      // AUDIVEL -- silencioso ja escondeu 3 quebras reais no mesmo dia (deps
+      // orfa com metodo faltando, RPC ambigua por migration duplicada). So'
+      // dispara quando a consulta de fato lanca excecao -- resposta normal
+      // "sem poligono" (municipioDaCoordenada resolvendo null) fica quieta.
+      console.error("[validarTerritorio] municipioDaCoordenada falhou -- aprovando por fail-open", err);
       return { ok: true };
     }
     if (real && real !== esperado.municipioCodigo) {
@@ -154,7 +160,11 @@ export async function validarTerritorio(
         normalizarBairro(esperado.bairro),
         esperado.municipioCodigo,
       );
-    } catch {
+    } catch (err) {
+      // Mesmo raciocinio de municipioDaCoordenada acima -- fail-open audivel,
+      // nunca dispara pra distancia null vinda de resposta normal (bairro
+      // genuinamente ausente do CNEFE, 942 enderecos, caso esperado e comum).
+      console.error("[validarTerritorio] distanciaAoBairro falhou -- aprovando por fail-open", err);
       return { ok: true };
     }
     if (distanciaM !== null && distanciaM > LIMIAR_DISTANCIA_BAIRRO_M) {

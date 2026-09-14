@@ -20,6 +20,28 @@ describe("montarDepsTerritorio", () => {
     expect(await deps.municipioDaCoordenada(-22.9, -43.2)).toBeNull();
   });
 
+  // Fix 2 (Fase 2, 13/09): a RPC de fato falhando (erro Postgres, RPC
+  // ambigua por migration duplicada, etc) precisa ser audivel -- o adaptador
+  // e' onde o erro real ainda existe antes de virar null pra validarTerritorio.
+  it("municipioDaCoordenada loga console.error nomeando a consulta quando a RPC erra", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rpc = async () => ({ data: null, error: { message: "function is not unique" } });
+    const deps = montarDepsTerritorio({ rpc } as never);
+    await deps.municipioDaCoordenada(-22.9, -43.2);
+    expect(erroSpy).toHaveBeenCalledTimes(1);
+    expect(String(erroSpy.mock.calls[0][0])).toMatch(/municipio_da_coordenada/);
+    erroSpy.mockRestore();
+  });
+
+  it("municipioDaCoordenada NAO loga quando so' nao ha poligono contendo o ponto (resposta normal, sem erro)", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rpc = async () => ({ data: [], error: null });
+    const deps = montarDepsTerritorio({ rpc } as never);
+    await deps.municipioDaCoordenada(-20.8, -41.9);
+    expect(erroSpy).not.toHaveBeenCalled();
+    erroSpy.mockRestore();
+  });
+
   it("distanciaAoBairro devolve a distancia em metros ate o hull do bairro", async () => {
     const rpc = async () => ({ data: 3603, error: null });
     const deps = montarDepsTerritorio({ rpc } as never);
@@ -68,5 +90,29 @@ describe("montarDepsTerritorio", () => {
     const rpc = async () => ({ data: null, error: { message: "boom" } });
     const deps = montarDepsTerritorio({ rpc } as never);
     expect(await deps.distanciaAoBairro(-22.9, -43.2, "GALEAO", "3304557")).toBeNull();
+  });
+
+  // Fix 2 (Fase 2, 13/09) -- achado real do mesmo dia: migration 084 rodou
+  // antes do codigo que assumia coluna unica, "distancia_ao_bairro" ficou
+  // ambigua (duas sobrecargas), a RPC comecou a errar em toda chamada, o
+  // erro virou null aqui e a guarda ficou morta em producao sem log nenhum
+  // ate teste manual achar coordenada 5km errada aprovada.
+  it("distanciaAoBairro loga console.error nomeando a consulta quando a RPC erra", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rpc = async () => ({ data: null, error: { message: "function distancia_ao_bairro is not unique" } });
+    const deps = montarDepsTerritorio({ rpc } as never);
+    await deps.distanciaAoBairro(-22.9, -43.2, "GALEAO", "3304557");
+    expect(erroSpy).toHaveBeenCalledTimes(1);
+    expect(String(erroSpy.mock.calls[0][0])).toMatch(/distancia_ao_bairro/);
+    erroSpy.mockRestore();
+  });
+
+  it("distanciaAoBairro NAO loga quando o bairro so' nao existe no CNEFE (resposta normal, sem erro -- caso dos 942)", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rpc = async () => ({ data: null, error: null });
+    const deps = montarDepsTerritorio({ rpc } as never);
+    await deps.distanciaAoBairro(-22.9, -43.2, "BAIRRO INEXISTENTE", "3304557");
+    expect(erroSpy).not.toHaveBeenCalled();
+    erroSpy.mockRestore();
   });
 });
