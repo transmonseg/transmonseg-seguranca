@@ -11,6 +11,16 @@
 // criar area cega pra deteccao de desvio perto de clientes.
 const RAIO_PRESENCA_MIN_M = 500;
 
+// Achado real 14/09 (revisao adversarial da confirmacao por geocode
+// proprio): 500m e' seguro pro bloco do ALVO da Unitrac (ja tem o dwell
+// especifico do alvo como segundo filtro), mas e' largo demais pra
+// confirmar via O NOSSO geocode sozinho -- em area urbana densa (Centro do
+// Rio, medido: 14973 pares de NF do mesmo veiculo/dia a <=100m um do outro
+// em 21 dias) o vizinho errado vira candidato plausivel. Raio mais apertado
+// so' pra esse caminho (ainda cobre GPS/geocode ruim comum, so' reduz a
+// chance de pegar OUTRO cliente que por acaso mora perto).
+const RAIO_PRESENCA_PROPRIO_GEOCODE_M = 150;
+
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
@@ -22,6 +32,7 @@ import {
   alvoNaFaixaPerto,
   rumoGraus,
   haversineM,
+  pontoRomaneioMaisProximoParaConfirmarPresenca,
   normalizar,
   centroideGeo,
   distanciaAoSegmentoM,
@@ -2396,23 +2407,37 @@ export async function POST(request: Request) {
           // que alimenta o desvio "afastando de todos os pendentes e da
           // base" -- menos pendente real facilita o disparo falso. Fix:
           // confirma so' o ponto MAIS PROXIMO ainda nao confirmado dentro do
-          // raio, nao todos -- uma parada real com multiplas entregas
-          // sequenciais no mesmo lugar ainda confirma uma por vez a cada
-          // ciclo (60s), so nao confirma em lote pontos nao visitados.
+          // raio (agora RAIO_PRESENCA_PROPRIO_GEOCODE_M, mais apertado que o
+          // do bloco do alvo), nao todos -- uma parada real com multiplas
+          // entregas sequenciais no mesmo lugar ainda confirma uma por vez a
+          // cada ciclo (60s), so nao confirma em lote pontos nao visitados.
+          //
+          // Achado real 14/09 (revisao adversarial, 2a rodada): o cache de
+          // romaneioPontosPorPlaca dura ate CACHE_ROMANEIO_MS (3min) e so' e'
+          // atualizado do banco quando expira -- sem marcar em memoria aqui,
+          // o mesmo `rp` (mesmo objeto, referencia direta no Map cacheado)
+          // continuava aparecendo como nao-confirmado pros proximos ciclos
+          // dentro da janela de cache, e o UPDATE no banco (WHERE
+          // presenca_confirmada_em IS NULL) so' vira no-op DEPOIS que o
+          // primeiro ciclo grava -- ate la', o mesmo vizinho errado podia
+          // ser reselecionado ciclo apos ciclo, so' mais devagar que o bug
+          // original (rate-limitado, nao eliminado). Fix: marca
+          // presencaConfirmadaEm no PROPRIO objeto cacheado assim que
+          // seleciona, pra sair do "ainda nao confirmado" imediatamente,
+          // mesmo antes do flush em lote no fim do ciclo persistir no banco.
           if (romaneioDoVeiculo && pos.fresco && pos.velocidade === 0 && paradoMin * 60 >= ENTREGA_PRESENCA_MIN_SEG) {
-            let maisPertoNaoConfirmado: { nf: string; distM: number } | null = null;
-            for (const rp of romaneioDoVeiculo) {
-              if (rp.presencaConfirmadaEm) continue;
-              const distRomaneioM = haversineM(pos.lat, pos.lng, rp.lat, rp.lng);
-              if (
-                distRomaneioM <= RAIO_PRESENCA_MIN_M &&
-                (maisPertoNaoConfirmado === null || distRomaneioM < maisPertoNaoConfirmado.distM)
-              ) {
-                maisPertoNaoConfirmado = { nf: rp.nf, distM: distRomaneioM };
-              }
-            }
+            const maisPertoNaoConfirmado = pontoRomaneioMaisProximoParaConfirmarPresenca(
+              pos.lat,
+              pos.lng,
+              romaneioDoVeiculo,
+              RAIO_PRESENCA_PROPRIO_GEOCODE_M
+            );
             if (maisPertoNaoConfirmado) {
-              presencaConfirmadaCiclo.push({ veiculo_id, nf: maisPertoNaoConfirmado.nf, lat: pos.lat, lng: pos.lng });
+              maisPertoNaoConfirmado.ponto.presencaConfirmadaEm = agora.toISOString();
+              console.log(
+                `presenca-propria-geocode: veiculo=${veiculo_id} nf=${maisPertoNaoConfirmado.ponto.nf} dist=${Math.round(maisPertoNaoConfirmado.distM)}m`
+              );
+              presencaConfirmadaCiclo.push({ veiculo_id, nf: maisPertoNaoConfirmado.ponto.nf, lat: pos.lat, lng: pos.lng });
             }
           }
 

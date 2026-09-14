@@ -351,6 +351,33 @@ export function alvoPendenteMaisProximo(
   return melhor;
 }
 
+// Ponto do romaneio do PROPRIO veiculo (geocode nosso, nao o alvo da
+// Unitrac) mais proximo AINDA NAO confirmado, dentro de um raio -- usado
+// pra confirmar presenca por dwell quando o alvo da Unitrac nao existe/esta
+// mal posicionado (ver motor/route.ts, achado 06/09). Extraida como funcao
+// pura em 14/09 apos achado real: confirmar TODOS os pontos dentro do raio
+// (nao so' o mais proximo) deixava area urbana densa (Centro do Rio: NFs de
+// clientes DIFERENTES a <100-150m um do outro, medido em producao) confirmar
+// em lote clientes vizinhos nao visitados. So' o mais proximo ainda reduz
+// mas nao elimina o risco de misturar vizinho -- por isso o raio de chamada
+// (RAIO_PRESENCA_PROPRIO_GEOCODE_M em motor/route.ts) e' mais apertado que
+// o raio generico de presenca (RAIO_PRESENCA_MIN_M, que so' vale pro bloco
+// irmao com o alvo da Unitrac, que tem o dwell alvo-especifico como filtro
+// extra).
+export function pontoRomaneioMaisProximoParaConfirmarPresenca<
+  T extends { nf: string; lat: number; lng: number; presencaConfirmadaEm: string | null }
+>(lat: number, lng: number, pontosDoVeiculo: T[], raioM: number): { ponto: T; distM: number } | null {
+  let melhor: { ponto: T; distM: number } | null = null;
+  for (const rp of pontosDoVeiculo) {
+    if (rp.presencaConfirmadaEm) continue;
+    const distM = haversineM(lat, lng, rp.lat, rp.lng);
+    if (distM <= raioM && (melhor === null || distM < melhor.distM)) {
+      melhor = { ponto: rp, distM };
+    }
+  }
+  return melhor;
+}
+
 // Rumo inicial (graus, 0=Norte, 90=Leste) de A para B.
 export function rumoGraus(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const toR = (d: number) => (d * Math.PI) / 180;

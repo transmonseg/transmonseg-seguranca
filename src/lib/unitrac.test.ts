@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, deveCorrigirComRomaneio, alvoNaFaixaPerto, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, deveCorrigirComRomaneio, alvoNaFaixaPerto, pontoRomaneioMaisProximoParaConfirmarPresenca, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
 
 describe("distanciaAoSegmentoM", () => {
   const origem = { lat: -22.9000, lng: -43.2000 };
@@ -478,5 +478,48 @@ describe("alvoNaFaixaPerto", () => {
     expect(antes?.pontoCodigo).toBe(68104);
     const depois = alvoNaFaixaPerto(LAT, LNG, [jlf, sabor], RAIO_EXTRA);
     expect(depois).toBeNull();
+  });
+});
+
+describe("pontoRomaneioMaisProximoParaConfirmarPresenca", () => {
+  // Caso real 11/09 (veiculo 6e60408b, Centro do Rio): HOTEL ITAJUBA (Rua
+  // Alvaro Alvim), SENADOR GRILL (Rua Senador Dantas) e LITERATO CAFE (Rua
+  // Mexico) sao 3 clientes DIFERENTES a poucas dezenas/centenas de metros
+  // um do outro. O bug original (achado 14/09) confirmava os 3 de uma vez
+  // quando o caminhao parava perto de qualquer um deles.
+  const hotelItajuba = { nf: "2367573", lat: -22.9071, lng: -43.1780, presencaConfirmadaEm: null };
+  const senadorGrill = { nf: "2367577", lat: -22.9074, lng: -43.1783, presencaConfirmadaEm: null }; // ~40m
+  const literatoCafe = { nf: "2367578", lat: -22.9090, lng: -43.1795, presencaConfirmadaEm: null }; // ~230m
+
+  it("confirma so' o mais proximo, nao todos os pontos dentro do raio (regressao do bug real 11/09)", () => {
+    const resultado = pontoRomaneioMaisProximoParaConfirmarPresenca(
+      -22.9071, -43.1780, // caminhao parado exatamente no Hotel Itajuba
+      [hotelItajuba, senadorGrill, literatoCafe],
+      150
+    );
+    expect(resultado?.ponto.nf).toBe("2367573");
+  });
+
+  it("nao confirma nenhum ponto se o mais proximo esta fora do raio apertado", () => {
+    const resultado = pontoRomaneioMaisProximoParaConfirmarPresenca(
+      -22.9090, -43.1795, // caminhao parado perto so' do Literato Cafe
+      [hotelItajuba, senadorGrill], // sem o Literato na lista
+      100
+    );
+    expect(resultado).toBeNull();
+  });
+
+  it("pula pontos ja confirmados e considera o proximo mais perto", () => {
+    const jaConfirmado = { ...hotelItajuba, presencaConfirmadaEm: "2026-09-11T10:00:00Z" };
+    const resultado = pontoRomaneioMaisProximoParaConfirmarPresenca(
+      -22.9071, -43.1780,
+      [jaConfirmado, senadorGrill, literatoCafe],
+      150
+    );
+    expect(resultado?.ponto.nf).toBe("2367577");
+  });
+
+  it("lista vazia: null", () => {
+    expect(pontoRomaneioMaisProximoParaConfirmarPresenca(-22.9071, -43.1780, [], 150)).toBeNull();
   });
 });
