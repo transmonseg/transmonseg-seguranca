@@ -349,15 +349,17 @@ export function ehRetornoSustentadoABase(leituras: LeituraRetornoBase[]): boolea
 //
 // Corte movido de 14:30 pra 12:30 (14/09, pedido explicito do usuario apos
 // piora real e sustentada de qualidade 09/09-14/09 -- ver serie diaria em
-// /analise). Validado contra os 35 desvios reais (status=resolvido,
+// /analise). Validado contra os 36 desvios reais (status=resolvido,
 // origem_acao=resolver_individual) com "da base" no motivo entre 12:30 e
-// 14:00 dos ultimos 21 dias: 32 dos 35 tem distancia-a-base AUMENTANDO no
-// disparo (veiculo se afastando, nao aproximando) -- o gate de TENDENCIA
-// LIQUIDA de aproximacao nao dispara nesses casos porque a condicao central
-// (queda liquida >= RETORNO_BASE_QUEDA_MIN_M com fracao >= 0.5) exige
-// aproximacao real, que a maioria nao tem. So' 3 casos (RQU-0B47, RQV-9B26,
-// TOS-4J82) mostravam aproximacao real nessa janela -- risco de recall
-// aceito explicitamente pelo usuario dado o quadro de qualidade em queda.
+// 14:00 dos ultimos 21 dias, RECONSTRUINDO o predicado exato do gate
+// (posicoes_historico reais na janela de 900s antes de cada alerta, queda
+// primeira-vs-ultima leitura e fracao do caminho -- nao so' um proxy de
+// "distancia aumentou no ultimo passo", que superestima seguranca porque o
+// gate olha a janela inteira, nao o ultimo delta): so' 3 dos 36 teriam sido
+// suprimidos (TTM-2F99 25/08 13:36, TOS-3C21 26/08 13:24, RQU-6G55 08/09
+// 13:07) -- os 3 tinham fracao de aproximacao liquida real (0,59/0,53/0,93)
+// mesmo sendo desvio de verdade. Risco de recall aceito explicitamente pelo
+// usuario dado o quadro de qualidade em queda.
 export const HORARIO_AVANCADO_BASE_ENTREGA_HORA = 12;
 export const HORARIO_AVANCADO_BASE_ENTREGA_MINUTO = 30;
 

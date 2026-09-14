@@ -144,7 +144,7 @@ describe("ehRetornoSustentadoABase", () => {
 });
 
 describe("ehRetornoABaseHorarioAvancado", () => {
-  it("caso real RQV-6C22 (09/09, ~18h): antes das 14:30 nao suprime mesmo com queda liquida boa", () => {
+  it("caso real RQV-6C22 (09/09, ~18h): antes das 12:30 nao suprime mesmo com queda liquida boa", () => {
     const dists = Array.from({ length: 15 }, (_, i) => 70_000 - i * 700);
     dists[7] = dists[6] + 500; // oscilacao real, tolerada so' pela tendencia liquida
     expect(
@@ -152,7 +152,7 @@ describe("ehRetornoABaseHorarioAvancado", () => {
     ).toBe(false);
   });
 
-  it("caso real RQV-6C22 (09/09): a partir das 14:30, tendencia liquida da janela basta -- nao exige monotonicidade ponto-a-ponto", () => {
+  it("caso real RQV-6C22 (09/09): a partir das 12:30, tendencia liquida da janela basta -- nao exige monotonicidade ponto-a-ponto", () => {
     const leituras = [
       { tSegundos: 0, distBaseM: 128212.1, deslocamentoM: 0 },
       { tSegundos: 26, distBaseM: 127288.6, deslocamentoM: 1174.4 },
@@ -214,6 +214,20 @@ describe("ehRetornoABaseHorarioAvancado", () => {
     expect(
       ehRetornoABaseHorarioAvancado(janela(dists, 800), { hora: 16, minuto: 0 })
     ).toBe(false);
+  });
+
+  it("LIMITACAO CONHECIDA: o gate compara so' a PRIMEIRA e a ULTIMA leitura da janela -- aproximar bastante e depois voltar a se afastar ainda pode suprimir, mesmo com a leitura mais recente subindo", () => {
+    // Achado da revisao adversarial de 14/09 (ao mover o corte pra 12:30):
+    // a queda liquida da janela toda (nao o ultimo passo) e' o que decide.
+    // Perfil real dos 3 casos que o predicado real suprimiu na validacao
+    // (fracao 0,53-0,93): aproximacao franca cedo na janela sustenta a
+    // fracao mesmo com afastamento no fim. Documentado como comportamento
+    // ESPERADO -- mudar pra exigir tendencia no FIM da janela reabriria o
+    // gap que RQV-9E67 (oscilacao ponto-a-ponto por rodovia) resolveu.
+    const dists = [10_000, 8_500, 8_600, 8_700, 8_800]; // aproxima 1500m, depois se afasta 100m por leitura
+    expect(
+      ehRetornoABaseHorarioAvancado(janela(dists, 300, 150), { hora: 13, minuto: 0 })
+    ).toBe(true);
   });
 });
 
