@@ -73,6 +73,36 @@ export function enderecoDaRioQuality(endereco: string): boolean {
   return extrairNumeroDoEndereco(endereco) === null;
 }
 
+// Fix 3 (Fase 2, 13/09): kpi_romaneio_geocode_cache tambem e' usada por Porte
+// Frio (src/lib/kpi-portefrio/agregacao.ts:enderecoCompleto, KPI repo --
+// `${endereco}, ${numero} - ${bairro}, ${cidade} - ${uf}`). Quando o numero
+// parseado (parse-romaneio.ts do Porte Frio, linha ~246) e' vazio, o formato
+// colapsa com o de Rio Quality e enderecoDaRioQuality ja exclui (mesmo motivo
+// errado, mesmo resultado certo). O caso perigoso e' Porte Frio COM numero
+// real: o formato fica byte-a-byte igual ao da Nutry Max (numero real,
+// virgula, hifen, bairro, cidade, hifen, sufixo) -- NAO HA discriminador de
+// forma pra separar os dois (ver auditar-geocode-territorio.test.ts, describe
+// "enderecoDaRioQuality"). Nao inventamos heuristica fragil pra isso porque
+// qualquer regra baseada em forma teria a mesma taxa de erro do parser: zero
+// informacao decisiva sobrou no texto.
+// Exposicao hoje (13/09): 0 geracoes Porte Frio em kpi_romaneio_geracoes (47
+// nutrimax, 1 rioquality) -- verificado antes desta mudanca. O fix real,
+// quando Porte Frio for pra producao, e' uma coluna `cliente` em
+// kpi_romaneio_geocode_cache (a tabela e' compartilhada, chaveada so' por
+// `endereco`) -- nao existe hoje. Ate la, este aviso torna o risco visivel
+// pra quem le a saida do script, em vez de fingir que o filtro atual cobre
+// os 3 clientes.
+export const AVISO_LIMITACAO_PORTFRIO =
+  "ATENCAO: este script so' consegue excluir enderecos no formato Rio " +
+  "Quality (numero sempre vazio). Porte Frio usa a MESMA tabela " +
+  "kpi_romaneio_geocode_cache e, quando o numero parseado do romaneio dele " +
+  "e' um numero real (nao vazio), o formato do endereco e' identico ao da " +
+  "Nutry Max -- esses enderecos NAO sao excluidos e caem no bucket Nutry " +
+  "Max sem deteccao possivel por forma. Hoje (13/09) a exposicao e' zero " +
+  "(0 geracoes Porte Frio em kpi_romaneio_geracoes), mas isso muda no dia " +
+  "em que Porte Frio gerar o primeiro romaneio. Correcao real: adicionar " +
+  "uma coluna `cliente` em kpi_romaneio_geocode_cache antes disso acontecer.";
+
 function lerTsv(caminho: string): LinhaCache[] {
   const texto = readFileSync(caminho, "utf8");
   const linhas = texto.split("\n").filter((l) => l.length > 0);
@@ -108,6 +138,8 @@ async function main() {
     process.exit(1);
   }
 
+  console.warn(AVISO_LIMITACAO_PORTFRIO);
+
   const todasAsLinhas = lerTsv(tsvPath);
   const rows = todasAsLinhas.filter((r) => !enderecoDaRioQuality(r.endereco));
   const excluidosRioQuality = todasAsLinhas.length - rows.length;
@@ -133,10 +165,14 @@ async function main() {
       // funcao) -- este script nunca reimplementa a normalizacao, so' repassa
       // o parametro pra funcao SQL, igual ao adapter da rota
       // (src/app/api/romaneio/geocode/territorio-deps.ts).
-      async distanciaAoBairro(lat: number, lng: number, bairroNormalizado: string) {
+      // Fix 1 (Fase 2, 13/09): municipioCodigo repassado como 4o argumento
+      // posicional pra 084_distancia_ao_bairro_municipio.sql -- mesma funcao
+      // que a rota real chama via RPC (territorio-deps.ts), so' que aqui via
+      // psql direto. null mantem o comportamento fail-open antigo.
+      async distanciaAoBairro(lat: number, lng: number, bairroNormalizado: string, municipioCodigo: string | null) {
         const r = await monit.query<{ distancia_ao_bairro: number | null }>(
-          "SELECT distancia_ao_bairro($1, $2, $3) AS distancia_ao_bairro",
-          [lat, lng, bairroNormalizado],
+          "SELECT distancia_ao_bairro($1, $2, $3, $4) AS distancia_ao_bairro",
+          [lat, lng, bairroNormalizado, municipioCodigo],
         );
         const v = r.rows[0]?.distancia_ao_bairro;
         return typeof v === "number" ? v : null;

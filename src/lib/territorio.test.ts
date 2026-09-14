@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { validarTerritorio, LIMIAR_DISTANCIA_BAIRRO_M } from "./territorio";
 
 const semBairro = { municipioCodigo: "3304557", bairro: null };
@@ -145,5 +145,31 @@ describe("validarTerritorio - bairro (distancia ao hull cnefe_bairros)", () => {
       },
     );
     expect(r).toEqual({ ok: false, motivo: "municipio_divergente" });
+  });
+
+  // Fix 1 (Fase 2, 13/09): distancia_ao_bairro media a distancia ao hull mais
+  // proximo entre os 92 municipios, ignorando o municipio esperado pelo
+  // romaneio -- pra bairros homonimos (CENTRO em 92, BOA VISTA em 29) a
+  // checagem virava quase um no-op. validarTerritorio precisa repassar o
+  // municipioCodigo esperado pra deps.distanciaAoBairro, pra que o hull seja
+  // buscado dentro do municipio certo.
+  it("repassa o municipioCodigo esperado pra deps.distanciaAoBairro", async () => {
+    const distanciaAoBairro = vi.fn(async () => 0);
+    await validarTerritorio(
+      { lat: -22.9, lng: -43.2 },
+      { municipioCodigo: "3304557", bairro: "CENTRO" },
+      { ...municipioOk, distanciaAoBairro },
+    );
+    expect(distanciaAoBairro).toHaveBeenCalledWith(-22.9, -43.2, "CENTRO", "3304557");
+  });
+
+  it("repassa null pra deps.distanciaAoBairro quando o municipio esperado e' desconhecido -- mantem busca em todos, fail-open", async () => {
+    const distanciaAoBairro = vi.fn(async () => 0);
+    await validarTerritorio(
+      { lat: -22.9, lng: -43.2 },
+      { municipioCodigo: null, bairro: "CENTRO" },
+      { municipioDaCoordenada: async () => null, distanciaAoBairro },
+    );
+    expect(distanciaAoBairro).toHaveBeenCalledWith(-22.9, -43.2, "CENTRO", null);
   });
 });

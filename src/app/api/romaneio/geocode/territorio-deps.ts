@@ -15,11 +15,16 @@ export function montarDepsTerritorio(admin: SupabaseClient): DepsTerritorio {
     // bairroNormalizado ja chega acentos-fora/maiusculo (normalizarBairro em
     // src/lib/territorio.ts) -- mesma normalizacao usada pra gravar
     // localidade_norm em cnefe_bairros, entao a comparacao no banco e' exata.
-    async distanciaAoBairro(lat, lng, bairroNormalizado) {
+    // municipioCodigo (Fix 1, Fase 2 13/09): repassado pra RPC como
+    // p_municipio pra que 084 filtre o hull pelo municipio esperado --
+    // null mantem o comportamento fail-open de buscar em todos os
+    // municipios (ver src/lib/territorio.ts).
+    async distanciaAoBairro(lat, lng, bairroNormalizado, municipioCodigo) {
       const { data, error } = await admin.rpc("distancia_ao_bairro", {
         p_lat: lat,
         p_lng: lng,
         p_bairro: bairroNormalizado,
+        p_municipio: municipioCodigo,
       });
       if (error) return null;
       return typeof data === "number" ? data : null;

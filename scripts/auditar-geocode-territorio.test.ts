@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { enderecoDaRioQuality } from "./auditar-geocode-territorio";
+import { enderecoDaRioQuality, AVISO_LIMITACAO_PORTFRIO } from "./auditar-geocode-territorio";
 import { extrairBairroDoEndereco, extrairCidadeDoEndereco } from "@/lib/romaneio-geocode-local";
 
 // Finding 2 (fix wave 12/09): kpi_romaneio_geocode_cache e' compartilhada
@@ -19,6 +19,35 @@ describe("enderecoDaRioQuality", () => {
 
   it("endereco Nutry Max generico (numero real, sufixo qualquer) nao e' excluido", () => {
     expect(enderecoDaRioQuality("RUA DAS FLORES, 100 - CENTRO, ANGRA DOS REIS - *")).toBe(false);
+  });
+
+  // Fix 3 (Fase 2, 13/09): Porte Frio monta endereco com
+  // src/lib/kpi-portefrio/agregacao.ts:enderecoCompleto
+  // (`${endereco}, ${numero} - ${bairro}, ${cidade} - ${uf}`), e o numero
+  // parseado (parse-romaneio.ts linha 246) pode ser um numero real -- nesse
+  // caso o formato e' byte-a-byte identico ao formato Nutry Max (numero real,
+  // virgula, hifen, bairro, cidade, hifen, sufixo) e enderecoDaRioQuality NAO
+  // exclui. Nao ha discriminador de forma possivel aqui -- confirmado lendo
+  // agregacao.ts (esta funcao so testa numero vazio, e Porte Frio com numero
+  // parseado passa por igual a um endereco real da Nutry Max).
+  it("endereco Porte Frio COM numero (formato identico ao da Nutry Max) NAO e' excluido -- limitacao conhecida, sem discriminador de forma possivel", () => {
+    // Shape de src/lib/kpi-portefrio/agregacao.ts:enderecoCompleto com numero
+    // parseado (nao vazio).
+    expect(enderecoDaRioQuality("RUA CORONEL PEDRO CORREIA, 850 - CENTRO, MACAE - RJ")).toBe(false);
+  });
+});
+
+// Fix 3 (Fase 2, 13/09): como nao ha discriminador de forma seguro pra
+// separar Porte Frio de Nutry Max quando Porte Frio tem numero real (ver
+// teste acima), a mitigacao possivel neste nivel e' tornar o risco visivel
+// pra quem le o relatorio, em vez de inventar uma heuristica fragil. Exposicao
+// hoje e' zero (0 geracoes Porte Frio em kpi_romaneio_geracoes, 13/09) -- o
+// fix real e' uma coluna `cliente` em kpi_romaneio_geocode_cache antes de
+// Porte Frio ir pra producao.
+describe("AVISO_LIMITACAO_PORTFRIO", () => {
+  it("documenta a limitacao (Porte Frio com numero real nao e' excluido) e a mitigacao real (coluna cliente)", () => {
+    expect(AVISO_LIMITACAO_PORTFRIO).toMatch(/Porte Frio/);
+    expect(AVISO_LIMITACAO_PORTFRIO).toMatch(/coluna/i);
   });
 });
 
