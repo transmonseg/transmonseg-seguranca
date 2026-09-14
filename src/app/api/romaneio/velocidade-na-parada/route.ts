@@ -28,14 +28,27 @@ import { normalizarPlaca } from "@/lib/romaneio";
 // direto possivel).
 //
 // Contrato de resposta (decisao explicita, ver task): esta rota reporta
-// FATO -- true/false/null -- e NUNCA decide fail-open. `null` e' reservado
-// SO' pra entrada malformada (faltando campo obrigatorio). Zero leituras
-// pra aquela placa naquela janela (ex. fora de cobertura do Unitrac) e' um
-// `false` legitimo, nao um erro -- quem decide o que fazer com "sem dado
-// nosso" (ex. aceitar como hoje, fail-open, por falta de GPS) e' o
-// CHAMADOR (KPI), nao esta rota. Isso e' deliberadamente diferente do
-// fail-open descrito na secao 3a da spec (que fala do comportamento FINAL
-// do KPI) -- aqui embaixo a rota so' informa o que o GPS mostrou.
+// FATO -- nunca decide fail-open. `null` e' reservado SO' pra entrada
+// malformada (faltando campo obrigatorio). Quem decide o que fazer com
+// "sem dado nosso" (ex. aceitar como hoje, fail-open, por falta de GPS) e'
+// o CHAMADOR (KPI), nao esta rota -- aqui embaixo a rota so' informa o que
+// o GPS mostrou.
+//
+// Correcao pos-revisao (mesmo dia): a resposta original era so' um
+// boolean (`temParadaComVelocidade`), e isso colapsava dois casos que a
+// secao 3a da spec exige distinguir:
+//   1. ZERO leituras pra aquela placa naquela janela/raio (fora de
+//      cobertura do Unitrac/monitoramento) -- a spec manda fail-open aqui
+//      ("nao inventar negativa por falta de dado"), o chamador deve
+//      CONTINUAR confiando na parada do Unitrac como confirma hoje.
+//   2. Leituras EXISTEM na janela/raio, mas todas com velocidade >5 --
+//      contradicao real (o caminhao passou, nao parou) -- o chamador deve
+//      DESCARTAR a parada do Unitrac.
+// Os dois casos produziam o MESMO `false` na primeira versao -- o chamador
+// nao tinha como diferenciar "sem dado" de "dado contradiz". `temCobertura`
+// (existe ao menos 1 linha casando placa+janela+raio, com QUALQUER
+// velocidade) resolve isso sem precisar de 2a chamada -- vem da MESMA
+// query SQL (bool_or/count agregado por indice), so' mais uma coluna.
 //
 // Protegida pelo mesmo header x-motor-key + MOTOR_SECRET que as outras
 // rotas de ponte deste projeto. Side-effect-free: SO' LE posicoes_historico
@@ -119,7 +132,8 @@ export async function POST(request: Request) {
     if (ehConsultaValida(c)) validasComIndiceOriginal.push({ consulta: c, indiceOriginal });
   });
 
-  const resultados: (boolean | null)[] = new Array(consultas.length).fill(null);
+  type Resultado = { temParadaComVelocidade: boolean; temCobertura: boolean };
+  const resultados: (Resultado | null)[] = new Array(consultas.length).fill(null);
 
   if (validasComIndiceOriginal.length === 0) {
     return Response.json({ resultados });
@@ -143,14 +157,14 @@ export async function POST(request: Request) {
   // A funcao devolve so' as linhas com idx correspondente (0-based, na
   // ordem do lote MANDADO ao banco, nao do lote original recebido no
   // corpo). Ausencia de linha pro idx e' "sem leitura nenhuma casando
-  // placa/janela/raio/velocidade" -- `false` legitimo (ver contrato no
-  // topo do arquivo), nao erro.
-  const porIdx = new Map<number, boolean>();
-  for (const linha of (data ?? []) as { idx: number; tem_parada_com_velocidade: boolean }[]) {
-    porIdx.set(linha.idx, linha.tem_parada_com_velocidade);
+  // placa/janela/raio" -- vira { temParadaComVelocidade: false, temCobertura:
+  // false } (ver contrato no topo do arquivo), nunca erro.
+  const porIdx = new Map<number, Resultado>();
+  for (const linha of (data ?? []) as { idx: number; tem_parada_com_velocidade: boolean; tem_cobertura: boolean }[]) {
+    porIdx.set(linha.idx, { temParadaComVelocidade: linha.tem_parada_com_velocidade, temCobertura: linha.tem_cobertura });
   }
   validasComIndiceOriginal.forEach(({ indiceOriginal }, idxNoLote) => {
-    resultados[indiceOriginal] = porIdx.get(idxNoLote) ?? false;
+    resultados[indiceOriginal] = porIdx.get(idxNoLote) ?? { temParadaComVelocidade: false, temCobertura: false };
   });
 
   return Response.json({ resultados });
