@@ -139,7 +139,22 @@ const cacheFrotaPorCliente = new Map<string, VeiculoCache>();
 // min, nao precisa reconsultar todo ciclo de 30s. Se nao existir romaneio de
 // hoje pro veiculo, o motor cai no caminho 100% Unitrac de sempre (rede de
 // seguranca, sem regressao de cobertura).
-type RomaneioCache = { pontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number; presencaConfirmadaEm: string | null }[]>; expiraEm: number };
+type RomaneioCache = {
+  pontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number; presencaConfirmadaEm: string | null }[]>;
+  // Achado real 14/09 (revisao adversarial do fix de usaMotorRomaneioParalelo
+  // por veiculo): pontosPorPlaca SO' guarda linha com lat/lng geocodificados
+  // (filtro .not(lat/lng, is, null) na query, necessario pros consumidores
+  // que fazem distancia). Mas "tem romaneio hoje" pra decidir se a Central
+  // Romaneio cobre esse veiculo precisa contar QUALQUER linha, geocodificada
+  // ou nao -- a Central Romaneio (motor-romaneio/route.ts) nao filtra por
+  // geocode antes de decidir se o veiculo entra no loop. Sem essa distincao,
+  // um veiculo com romaneio 100% nao-geocodificado apareceria como "sem
+  // romaneio" aqui e reativaria os 3 detectores na Central Unitrac, MESMO
+  // a Central Romaneio ja cobrindo ele -- duplicidade, nao buraco de recall
+  // (falha pro lado seguro), mas evitavel.
+  placasComRomaneioHoje: Set<string>;
+  expiraEm: number;
+};
 const CACHE_ROMANEIO_MS = 3 * 60_000;
 const cacheRomaneioPorCliente = new Map<string, RomaneioCache>();
 const cacheEscalaPorCliente = new Map<string, { pontosPorPlaca: Map<string, { lat: number; lng: number; raioM: number }[]>; expiraEm: number }>();
@@ -1356,24 +1371,44 @@ export async function POST(request: Request) {
       // novo quando expira.
       const cacheRomaneio = cacheRomaneioPorCliente.get(cliente.id);
       let romaneioPontosPorPlaca: Map<string, { nf: string; clienteNome: string; lat: number; lng: number; presencaConfirmadaEm: string | null }[]>;
+      let placasComRomaneioHoje: Set<string>;
       if (cacheRomaneio && cacheRomaneio.expiraEm > Date.now()) {
         romaneioPontosPorPlaca = cacheRomaneio.pontosPorPlaca;
+        placasComRomaneioHoje = cacheRomaneio.placasComRomaneioHoje;
       } else {
         romaneioPontosPorPlaca = new Map();
-        const { data: linhasRomaneio } = await supabase
+        placasComRomaneioHoje = new Set();
+        // Sem filtro de lat/lng aqui (achado real 14/09, ver comentario em
+        // RomaneioCache acima): placasComRomaneioHoje precisa contar
+        // QUALQUER linha, geocodificada ou nao. romaneioPontosPorPlaca (usado
+        // pra distancia/presenca) continua so' com as geocodificadas, filtrado
+        // em JS abaixo.
+        const { data: linhasRomaneio, error: erroRomaneio } = await supabase
           .from("romaneio_pontos")
           .select("placa, nf, cliente_nome, lat, lng, presenca_confirmada_em")
           .eq("romaneio_data", dataHojeSP)
           .eq("modo_teste", false)
-          .not("lat", "is", null)
-          .not("lng", "is", null)
           .in("veiculo_id", veiculoIdsDoCliente);
         for (const l of linhasRomaneio ?? []) {
+          placasComRomaneioHoje.add(l.placa);
+          if (l.lat == null || l.lng == null) continue;
           const lista = romaneioPontosPorPlaca.get(l.placa) ?? [];
           lista.push({ nf: l.nf, clienteNome: l.cliente_nome, lat: l.lat, lng: l.lng, presencaConfirmadaEm: l.presenca_confirmada_em });
           romaneioPontosPorPlaca.set(l.placa, lista);
         }
-        cacheRomaneioPorCliente.set(cliente.id, { pontosPorPlaca: romaneioPontosPorPlaca, expiraEm: Date.now() + CACHE_ROMANEIO_MS });
+        // Achado real 14/09 (revisao adversarial): busca com erro nao pode
+        // ser cacheada como "sem romaneio" -- um erro transiente de rede/
+        // Supabase cacheado por 3min reativaria os 3 detectores de parada na
+        // Central Unitrac pra TODOS os veiculos do cliente, mesmo os que a
+        // Central Romaneio ja cobre de verdade, gerando alerta duplicado.
+        // So grava no cache quando a busca teve sucesso; erro so' mantem o
+        // cache anterior (ou fica vazio so' neste ciclo, sem persistir).
+        if (!erroRomaneio) {
+          cacheRomaneioPorCliente.set(cliente.id, { pontosPorPlaca: romaneioPontosPorPlaca, placasComRomaneioHoje, expiraEm: Date.now() + CACHE_ROMANEIO_MS });
+        } else if (cacheRomaneio) {
+          romaneioPontosPorPlaca = cacheRomaneio.pontosPorPlaca;
+          placasComRomaneioHoje = cacheRomaneio.placasComRomaneioHoje;
+        }
       }
 
       // Pontos de escala de HOJE pro cliente -- ver
@@ -2721,14 +2756,15 @@ export async function POST(request: Request) {
                   // detector de parada anomala em nenhum dos dois motores
                   // -- 18 dias corridos zerados (parada_anomala/parada_longa
                   // sumiram de vez desde 28/08). Fix: desliga por VEICULO,
-                  // so quando ELE especificamente tem romaneio hoje
-                  // (romaneioDoVeiculo, ja calculado acima nesta mesma
-                  // iteracao) -- sem romaneio, a Central Unitrac volta a
-                  // cobrir esse veiculo como sempre cobriu antes de 31/07.
+                  // so quando ELE especificamente tem romaneio hoje --
+                  // placasComRomaneioHoje (nao romaneioDoVeiculo, que so'
+                  // conta linha GEOCODIFICADA e podia sub-contar romaneio
+                  // real, ver comentario em RomaneioCache acima) -- sem
+                  // romaneio, a Central Unitrac volta a cobrir esse veiculo
+                  // como sempre cobriu antes de 31/07.
                   usaMotorRomaneioParalelo:
                     CLIENTES_COM_MOTOR_ROMANEIO_PARALELO.has(cliente.cod_user_unitrac) &&
-                    !!romaneioDoVeiculo &&
-                    romaneioDoVeiculo.length > 0,
+                    placasComRomaneioHoje.has(pos.placa),
                 })
             // jammer continua valendo mesmo com atraso > 60min (caso que
             // montarCandidatosCore() nao cobre, ja que so roda com fresco).
