@@ -438,16 +438,18 @@ describe("acharVisitasPorPonto", () => {
       expect(visita).toEqual({ id: "NF1", chegada: "2026-09-11T09:01:00.000Z", saida: "2026-09-11T09:05:00.000Z" });
     });
 
-    // Mesmo achado real 14/09 de derivarParadas (RQV6C75) -- essa funcao tem
-    // a MESMA vulnerabilidade estrutural (fecha o bloco na primeira leitura
-    // de velocidade alta), so' que pra confirmacao por ponto especifico em
-    // vez de parada generica. Uma leitura isolada de ruido nao pode cortar
-    // um dwell real na metade.
-    it("leitura isolada de velocidade alta no meio do dwell (ruido, posicao dentro do raio): NAO corta o bloco", () => {
+    // Achado real 14/09 (grupo KPI AJUSTES, placa RQV6C75): GPS bruto real
+    // mostra DUAS leituras SEGUIDAS de velocidade alta (8km/h) no meio de
+    // uma permanencia continua de ~7,5min, posicao praticamente intocada --
+    // qualquer debounce de N leituras fixo e' fragil contra ruido de
+    // duracao variavel. Posicao manda: velocidade sozinha (mesmo em mais de
+    // uma leitura seguida) nunca corta um dwell ja' confirmado.
+    it("DUAS leituras seguidas de velocidade alta, posicao intocada: NAO corta o bloco", () => {
       const posicoes = [
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:54:54.000Z", velocidade: 0 },
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:55:22.000Z", velocidade: 0 },
-        { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:57:50.000Z", velocidade: 8 }, // ruido isolado
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:57:50.000Z", velocidade: 8 }, // ruido, 1a leitura
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:58:20.000Z", velocidade: 8 }, // ruido, 2a leitura seguida
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:59:44.000Z", velocidade: 0 },
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T14:02:24.000Z", velocidade: 0 },
       ];
@@ -455,14 +457,12 @@ describe("acharVisitasPorPonto", () => {
       expect(visita).toEqual({ id: "NF1", chegada: "2026-09-14T13:54:54.000Z", saida: "2026-09-14T14:02:24.000Z" });
     });
 
-    it("DUAS leituras seguidas de velocidade alta: corta de verdade, fica com o bloco anterior se for o maior", () => {
+    it("veiculo sai de verdade do raio do ponto: fecha o bloco na leitura que saiu, nao inventa permanencia", () => {
       const posicoes = [
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:00:00.000Z", velocidade: 0 },
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:05:00.000Z", velocidade: 0 },
-        { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:05:30.000Z", velocidade: 30 },
-        { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:06:00.000Z", velocidade: 35 },
-        { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:10:00.000Z", velocidade: 0 },
-        { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T13:10:30.000Z", velocidade: 0 },
+        { lat: -23.5, lng: -44.5, criado_em: "2026-09-14T13:05:30.000Z", velocidade: 30 }, // saiu de verdade
+        { lat: -23.5, lng: -44.5, criado_em: "2026-09-14T13:10:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
       expect(visita).toEqual({ id: "NF1", chegada: "2026-09-14T13:00:00.000Z", saida: "2026-09-14T13:05:00.000Z" });
@@ -612,20 +612,22 @@ describe("derivarParadas (paradas a partir do historico permanente de posicao)",
 
   // Achado real 14/09 (grupo KPI AJUSTES, placa RQV6C75/carga 97881, NFs
   // 2371610+2371612): GPS bruto real mostra o caminhao parado no MESMO
-  // ponto de 15:54:54 a 16:02:24 (+02), com UMA UNICA leitura isolada as
-  // 15:58:18 registrando 8km/h (posicao nao mudou nada -- ruido de sensor).
-  // Sem o debounce, essa leitura fechava a parada em dois pedacos de ~3min
-  // cada, virando "0h03min" no relatorio quando a permanencia real foi de
-  // ~7,5min -- exatamente o que o cliente contestou por audio.
-  describe("ruido isolado de velocidade nao fragmenta uma permanencia real (achado real 14/09, RQV6C75)", () => {
-    it("uma leitura isolada de velocidade alta no meio, posicao intocada: permanece UMA parada so", () => {
+  // ponto de 15:54:54 a 16:02:24 (+02) -- 7,5min continuos -- com DUAS
+  // leituras SEGUIDAS as 15:58:18/15:58:54 registrando 8km/h (posicao
+  // praticamente intocada, ~12m do ancora -- ruido de sensor/solavanco).
+  // O fechamento original cortava essa permanencia em dois pedacos de
+  // ~3min cada, virando "0h03min" no relatorio quando a permanencia real
+  // foi de ~7,5min -- exatamente o que o cliente contestou por audio
+  // ("e' humanamente impossivel fazer entrega em 3 minutos").
+  describe("velocidade sozinha nao fragmenta uma permanencia real -- so' posicao fecha (achado real 14/09, RQV6C75)", () => {
+    it("DUAS leituras seguidas de velocidade alta, posicao intocada: permanece UMA parada so", () => {
       const paradas = derivarParadas([
         p(0, -22.515252, -44.197902, 0),
         p(1, -22.515252, -44.197902, 0),
         p(2, -22.515252, -44.197902, 0),
-        p(3, -22.515252, -44.197902, 8),  // ruido isolado -- posicao igual
-        p(4, -22.515465, -44.197915, 0),  // volta pra dentro do raio do ancora
-        p(5, -22.515542, -44.197882, 0),
+        p(3, -22.515252, -44.197902, 8),  // ruido, 1a leitura -- posicao igual
+        p(4, -22.515302, -44.198005, 8),  // ruido, 2a leitura seguida -- ainda ~12m do ancora
+        p(5, -22.515465, -44.197915, 0),
         p(6, -22.515542, -44.197882, 0),
         p(20, -22.3, -43.0, 60),          // foi embora de verdade
       ], []);
@@ -634,34 +636,18 @@ describe("derivarParadas (paradas a partir do historico permanente de posicao)",
       expect(paradas[0].duracaoSeg).toBe(360); // 0 a 6min
     });
 
-    it("DUAS leituras seguidas de velocidade alta: fecha de verdade (nao e' so' ruido)", () => {
-      const paradas = derivarParadas([
-        p(0, -22.9, -43.2, 0),
-        p(1, -22.9, -43.2, 0),
-        p(2, -22.9, -43.2, 0),
-        p(3, -22.9, -43.2, 30), // primeira alta -- pendente
-        p(4, -22.9, -43.2, 35), // segunda alta seguida -- confirma saida
-        p(14, -22.9, -43.2, 0), // "voltou" 10min depois -- outra parada
-        p(16, -22.9, -43.2, 0),
-      ], []);
-
-      expect(paradas).toHaveLength(2);
-      expect(paradas[0].duracaoSeg).toBe(120); // 0 a 2min, fechada na 1a leitura alta confirmada pela 2a
-      expect(paradas[1].duracaoSeg).toBe(120); // 14 a 16min
-    });
-
-    it("leitura de velocidade alta seguida de posicao realmente longe: fecha na leitura seguinte, nao inventa permanencia", () => {
+    it("veiculo sai de verdade do raio do ancora: fecha na leitura que saiu, nao inventa permanencia", () => {
       const paradas = derivarParadas([
         p(0, -22.9, -43.2, 0),
         p(3, -22.9, -43.2, 0),
-        p(9, -22.9, -43.2, 30),  // pendente
-        p(10, -23.5, -44.5, 0), // chegou longe, parado -- confirma que a pendente era saida real
+        p(9, -23.5, -44.5, 30), // saiu de verdade (posicao longe) -- fecha na hora
+        p(10, -23.5, -44.5, 0), // ja' chegou no novo lugar, parado
         p(13, -23.5, -44.5, 0),
       ], []);
 
       expect(paradas).toHaveLength(2);
       expect(paradas[0].duracaoSeg).toBe(180); // 0 a 3min
-      expect(paradas[1].duracaoSeg).toBe(180); // 10 a 13min, no novo lugar
+      expect(paradas[1].duracaoSeg).toBe(180); // 10 a 13min, no novo lugar (p9 estava em movimento, so' abre a partir de p10 parado)
     });
   });
 });

@@ -269,11 +269,13 @@ const DWELL_MINIMO_MS = 60_000
 // mesmo em deriva) pra nao rejeitar dwell real por 1 leitura ruidosa.
 const VELOCIDADE_MAX_PARADO_KMH = 5
 
-// Debounce de velocidade (achado real 14/09, ver comentario de
-// derivarParadas): uma leitura isolada de velocidade alta sem o veiculo
-// ter saido do raio do ponto (ruido de sensor/solavanco) nao deve fechar o
-// bloco -- so' fecha se a leitura SEGUINTE tambem falhar por velocidade, ou
-// se a posicao em si saiu do raio (dai fecha na hora, e' saida de verdade).
+// Posicao manda sobre velocidade (achado real 14/09, ver comentario de
+// derivarParadas -- caso real teve DUAS leituras seguidas de velocidade
+// alta no meio de uma permanencia continua, entao um debounce de N leituras
+// fixo e' fragil). Velocidade so' gate'ia a ABERTURA de um bloco novo (nao
+// abre nem reabre em movimento -- preserva o teste do TTH6G37/passagem
+// rapida); uma vez aberto, so' a posicao SAIR do raio do ponto fecha o
+// bloco -- velocidade sozinha nunca fecha uma permanencia ja' confirmada.
 function acharBlocoDentroDoRaio(
   pt: PontoEntrega,
   posicoes: Posicao[],
@@ -283,7 +285,6 @@ function acharBlocoDentroDoRaio(
   type Bloco = { inicio: string; fim: string; durMs: number }
   const blocos: Bloco[] = []
   let atual: { inicio: string; fim: string } | null = null
-  let pendenteAlta: Posicao | null = null
 
   const fecharBloco = () => {
     if (!atual) return
@@ -293,19 +294,14 @@ function acharBlocoDentroDoRaio(
 
   for (const p of posicoes) {
     const naPosicao = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM && !estaMaisPertoDaBaseQueDoPonto(p, pt, basesCentro)
-    if (!naPosicao) { fecharBloco(); pendenteAlta = null; continue }
-    const velocidadeOk = p.velocidade <= VELOCIDADE_MAX_PARADO_KMH
-    if (!velocidadeOk) {
-      if (atual && pendenteAlta == null) { pendenteAlta = p; continue }
-      fecharBloco()
-      pendenteAlta = null
+    if (!naPosicao) { fecharBloco(); continue }
+    if (!atual) {
+      if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) continue // passando rapido, ainda nao "chegou"
+      atual = { inicio: p.criado_em, fim: p.criado_em }
       continue
     }
-    pendenteAlta = null
-    if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em }
-    else atual.fim = p.criado_em
+    atual.fim = p.criado_em
   }
-  if (pendenteAlta) fecharBloco()
   fecharBloco()
   if (blocos.length === 0) return null
   const maior = blocos.reduce((a, b) => (b.durMs > a.durMs ? b : a))
@@ -387,23 +383,29 @@ export type ParadaDerivada = {
 // Achado real 14/09 (grupo KPI AJUSTES, placa RQV6C75/carga 97881, NFs
 // 2371610+2371612 "R Olavo Marasse"/"R Aarao A de Souza"): GPS bruto mostra
 // o caminhao parado no MESMO ponto (raio de poucos metros) de 15:54:54 a
-// 16:02:24 (+02), uma unica leitura isolada as 15:58:18 registrando 8km/h
-// (ruido de sensor/solavanco -- posicao nao mudou nada). O fechamento
-// original, seco na primeira leitura acima de VELOCIDADE_MAX_PARADO_KMH,
-// cortava essa permanencia real de ~7,5min em DUAS paradas de ~3min cada
-// -- exatamente o "0h03min" que o cliente contestou por audio ("e'
-// humanamente impossivel fazer entrega em 3 minutos") E o que a operacao
-// mediu manualmente contra a Unitrac como "9 ou 12 minutos". Uma leitura
-// isolada de velocidade alta agora fica PENDENTE em vez de fechar na hora:
-// so' confirma fechamento se a proxima leitura tambem estiver longe do
-// ancora (movimento de verdade) -- se a leitura seguinte volta pra dentro
-// do raio, foi ruido, o cluster continua sem interrupcao. Duas leituras
-// SEGUIDAS de velocidade alta (ainda) fecham imediatamente na segunda,
-// preservando o teste "passagem rapida nao vira parada".
+// 16:02:24 (+02) -- 7,5min continuos -- com DUAS leituras seguidas (15:58:18
+// e 15:58:54) registrando 8km/h no meio, posicao praticamente intocada
+// (~12m do ancora). O fechamento original, seco na primeira leitura acima
+// de VELOCIDADE_MAX_PARADO_KMH, cortava essa permanencia em DUAS paradas de
+// ~3min cada -- exatamente o "0h03min" que o cliente contestou por audio
+// ("e' humanamente impossivel fazer entrega em 3 minutos") E o que a
+// operacao mediu manualmente contra a Unitrac como "9 ou 12 minutos". Uma
+// tentativa inicial de "debounce de 1 leitura" nao bastou porque o ruido
+// real veio em DUAS leituras seguidas, nao uma -- qualquer contagem fixa de
+// leituras e' fragil contra ruido de duracao variavel.
+//
+// Fix definitivo: uma vez que o cluster esta' aberto, so' a POSICAO decide
+// se ele continua -- velocidade sozinha nunca fecha uma permanencia real
+// (e' sinal ruidoso, sensor/solavanco durante manobra). So' fecha quando o
+// veiculo de fato SAI do raio do ancora. Velocidade ainda gate'ia a
+// ABERTURA de um cluster novo (nao abre nem reabre em movimento, preserva
+// o teste "passagem rapida nao vira parada") -- so' deixa de valer DEPOIS
+// que a permanencia ja' foi confirmada por pelo menos 1 leitura parada.
+// Mesmo raciocinio ja' usado no resto do projeto (posicao bruta como fonte
+// de verdade, nao o campo de velocidade do rastreador).
 export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = []): ParadaDerivada[] {
   const paradas: ParadaDerivada[] = [];
   let atual: { inicio: string; fim: string; lats: number[]; lngs: number[] } | null = null;
-  let pendenteAlta: Posicao | null = null;
 
   const fechar = () => {
     if (!atual) return;
@@ -425,22 +427,21 @@ export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = 
   };
 
   for (const p of posicoes) {
-    if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) {
-      if (atual && pendenteAlta == null) { pendenteAlta = p; continue; }
-      fechar();
-      pendenteAlta = null;
+    if (!atual) {
+      if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) continue; // em movimento -- nada pra abrir ainda
+      atual = { inicio: p.criado_em, fim: p.criado_em, lats: [p.lat], lngs: [p.lng] };
       continue;
     }
-    if (pendenteAlta) {
-      const aindaDentro = atual != null && haversineM(atual.lats[0], atual.lngs[0], p.lat, p.lng) <= RAIO_CLUSTER_PARADA_M;
-      if (!aindaDentro) fechar();
-      pendenteAlta = null;
+    if (haversineM(atual.lats[0], atual.lngs[0], p.lat, p.lng) > RAIO_CLUSTER_PARADA_M) {
+      fechar();
+      if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) continue;
+      atual = { inicio: p.criado_em, fim: p.criado_em, lats: [p.lat], lngs: [p.lng] };
+      continue;
     }
-    if (atual && haversineM(atual.lats[0], atual.lngs[0], p.lat, p.lng) > RAIO_CLUSTER_PARADA_M) fechar();
-    if (!atual) atual = { inicio: p.criado_em, fim: p.criado_em, lats: [p.lat], lngs: [p.lng] };
-    else { atual.fim = p.criado_em; atual.lats.push(p.lat); atual.lngs.push(p.lng); }
+    atual.fim = p.criado_em;
+    atual.lats.push(p.lat);
+    atual.lngs.push(p.lng);
   }
-  if (pendenteAlta) fechar();
   fechar();
   return paradas;
 }
