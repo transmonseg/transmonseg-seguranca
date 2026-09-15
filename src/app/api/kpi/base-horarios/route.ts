@@ -40,7 +40,7 @@ const RAIO_BASE_M = 500;
 
 const MAX_PLACAS_POR_CHAMADA = 200;
 
-type Posicao = { lat: number; lng: number; criado_em: string; velocidade: number; atraso_min: number };
+type Posicao = { lat: number; lng: number; criado_em: string; velocidade: number };
 type BaseCentro = { lat: number; lng: number };
 
 /** Dado o historico continuo (ordenado por tempo) e os centros de base do
@@ -403,25 +403,6 @@ export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = 
   return paradas;
 }
 
-// Achado real 14/09 (planejamento da fase que torna esta ponte fonte
-// PRIMARIA de parada, nao so' fallback): quando o rastreador para de
-// comunicar, o poller deste projeto continua gravando a ULTIMA posicao
-// conhecida, com atraso_min subindo -- isso ou congela sem gerar parada,
-// ou pior, derivarParadas ve varias leituras identicas se repetindo e
-// deriva uma parada FALSA no ponto onde o sinal caiu. Caso real medido:
-// placa RQV3G18, 09/09, atraso subindo de 2 pra 34+ enquanto ela rodava
-// de verdade entre Trapiche e Macae (a Unitrac, que recebe o trecho em
-// lote ao reconectar, mostra a parada real; esta ponte, nao).
-//
-// Limiar medido em producao (3 dias de posicoes_historico), nao chutado:
-// 283.183 leituras na faixa 10-15min contra so' 5.932 na faixa 15-20min --
-// degrau nitido bem em 15min.
-const LIMIAR_APAGAO_MIN = 15;
-
-export function teveApagaoDeSinal(posicoes: Posicao[], limiarMin = LIMIAR_APAGAO_MIN): boolean {
-  return posicoes.some((p) => p.atraso_min > limiarMin);
-}
-
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
   const diretas = pontos.map((pt) => {
     const bloco = acharBlocoDentroDoRaio(pt, posicoes, RAIO_ENTREGA_M, basesCentro)
@@ -581,7 +562,6 @@ export async function POST(request: Request) {
     kmPercorrido: number | null;
     visitas?: VisitaPonto[];
     paradas?: ParadaDerivada[];
-    apagaoDeSinal?: boolean;
   }[] = [];
   for (const placaBruta of placas) {
     const placaNorm = normPlaca(placaBruta);
@@ -593,7 +573,7 @@ export async function POST(request: Request) {
     const basesCentro = basesPorCliente.get(v.cliente_id) ?? [];
     const { data: posicoesRows, error: erroPosicoes } = await admin
       .from("posicoes_historico")
-      .select("lat, lng, criado_em, velocidade, atraso_min")
+      .select("lat, lng, criado_em, velocidade")
       .eq("veiculo_id", v.id)
       .gte("criado_em", inicioUTC.toISOString())
       .lt("criado_em", fimUTC.toISOString())
@@ -611,16 +591,7 @@ export async function POST(request: Request) {
     // cresce bastante e o consumidor normal (saida/chegada/km/visitas) nao
     // precisa. O KPI pede quando o dia caiu fora da janela de 48h da Unitrac.
     const paradas = incluirParadas ? derivarParadas(posicoes, basesCentro) : undefined;
-    const apagaoDeSinal = incluirParadas ? teveApagaoDeSinal(posicoes) : undefined;
-    resultados.push({
-      placa: placaBruta,
-      saidaBase,
-      chegadaBase,
-      kmPercorrido,
-      ...(visitas ? { visitas } : {}),
-      ...(paradas ? { paradas } : {}),
-      ...(apagaoDeSinal !== undefined ? { apagaoDeSinal } : {}),
-    });
+    resultados.push({ placa: placaBruta, saidaBase, chegadaBase, kmPercorrido, ...(visitas ? { visitas } : {}), ...(paradas ? { paradas } : {}) });
   }
 
   return Response.json({ resultados });
