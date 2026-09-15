@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas } from "./route";
+import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal } from "./route";
 
 const BASE = { lat: -22.816007, lng: -43.277827 };
 // ~50km da base -- claramente fora do raio de 500m.
@@ -580,3 +580,42 @@ describe("derivarParadas (paradas a partir do historico permanente de posicao)",
     expect(paradas[1].duracaoSeg).toBe(900);
   });
 });
+
+describe('teveApagaoDeSinal', () => {
+  const base = { lat: -22.9, lng: -43.2, criado_em: '2026-09-11T10:00:00Z' }
+
+  it('false quando todo atraso_min esta dentro do normal', () => {
+    const posicoes = [
+      { ...base, velocidade: 0, atraso_min: 2 },
+      { ...base, velocidade: 0, atraso_min: 5 },
+      { ...base, velocidade: 0, atraso_min: 10 },
+    ]
+    expect(teveApagaoDeSinal(posicoes)).toBe(false)
+  })
+
+  it('true quando alguma leitura passa do limiar (15min)', () => {
+    // Caso real (RQV3G18, 09/09): atraso subindo de 17 ate 47+ com lat/lng
+    // congelados enquanto o rastreador estava sem comunicar.
+    const posicoes = [
+      { ...base, velocidade: 0, atraso_min: 2 },
+      { ...base, velocidade: 0, atraso_min: 17 },
+      { ...base, velocidade: 0, atraso_min: 25 },
+    ]
+    expect(teveApagaoDeSinal(posicoes)).toBe(true)
+  })
+
+  it('false com lista vazia -- sem posicao nenhuma nao e' + ' apagao, e' + ' sem cobertura (tratado em outro lugar)', () => {
+    expect(teveApagaoDeSinal([])).toBe(false)
+  })
+
+  it('respeita limiar customizado, pra teste isolado do valor exato', () => {
+    const posicoes = [{ ...base, velocidade: 0, atraso_min: 8 }]
+    expect(teveApagaoDeSinal(posicoes, 5)).toBe(true)
+    expect(teveApagaoDeSinal(posicoes, 10)).toBe(false)
+  })
+
+  it('exatamente no limiar nao conta como apagao (estritamente maior que)', () => {
+    const posicoes = [{ ...base, velocidade: 0, atraso_min: 15 }]
+    expect(teveApagaoDeSinal(posicoes)).toBe(false)
+  })
+})
