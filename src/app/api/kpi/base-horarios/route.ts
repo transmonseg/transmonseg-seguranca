@@ -292,12 +292,25 @@ function acharBlocoDentroDoRaio(
     atual = null
   }
 
+  // Achado real 15/09 (mesmo raciocinio de derivarParadas): ruido de
+  // velocidade tambem pode atrasar a "chegada" detectada aqui -- leituras
+  // dentro do raio do ponto com velocidade um pouco acima do limiar ficam
+  // pendentes; se uma leitura de verdade parada confirmar logo em seguida
+  // (ainda dentro do raio), o inicio do bloco volta pra' a mais antiga
+  // pendente.
+  let pendentes: Posicao[] = []
   for (const p of posicoes) {
     const naPosicao = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM && !estaMaisPertoDaBaseQueDoPonto(p, pt, basesCentro)
-    if (!naPosicao) { fecharBloco(); continue }
+    if (!naPosicao) { fecharBloco(); pendentes = []; continue }
     if (!atual) {
-      if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) continue // passando rapido, ainda nao "chegou"
-      atual = { inicio: p.criado_em, fim: p.criado_em }
+      if (p.velocidade <= VELOCIDADE_MAX_PARADO_KMH) {
+        const inicio = pendentes.length > 0 ? pendentes[0].criado_em : p.criado_em
+        pendentes = []
+        atual = { inicio, fim: p.criado_em }
+        continue
+      }
+      if (p.velocidade <= VELOCIDADE_RUIDO_ABERTURA_KMH) { pendentes.push(p); continue }
+      pendentes = [] // trafego de verdade
       continue
     }
     atual.fim = p.criado_em
@@ -394,18 +407,48 @@ export type ParadaDerivada = {
 // real veio em DUAS leituras seguidas, nao uma -- qualquer contagem fixa de
 // leituras e' fragil contra ruido de duracao variavel.
 //
-// Fix definitivo: uma vez que o cluster esta' aberto, so' a POSICAO decide
-// se ele continua -- velocidade sozinha nunca fecha uma permanencia real
-// (e' sinal ruidoso, sensor/solavanco durante manobra). So' fecha quando o
-// veiculo de fato SAI do raio do ancora. Velocidade ainda gate'ia a
-// ABERTURA de um cluster novo (nao abre nem reabre em movimento, preserva
-// o teste "passagem rapida nao vira parada") -- so' deixa de valer DEPOIS
-// que a permanencia ja' foi confirmada por pelo menos 1 leitura parada.
-// Mesmo raciocinio ja' usado no resto do projeto (posicao bruta como fonte
-// de verdade, nao o campo de velocidade do rastreador).
+// Fix (fechamento): uma vez que o cluster esta' aberto, so' a POSICAO
+// decide se ele continua -- velocidade sozinha nunca fecha uma permanencia
+// real (e' sinal ruidoso, sensor/solavanco durante manobra). So' fecha
+// quando o veiculo de fato SAI do raio do ancora.
+//
+// Achado real 15/09 (auditoria em massa via subagentes, placa RQV9B26/NF
+// 2372896 "Mercearia Sao Pedro"): o fix de fechamento acima NAO cobria a
+// ABERTURA -- GPS bruto mostrou o caminhao parado a 5m do endereco por 7min
+// (12:15-12:22 BRT), mas com velocidade 6km/h (so' 1km/h acima do limiar)
+// nas 6 primeiras leituras, so' caindo pra 0 nos ultimos ~52s. Como a
+// abertura exige velocidade<=5 desde sempre, o cluster so' abria nesses
+// ultimos 52s -- curto demais pro piso de DUR_MINIMA_PARADA_MS (2min) -- e
+// a parada inteira, real e a 5m do endereco, sumia do resultado. O
+// relatorio caia pra outra parada mais distante como substituta, virando
+// "PARADA PROXIMA (500-800m)" numa entrega que na verdade foi bem em cima
+// do endereco. Auditoria encontrou esse padrao em 61% dos casos dessa
+// categoria no dia.
+//
+// Fix (abertura): mesma logica de "posicao manda", agora tambem pra tras.
+// Leituras com velocidade um pouco acima do limiar mas ainda plausivelmente
+// ruido de sensor (ate' VELOCIDADE_RUIDO_ABERTURA_KMH) ficam num buffer
+// enquanto a posicao continuar dentro do raio do cluster; se uma leitura
+// de verdade parada (<=VELOCIDADE_MAX_PARADO_KMH) chegar nesse raio, o
+// inicio do cluster e' puxado pra tras ate' a leitura mais antiga do
+// buffer -- a permanencia conta desde quando o veiculo praticamente parou
+// de se mover, nao so' desde o instante exato que a velocidade cravou
+// zero. Acima do teto de ruido (ex.: 45km/h no teste "passagem rapida"),
+// a leitura e' trafego de verdade e o buffer e' descartado -- preserva o
+// comportamento ja' testado de nao inventar chegada antecipada numa
+// abordagem rapida de verdade (teste "comeca rapido e para de verdade").
+// Teto calibrado com 1 caso real (6km/h sustentado) vs 1 caso sintetico
+// (45km/h, teste existente) -- ha' bastante margem entre os dois, mas
+// precisa de mais casos reais pra apertar o numero com confianca.
+const VELOCIDADE_RUIDO_ABERTURA_KMH = 15;
+
 export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = []): ParadaDerivada[] {
   const paradas: ParadaDerivada[] = [];
   let atual: { inicio: string; fim: string; lats: number[]; lngs: number[] } | null = null;
+  // Buffer de leituras "quase paradas" (ruido de velocidade, posicao
+  // plausivelmente parada) esperando confirmacao por uma leitura de
+  // verdade parada no mesmo lugar.
+  let pendentes: Posicao[] = [];
 
   const fechar = () => {
     if (!atual) return;
@@ -428,8 +471,29 @@ export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = 
 
   for (const p of posicoes) {
     if (!atual) {
-      if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) continue; // em movimento -- nada pra abrir ainda
-      atual = { inicio: p.criado_em, fim: p.criado_em, lats: [p.lat], lngs: [p.lng] };
+      if (p.velocidade <= VELOCIDADE_MAX_PARADO_KMH) {
+        // Confirma parada de verdade -- puxa o inicio pra tras ate' onde o
+        // buffer de ruido ainda estava dentro do raio deste ponto.
+        let inicio = p.criado_em;
+        for (let i = pendentes.length - 1; i >= 0; i--) {
+          if (haversineM(pendentes[i].lat, pendentes[i].lng, p.lat, p.lng) > RAIO_CLUSTER_PARADA_M) break;
+          inicio = pendentes[i].criado_em;
+        }
+        pendentes = [];
+        atual = { inicio, fim: p.criado_em, lats: [p.lat], lngs: [p.lng] };
+        continue;
+      }
+      if (p.velocidade <= VELOCIDADE_RUIDO_ABERTURA_KMH) {
+        // Ruido plausivel -- so' acumula enquanto continuar perto do
+        // proprio buffer (senao e' deslocamento real, nao chegada).
+        if (pendentes.length > 0 && haversineM(pendentes[0].lat, pendentes[0].lng, p.lat, p.lng) > RAIO_CLUSTER_PARADA_M) {
+          pendentes = [p];
+        } else {
+          pendentes.push(p);
+        }
+        continue;
+      }
+      pendentes = []; // trafego de verdade -- descarta qualquer ruido acumulado
       continue;
     }
     if (haversineM(atual.lats[0], atual.lngs[0], p.lat, p.lng) > RAIO_CLUSTER_PARADA_M) {

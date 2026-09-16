@@ -467,6 +467,34 @@ describe("acharVisitasPorPonto", () => {
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
       expect(visita).toEqual({ id: "NF1", chegada: "2026-09-14T13:00:00.000Z", saida: "2026-09-14T13:05:00.000Z" });
     });
+
+    // Achado real 15/09 (auditoria em massa, RQV9B26/NF 2372896): mesma
+    // logica de derivarParadas -- ruido de velocidade nao pode atrasar a
+    // deteccao de chegada no ponto especifico.
+    it("leituras de ruido (6-9km/h) dentro do raio do ponto antes de cravar parado: chegada volta pra' a mais antiga do ruido", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:15:00.000Z", velocidade: 6 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:16:00.000Z", velocidade: 6 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:17:00.000Z", velocidade: 6 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:18:00.000Z", velocidade: 6 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:19:00.000Z", velocidade: 6 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:20:00.000Z", velocidade: 6 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:21:00.000Z", velocidade: 0 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:22:00.000Z", velocidade: 0 },
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-15T12:15:00.000Z", saida: "2026-09-15T12:22:00.000Z" });
+    });
+
+    it("passagem rapida de verdade (velocidade alta, existente) continua sem confirmar", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:00:00.000Z", velocidade: 50 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:01:00.000Z", velocidade: 53 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:02:00.000Z", velocidade: 49 },
+      ];
+      const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
+      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null });
+    });
   });
 
   // Achado real 08/09 (KPI Nutry Max, placa RQV5F67/KINHA BAR): caminhao
@@ -648,6 +676,62 @@ describe("derivarParadas (paradas a partir do historico permanente de posicao)",
       expect(paradas).toHaveLength(2);
       expect(paradas[0].duracaoSeg).toBe(180); // 0 a 3min
       expect(paradas[1].duracaoSeg).toBe(180); // 10 a 13min, no novo lugar (p9 estava em movimento, so' abre a partir de p10 parado)
+    });
+  });
+
+  // Achado real 15/09 (auditoria em massa via subagentes, placa RQV9B26/NF
+  // 2372896 "Mercearia Sao Pedro"): GPS bruto real mostrou o caminhao
+  // parado a 5m do endereco por 7min (12:15-12:22 BRT), com velocidade
+  // 6km/h (so' 1km/h acima do limiar) nas 6 primeiras leituras -- so' as
+  // ultimas ~2 leituras cravaram 0. O fix de FECHAMENTO (acima) nao ajuda
+  // aqui porque o cluster nunca chega a ABRIR direito -- so' os ultimos
+  // segundos ficariam "parados", curto demais pro piso de 2min, e a
+  // permanencia inteira sumia. Achado em 61% dos casos de uma categoria no
+  // dia (paradas reais bem em cima do endereco confirmadas como "parada
+  // longe" so' porque abriram tarde demais).
+  describe("velocidade sozinha nao atrasa a ABERTURA de uma permanencia real (achado real 15/09, RQV9B26)", () => {
+    it("6 leituras de ruido (6-9km/h) na mesma posicao antes de cravar parado: chegada volta pra' a mais antiga do ruido", () => {
+      const paradas = derivarParadas([
+        p(0, -22.809740, -42.118222, 6),
+        p(1, -22.809740, -42.118222, 6),
+        p(2, -22.809740, -42.118222, 6),
+        p(3, -22.809740, -42.118222, 6),
+        p(4, -22.809740, -42.118222, 6),
+        p(5, -22.809740, -42.118222, 6),
+        p(6, -22.809678, -42.118200, 0), // confirma parado, ~7m do buffer
+        p(7, -22.809678, -42.118200, 0),
+        p(20, -22.3, -43.0, 44),          // vai embora de verdade
+      ], []);
+
+      expect(paradas).toHaveLength(1);
+      expect(paradas[0].duracaoSeg).toBe(420); // 0 a 7min, nao so' 6 a 7min
+    });
+
+    it("passagem rapida de verdade (45km/h, teste ja existente) continua sem contar chegada antecipada", () => {
+      // Mesmo cenario do teste "comeca rapido e para de verdade" acima --
+      // 45km/h esta' bem acima do teto de ruido (15km/h), entao o buffer
+      // e' descartado e a chegada so' conta do primeiro zero de verdade.
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:00:00.000Z", velocidade: 45 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:01:00.000Z", velocidade: 0 },
+        { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:05:00.000Z", velocidade: 0 },
+      ];
+      const paradas = derivarParadas(posicoes, []);
+      expect(paradas).toHaveLength(1);
+      expect(paradas[0].chegada).toBe("2026-09-11T09:01:00.000Z");
+    });
+
+    it("ruido de velocidade que se desloca de verdade (posicao muda) antes de confirmar: buffer reinicia, nao puxa chegada de um lugar diferente", () => {
+      const paradas = derivarParadas([
+        p(0, -22.9, -43.2, 8),    // ruido no lugar A
+        p(1, -22.9, -43.2, 8),    // ainda ruido em A
+        p(2, -22.7, -43.0, 8),    // ruido mas em lugar B, longe de A -- descarta buffer de A, buffer vira so' este
+        p(3, -22.7, -43.0, 0),    // confirma parado em B
+        p(4, -22.7, -43.0, 0),    // ainda parado (soma piso minimo de 2min)
+      ], []);
+
+      expect(paradas).toHaveLength(1);
+      expect(paradas[0].chegada).toBe(p(2, -22.7, -43.0, 8).criado_em); // volta so' ate' o inicio do ruido em B, nao em A
     });
   });
 });
