@@ -529,6 +529,46 @@ export function teveApagaoDeSinal(posicoes: Posicao[], limiarMin = LIMIAR_APAGAO
   return posicoes.some((p) => p.atraso_min > limiarMin);
 }
 
+// Achado real 15/09 (auditoria em massa via subagentes, "PASSOU NO ENDEREÇO
+// MAS NÃO REGISTROU PARADA" -- placas RQU3B36/RQP0G77/RBJ2H28): trechos de
+// 3-16min com lat/lng BIT-IDENTICOS enquanto velocidade reportada ficava
+// travada num valor alto e nao-zero (38, 48, 50, 51, 60km/h) -- fisicamente
+// impossivel (a essas velocidades o veiculo percorreria centenas de metros
+// a cada leitura, ~30-40s de cadencia). `atraso_min` fica BAIXO durante o
+// trecho (perto de 2min, nao sobe como no apagao de sinal classico) -- a
+// origem (API da Unitrac) parece estar devolvendo a MESMA leitura repetida
+// como se fosse fresca, nao um sinal de atraso conhecido. Diferente do
+// apagao de sinal (posicao congela com velocidade baixa/zero, atraso SOBE):
+// aqui a posicao tambem congela, mas alegando movimento rapido, com atraso
+// baixo -- os dois detectores nao se sobrepoem no mesmo padrao.
+//
+// So' DETECTA por enquanto (mesmo primeiro passo que teveApagaoDeSinal deu
+// antes de resolverParadas ganhar tratamento pra ele) -- nao muda
+// derivarParadas nem acharBlocoDentroDoRaio ainda. Preciso de mais casos
+// reais catalogados (so' 3 placas/1 dia medido) antes de decidir o que
+// fazer com o trecho congelado (descartar da clusterizacao? sinalizar pro
+// operador? cair pra Unitrac como no apagao?) -- ver Ruling na spec antes
+// de dar o proximo passo.
+const VELOCIDADE_MIN_CONGELAMENTO_KMH = 20; // >VELOCIDADE_RUIDO_ABERTURA_KMH(15) -- acima disso, deslocamento zero nao e' ruido plausivel de GPS parado, so' pode ser leitura repetida
+const LEITURAS_MINIMAS_CONGELAMENTO = 3; // pelo menos 3 leituras seguidas (~1-2min de cadencia real) pra nao confundir com 1 glitch isolado
+
+export function teveGpsCongelado(posicoes: Posicao[]): boolean {
+  let anterior: Posicao | null = null;
+  let seq = 1;
+  for (const p of posicoes) {
+    const repetePosicaoEmMovimento =
+      anterior != null &&
+      p.lat === anterior.lat &&
+      p.lng === anterior.lng &&
+      p.velocidade >= VELOCIDADE_MIN_CONGELAMENTO_KMH &&
+      anterior.velocidade >= VELOCIDADE_MIN_CONGELAMENTO_KMH;
+    seq = repetePosicaoEmMovimento ? seq + 1 : 1;
+    if (seq >= LEITURAS_MINIMAS_CONGELAMENTO) return true;
+    anterior = p;
+  }
+  return false;
+}
+
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
   const diretas = pontos.map((pt) => {
     const bloco = acharBlocoDentroDoRaio(pt, posicoes, RAIO_ENTREGA_M, basesCentro)
@@ -689,6 +729,7 @@ export async function POST(request: Request) {
     visitas?: VisitaPonto[];
     paradas?: ParadaDerivada[];
     apagaoDeSinal?: boolean;
+    gpsCongelado?: boolean;
   }[] = [];
   for (const placaBruta of placas) {
     const placaNorm = normPlaca(placaBruta);
@@ -719,6 +760,7 @@ export async function POST(request: Request) {
     // precisa. O KPI pede quando o dia caiu fora da janela de 48h da Unitrac.
     const paradas = incluirParadas ? derivarParadas(posicoes, basesCentro) : undefined;
     const apagaoDeSinal = incluirParadas ? teveApagaoDeSinal(posicoes) : undefined;
+    const gpsCongelado = incluirParadas ? teveGpsCongelado(posicoes) : undefined;
     resultados.push({
       placa: placaBruta,
       saidaBase,
@@ -727,6 +769,7 @@ export async function POST(request: Request) {
       ...(visitas ? { visitas } : {}),
       ...(paradas ? { paradas } : {}),
       ...(apagaoDeSinal !== undefined ? { apagaoDeSinal } : {}),
+      ...(gpsCongelado !== undefined ? { gpsCongelado } : {}),
     });
   }
 

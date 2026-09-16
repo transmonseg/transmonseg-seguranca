@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal } from "./route";
+import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveGpsCongelado } from "./route";
 
 const BASE = { lat: -22.816007, lng: -43.277827 };
 // ~50km da base -- claramente fora do raio de 500m.
@@ -772,5 +772,50 @@ describe('teveApagaoDeSinal', () => {
   it('exatamente no limiar nao conta como apagao (estritamente maior que)', () => {
     const posicoes = [{ ...base, velocidade: 0, atraso_min: 15 }]
     expect(teveApagaoDeSinal(posicoes)).toBe(false)
+  })
+})
+
+// Achado real 15/09 (auditoria em massa via subagentes, placas RQU3B36/
+// RQP0G77/RBJ2H28): trechos de 3-16min com posicao BIT-IDENTICA enquanto a
+// velocidade reportada ficava travada num valor alto (38-60km/h) -- atraso
+// baixo o tempo todo, diferente do apagao classico.
+describe('teveGpsCongelado', () => {
+  const p = (min: number, velocidade: number, lat = -22.9, lng = -43.2) => ({
+    lat, lng, velocidade, atraso_min: 2,
+    criado_em: `2026-09-15T12:${String(min).padStart(2, '0')}:00.000Z`,
+  })
+
+  it('3+ leituras seguidas na MESMA posicao com velocidade alta: detecta', () => {
+    const posicoes = [p(0, 50), p(1, 50), p(2, 50)]
+    expect(teveGpsCongelado(posicoes)).toBe(true)
+  })
+
+  it('so 2 leituras seguidas (glitch isolado, nao confirmado): nao detecta', () => {
+    const posicoes = [p(0, 50), p(1, 50), p(2, 0, -22.91, -43.21)]
+    expect(teveGpsCongelado(posicoes)).toBe(false)
+  })
+
+  it('velocidade alta mas posicao MUDA a cada leitura (deslocamento real): nao detecta', () => {
+    const posicoes = [p(0, 50, -22.90, -43.20), p(1, 50, -22.91, -43.21), p(2, 50, -22.92, -43.22)]
+    expect(teveGpsCongelado(posicoes)).toBe(false)
+  })
+
+  it('posicao identica mas velocidade baixa (parada real, nao congelamento): nao detecta', () => {
+    const posicoes = [p(0, 0), p(1, 0), p(2, 0), p(3, 0)]
+    expect(teveGpsCongelado(posicoes)).toBe(false)
+  })
+
+  it('posicao identica com velocidade logo abaixo do limiar (19km/h, ruido de abertura plausivel): nao detecta', () => {
+    const posicoes = [p(0, 19), p(1, 19), p(2, 19)]
+    expect(teveGpsCongelado(posicoes)).toBe(false)
+  })
+
+  it('sequencia congelada seguida de posicao mudando de novo: ainda detecta (achou o trecho no meio)', () => {
+    const posicoes = [p(0, 30, -22.80, -43.10), p(1, 50), p(2, 50), p(3, 50), p(4, 60, -22.85, -43.15)]
+    expect(teveGpsCongelado(posicoes)).toBe(true)
+  })
+
+  it('lista vazia: nao detecta', () => {
+    expect(teveGpsCongelado([])).toBe(false)
   })
 })
