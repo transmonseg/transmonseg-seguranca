@@ -30,3 +30,14 @@
 // Ou seja, exatamente um dos dois pipelines cobre cada cliente -- nunca zero
 // (falso negativo, o erro caro aqui) e nunca dois (alerta duplicado).
 export const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096"]); // Nutry Max
+
+// 21/09 (pedido do usuario: "volte tudo que dava certo"): em 21-27/08, quando
+// o desvio/parada eram medidos como "muito melhores", a Central Unitrac rodava
+// os 3 detectores de parada pra FROTA INTEIRA da Nutry Max (75 e 66 paradas
+// corretas/dia em 25 e 27/08). O desligamento de 26/08 (752acca) zerou isso na
+// aba Central que as operadoras monitoram (0 corretas/dia desde 28/08). true =
+// Central Unitrac volta a rodar as paradas pra todo veiculo, mesmo com
+// romaneio; a Central Romaneio segue rodando as dela (aba propria) -- custo
+// aceito: possivel alerta duplicado entre as duas abas. Voltar a false
+// restaura o comportamento por-veiculo de 14/09.
+export const PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA = true;

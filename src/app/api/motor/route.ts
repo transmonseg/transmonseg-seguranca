@@ -68,7 +68,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO } from "@/lib/config-clientes";
+import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import {
   melhorClasse,
@@ -2763,6 +2763,7 @@ export async function POST(request: Request) {
                   // romaneio, a Central Unitrac volta a cobrir esse veiculo
                   // como sempre cobriu antes de 31/07.
                   usaMotorRomaneioParalelo:
+                    !PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA &&
                     CLIENTES_COM_MOTOR_ROMANEIO_PARALELO.has(cliente.cod_user_unitrac) &&
                     placasComRomaneioHoje.has(pos.placa),
                 })
