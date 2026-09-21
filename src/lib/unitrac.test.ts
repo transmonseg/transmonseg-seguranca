@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, deveCorrigirComRomaneio, alvoNaFaixaPerto, pontoRomaneioMaisProximoParaConfirmarPresenca, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
+import { agruparPontosPorPlaca, removerPicosRastro, distanciaAoSegmentoM, haversineM, suspenderPorChegada, divergenciaRumoGraus, divergenciaRumoMinima, divergenciaRumoDispara, corrigirComPontoAprendido, deveCorrigirComRomaneio, alvoNaFaixaPerto, pontoRomaneioMaisProximoParaConfirmarPresenca, pontoPendenteMaisProximoParaConfirmarPresenca, type AlvoUnitrac, type PontoEntrega } from "./unitrac";
 
 describe("distanciaAoSegmentoM", () => {
   const origem = { lat: -22.9000, lng: -43.2000 };
@@ -536,5 +536,54 @@ describe("pontoRomaneioMaisProximoParaConfirmarPresenca", () => {
 
   it("lista vazia: null", () => {
     expect(pontoRomaneioMaisProximoParaConfirmarPresenca(-22.9071, -43.1780, [], 150)).toBeNull();
+  });
+});
+
+describe("pontoPendenteMaisProximoParaConfirmarPresenca", () => {
+  // Bug real 21/09: parada no Centro do Rio registrava em entregas_presenca TODOS
+  // os pendentes a <=500m (ate 24 por parada) com a mesma coordenada da parada.
+  const mk = (pontoCodigo: number | null, lat: number, lng: number, raio = 50) => ({ pontoCodigo, lat, lng, raio });
+  const parada = { lat: -22.9071, lng: -43.1780 };
+  const hotel = mk(1, -22.9071, -43.1780); // 0m
+  const grill = mk(2, -22.9074, -43.1783); // ~45m
+  const cafe = mk(3, -22.9090, -43.1795); // ~261m (dentro do piso de 500m)
+  const nunca = () => false;
+
+  it("registra so' o mais proximo, nao todos dentro do piso de 500m", () => {
+    const r = pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [cafe, grill, hotel], nunca, 500);
+    expect(r?.ponto.pontoCodigo).toBe(1);
+  });
+
+  it("pula pontos ja registrados e escolhe o proximo mais perto (parada longa, entregas em sequencia)", () => {
+    const r = pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [hotel, grill, cafe], (c) => c === 1, 500);
+    expect(r?.ponto.pontoCodigo).toBe(2);
+  });
+
+  it("nada dentro do raio: null (raio nao e' ampliado)", () => {
+    const longe = mk(9, -22.9200, -43.1780); // ~1,4km
+    expect(pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [longe], nunca, 500)).toBeNull();
+  });
+
+  it("raio proprio maior que o piso vale: ponto com raio 800m a ~700m e' aceito", () => {
+    const grande = mk(7, -22.9071 + 700 / 111_320, -43.1780, 800);
+    expect(pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [grande], nunca, 500)?.ponto.pontoCodigo).toBe(7);
+  });
+
+  it("fronteira do piso: 499m aceita, 501m rejeita", () => {
+    const dentro = mk(4, -22.9071 + 499 / 111_320, -43.1780);
+    const fora = mk(5, -22.9071 + 501 / 111_320, -43.1780);
+    expect(pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [dentro], nunca, 500)?.ponto.pontoCodigo).toBe(4);
+    expect(pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [fora], nunca, 500)).toBeNull();
+  });
+
+  it("ignora pontoCodigo null e lista vazia", () => {
+    expect(pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [mk(null, parada.lat, parada.lng)], nunca, 500)).toBeNull();
+    expect(pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [], nunca, 500)).toBeNull();
+  });
+
+  it("varios alvos (NFs) do mesmo pontoCodigo: escolhe um so', o codigo cobre todos", () => {
+    const a = mk(6, -22.9071, -43.1780);
+    const b = mk(6, -22.9071, -43.1780);
+    expect(pontoPendenteMaisProximoParaConfirmarPresenca(parada.lat, parada.lng, [a, b], nunca, 500)?.ponto.pontoCodigo).toBe(6);
   });
 });

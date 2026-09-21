@@ -378,6 +378,37 @@ export function pontoRomaneioMaisProximoParaConfirmarPresenca<
   return melhor;
 }
 
+// Ponto Unitrac PENDENTE mais proximo da parada que ainda nao teve presenca
+// registrada hoje, dentro do raio do proprio ponto (com piso `pisoRaioM`).
+// Usado por "parada no local conta como entregue" (motor/route.ts, grava em
+// entregas_presenca, que alimenta aprender_pontos_entrega()). Achado 21/09:
+// o loop anterior registrava TODO pendente dentro de max(raio, 500m) com a
+// MESMA coordenada da parada -- ~50% dos registros de entregas_presenca vinham
+// de paradas com 2+ pontos (ate 24), ensinando a coordenada de um cliente
+// visitado como se fosse a de todos os vizinhos. Mesma classe do bug de 14/09
+// (pontoRomaneioMaisProximoParaConfirmarPresenca). O raio NAO e ampliado.
+// Varios alvos (NFs) do mesmo pontoCodigo contam como um ponto so.
+export function pontoPendenteMaisProximoParaConfirmarPresenca<
+  T extends { pontoCodigo: number | null; lat: number; lng: number; raio: number }
+>(
+  lat: number,
+  lng: number,
+  pendentes: T[],
+  jaConfirmado: (pontoCodigo: number) => boolean,
+  pisoRaioM: number
+): { ponto: T; distM: number } | null {
+  let melhor: { ponto: T; distM: number } | null = null;
+  for (const pt of pendentes) {
+    if (pt.pontoCodigo == null) continue;
+    if (jaConfirmado(pt.pontoCodigo)) continue;
+    const distM = haversineM(lat, lng, pt.lat, pt.lng);
+    if (distM <= Math.max(pt.raio, pisoRaioM) && (melhor === null || distM < melhor.distM)) {
+      melhor = { ponto: pt, distM };
+    }
+  }
+  return melhor;
+}
+
 // Rumo inicial (graus, 0=Norte, 90=Leste) de A para B.
 export function rumoGraus(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const toR = (d: number) => (d * Math.PI) / 180;

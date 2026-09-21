@@ -33,6 +33,7 @@ import {
   rumoGraus,
   haversineM,
   pontoRomaneioMaisProximoParaConfirmarPresenca,
+  pontoPendenteMaisProximoParaConfirmarPresenca,
   normalizar,
   centroideGeo,
   distanciaAoSegmentoM,
@@ -2494,9 +2495,21 @@ export async function POST(request: Request) {
           // alvoNoRaioAgora continua intocado -- bypass_entrega e o dwell
           // dele nao mudam.
           if (ENTREGA_PRESENCA_ATIVA && pos.fresco && pos.velocidade === 0 && paradoMin * 60 >= ENTREGA_PRESENCA_MIN_SEG) {
-            for (const pt of pendentes) {
-              if (pt.pontoCodigo == null) continue;
-              if (presencaEntregaCliente.has(`${veiculo_id}:${pt.pontoCodigo}`)) continue;
+            // Achado real 21/09: so o ponto MAIS PROXIMO ainda nao registrado
+            // por parada/ciclo (nao todos dentro do raio) -- ver
+            // pontoPendenteMaisProximoParaConfirmarPresenca em unitrac.ts.
+            // Paradas longas com varios pontos no mesmo endereco continuam
+            // registrando um por ciclo (presencaEntregaCliente e' relido do
+            // banco a cada ciclo e o ponto sai de `pendentes`), so' nao em lote.
+            const maisPertoPresenca = pontoPendenteMaisProximoParaConfirmarPresenca(
+              pos.lat,
+              pos.lng,
+              pendentes,
+              (codigo) => presencaEntregaCliente.has(`${veiculo_id}:${codigo}`),
+              RAIO_PRESENCA_MIN_M
+            );
+            if (maisPertoPresenca) {
+              const pt = maisPertoPresenca.ponto;
               // Achado real 10/08 (revisao final de branch, Finding 4):
               // comparar contra `pt` corrigido tinha risco teorico de loop
               // fechado se o endereco real do cliente mudasse (o gate ficaria
@@ -2514,8 +2527,7 @@ export async function POST(request: Request) {
               // e' de SUPRESSAO DE DESVIO e fica em 300m de proposito -- ver
               // comentario em unitrac.ts). Confirmacao de presenca pode ter
               // piso mais largo (500m) sem criar area cega de desvio.
-              const distM = haversineM(pos.lat, pos.lng, pt.lat, pt.lng);
-              if (distM <= Math.max(pt.raio, RAIO_PRESENCA_MIN_M)) {
+              if (pt.pontoCodigo != null) {
                 presencaEntregaCiclo.push({
                   veiculo_id,
                   ponto_codigo: pt.pontoCodigo,
