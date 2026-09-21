@@ -84,7 +84,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, GATES_SUPRESSAO_DESVIO_ATIVOS } from "@/lib/config-clientes";
+import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
@@ -1576,10 +1576,15 @@ export async function POST(request: Request) {
         // dia em que um segundo cliente ganhar romaneio e os 3 detectores
         // passarem a rodar nos DOIS pipelines pra ele.
         const pontosUnitracVeiculo = pontosUnitracPorPlaca.get(info.placa) ?? [];
-        const { avaliaDesvio, avaliaParadas } = decidirEscopoDoVeiculo({
+        const escopoVeiculo = decidirEscopoDoVeiculo({
           qtdAlvosUnitracDoVeiculo: pontosUnitracVeiculo.length,
           codUserUnitrac: codUserUnitracPorCliente.get(info.cliente_id) ?? null,
         });
+        const { avaliaDesvio } = escopoVeiculo;
+        // 21/09: com a Central Unitrac cobrindo parada pra frota inteira (como
+        // em 25/08) a Central Romaneio nao roda as suas -- evita alerta
+        // duplicado entre as duas abas (reclamacao de 28/08).
+        const avaliaParadas = escopoVeiculo.avaliaParadas && !PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA;
 
         // Step 1: posição atual -- mesma fonte da Central (posicoes_atuais), SOMENTE LEITURA.
         const posAtual = posAtualPorVeiculo.get(veiculoId);

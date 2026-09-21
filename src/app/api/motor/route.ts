@@ -627,7 +627,8 @@ export async function POST(request: Request) {
   // Idem pro log de instrumentacao de "parada fora de rota" (09/09,
   // migration 077, ver LIMIAR_MIN_PARADA_FORA_DE_ROTA em lib/desvio.ts) --
   // NUNCA cria alerta, so' acumula dado real pra calibracao futura.
-  const logParadaForaDeRota = { habilitado: true };
+  // 21/09: instrumentacao de 09/09 (1a72d24) desligada -- 25/08 nao tinha; sem efeito de alerta.
+  const logParadaForaDeRota = { habilitado: false };
   // Populado por cliente (candidatos deste ciclo, ver preencherGeocodeCacheCandidatos
   // e a pre-passada de cada cliente) — nao busca a tabela inteira (ver comentario ali).
   const cacheGeocode = new Map<string, string>();
