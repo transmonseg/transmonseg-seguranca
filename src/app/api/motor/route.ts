@@ -3606,8 +3606,13 @@ export async function POST(request: Request) {
           // na tela, so' perde prioridade. Aplicado DEPOIS do log de disparo
           // (desvio_disparo_log.tipo_disparo tem CHECK e o disparo real foi
           // afastando_geral) e da calibracao/corredor, que valem pro sinal original.
+          // Revisao adversarial (21/09): so' rebaixa com alvos da Unitrac
+          // DISPONIVEIS neste ciclo -- se a API caiu ha mais de 30 min
+          // (ALVOS_FALLBACK_MAX_MS) a lista vem vazia pra frota inteira e todo
+          // desvio virava "sem destinos".
           if (
             alertaDesvioV2 &&
+            alvosDestinosDisponiveis &&
             deveRebaixarDesvioSemDestinos({
               flagAtiva: DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO,
               origemDesvio: alertaDesvioV2.origemDesvio,
@@ -4111,6 +4116,8 @@ export async function POST(request: Request) {
                   .update({
                     desde: agora.toISOString(),
                     status: "ativo",
+                    lat: pos.lat,
+                    lng: pos.lng,
                     nivel: alerta.nivel,
                     motivo: alerta.motivo,
                     score: alerta.score,

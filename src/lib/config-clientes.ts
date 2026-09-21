@@ -78,4 +78,9 @@ export const DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO = true;
 // sobra so' a base, inclui o cliente pendente mais proximo na avaliacao de
 // "afastando de todos". Medido no gabarito: 14 falsos, 0 corretos. Se o OSRM nao
 // rotear ate esse cliente, a avaliacao cai de volta na lista antiga.
-export const DESVIO_INCLUI_CLIENTE_DISTANTE_NA_LISTA = true;
+// Revisao adversarial (21/09): DESLIGADA por padrao. Incluir o cliente distante
+// faz aproximandoAlgum ficar true durante a rota longa inteira (LIMIAR_TRANSITO_
+// LONGO_M=300km), o que tambem desliga o Sinal B rua_rara e faz o streak
+// decair -- reintroduz o mascaramento de 13/08 em escopo maior e nao foi
+// medido por ciclo. So' liga depois de contrafactual por ciclo.
+export const DESVIO_INCLUI_CLIENTE_DISTANTE_NA_LISTA = false;
