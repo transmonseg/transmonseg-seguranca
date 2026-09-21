@@ -52,3 +52,30 @@ export const PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA = true;
 // voltam os falsos "saindo/retornando da base" reclamados em 28/08-03/09.
 // true religa os tres.
 export const GATES_SUPRESSAO_DESVIO_ATIVOS = false;
+
+// 21/09 (diagnostico com o gabarito do grupo DESVIO DE ROTA: 455 vereditos, 303
+// alertas casados). Tres ajustes na visibilidade/prioridade do desvio da
+// Central Unitrac, cada um com flag propria (true = ligado; false = comportamento
+// anterior). Nenhum fecha, silencia ou remove alerta: so' muda QUANDO um
+// episodio novo aparece e COM QUE prioridade. Ver lib/desvio-episodio.ts e
+// lib/desvio-destinos.ts.
+
+// Episodio novo (>= 10 min sem disparo) de um veiculo que JA tem desvio aberto
+// reabre o alerta existente (sobe `desde`, volta a 'ativo', marca
+// contexto.episodios) em vez de ficar escondido pelo dedupe por tipo. Medido:
+// 445 de 892 episodios de 14-20/09 (50%) estavam escondidos sob alerta velho,
+// contra 270 de 1066 (25%) em 24-28/08.
+export const DESVIO_EPISODIO_NOVO_REABRE_ALERTA = true;
+
+// "Afastando de todos" com ZERO pendente de cliente na lista de destinos (so'
+// base/escala) vira desvio nivel 'atencao' / origem 'sem_destinos' em vez de
+// critico. Medido no gabarito: 71 falsos e 1 unico correto ambiguo (9E37 em
+// 21/09, que a propria operadora disse que "deveria ser saida de base sem
+// informacao"). Rebaixa, nunca silencia.
+export const DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO = true;
+
+// Quando o filtro de 50 km tira TODOS os clientes pendentes (rota longa) e
+// sobra so' a base, inclui o cliente pendente mais proximo na avaliacao de
+// "afastando de todos". Medido no gabarito: 14 falsos, 0 corretos. Se o OSRM nao
+// rotear ate esse cliente, a avaliacao cai de volta na lista antiga.
+export const DESVIO_INCLUI_CLIENTE_DISTANTE_NA_LISTA = true;

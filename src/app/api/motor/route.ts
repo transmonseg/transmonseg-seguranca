@@ -69,7 +69,25 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA, GATES_SUPRESSAO_DESVIO_ATIVOS } from "@/lib/config-clientes";
+import {
+  CLIENTES_COM_MOTOR_ROMANEIO_PARALELO,
+  PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA,
+  GATES_SUPRESSAO_DESVIO_ATIVOS,
+  DESVIO_EPISODIO_NOVO_REABRE_ALERTA,
+  DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO,
+  DESVIO_INCLUI_CLIENTE_DISTANTE_NA_LISTA,
+} from "@/lib/config-clientes";
+import {
+  deveReabrirDesvio,
+  montarContextoReabertura,
+  ORIGENS_DESVIO_COM_LOG_DE_DISPARO,
+} from "@/lib/desvio-episodio";
+import {
+  deveRebaixarDesvioSemDestinos,
+  rebaixarDesvioSemDestinos,
+  indiceClienteDistanteParaIncluir,
+  indicesComClienteDistante,
+} from "@/lib/desvio-destinos";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import {
   melhorClasse,
@@ -303,6 +321,34 @@ function criaPgPool() {
     ...configPoolContabo(process.env.DATABASE_URL),
     max: 3,
   });
+}
+
+// Ultimo disparo de desvio (afastando_geral/rua_rara_frota) DESTE veiculo
+// ANTES do ciclo atual -- base do "episodio novo reabre alerta" (lib/
+// desvio-episodio.ts). Exclui o registro do proprio ciclo (gravado depois de
+// `agora`, o inicio do ciclo). null = sem registro nas ultimas 24h OU falha na
+// consulta: quem chama NAO reabre (comportamento anterior preservado). Erro vai
+// pro console (PM2) -- nunca derruba o veiculo.
+async function buscarUltimoDisparoDesvioMs(
+  pool: pg.Pool,
+  veiculoId: string,
+  agora: Date
+): Promise<number | null> {
+  try {
+    const limiteInferior = new Date(agora.getTime() - 24 * 60 * 60 * 1000);
+    const { rows } = await pool.query<{ ultimo: Date | null }>(
+      `SELECT max(criado_em) AS ultimo FROM desvio_disparo_log
+        WHERE veiculo_id = $1
+          AND tipo_disparo IN ('afastando_geral', 'rua_rara_frota')
+          AND criado_em < $2 AND criado_em > $3`,
+      [veiculoId, agora.toISOString(), limiteInferior.toISOString()]
+    );
+    const ultimo = rows[0]?.ultimo;
+    return ultimo ? new Date(ultimo).getTime() : null;
+  } catch (err) {
+    console.error(`[episodio-desvio] falha ao consultar ultimo disparo | veiculo_id=${veiculoId}`, err);
+    return null;
+  }
 }
 
 // Trava de execução única do ciclo do motor. O cron dispara o POST a cada 30s
@@ -2909,7 +2955,28 @@ export async function POST(request: Request) {
           const indicesRelevantes = destinos
             .map((_, i) => i)
             .filter((i) => haversineM(pos.lat, pos.lng, destinos[i].lat, destinos[i].lng) <= LIMIAR_DESTINO_RELEVANTE_M);
-          const destinosRelevantes = indicesRelevantes.map((i) => destinos[i]);
+          // 21/09 (gabarito do grupo: 14 falsos, 0 corretos, todos de manha, rota
+          // longa com ~25 pendentes): quando o filtro de 50km deixa ZERO cliente
+          // e sobra so' a base, "afastar da base" (o que sair da base significa)
+          // virava alerta. Inclui o cliente pendente MAIS PROXIMO na AVALIACAO,
+          // pra "afastando de todos" exigir afastar tambem dele. Recall: o filtro
+          // de 13/08 existia pra um destino distante nao MASCARAR divergencia
+          // local (se o veiculo aproxima de leve do destino distante enquanto
+          // desvia local, o desvio nunca dispara) -- risco aceito aqui SO' pro
+          // caso sem nenhum cliente relevante, com um unico cliente (o mais
+          // proximo) e a base continuando na lista; se o OSRM nao rotear ate ele,
+          // cai na lista antiga (ver bloco de distancias mais abaixo).
+          // `indicesRelevantes` (base) segue alimentando temPendenteRelevante/
+          // temPendenteForaDoRaio (gates e anotacoes) -- semantica inalterada.
+          const indiceClienteDistante = DESVIO_INCLUI_CLIENTE_DISTANTE_NA_LISTA
+            ? indiceClienteDistanteParaIncluir({
+                distRetaM: distDestinosM,
+                nPendentes: pontosVeiculoParaDesvio.length,
+                indicesRelevantes,
+              })
+            : null;
+          const destinosRelevantesBase = indicesRelevantes.map((i) => destinos[i]);
+          let destinosRelevantes = indicesComClienteDistante(indicesRelevantes, indiceClienteDistante).map((i) => destinos[i]);
           // Achado real 31/08 (ver ehSaidaDeBaseSemDestinoAvaliavel em
           // lib/desvio.ts): interessa saber se o conjunto avaliado ficou SEM
           // nenhum cliente pendente, e se isso aconteceu por causa do filtro
@@ -3115,11 +3182,26 @@ export async function POST(request: Request) {
               }
             }
 
-            const distAtuaisReais = await buscarDistanciasReais(posParaAvaliar, destinosRelevantes);
-            const distAnterioresReais =
-              anteriorParaAvaliar && distAtuaisReais
-                ? await buscarDistanciasReais(anteriorParaAvaliar, destinosRelevantes)
-                : null;
+            const buscarParDistancias = async (lista: { lat: number; lng: number }[]) => {
+              const atual = await buscarDistanciasReais(posParaAvaliar, lista);
+              const anteriorReal =
+                anteriorParaAvaliar && atual ? await buscarDistanciasReais(anteriorParaAvaliar, lista) : null;
+              return { atual, anteriorReal };
+            };
+            let parDistancias = await buscarParDistancias(destinosRelevantes);
+            // Cliente distante incluido (mudanca de 21/09) e o OSRM nao roteou
+            // ate ele (null = destino sem rota / fora do extract / timeout):
+            // NAO perde a avaliacao do ciclo -- refaz com a lista antiga (so' a
+            // base), exatamente como era antes. Recall primeiro.
+            if (
+              indiceClienteDistante != null &&
+              (!parDistancias.atual || (anteriorParaAvaliar && !parDistancias.anteriorReal))
+            ) {
+              destinosRelevantes = destinosRelevantesBase;
+              parDistancias = await buscarParDistancias(destinosRelevantes);
+            }
+            const distAtuaisReais = parDistancias.atual;
+            const distAnterioresReais = parDistancias.anteriorReal;
 
             if (distAtuaisReais && distAnterioresReais) {
               const afastando = avaliarAfastandoDeTudo(distAtuaisReais, distAnterioresReais, estadoDesvioAnterior.afastandoStreak);
@@ -3515,6 +3597,24 @@ export async function POST(request: Request) {
             // teria se este ciclo simplesmente nao existisse.
             afastandoStreakNovo = estadoDesvioAnterior.afastandoStreak;
             ruaRaraStreakNovo = estadoDesvioAnterior.ruaRaraStreak;
+          }
+          // 21/09 (gabarito do grupo): "afastando de todos" com ZERO pendente de
+          // cliente na lista de destinos (so' base/escala) e' falso em 71 de 72
+          // casos casados (o unico "correto", 9E37 em 21/09, a propria operadora
+          // disse que "deveria ser saida de base sem informacao"). REBAIXA pra
+          // atencao / origem "sem_destinos" em vez de critico -- o alerta continua
+          // na tela, so' perde prioridade. Aplicado DEPOIS do log de disparo
+          // (desvio_disparo_log.tipo_disparo tem CHECK e o disparo real foi
+          // afastando_geral) e da calibracao/corredor, que valem pro sinal original.
+          if (
+            alertaDesvioV2 &&
+            deveRebaixarDesvioSemDestinos({
+              flagAtiva: DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO,
+              origemDesvio: alertaDesvioV2.origemDesvio,
+              nPendentesCliente: pontosVeiculoParaDesvio.length,
+            })
+          ) {
+            alertaDesvioV2 = rebaixarDesvioSemDestinos(alertaDesvioV2);
           }
           if (alertaDesvioV2) candidatosCore.push(alertaDesvioV2);
 
@@ -3980,6 +4080,48 @@ export async function POST(request: Request) {
                     desde: agora.toISOString(),
                   });
                 }
+              } else if (
+                DESVIO_EPISODIO_NOVO_REABRE_ALERTA &&
+                alerta.tipo === "desvio" &&
+                alerta.origemDesvio !== undefined &&
+                ORIGENS_DESVIO_COM_LOG_DE_DISPARO.has(alerta.origemDesvio) &&
+                !(alertaExistente.nivel === "critico" && alerta.nivel !== "critico") &&
+                // Alerta velho, episodio novo (21/09): o dedupe por tipo escondia
+                // 50% dos episodios de 14-20/09 (445 de 892) sob um desvio aberto
+                // e nunca tratado. So' consulta o banco nesse caso (veiculo com
+                // desvio aberto E disparando agora), nunca todo veiculo/ciclo.
+                deveReabrirDesvio({
+                  flagAtiva: true,
+                  tipoAlerta: alerta.tipo,
+                  origemDesvio: alerta.origemDesvio,
+                  nivelNovo: alerta.nivel,
+                  nivelExistente: alertaExistente.nivel,
+                  ultimoDisparoEmMs: await buscarUltimoDisparoDesvioMs(pool, veiculo_id, agora),
+                  agoraMs: agora.getTime(),
+                  desdeExistenteMs: new Date(alertaExistente.desde).getTime(),
+                })
+              ) {
+                // REABRE sem fechar nada e sem linha nova: sobe `desde` (a UI ordena,
+                // colore por idade e protege da acao em massa por ele), volta a
+                // 'ativo' se estava 'reconhecido' e marca contexto.episodios. Cooldown
+                // pos-tratamento e silenciamento de 2h ja' foram respeitados acima
+                // (este bloco so' roda com alerta ABERTO e `!silenciado`).
+                await supabase
+                  .from("alertas")
+                  .update({
+                    desde: agora.toISOString(),
+                    status: "ativo",
+                    nivel: alerta.nivel,
+                    motivo: alerta.motivo,
+                    score: alerta.score,
+                    contexto: montarContextoReabertura(
+                      contextoAlerta as Record<string, unknown>,
+                      alertaExistente.contexto,
+                      agora.toISOString(),
+                      alertaExistente.desde
+                    ),
+                  })
+                  .eq("id", alertaExistente.id);
               } else if (alertaExistente.nivel !== "critico" && alerta.nivel === "critico") {
                 // Achado real 22/07 (revisao final de whole-branch, sub-projeto
                 // C): o alerta FRACO de desvio (nivel atencao, teto de 300km)
@@ -3989,6 +4131,11 @@ export async function POST(request: Request) {
                 // novo alerta e mais severo que o existente do mesmo tipo,
                 // escala a linha existente (preserva id/desde) em vez de
                 // descartar o sinal mais grave.
+                // 21/09: se o alerta existente era o desvio REBAIXADO "sem_destinos",
+                // o critico que chega agora e' um evento novo (veiculo passou a ter
+                // destinos e esta afastando) -- sobe `desde`/status tambem.
+                const existenteEraSemDestinos =
+                  (alertaExistente.contexto as { origem_desvio?: string } | null)?.origem_desvio === "sem_destinos";
                 await supabase
                   .from("alertas")
                   .update({
@@ -3996,6 +4143,7 @@ export async function POST(request: Request) {
                     motivo: alerta.motivo,
                     score: alerta.score,
                     contexto: contextoAlerta,
+                    ...(existenteEraSemDestinos ? { desde: agora.toISOString(), status: "ativo" } : {}),
                   })
                   .eq("id", alertaExistente.id);
               }

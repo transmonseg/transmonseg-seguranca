@@ -48,7 +48,8 @@ export function segmentoCalibracaoPreferido(
       | "classe_viaria"
       | "rumo_diverge"
       | "afastando_geral"
-      | "rua_rara_frota";
+      | "rua_rara_frota"
+      | "sem_destinos";
   },
   corredorVeredito: string | null | undefined
 ): string | null {
@@ -65,6 +66,12 @@ export function segmentoCalibracaoPreferido(
   }
   if (alerta.tipo === "desvio" && alerta.origemDesvio === "rua_rara_frota") {
     return "origem:rua_rara_frota";
+  }
+  // 21/09: "afastando de todos" sem nenhum cliente na lista (rebaixado pra
+  // atencao). Segmento proprio pra a taxa de falso positivo dele (~98% no
+  // gabarito) nao contaminar "origem:afastando_geral" nem o balde generico.
+  if (alerta.tipo === "desvio" && alerta.origemDesvio === "sem_destinos") {
+    return "origem:sem_destinos";
   }
   // Achado real 28/07 (Task 2, Step 4 -- grep obrigatorio por todo o repo
   // antes de estender "rumo_diverge"): `alerta.origemDesvio === "comportamental"`

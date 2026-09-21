@@ -100,6 +100,7 @@ export async function registrarCasosDesvioRevisao(
         | "rumo_diverge"
         | "afastando_geral"
         | "rua_rara_frota"
+        | "sem_destinos"
         | undefined;
       const segmento = segmentoCalibracaoPreferido({ tipo: a.tipo, origemDesvio }, null);
 

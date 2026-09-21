@@ -42,6 +42,9 @@ interface AlertaEnriquecido {
   progressoDestinoM: number | null;
   placarSombra: { placar: number; componentes: Record<string, number | boolean | string> } | null;
   calibracao: { segmento: string | null; taxa_falso_positivo: number } | null;
+  // 21/09: "Reaberto — Nº episódio" quando um episódio novo reabriu este desvio
+  // (lib/desvio-episodio.ts). Opcional: a Central Romaneio não preenche.
+  reabertura?: string | null;
 }
 
 interface ClienteInfo { id: string; nome: string; cod: string; }
@@ -1582,6 +1585,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 background: `${T.yellow}22`, color: T.yellow, letterSpacing: ".03em",
               }}>
                 GPS +{Math.round(a.atraso_min)}min
+              </span>
+            )}
+            {a.reabertura && (
+              <span title="Novo episodio de desvio neste veiculo: o alerta ja estava aberto e foi reaberto (o horario ao lado e' do episodio atual)" style={{
+                fontSize: 9, fontWeight: 800, padding: "1px 5px", borderRadius: 4,
+                background: `${T.accent}22`, color: T.accent, letterSpacing: ".03em",
+              }}>
+                ↻ {a.reabertura}
               </span>
             )}
             {(() => {

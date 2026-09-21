@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { formatarReabertura } from "@/lib/desvio-episodio";
 
 export const dynamic = "force-dynamic";
 
@@ -150,6 +151,7 @@ export async function GET(request: Request) {
         progressoDestinoM: a.contexto?.progresso_destino?.delta_m ?? null,
         placarSombra: a.contexto?.placar_sombra ?? null,
         calibracao: a.contexto?.calibracao ?? null,
+        reabertura: formatarReabertura(a.contexto),
       };
     }
   );

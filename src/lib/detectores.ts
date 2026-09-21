@@ -56,7 +56,9 @@ export type Alerta = {
   // so a DIRECAO diverge). Sem valor proprio, a taxa de falso positivo
   // desta regra especifica ficava escondida dentro do balde generico
   // tipo:desvio (ver segmentoCalibracaoPreferido em calibracao-desvio.ts).
-  origemDesvio?: "afastando_geral" | "rua_rara_frota";
+  // "sem_destinos" (21/09): "afastando de todos" quando a lista de destinos nao
+  // tem NENHUM cliente pendente -- rebaixado pra atencao (lib/desvio-destinos.ts).
+  origemDesvio?: "afastando_geral" | "rua_rara_frota" | "sem_destinos";
 };
 
 // Informativo de veiculo sem comunicacao (atraso > 60 min).
