@@ -89,7 +89,16 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M } from "@/lib/desvio";
+import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, RETORNO_BASE_JANELA_S, type LeituraRetornoBase } from "@/lib/desvio";
+import {
+  GATE_SAIDA_BASE_ATIVO,
+  PERIODO_CICLO_MOTOR_S,
+  calcularDtParSegundos,
+  decidirSupressaoDesvioRomaneio,
+  distanciaBaseMaisProximaM,
+  ehSaltoDeReconciliacaoRomaneio,
+  montarLeiturasRetornoBase,
+} from "@/lib/desvio-supressao-romaneio";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import {
   melhorClasse,
@@ -935,6 +944,12 @@ export async function POST(request: Request) {
   // que pulou veículo por regra" (sem posição fresca, idempotência de datagps)
   // de "ciclo ficando caro" -- ver LIMIAR_AVISO_DURACAO_MS.
   let veiculosComRomaneio = 0;
+  // Auditoria dos 3 gates de supressao de desvio portados da Central
+  // (ver @/lib/desvio-supressao-romaneio). NAO grava em desvio_disparo_log: o
+  // cabecalho deste arquivo proibe escrever em tabela da Central e nao existe
+  // tabela equivalente do romaneio (criar uma exige migration, fora do escopo).
+  // Contagem por ciclo na resposta + linha no log do PM2 quando suprime.
+  const suprimidosPorGate = { salto_reconciliacao: 0, retorno_base: 0, saida_base: 0 };
 
   // Fecha o ciclo sempre pelo mesmo lugar, pra que TODA resposta de ciclo
   // executado carregue as 3 métricas (e o aviso de duração saia uma vez só).
@@ -953,6 +968,7 @@ export async function POST(request: Request) {
       veiculosComRomaneio,
       alertasGerados,
       alertasSombraGerados,
+      suprimidosPorGate,
       duracaoMs,
       erros,
     });
@@ -1710,16 +1726,23 @@ export async function POST(request: Request) {
         // estava com velocidade 0 no MESMO ponto -- mesma checagem da Central
         // (route.ts:1956-1961), que lá lê do snapshot anterior de
         // posicoes_atuais e aqui vem desta mesma leitura anterior.
+        //
+        // atraso_min e criado_em entram junto (gate de salto de reconciliacao,
+        // portado da Central): a Central le esses dois do snapshot anterior de
+        // posicoes_atuais (atraso_min, updated_at); o equivalente aqui e' o
+        // atraso gravado na propria leitura anterior e o instante em que ela
+        // foi gravada.
+        type LeituraAnteriorRow = { lat: number; lng: number; velocidade: number | null; atraso_min: number | null; criado_em: Date | string | null };
         const corteAnterior = posAtual.updated_at;
         const { rows: anteriorRows } = corteAnterior
-          ? await pool.query<{ lat: number; lng: number; velocidade: number | null }>(
-              `SELECT lat, lng, velocidade FROM posicoes_historico
+          ? await pool.query<LeituraAnteriorRow>(
+              `SELECT lat, lng, velocidade, atraso_min, criado_em FROM posicoes_historico
                 WHERE veiculo_id = $1 AND criado_em < $2
                 ORDER BY criado_em DESC LIMIT 1`,
               [veiculoId, corteAnterior]
             )
-          : await pool.query<{ lat: number; lng: number; velocidade: number | null }>(
-              `SELECT lat, lng, velocidade FROM posicoes_historico
+          : await pool.query<LeituraAnteriorRow>(
+              `SELECT lat, lng, velocidade, atraso_min, criado_em FROM posicoes_historico
                 WHERE veiculo_id = $1
                 ORDER BY criado_em DESC LIMIT 1 OFFSET 1`,
               [veiculoId]
@@ -2043,17 +2066,41 @@ export async function POST(request: Request) {
         // dentro roda: nenhuma chamada de OSRM, nenhum montarAlertaDesvio,
         // `alerta` fica null e afastandoStreakNovo/ruaRaraStreakNovo ficam 0
         // (mesmo default de qualquer outro ciclo bloqueado).
-        if (
-          deveAvaliarSinalA({
-            avaliaDesvio,
-            fresco,
-            suspensoPorChegada,
-            emCarenciaDeBase,
-            paradoSemSeMover,
-            movimentoInsignificante,
-            qtdDestinosRelevantes: destinosRelevantes.length,
-          })
-        ) {
+        const avaliavelSinalA = deveAvaliarSinalA({
+          avaliaDesvio,
+          fresco,
+          suspensoPorChegada,
+          emCarenciaDeBase,
+          paradoSemSeMover,
+          movimentoInsignificante,
+          qtdDestinosRelevantes: destinosRelevantes.length,
+        });
+
+        // Gate de salto de reconciliacao de telemetria atrasada (28/08),
+        // portado da Central (motor/route.ts, ehSaltoDeReconciliacaoDeAtraso
+        // em lib/desvio.ts pro achado e a calibracao). Mesma disciplina: so'
+        // vale quando este seria um ciclo AVALIADO (senao logaria/contaria a
+        // frota parada inteira), suspende SO' este ciclo e PRESERVA o streak
+        // (ver o `else if` no fim do bloco). Fail-open: sem atraso anterior,
+        // sem timestamp da leitura anterior ou sem movimento medido, nao age.
+        const anteriorGravadoEmMs =
+          anterior?.criado_em != null ? new Date(anterior.criado_em).getTime() : null;
+        const saltoDeReconciliacao =
+          avaliavelSinalA &&
+          ehSaltoDeReconciliacaoRomaneio({
+            atrasoAnteriorMin: anterior?.atraso_min ?? null,
+            atrasoAtualMin: posAtual.atraso_min,
+            movimentoRealM,
+            dtParSegundos: calcularDtParSegundos(agora.getTime(), anteriorGravadoEmMs, PERIODO_CICLO_MOTOR_S),
+          });
+        if (saltoDeReconciliacao) {
+          suprimidosPorGate.salto_reconciliacao++;
+          console.log(
+            `desvio-romaneio: suprimido_salto_reconciliacao veiculo=${veiculoId} atrasoAnt=${anterior?.atraso_min} atrasoAtual=${posAtual.atraso_min} movimentoRealM=${Math.round(movimentoRealM ?? 0)}`
+          );
+        }
+
+        if (avaliavelSinalA && !saltoDeReconciliacao) {
           // M3: correção de posição via OSRM /match (route.ts:2551-2624) --
           // só entra em ação quando já existe streak (afastandoStreak > 0) e
           // existe pra matar o ruído de snap-to-road do achado de 13/08.
@@ -2102,6 +2149,72 @@ export async function POST(request: Request) {
             // histórica caso volte a ser religado.
             alerta = montarAlertaDesvio(afastando, { ...ruaRara, disparou: false, celula: celulaAtual, nVisitas: nVisitasHistorico });
 
+            // Gates de supressao portados da Central (28/08 retorno a base,
+            // 10/09 horario avancado 14:30, 31/08 saida da base -- achados e
+            // calibracao em lib/desvio.ts). Mesma posicao da Central: logo
+            // depois do detector montar o alerta e ANTES das corroboracoes.
+            // NAO mexem no streak (afastandoStreakNovo ja' foi escrito acima):
+            // o alerta sai assim que qualquer condicao deixar de valer.
+            // Fail-open: qualquer erro aqui deixa o alerta seguir.
+            if (alerta?.origemDesvio === "afastando_geral") {
+              try {
+                let leiturasRetorno: LeituraRetornoBase[] | null = null;
+                const distBaseMaisProximaM = distanciaBaseMaisProximaM({ lat: latAtual, lng: lngAtual }, centroidesBase);
+                // Janela so' e' lida quando o gate de retorno pode agir (todas
+                // as bases alem do raio de relevancia) -- mesma economia da Central.
+                if (distBaseMaisProximaM != null && distBaseMaisProximaM > LIMIAR_DESTINO_RELEVANTE_M) {
+                  try {
+                    const { rows: janelaBaseRows } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
+                      `SELECT lat, lng, criado_em FROM posicoes_historico
+                        WHERE veiculo_id = $1
+                          AND criado_em >= now() - ($2 || ' seconds')::interval
+                          AND lat IS NOT NULL AND lng IS NOT NULL
+                        ORDER BY criado_em ASC`,
+                      [veiculoId, String(RETORNO_BASE_JANELA_S)]
+                    );
+                    // A leitura DESTE ciclo ainda nao esta em posicoes_historico
+                    // (insert em lote da Central so' no fim do ciclo dela) --
+                    // entra em memoria no fim da janela, como na Central.
+                    leiturasRetorno = montarLeiturasRetornoBase(
+                      [
+                        ...janelaBaseRows.map((r) => ({ lat: r.lat, lng: r.lng, t: new Date(r.criado_em).getTime() / 1000 })),
+                        { lat: latAtual, lng: lngAtual, t: agora.getTime() / 1000 },
+                      ],
+                      centroidesBase
+                    );
+                  } catch (errJanelaRetorno) {
+                    // sem janela => gate de retorno nao age (fail-open)
+                    erros.push(`Aviso: falha ao ler janela de retorno a base pro veiculo ${veiculoId}: ${String(errJanelaRetorno)}`);
+                  }
+                }
+                const partesHoraSP = new Intl.DateTimeFormat("pt-BR", {
+                  timeZone: "America/Sao_Paulo", hour: "numeric", minute: "numeric", hour12: false,
+                }).formatToParts(agora);
+                const decisaoSupressao = decidirSupressaoDesvioRomaneio({
+                  pos: { lat: latAtual, lng: lngAtual },
+                  anterior: anterior ? { lat: anterior.lat, lng: anterior.lng } : null,
+                  pendentes: pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
+                  centroidesBase,
+                  leiturasRetorno,
+                  hora: parseInt(partesHoraSP.find((p) => p.type === "hour")?.value ?? "0", 10),
+                  minuto: parseInt(partesHoraSP.find((p) => p.type === "minute")?.value ?? "0", 10),
+                  streakAfastando: afastandoStreakNovo,
+                  limiarDestinoRelevanteM: LIMIAR_DESTINO_RELEVANTE_M,
+                  gateSaidaBaseAtivo: GATE_SAIDA_BASE_ATIVO,
+                });
+                if (decisaoSupressao.tipo) {
+                  if (decisaoSupressao.tipo === "suprimido_retorno_base") suprimidosPorGate.retorno_base++;
+                  else suprimidosPorGate.saida_base++;
+                  console.log(
+                    `desvio-romaneio: ${decisaoSupressao.tipo} veiculo=${veiculoId} ${JSON.stringify(decisaoSupressao.detalhe)}`
+                  );
+                  alerta = null;
+                }
+              } catch (errSupressao) {
+                erros.push(`Aviso: falha ao avaliar gates de supressao pro veiculo ${veiculoId}: ${String(errSupressao)}`);
+              }
+            }
+
             // Step 7: corroborações, mesma ordem da Central -- corredor, depois classe viária.
             if (alerta) {
               try {
@@ -2143,6 +2256,15 @@ export async function POST(request: Request) {
             afastandoStreakNovo = estadoAnterior.afastando_streak;
             ruaRaraStreakNovo = estadoAnterior.rua_rara_streak;
           }
+        } else if (saltoDeReconciliacao) {
+          // Gate de salto de reconciliacao: PRESERVA o streak (nao zera), igual
+          // a Central (achado da 2a revisao independente de 28/08). Ele atua
+          // sobre veiculo EM MOVIMENTO que pode estar no meio de uma
+          // divergencia real -- zerar destruiria o streak acumulado. Restaura
+          // o estado anterior, que e' o que o detector teria se este ciclo
+          // simplesmente nao existisse.
+          afastandoStreakNovo = estadoAnterior.afastando_streak;
+          ruaRaraStreakNovo = estadoAnterior.rua_rara_streak;
         }
 
         // Step 8: grava estado (UPSERT por veiculo_id), tabela PRÓPRIA.
