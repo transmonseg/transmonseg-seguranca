@@ -69,7 +69,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
+import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA, GATES_SUPRESSAO_DESVIO_ATIVOS } from "@/lib/config-clientes";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import {
   melhorClasse,
@@ -2974,7 +2974,7 @@ export async function POST(request: Request) {
           const dtParSegundos = anterior?.updated_at
             ? (Date.now() - new Date(anterior.updated_at).getTime()) / 1000 + PERIODO_CICLO_MOTOR_S
             : null;
-          const saltoDeReconciliacaoDeAtraso = ehSaltoDeReconciliacaoDeAtraso(
+          const saltoDeReconciliacaoDeAtraso = GATES_SUPRESSAO_DESVIO_ATIVOS && ehSaltoDeReconciliacaoDeAtraso(
             anterior?.atraso_min ?? null,
             pos.atraso,
             movimentoRealM,
@@ -3155,7 +3155,7 @@ export async function POST(request: Request) {
               // no ciclo em que o veiculo deixar de se aproximar da base, o
               // alerta sai imediatamente com o streak acumulado. O custo de
               // recall e' zero por construcao, nao "no maximo um ciclo".
-              if (alertaDesvioV2?.origemDesvio === "afastando_geral" && centroidesBases.length > 0) {
+              if (GATES_SUPRESSAO_DESVIO_ATIVOS && alertaDesvioV2?.origemDesvio === "afastando_geral" && centroidesBases.length > 0) {
                 try {
                   const distBaseMaisProximaM = Math.min(
                     ...centroidesBases.map((b) => haversineM(pos.lat, pos.lng, b.lat, b.lng))
@@ -3266,7 +3266,7 @@ export async function POST(request: Request) {
               // o volume real de hoje sugere que o custo do ruido esta pior
               // que o medido): usuario escolheu reativar. Migration 068
               // aplicada em producao antes desta ativacao (01/09).
-              const GATE_SAIDA_BASE_ATIVO = true;
+              const GATE_SAIDA_BASE_ATIVO = GATES_SUPRESSAO_DESVIO_ATIVOS;
               if (GATE_SAIDA_BASE_ATIVO && alertaDesvioV2?.origemDesvio === "afastando_geral") {
                 try {
                   if (

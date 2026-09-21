@@ -41,3 +41,14 @@ export const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096"]); // Nutry 
 // aceito: possivel alerta duplicado entre as duas abas. Voltar a false
 // restaura o comportamento por-veiculo de 14/09.
 export const PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA = true;
+
+// 21/09 (pedido do usuario, "deixar como dava certo"): chave mestra dos 3
+// filtros que so' SUPRIMEM alerta de desvio e nao existiam em 24-27/08, quando
+// o desvio era medido como "muito melhor": salto de reconciliacao (28/08),
+// retorno a base estrito + horario avancado 14:30 (28/08 e 10/09) e saida da
+// base sem destino (31/08). false = comportamento de 25/08 nos dois motores
+// (Central Unitrac e Central Romaneio). Custo medido dos filtros: ~13
+// incidentes engolidos/dia e 33/296 corretos atrasados no disparo; sem eles
+// voltam os falsos "saindo/retornando da base" reclamados em 28/08-03/09.
+// true religa os tres.
+export const GATES_SUPRESSAO_DESVIO_ATIVOS = false;

@@ -84,7 +84,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO } from "@/lib/config-clientes";
+import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, GATES_SUPRESSAO_DESVIO_ATIVOS } from "@/lib/config-clientes";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
@@ -2086,6 +2086,7 @@ export async function POST(request: Request) {
         const anteriorGravadoEmMs =
           anterior?.criado_em != null ? new Date(anterior.criado_em).getTime() : null;
         const saltoDeReconciliacao =
+          GATES_SUPRESSAO_DESVIO_ATIVOS &&
           avaliavelSinalA &&
           ehSaltoDeReconciliacaoRomaneio({
             atrasoAnteriorMin: anterior?.atraso_min ?? null,
@@ -2156,7 +2157,7 @@ export async function POST(request: Request) {
             // NAO mexem no streak (afastandoStreakNovo ja' foi escrito acima):
             // o alerta sai assim que qualquer condicao deixar de valer.
             // Fail-open: qualquer erro aqui deixa o alerta seguir.
-            if (alerta?.origemDesvio === "afastando_geral") {
+            if (GATES_SUPRESSAO_DESVIO_ATIVOS && alerta?.origemDesvio === "afastando_geral") {
               try {
                 let leiturasRetorno: LeituraRetornoBase[] | null = null;
                 const distBaseMaisProximaM = distanciaBaseMaisProximaM({ lat: latAtual, lng: lngAtual }, centroidesBase);
