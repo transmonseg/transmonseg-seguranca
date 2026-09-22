@@ -1,5 +1,59 @@
-import { describe, it, expect } from "vitest";
-import { acharSaidaEChegadaBase, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveGpsCongelado } from "./route";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { acharSaidaEChegadaBase, acharChegadaAposFimRota, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveGpsCongelado } from "./route";
+
+// ─── Mocks pro bloco de teste de integracao do POST (fimRotaPorPlaca, ver
+// describe abaixo). Mesmo precedente de estilo do mock chain encadeavel de
+// romaneio/reverter/route.test.ts -- aqui precisa tambem mockar pg.Pool
+// (a rota fala Postgres cru pra ler `bases`), entao o estado e' compartilhado
+// via vi.hoisted (tem que existir antes do vi.mock, que o vitest hoisteia
+// pro topo do arquivo).
+const mockPostState = vi.hoisted(() => ({
+  veiculosRows: [] as { id: string; placa: string; cliente_id: string }[],
+  posicoesPorVeiculo: {} as Record<string, unknown[]>,
+  basesRows: [] as { cliente_id: string; lat: number; lng: number }[],
+}));
+
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => ({
+    from: (tabela: string) => {
+      if (tabela === "veiculos") {
+        return { select: () => Promise.resolve({ data: mockPostState.veiculosRows, error: null }) };
+      }
+      if (tabela === "posicoes_historico") {
+        return {
+          select: () => ({
+            eq: (_col: string, veiculoId: string) => ({
+              gte: () => ({
+                lt: () => ({
+                  order: () => Promise.resolve({ data: mockPostState.posicoesPorVeiculo[veiculoId] ?? [], error: null }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      throw new Error("tabela inesperada no mock: " + tabela);
+    },
+  }),
+}));
+
+vi.mock("pg", () => ({
+  default: {
+    // Arrow function nao pode ser usada como constructor (Reflect.construct
+    // rejeita) -- mockImplementation precisa de function normal aqui pq o
+    // route.ts faz `new pg.Pool(...)`.
+    Pool: vi.fn().mockImplementation(function () {
+      return {
+        query: vi.fn(async () => ({ rows: mockPostState.basesRows })),
+        end: vi.fn(async () => {}),
+      };
+    }),
+  },
+}));
+
+// Import dinamico depois dos mocks acima -- POST fala com admin+pg, as
+// funcoes puras nao (por isso ja vieram no import estatico do topo).
+const { POST } = await import("./route");
 
 const BASE = { lat: -22.816007, lng: -43.277827 };
 // ~50km da base -- claramente fora do raio de 500m.
@@ -71,6 +125,48 @@ describe("acharSaidaEChegadaBase", () => {
     const r = acharSaidaEChegadaBase(posicoes, [BASE, campos]);
     expect(r.saidaBase).toBe("2026-08-25T09:00:00.000Z");
     expect(r.chegadaBase).toBe("2026-08-25T21:00:00.000Z");
+  });
+});
+
+// Task 2026-09-22 (fimRotaPorPlaca, achado real RBG-5G18 21/09 -- ver
+// .superpowers/sdd/2026-09-22-chegada-cd-apos-ultima-entrega/task-1-brief.md
+// no repo IRMAO "KPI transmonseg"): o KPI ja sabe o horario da ULTIMA
+// entrega confirmada da rota (a partir das proprias visitas) e quer que
+// CHEGADA NA BASE seja a PRIMEIRA entrada na base A PARTIR DAQUELE
+// instante -- nao a ultima entrada do dia (`acharSaidaEChegadaBase` acima),
+// que pode ser horas depois (manobra, 2a viagem, pernoite) e infla o
+// KM PERCORRIDO calculado sobre essa janela maior do que a rota real.
+describe("acharChegadaAposFimRota", () => {
+  const BASE_C = { lat: -22.8167, lng: -43.2777 };
+  // ~10km da base, fora do raio de 500m.
+  const FORA = { lat: -22.9, lng: -43.35 };
+
+  const sequenciaDoDia = [
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T06:00:00.000Z", velocidade: 0, atraso_min: 0 }, // dentro
+    { lat: FORA.lat, lng: FORA.lng, criado_em: "2026-09-21T07:00:00.000Z", velocidade: 0, atraso_min: 0 }, // fora
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T15:02:00.000Z", velocidade: 0, atraso_min: 0 }, // dentro
+    { lat: FORA.lat, lng: FORA.lng, criado_em: "2026-09-21T16:28:00.000Z", velocidade: 0, atraso_min: 0 }, // fora
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T19:34:00.000Z", velocidade: 0, atraso_min: 0 }, // dentro
+  ];
+
+  it("fim antes da entrada das 15:02: devolve essa entrada (a 1a fora->dentro apos o fim)", () => {
+    const r = acharChegadaAposFimRota(sequenciaDoDia, [BASE_C], "2026-09-21T13:59:00.000Z");
+    expect(r).toBe("2026-09-21T15:02:00.000Z");
+  });
+
+  it("fim depois das 15:02 mas antes das 19:34: a saida das 16:28 era rota de verdade, devolve a entrada das 19:34", () => {
+    const r = acharChegadaAposFimRota(sequenciaDoDia, [BASE_C], "2026-09-21T15:30:00.000Z");
+    expect(r).toBe("2026-09-21T19:34:00.000Z");
+  });
+
+  it("fim depois da ultima entrada na base: null, nunca inventa", () => {
+    const r = acharChegadaAposFimRota(sequenciaDoDia, [BASE_C], "2026-09-21T20:00:00.000Z");
+    expect(r).toBeNull();
+  });
+
+  it("sem posicao ou sem base cadastrada: null", () => {
+    expect(acharChegadaAposFimRota([], [BASE_C], "2026-09-21T13:59:00.000Z")).toBeNull();
+    expect(acharChegadaAposFimRota(sequenciaDoDia, [], "2026-09-21T13:59:00.000Z")).toBeNull();
   });
 });
 
@@ -819,3 +915,89 @@ describe('teveGpsCongelado', () => {
     expect(teveGpsCongelado([])).toBe(false)
   })
 })
+
+// Task 2026-09-22 (fimRotaPorPlaca no POST -- ver comentario da suite
+// acharChegadaAposFimRota acima pro raciocinio completo). Unico bloco deste
+// arquivo que invoca o POST de verdade (banco mockado) -- as demais suites
+// seguem a convencao de testar so' as funcoes puras exportadas.
+describe("POST /api/kpi/base-horarios -- fimRotaPorPlaca", () => {
+  const BASE_C = { lat: -22.8167, lng: -43.2777 };
+  const P1 = { lat: -22.9, lng: -43.35 }; // ~12km da base
+  const P2 = { lat: -23.0, lng: -43.5 }; // mais longe ainda, movimento real entre P1 e P2
+
+  const posicoesRBG5G18 = [
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T06:00:00.000Z", velocidade: 0, atraso_min: 0 }, // dentro
+    { lat: P1.lat, lng: P1.lng, criado_em: "2026-09-21T07:00:00.000Z", velocidade: 0, atraso_min: 0 }, // fora
+    { lat: P2.lat, lng: P2.lng, criado_em: "2026-09-21T10:00:00.000Z", velocidade: 0, atraso_min: 0 }, // fora, mais longe
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T15:02:00.000Z", velocidade: 0, atraso_min: 0 }, // dentro -- ultima entrega real termina antes disso
+    { lat: P1.lat, lng: P1.lng, criado_em: "2026-09-21T16:28:00.000Z", velocidade: 0, atraso_min: 0 }, // fora de novo (manobra/2a saida pos-entrega)
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T19:34:00.000Z", velocidade: 0, atraso_min: 0 }, // dentro, pernoite
+  ];
+
+  const posicoesControle = [
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T06:00:00.000Z", velocidade: 0, atraso_min: 0 },
+    { lat: P1.lat, lng: P1.lng, criado_em: "2026-09-21T07:00:00.000Z", velocidade: 0, atraso_min: 0 },
+    { lat: BASE_C.lat, lng: BASE_C.lng, criado_em: "2026-09-21T12:00:00.000Z", velocidade: 0, atraso_min: 0 },
+  ];
+
+  function req(body: unknown, chave: string | null = "segredo") {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (chave) headers["x-motor-key"] = chave;
+    return new Request("http://local/api/kpi/base-horarios", {
+      method: "POST",
+      headers,
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  beforeEach(() => {
+    process.env.MOTOR_SECRET = "segredo";
+    mockPostState.veiculosRows = [
+      { id: "v-rbg5g18", placa: "RBG5G18", cliente_id: "c1" },
+      { id: "v-controle", placa: "RBG9Z99", cliente_id: "c1" },
+    ];
+    mockPostState.basesRows = [{ cliente_id: "c1", lat: BASE_C.lat, lng: BASE_C.lng }];
+    mockPostState.posicoesPorVeiculo = {
+      "v-rbg5g18": posicoesRBG5G18,
+      "v-controle": posicoesControle,
+    };
+  });
+
+  it("com fimRotaPorPlaca pra uma placa: chegadaBase vira a 1a entrada apos o fim, kmPercorrido cai; outra placa do lote sem entrada no mapa fica identica ao comportamento de hoje", async () => {
+    const resSemFim = await POST(req({ placas: ["RBG5G18", "RBG9Z99"], data: "2026-09-21" }));
+    const { resultados: resultadosSemFim } = await resSemFim.json();
+
+    const resComFim = await POST(
+      req({
+        placas: ["RBG5G18", "RBG9Z99"],
+        data: "2026-09-21",
+        fimRotaPorPlaca: { "RBG-5G18": "2026-09-21T13:59:00.000Z" },
+      }),
+    );
+    expect(resComFim.status).toBe(200);
+    const { resultados } = await resComFim.json();
+
+    const rbg = resultados.find((r: { placa: string }) => r.placa === "RBG5G18");
+    const rbgSemFim = resultadosSemFim.find((r: { placa: string }) => r.placa === "RBG5G18");
+    expect(rbg.chegadaBase).toBe("2026-09-21T15:02:00.000Z");
+    expect(rbgSemFim.chegadaBase).toBe("2026-09-21T19:34:00.000Z"); // comportamento de hoje: ultima entrada do dia
+    expect(rbg.kmPercorrido).toBeLessThan(rbgSemFim.kmPercorrido);
+
+    const controle = resultados.find((r: { placa: string }) => r.placa === "RBG9Z99");
+    const controleSemFim = resultadosSemFim.find((r: { placa: string }) => r.placa === "RBG9Z99");
+    expect(controle).toEqual(controleSemFim); // sem entrada no mapa -- resultado identico ao de hoje
+  });
+
+  it("fimRotaPorPlaca malformado (valor nao-string / nao-data): ignora so' aquela entrada, 200, comportamento default preservado", async () => {
+    const res = await POST(
+      req({
+        placas: ["RBG5G18"],
+        data: "2026-09-21",
+        fimRotaPorPlaca: { X: 123, "RBG-5G18": "isso-nao-e-uma-data" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const { resultados } = await res.json();
+    expect(resultados[0].chegadaBase).toBe("2026-09-21T19:34:00.000Z"); // fim invalido ignorado -- cai no default
+  });
+});

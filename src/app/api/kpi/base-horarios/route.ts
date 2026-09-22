@@ -89,6 +89,39 @@ export function acharSaidaEChegadaBase(
   return { saidaBase, chegadaBase };
 }
 
+/** Achado real 21/09 (RBG-5G18, grupo KPI): `acharSaidaEChegadaBase` devolve
+ *  a ULTIMA entrada do dia como `chegadaBase` -- quando o veiculo faz
+ *  manobra, 2a saida ou fica de pernoite na base HORAS depois da ultima
+ *  entrega real, isso infla `kmPercorrido` (calculado sobre a janela ate
+ *  essa chegada tardia) com trajeto que nao e' mais rota. O KPI ja sabe o
+ *  horario da ultima entrega confirmada (a partir das proprias visitas) --
+ *  esta funcao acha a PRIMEIRA entrada na base (transicao fora->dentro) a
+ *  partir daquele instante (`fimRotaISO`, inclusive), que e' a chegada real
+ *  de volta pra base apos concluir a rota. Sem posicao, sem base cadastrada,
+ *  ou nenhuma entrada apos o fim -- `null`, nunca inventa. */
+export function acharChegadaAposFimRota(
+  posicoes: Posicao[],
+  basesCentro: BaseCentro[],
+  fimRotaISO: string,
+): string | null {
+  if (basesCentro.length === 0 || posicoes.length === 0) return null;
+
+  const dentro = (p: Posicao) => basesCentro.some((b) => haversineM(b.lat, b.lng, p.lat, p.lng) <= RAIO_BASE_M);
+  const fimMs = Date.parse(fimRotaISO);
+
+  let estadoAnterior: boolean | null = null;
+
+  for (const p of posicoes) {
+    const estaDentro = dentro(p);
+    if (estadoAnterior === false && estaDentro === true && Date.parse(p.criado_em) >= fimMs) {
+      return p.criado_em;
+    }
+    estadoAnterior = estaDentro;
+  }
+
+  return null;
+}
+
 /** Achado real 25/08 (dado real RBI-0J25): o KM PERCORRIDO do lado do KPI
  *  soma distancia em linha reta so' ENTRE as paradas da Unitrac (~20-30
  *  pontos no dia) -- pula todo o trajeto real entre elas. Comparando os
@@ -632,7 +665,7 @@ export async function POST(request: Request) {
     return Response.json({ erro: "corpo invalido, esperado JSON" }, { status: 400 });
   }
 
-  const { placas, data, pontosPorPlaca: pontosPorPlacaBruto, incluirParadas: incluirParadasBruto } = body as {
+  const { placas, data, pontosPorPlaca: pontosPorPlacaBruto, incluirParadas: incluirParadasBruto, fimRotaPorPlaca: fimRotaPorPlacaBruto } = body as {
     placas?: unknown;
     data?: unknown;
     incluirParadas?: unknown;
@@ -643,6 +676,13 @@ export async function POST(request: Request) {
     // fail-open das outras rotas: sem pontos, sem visitas, resto do
     // resultado nao e' afetado).
     pontosPorPlaca?: unknown;
+    // Opcional (achado real 21/09, RBG-5G18): { [placa]: fimRotaISO } -- o
+    // KPI ja sabe o horario da ultima entrega confirmada e quer que
+    // `chegadaBase` seja a 1a entrada na base A PARTIR DAQUELE instante, nao
+    // a ultima entrada do dia (default). Placa ausente ou valor invalido
+    // (nao-string / Date.parse falha) simplesmente cai no comportamento de
+    // hoje -- fail-open, nunca 400.
+    fimRotaPorPlaca?: unknown;
   };
   if (!Array.isArray(placas) || !placas.every((p) => typeof p === "string")) {
     return Response.json({ erro: "'placas' precisa ser um array de strings" }, { status: 400 });
@@ -674,6 +714,17 @@ export async function POST(request: Request) {
           typeof (p as PontoEntrega).lng === "number",
       );
       if (pontosValidos.length > 0) pontosPorPlaca.set(normPlaca(placaChave), pontosValidos);
+    }
+  }
+
+  // Fail-open: so' entram no Map valores string que Date.parse aceita --
+  // entrada malformada (numero, string invalida) e' simplesmente ignorada,
+  // cai no comportamento default (sem 400).
+  const fimRotaPorPlaca = new Map<string, string>();
+  if (fimRotaPorPlacaBruto !== undefined && typeof fimRotaPorPlacaBruto === "object" && fimRotaPorPlacaBruto !== null) {
+    for (const [placaChave, fimBruto] of Object.entries(fimRotaPorPlacaBruto as Record<string, unknown>)) {
+      if (typeof fimBruto !== "string" || Number.isNaN(Date.parse(fimBruto))) continue;
+      fimRotaPorPlaca.set(normPlaca(placaChave), fimBruto);
     }
   }
 
@@ -751,7 +802,12 @@ export async function POST(request: Request) {
       continue;
     }
     const posicoes = (posicoesRows ?? []) as Posicao[];
-    const { saidaBase, chegadaBase } = acharSaidaEChegadaBase(posicoes, basesCentro);
+    const { saidaBase, chegadaBase: chegadaBaseDefault } = acharSaidaEChegadaBase(posicoes, basesCentro);
+    // Achado real 21/09 (RBG-5G18): com `fimRotaPorPlaca`, `chegadaBase` deixa
+    // de ser a ultima entrada do dia e vira a 1a entrada apos a ultima
+    // entrega real -- corta manobra/pernoite pos-rota de `kmPercorrido`.
+    const fimRota = fimRotaPorPlaca.get(placaNorm);
+    const chegadaBase = fimRota ? acharChegadaAposFimRota(posicoes, basesCentro, fimRota) : chegadaBaseDefault;
     const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const pontos = pontosPorPlaca.get(placaNorm);
     const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos, basesCentro) : undefined;
