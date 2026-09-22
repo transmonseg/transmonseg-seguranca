@@ -64,6 +64,61 @@ export function pontosRomaneioDisponiveisParaDesvio(
   return romaneioDoVeiculo.filter((rp) => !rp.presencaConfirmadaEm);
 }
 
+// Checagem de sanidade (22/09, achado da revisao adversarial): o geocode do
+// romaneio ja' foi medido errando de 3km a 144km contra o alvo da Unitrac
+// (route.ts, achado real 27/08 -- "auditoria tempo em loja"). Um ponto do
+// romaneio mal geocodificado virando destino do desvio pode fazer "afastando
+// de TODOS" nunca disparar quando esse ponto fica longe na direcao errada --
+// e' o MESMO modo de falha ja conhecido com os pendentes da Unitrac (rota
+// longa com 22+ paradas quase sempre perto de alguma), so' que aqui o ponto
+// pode ser puro lixo de geocode, nao uma parada real distante. Prioridade e'
+// recall ([[feedback_desvio_priorizar_recall]]): um ponto implausivel deve
+// ser DESCARTADO como destino (fail-open pro "sem_destinos" de ontem), nunca
+// mascarar um desvio real.
+//
+// Teto de 100km (posicao atual OU base mais proxima do cliente): generoso o
+// bastante pra cobrir a rota do dia inteiro de Nutry Max (duas bases a
+// ~300km uma da outra, entregas locais a cada uma) sem aceitar coordenada
+// claramente errada (a faixa de erro medida de 3-144km do achado de 27/08
+// cai nessa faixa; 144km > 100km entao o pior caso medido JA seria
+// descartado por este teto).
+//
+// Deliberadamente NAO se protege contra "sobrou so' 1-2 pontos muito perto,
+// vira facil demais de disparar" -- isso empurra pro lado do falso positivo,
+// que e' o erro aceito por design aqui. So' o lado que mascara desvio real
+// (ponto implausivel demais SOMA distancia que nunca cai) precisa de guarda.
+export const ROMANEIO_SANIDADE_TETO_M = 100_000;
+
+export function pontoRomaneioPlausivelParaDesvio(
+  ponto: { lat: number; lng: number },
+  ctx: {
+    posAtual: { lat: number; lng: number };
+    bases: { lat: number; lng: number }[];
+    distanciaM: (aLat: number, aLng: number, bLat: number, bLng: number) => number;
+    tetoM?: number;
+  }
+): boolean {
+  const teto = ctx.tetoM ?? ROMANEIO_SANIDADE_TETO_M;
+  const distPos = ctx.distanciaM(ponto.lat, ponto.lng, ctx.posAtual.lat, ctx.posAtual.lng);
+  if (Number.isFinite(distPos) && distPos <= teto) return true;
+  return ctx.bases.some((b) => {
+    const d = ctx.distanciaM(ponto.lat, ponto.lng, b.lat, b.lng);
+    return Number.isFinite(d) && d <= teto;
+  });
+}
+
+export function filtrarPontosRomaneioPlausiveis(
+  pontos: PontoRomaneioParaFallback[],
+  ctx: {
+    posAtual: { lat: number; lng: number };
+    bases: { lat: number; lng: number }[];
+    distanciaM: (aLat: number, aLng: number, bLat: number, bLng: number) => number;
+    tetoM?: number;
+  }
+): PontoRomaneioParaFallback[] {
+  return pontos.filter((p) => pontoRomaneioPlausivelParaDesvio(p, ctx));
+}
+
 // (a) So' rebaixa o sinal "afastando de todos" com ZERO pendente de cliente
 // (pontosVeiculoParaDesvio vazio). rua_rara e demais origens nao sao tocadas.
 export function deveRebaixarDesvioSemDestinos(e: {

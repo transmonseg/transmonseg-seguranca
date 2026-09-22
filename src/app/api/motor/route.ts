@@ -90,6 +90,7 @@ import {
   indicesComClienteDistante,
   deveUsarRomaneioComoFallbackDeDesvio,
   pontosRomaneioDisponiveisParaDesvio,
+  filtrarPontosRomaneioPlausiveis,
 } from "@/lib/desvio-destinos";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import {
@@ -1880,13 +1881,29 @@ export async function POST(request: Request) {
           const pontosVeiculoParaDesvioUnitrac = (pontosVeiculo ?? []).filter(
             (pt) => !pt.feito && temCoordenadaValida(pt)
           );
+          const centroidesBases = basesCliente
+            .map((b) => centroideGeo(b.geom))
+            .filter((c): c is { lat: number; lng: number } => c !== null);
           // 22/09: fallback pro romaneio quando a Unitrac nao tem NENHUM
           // pendente pro veiculo -- ver comentario em
           // deveUsarRomaneioComoFallbackDeDesvio (lib/desvio-destinos.ts) e
           // docs/investigacoes/2026-08-21-marcacoes-faltantes.md (correcao
           // pendente desde 22/08). Fallback puro: nunca mistura com pontos
           // Unitrac quando eles existem.
-          const pontosRomaneioFallbackDesvio = pontosRomaneioDisponiveisParaDesvio(romaneioDoVeiculo);
+          //
+          // Checagem de sanidade (achado da revisao adversarial, mesmo dia):
+          // ponto do romaneio a mais de 100km da posicao atual E de toda
+          // base do cliente e' descartado ANTES de virar destino -- geocode
+          // do romaneio ja foi medido errando de 3-144km (achado 27/08,
+          // "auditoria tempo em loja"), e um ponto implausivel nunca
+          // "chegando mais perto" mascararia desvio real (mesmo modo de
+          // falha ja conhecido com pendentes da Unitrac, so que aqui pode
+          // ser puro lixo de geocode). Ver
+          // pontoRomaneioPlausivelParaDesvio em lib/desvio-destinos.ts.
+          const pontosRomaneioFallbackDesvio = filtrarPontosRomaneioPlausiveis(
+            pontosRomaneioDisponiveisParaDesvio(romaneioDoVeiculo),
+            { posAtual: { lat: pos.lat, lng: pos.lng }, bases: centroidesBases, distanciaM: haversineM }
+          );
           const usaRomaneioComoFallbackDesvio = deveUsarRomaneioComoFallbackDeDesvio({
             flagAtiva: DESVIO_USA_ROMANEIO_QUANDO_SEM_ALVO_UNITRAC,
             nPendentesUnitrac: pontosVeiculoParaDesvioUnitrac.length,
@@ -1896,9 +1913,6 @@ export async function POST(request: Request) {
             usaRomaneioComoFallbackDesvio
               ? pontosRomaneioFallbackDesvio.map((rp) => ({ lat: rp.lat, lng: rp.lng, pontoCodigo: null, origemRomaneioNf: rp.nf }))
               : pontosVeiculoParaDesvioUnitrac;
-          const centroidesBases = basesCliente
-            .map((b) => centroideGeo(b.geom))
-            .filter((c): c is { lat: number; lng: number } => c !== null);
           // Mesmas bases, com codigo estavel p/ a cerca virtual (chave de
           // cache + lista de destinos do verificarCorredor) -- ver uso em
           // "CERCA VIRTUAL" abaixo.

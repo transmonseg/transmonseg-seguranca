@@ -9,8 +9,12 @@ import {
   indicesComClienteDistante,
   deveUsarRomaneioComoFallbackDeDesvio,
   pontosRomaneioDisponiveisParaDesvio,
+  pontoRomaneioPlausivelParaDesvio,
+  filtrarPontosRomaneioPlausiveis,
+  ROMANEIO_SANIDADE_TETO_M,
   type PontoRomaneioParaFallback,
 } from "./desvio-destinos";
+import { haversineM } from "./unitrac";
 import { montarAlertaDesvio } from "./desvio";
 
 const alertaAfastando = montarAlertaDesvio(
@@ -141,5 +145,105 @@ describe("indicesComClienteDistante", () => {
   it("indice null: devolve a mesma lista (sem alterar)", () => {
     const base = [26, 27];
     expect(indicesComClienteDistante(base, null)).toBe(base);
+  });
+});
+
+// Fallback pro romaneio (22/09, correcao pendente desde 22/08 -- ver
+// docs/investigacoes/2026-08-21-marcacoes-faltantes.md). Testes que faltavam
+// (achado da revisao adversarial): a mensagem do commit original alegava "9
+// testes novos" mas o arquivo so' tinha 3 linhas de import.
+describe("deveUsarRomaneioComoFallbackDeDesvio", () => {
+  it("Unitrac vazia + romaneio com pontos + flag ligada: usa o fallback", () => {
+    expect(
+      deveUsarRomaneioComoFallbackDeDesvio({ flagAtiva: true, nPendentesUnitrac: 0, nPontosRomaneioDisponiveis: 3 })
+    ).toBe(true);
+  });
+
+  it("Unitrac com pendente: NUNCA usa o fallback, mesmo com romaneio disponivel (nao mistura)", () => {
+    expect(
+      deveUsarRomaneioComoFallbackDeDesvio({ flagAtiva: true, nPendentesUnitrac: 5, nPontosRomaneioDisponiveis: 3 })
+    ).toBe(false);
+  });
+
+  it("romaneio sem nenhum ponto disponivel: nao usa (cai no rebaixamento sem_destinos)", () => {
+    expect(
+      deveUsarRomaneioComoFallbackDeDesvio({ flagAtiva: true, nPendentesUnitrac: 0, nPontosRomaneioDisponiveis: 0 })
+    ).toBe(false);
+  });
+
+  it("flag desligada: nunca usa o fallback, mesmo com Unitrac vazia e romaneio disponivel", () => {
+    expect(
+      deveUsarRomaneioComoFallbackDeDesvio({ flagAtiva: false, nPendentesUnitrac: 0, nPontosRomaneioDisponiveis: 3 })
+    ).toBe(false);
+  });
+});
+
+describe("pontosRomaneioDisponiveisParaDesvio", () => {
+  const nf1: PontoRomaneioParaFallback = { nf: "1", lat: -22.9, lng: -43.2, presencaConfirmadaEm: null };
+  const nf2Confirmado: PontoRomaneioParaFallback = { nf: "2", lat: -22.91, lng: -43.21, presencaConfirmadaEm: "2026-09-22T10:00:00Z" };
+
+  it("filtra fora pontos ja confirmados (presencaConfirmadaEm preenchido) -- mesma garantia que `pendentes` da Unitrac tem contra entrega ja feita", () => {
+    expect(pontosRomaneioDisponiveisParaDesvio([nf1, nf2Confirmado])).toEqual([nf1]);
+  });
+
+  it("romaneio undefined (veiculo sem romaneio no dia): fail-open, lista vazia", () => {
+    expect(pontosRomaneioDisponiveisParaDesvio(undefined)).toEqual([]);
+  });
+
+  it("romaneio vazio: lista vazia", () => {
+    expect(pontosRomaneioDisponiveisParaDesvio([])).toEqual([]);
+  });
+});
+
+describe("pontoRomaneioPlausivelParaDesvio / filtrarPontosRomaneioPlausiveis (checagem de sanidade, achado da revisao adversarial)", () => {
+  // Posicao do veiculo em Nutry Max (Penha, RJ).
+  const posAtual = { lat: -22.845, lng: -43.28 };
+  const baseCampos = { lat: -21.75, lng: -41.33 }; // base de Campos dos Goytacazes
+
+  it("ponto plausivel (~5km da posicao atual): aceito", () => {
+    const pontoPerto = { lat: -22.89, lng: -43.25 }; // ~6km
+    expect(
+      pontoRomaneioPlausivelParaDesvio(pontoPerto, { posAtual, bases: [baseCampos], distanciaM: haversineM })
+    ).toBe(true);
+  });
+
+  it("caso real 27/08 (geocode do romaneio errando ate 144km, 'endereco mal formatado/rua homonima em outra cidade'): ponto a ~360km (Sao Paulo) de ambos e' descartado", () => {
+    const pontoSP = { lat: -23.55, lng: -46.63 }; // ~360km de posAtual e da base de Campos
+    expect(
+      pontoRomaneioPlausivelParaDesvio(pontoSP, { posAtual, bases: [baseCampos], distanciaM: haversineM })
+    ).toBe(false);
+  });
+
+  it("longe da posicao atual mas dentro do teto de alguma base (rota saindo de Campos): aceito", () => {
+    const pontoPertoDeCampos = { lat: -21.76, lng: -41.34 }; // ~1.5km da base de Campos, ~330km da posAtual
+    expect(
+      pontoRomaneioPlausivelParaDesvio(pontoPertoDeCampos, { posAtual, bases: [baseCampos], distanciaM: haversineM })
+    ).toBe(true);
+  });
+
+  it("exatamente no teto: aceita (<=), um pouco alem: rejeita", () => {
+    // 1 grau de latitude ~= 111.32km -- desloca ~89.8km (dentro) e ~90.2km (fora) do teto de 90km usado neste teste
+    const teto = 90_000;
+    const dentro = { lat: posAtual.lat - 89_800 / 111_320, lng: posAtual.lng };
+    const fora = { lat: posAtual.lat - 90_500 / 111_320, lng: posAtual.lng };
+    expect(pontoRomaneioPlausivelParaDesvio(dentro, { posAtual, bases: [], distanciaM: haversineM, tetoM: teto })).toBe(true);
+    expect(pontoRomaneioPlausivelParaDesvio(fora, { posAtual, bases: [], distanciaM: haversineM, tetoM: teto })).toBe(false);
+  });
+
+  it("teto default e' ROMANEIO_SANIDADE_TETO_M (100km)", () => {
+    expect(ROMANEIO_SANIDADE_TETO_M).toBe(100_000);
+  });
+
+  it("filtrarPontosRomaneioPlausiveis descarta so' os implausiveis, preservando os demais", () => {
+    const perto: PontoRomaneioParaFallback = { nf: "perto", lat: -22.89, lng: -43.25, presencaConfirmadaEm: null };
+    const longe: PontoRomaneioParaFallback = { nf: "longe", lat: -23.55, lng: -46.63, presencaConfirmadaEm: null };
+    const resultado = filtrarPontosRomaneioPlausiveis([perto, longe], { posAtual, bases: [baseCampos], distanciaM: haversineM });
+    expect(resultado).toEqual([perto]);
+  });
+
+  it("todos implausiveis: lista vazia -- fail-open pro rebaixamento sem_destinos existente, nunca trava", () => {
+    const longe1: PontoRomaneioParaFallback = { nf: "a", lat: -23.55, lng: -46.63, presencaConfirmadaEm: null };
+    const longe2: PontoRomaneioParaFallback = { nf: "b", lat: 4.71, lng: -74.07, presencaConfirmadaEm: null }; // Bogota
+    expect(filtrarPontosRomaneioPlausiveis([longe1, longe2], { posAtual, bases: [baseCampos], distanciaM: haversineM })).toEqual([]);
   });
 });
