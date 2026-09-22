@@ -7,6 +7,9 @@ import {
   rebaixarDesvioSemDestinos,
   indiceClienteDistanteParaIncluir,
   indicesComClienteDistante,
+  deveUsarRomaneioComoFallbackDeDesvio,
+  pontosRomaneioDisponiveisParaDesvio,
+  type PontoRomaneioParaFallback,
 } from "./desvio-destinos";
 import { montarAlertaDesvio } from "./desvio";
 

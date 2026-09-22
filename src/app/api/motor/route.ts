@@ -76,6 +76,7 @@ import {
   DESVIO_EPISODIO_NOVO_REABRE_ALERTA,
   DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO,
   DESVIO_INCLUI_CLIENTE_DISTANTE_NA_LISTA,
+  DESVIO_USA_ROMANEIO_QUANDO_SEM_ALVO_UNITRAC,
 } from "@/lib/config-clientes";
 import {
   deveReabrirDesvio,
@@ -87,6 +88,8 @@ import {
   rebaixarDesvioSemDestinos,
   indiceClienteDistanteParaIncluir,
   indicesComClienteDistante,
+  deveUsarRomaneioComoFallbackDeDesvio,
+  pontosRomaneioDisponiveisParaDesvio,
 } from "@/lib/desvio-destinos";
 import { verificarCorredorFora, aplicarCorroboracaoCorredor } from "@/lib/corredor-confirmacao";
 import {
@@ -1874,9 +1877,25 @@ export async function POST(request: Request) {
           // Unitrac, dado externo, não o heurístico de presença nosso) --
           // só o filtro de ENTREGA_PRESENCA_ATIVA/presencaEntregaCliente é
           // removido, que é especificamente o que causa este bug.
-          const pontosVeiculoParaDesvio = (pontosVeiculo ?? []).filter(
+          const pontosVeiculoParaDesvioUnitrac = (pontosVeiculo ?? []).filter(
             (pt) => !pt.feito && temCoordenadaValida(pt)
           );
+          // 22/09: fallback pro romaneio quando a Unitrac nao tem NENHUM
+          // pendente pro veiculo -- ver comentario em
+          // deveUsarRomaneioComoFallbackDeDesvio (lib/desvio-destinos.ts) e
+          // docs/investigacoes/2026-08-21-marcacoes-faltantes.md (correcao
+          // pendente desde 22/08). Fallback puro: nunca mistura com pontos
+          // Unitrac quando eles existem.
+          const pontosRomaneioFallbackDesvio = pontosRomaneioDisponiveisParaDesvio(romaneioDoVeiculo);
+          const usaRomaneioComoFallbackDesvio = deveUsarRomaneioComoFallbackDeDesvio({
+            flagAtiva: DESVIO_USA_ROMANEIO_QUANDO_SEM_ALVO_UNITRAC,
+            nPendentesUnitrac: pontosVeiculoParaDesvioUnitrac.length,
+            nPontosRomaneioDisponiveis: pontosRomaneioFallbackDesvio.length,
+          });
+          const pontosVeiculoParaDesvio: { lat: number; lng: number; pontoCodigo: number | null; origemRomaneioNf?: string }[] =
+            usaRomaneioComoFallbackDesvio
+              ? pontosRomaneioFallbackDesvio.map((rp) => ({ lat: rp.lat, lng: rp.lng, pontoCodigo: null, origemRomaneioNf: rp.nf }))
+              : pontosVeiculoParaDesvioUnitrac;
           const centroidesBases = basesCliente
             .map((b) => centroideGeo(b.geom))
             .filter((c): c is { lat: number; lng: number } => c !== null);
@@ -1900,7 +1919,7 @@ export async function POST(request: Request) {
             ...pontosVeiculoParaDesvio.map((pt) => ({
               lat: pt.lat,
               lng: pt.lng,
-              codigo: pt.pontoCodigo != null ? `pt:${pt.pontoCodigo}` : null,
+              codigo: pt.pontoCodigo != null ? `pt:${pt.pontoCodigo}` : pt.origemRomaneioNf ? `rom:${pt.origemRomaneioNf}` : null,
             })),
             ...centroidesBases.map((b) => ({ ...b, codigo: null })),
             ...escalaDoVeiculo.map((e) => ({ lat: e.lat, lng: e.lng, codigo: null })),

@@ -84,3 +84,12 @@ export const DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO = true;
 // decair -- reintroduz o mascaramento de 13/08 em escopo maior e nao foi
 // medido por ciclo. So' liga depois de contrafactual por ciclo.
 export const DESVIO_INCLUI_CLIENTE_DISTANTE_NA_LISTA = false;
+
+// 22/09: correcao pendente desde 22/08 (docs/investigacoes/2026-08-21-
+// marcacoes-faltantes.md). Quando a Unitrac nao tem NENHUM pendente pro
+// veiculo mas ha' romaneio carregado hoje, usa os pontos do romaneio (ainda
+// nao confirmados) como destino do desvio -- fallback puro, nunca mistura
+// com Unitrac quando ela tem alvo. Roda ANTES do rebaixamento
+// DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO acima: so' cai nele quando NEM
+// Unitrac NEM romaneio tem pendente.
+export const DESVIO_USA_ROMANEIO_QUANDO_SEM_ALVO_UNITRAC = true;

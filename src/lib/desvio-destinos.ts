@@ -24,6 +24,46 @@ export const MOTIVO_DESVIO_SEM_DESTINOS =
 // falhar; ignora como antes.
 export const CLIENTE_DISTANTE_TETO_M = 500_000;
 
+// (0) Fallback pro ROMANEIO quando a Unitrac nao tem NENHUM pendente pro
+// veiculo (22/09, correcao pendente desde 22/08 -- ver
+// docs/investigacoes/2026-08-21-marcacoes-faltantes.md, opcao 2 da "Proposta
+// de fix" e o "Adendo"). Achado de 21/08, fechado em 22/08: a Central nunca
+// usa o romaneio pra alimentar os destinos do desvio (decisao de 31/07) --
+// veiculo com romaneio carregado mas SEM alvo na Unitrac (carro do pao, placa
+// sem rastreador, romaneio ainda nao processado) fica com ZERO pendentes o
+// dia inteiro. So' 21/08: 14 veiculos nesse estado. No gabarito do grupo
+// (303 alertas casados), "lista sem nenhum cliente" e' 25% dos falsos.
+//
+// Deliberadamente um FALLBACK PURO: so' entra em acao quando a Unitrac ja
+// nao tem nada pra oferecer (pontosVeiculoParaDesvio vazio) -- nunca mistura
+// com pontos Unitrac quando eles existem, nunca inventa destino (sao pontos
+// REAIS do romaneio do dia, ja geocodificados, com presenca_confirmada_em
+// checado -- mesma garantia que o `pendentes` da Unitrac tem contra
+// entregas ja feitas). Essa correcao roda ANTES do rebaixamento "sem
+// destinos" (deveRebaixarDesvioSemDestinos, acima): so cai nele quando NEM
+// Unitrac NEM romaneio tem pendente.
+export type PontoRomaneioParaFallback = {
+  nf: string;
+  lat: number;
+  lng: number;
+  presencaConfirmadaEm: string | null;
+};
+
+export function deveUsarRomaneioComoFallbackDeDesvio(e: {
+  flagAtiva: boolean;
+  nPendentesUnitrac: number;
+  nPontosRomaneioDisponiveis: number;
+}): boolean {
+  return e.flagAtiva && e.nPendentesUnitrac === 0 && e.nPontosRomaneioDisponiveis > 0;
+}
+
+export function pontosRomaneioDisponiveisParaDesvio(
+  romaneioDoVeiculo: PontoRomaneioParaFallback[] | undefined
+): PontoRomaneioParaFallback[] {
+  if (!romaneioDoVeiculo) return [];
+  return romaneioDoVeiculo.filter((rp) => !rp.presencaConfirmadaEm);
+}
+
 // (a) So' rebaixa o sinal "afastando de todos" com ZERO pendente de cliente
 // (pontosVeiculoParaDesvio vazio). rua_rara e demais origens nao sao tocadas.
 export function deveRebaixarDesvioSemDestinos(e: {
