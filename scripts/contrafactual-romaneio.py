@@ -1,6 +1,14 @@
-import csv, subprocess
+import csv, subprocess, os
 
-rows = list(csv.DictReader(open('/private/tmp/claude-501/-Users-joaquimsalles/4bba5f9e-6375-4933-8fd7-1d65232d14aa/scratchpad/frenteA_casos.csv')))
+# Gabarito committado no repo (scripts/gabarito/frenteA_casos.csv) -- achado
+# real 22/09 (revisao adversarial rodada 2): a versao anterior lia de um
+# scratchpad de sessao (/private/tmp/...), que some quando a sessao termina,
+# tornando o script "reproduzivel" so' na mesma sessao que o gerou. 303
+# alertas de desvio casados com veredito humano extraido do grupo WhatsApp
+# "DESVIO DE ROTA" (18/08-21/09), ver metodologia no relatorio da task
+# "Diagnóstico caso a caso dos falsos do grupo" (21/09).
+GABARITO = os.path.join(os.path.dirname(__file__), 'gabarito', 'frenteA_casos.csv')
+rows = list(csv.DictReader(open(GABARITO)))
 sem_dest = {r['alerta_id']: r['veredito'] for r in rows if r['n_dest_cli'] == '0'}
 ids_sql = ','.join(f"'{i}'::uuid" for i in sem_dest)
 
