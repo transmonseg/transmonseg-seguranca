@@ -401,6 +401,50 @@ describe("acharVisitasPorPonto", () => {
     });
   });
 
+  describe("desempate pelo horario 'feito' da Unitrac (feitoEm, UTC real)", () => {
+    // Caso real 22/09 (TTH3C94, Ministro Mavignier 59): 2 paradas do mesmo veiculo na mesma rua, uma de manha
+    // (perto so' da coordenada de cadastro) e outra a tarde (mais perto do geocode). O 'feito' da manha decide.
+    const MANHA = { lat: -22.0006, lng: -43.0 }; // ~67m
+    const TARDE = { lat: -22.0001, lng: -43.0 }; // ~11m (mais proxima do geocode)
+    const dia = (h: string) => `2026-08-25T${h}.000Z`;
+    const pos = [
+      { ...MANHA, criado_em: dia("09:00:00"), velocidade: 0, atraso_min: 0 },
+      { ...MANHA, criado_em: dia("09:30:00"), velocidade: 0, atraso_min: 0 },
+      { lat: -23.0, lng: -44.0, criado_em: dia("09:40:00"), velocidade: 40, atraso_min: 0 },
+      { ...TARDE, criado_em: dia("15:00:00"), velocidade: 0, atraso_min: 0 },
+      { ...TARDE, criado_em: dia("15:10:00"), velocidade: 0, atraso_min: 0 },
+      { lat: -23.0, lng: -44.0, criado_em: dia("15:20:00"), velocidade: 40, atraso_min: 0 },
+    ];
+    it("sem feitoEm: continua a mais proxima (tarde)", () => {
+      expect(acharVisitasPorPonto(pos as never, [LOJA_A])[0].chegada).toBe(dia("15:00:00"));
+    });
+    it("feitoEm dentro da parada da manha (mais proxima esta >30min do feito): escolhe a da manha", () => {
+      const [v] = acharVisitasPorPonto(pos as never, [{ ...LOJA_A, feitoEm: dia("09:10:00") }]);
+      expect(v).toEqual({ id: "NF1", chegada: dia("09:00:00"), saida: dia("09:30:00") });
+    });
+    it("feitoEm consistente com a mais proxima: mantem a mais proxima", () => {
+      expect(acharVisitasPorPonto(pos as never, [{ ...LOJA_A, feitoEm: dia("15:05:00") }])[0].chegada).toBe(dia("15:00:00"));
+    });
+    it("feitoEm que nao bate com nenhuma parada (>20min de todas): mantem a mais proxima", () => {
+      expect(acharVisitasPorPonto(pos as never, [{ ...LOJA_A, feitoEm: dia("12:00:00") }])[0].chegada).toBe(dia("15:00:00"));
+    });
+    it("candidata consistente com o feito mas muito mais longe (>max(3x, 150m)): nao troca", () => {
+      const LONGE = { lat: -22.0036, lng: -43.0 }; // ~400m
+      const pos2 = [
+        { ...LONGE, criado_em: dia("09:00:00"), velocidade: 0, atraso_min: 0 },
+        { ...LONGE, criado_em: dia("09:30:00"), velocidade: 0, atraso_min: 0 },
+        { lat: -23.0, lng: -44.0, criado_em: dia("09:40:00"), velocidade: 40, atraso_min: 0 },
+        { ...TARDE, criado_em: dia("15:00:00"), velocidade: 0, atraso_min: 0 },
+        { ...TARDE, criado_em: dia("15:10:00"), velocidade: 0, atraso_min: 0 },
+        { lat: -23.0, lng: -44.0, criado_em: dia("15:20:00"), velocidade: 40, atraso_min: 0 },
+      ];
+      expect(acharVisitasPorPonto(pos2 as never, [{ ...LOJA_A, feitoEm: dia("09:10:00") }])[0].chegada).toBe(dia("15:00:00"));
+    });
+    it("feitoEm invalido e' ignorado (fail-open)", () => {
+      expect(acharVisitasPorPonto(pos as never, [{ ...LOJA_A, feitoEm: "lixo" }])[0].chegada).toBe(dia("15:00:00"));
+    });
+  });
+
   describe("parada real mais proxima (visita pela parada Unitrac-like)", () => {
     it("varias paradas no raio: escolhe a MAIS PROXIMA do ponto, nao a mais longa", () => {
       const perto = { lat: -22.0003, lng: -43.0 };

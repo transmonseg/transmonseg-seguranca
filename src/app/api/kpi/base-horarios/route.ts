@@ -235,7 +235,7 @@ const RAIO_ENTREGA_ALT_M = 300;
 // reais do relatorio Unitrac (22/09, 1408 NFs com vinculo por codigo de
 // cliente): cadastro Unitrac a <=500m da parada real em 93% dos casos contra
 // 81% do nosso geocode.
-type PontoEntrega = { id: string; lat: number; lng: number; latAlt?: number; lngAlt?: number };
+type PontoEntrega = { id: string; lat: number; lng: number; latAlt?: number; lngAlt?: number; feitoEm?: string };
 type VisitaPonto = { id: string; chegada: string | null; saida: string | null; viaVizinhanca?: boolean; viaRaioAmpliado?: boolean };
 
 // Achado real 30/08 (mesma investigacao do bucket 500m-2km, ver
@@ -613,27 +613,75 @@ export function teveGpsCongelado(posicoes: Posicao[]): boolean {
 // Escolhe a parada real (derivarParadas) FORA_BASE mais proxima do ponto
 // dentro de raioM. Distancias que diferem <=25m contam como empate e
 // desempata pela parada mais longa (nunca pela primeira do dia).
+// Desempate pelo 'feito' da Unitrac (feitoEm, ISO em UTC real, opcional). Achado real 22/09 (TTH3C94, Ministro
+// Mavignier 59): 2 paradas do mesmo veiculo na mesma rua (manha e tarde); a mais proxima do geocode era a da tarde
+// (15:13), mas o 'feito' (07:04) e a parada real do relatorio Unitrac apontavam a da manha. So' troca quando a mais
+// proxima esta a mais de FEITO_INCONSISTENTE_MIN do feito E ha candidata proxima (<= max(3x a dist. da mais proxima,
+// 150m)) dentro de FEITO_TOLERANCIA_MIN dele -- o feito tambem erra (marcacao manual), entao nunca sobrepoe uma
+// parada muito mais perto. Validado em 22/09 (1179 NFs, vinculo por codigo de cliente, 2 metades de placas):
+// erros >60min 24->15, <=10min 92,5->93,6%.
+const FEITO_INCONSISTENTE_MIN = 30;
+const FEITO_TOLERANCIA_MIN = 20;
+const FEITO_FATOR_DIST = 3;
+const FEITO_DIST_MIN_M = 150;
+
+function distanciaAoIntervalo(p: ParadaDerivada, t: number): number {
+  const a = Date.parse(p.chegada), b = Date.parse(p.saida);
+  return t < a ? a - t : t > b ? t - b : 0;
+}
+
 function acharParadaMaisProxima(pt: PontoEntrega, paradas: ParadaDerivada[], raioM: number, basesCentro: BaseCentro[]): ParadaDerivada | null {
-  const achar = (ref: PontoEntrega, raio: number): { parada: ParadaDerivada; dist: number } | null => {
-    let melhor: ParadaDerivada | null = null
-    let melhorDist = Infinity
+  const candidatas = new Map<ParadaDerivada, number>();
+  const coletar = (ref: PontoEntrega, raio: number) => {
     for (const p of paradas) {
       if (p.classificacao !== "FORA_BASE") continue
       if (estaMaisPertoDaBaseQueDoPonto({ lat: p.lat, lng: p.lng, criado_em: "", velocidade: 0, atraso_min: 0 }, ref, basesCentro)) continue
       const d = haversineM(ref.lat, ref.lng, p.lat, p.lng)
       if (d > raio) continue
-      if (melhor === null || d < melhorDist - 25 || (Math.abs(d - melhorDist) <= 25 && p.duracaoSeg > melhor.duracaoSeg)) {
-        melhor = p
-        melhorDist = d
-      }
+      const atual = candidatas.get(p)
+      if (atual === undefined || d < atual) candidatas.set(p, d)
     }
-    return melhor ? { parada: melhor, dist: melhorDist } : null
   }
-  const principal = achar(pt, raioM)
-  const temAlt = Number.isFinite(pt.latAlt) && Number.isFinite(pt.lngAlt)
-  const alternativa = temAlt ? achar({ id: pt.id, lat: pt.latAlt as number, lng: pt.lngAlt as number }, RAIO_ENTREGA_ALT_M) : null
-  if (principal && alternativa) return alternativa.dist < principal.dist ? alternativa.parada : principal.parada
-  return (principal ?? alternativa)?.parada ?? null
+  coletar(pt, raioM)
+  if (Number.isFinite(pt.latAlt) && Number.isFinite(pt.lngAlt)) {
+    coletar({ id: pt.id, lat: pt.latAlt as number, lng: pt.lngAlt as number }, RAIO_ENTREGA_ALT_M)
+  }
+  if (candidatas.size === 0) return null
+
+  // Escolha base (inalterada desde 95b14ac): a mais proxima de CADA referencia (empate <=25m -> a mais longa) e,
+  // entre as duas, a de menor distancia.
+  const maisProxima = (ref: PontoEntrega, raio: number): { parada: ParadaDerivada; dist: number } | null => {
+    let m: ParadaDerivada | null = null
+    let md = Infinity
+    for (const p of paradas) {
+      if (!candidatas.has(p)) continue
+      const d = haversineM(ref.lat, ref.lng, p.lat, p.lng)
+      if (d > raio) continue
+      if (m === null || d < md - 25 || (Math.abs(d - md) <= 25 && p.duracaoSeg > m.duracaoSeg)) { m = p; md = d }
+    }
+    return m ? { parada: m, dist: md } : null
+  }
+  const principal = maisProxima(pt, raioM)
+  const alternativaBase = Number.isFinite(pt.latAlt) && Number.isFinite(pt.lngAlt)
+    ? maisProxima({ id: pt.id, lat: pt.latAlt as number, lng: pt.lngAlt as number }, RAIO_ENTREGA_ALT_M)
+    : null
+  const escolhida = principal && alternativaBase
+    ? (alternativaBase.dist < principal.dist ? alternativaBase : principal)
+    : (principal ?? alternativaBase)
+  const melhor = escolhida?.parada ?? null
+  const melhorDist = escolhida?.dist ?? Infinity
+
+  const feito = typeof pt.feitoEm === "string" ? Date.parse(pt.feitoEm) : NaN
+  if (Number.isNaN(feito) || melhor === null) return melhor
+  if (distanciaAoIntervalo(melhor, feito) <= FEITO_INCONSISTENTE_MIN * 60_000) return melhor
+  const limite = Math.max(melhorDist * FEITO_FATOR_DIST, FEITO_DIST_MIN_M)
+  let alternativa: ParadaDerivada | null = null
+  let alternativaDist = Infinity
+  for (const [p, d] of candidatas) {
+    if (d > limite || distanciaAoIntervalo(p, feito) > FEITO_TOLERANCIA_MIN * 60_000) continue
+    if (d < alternativaDist) { alternativa = p; alternativaDist = d }
+  }
+  return alternativa ?? melhor
 }
 
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
