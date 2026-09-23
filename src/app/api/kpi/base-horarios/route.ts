@@ -226,8 +226,16 @@ export function calcularKmContinuo(posicoesBrutas: Posicao[]): number | null {
 // cliente). Subido pra 500m (ver RAIO_PRESENCA_MIN_M em motor/route.ts,
 // mesmo raciocinio, decoupled de RAIO_CHEGADA_MIN_M que fica em 300m).
 const RAIO_ENTREGA_M = 500;
+// Raio mais curto pra coordenada de cadastro da Unitrac (mesmo teste: 150/300/500 ficaram
+// dentro de 0,5pp; 300 mantido por ser o menos permissivo sem perda).
+const RAIO_ENTREGA_ALT_M = 300;
 
-type PontoEntrega = { id: string; lat: number; lng: number };
+// latAlt/lngAlt (opcionais): 2a coordenada do MESMO cliente -- o cadastro do
+// alvo na Unitrac (alvo.pontoLat/pontoLng). Validado 23/09 contra as paradas
+// reais do relatorio Unitrac (22/09, 1408 NFs com vinculo por codigo de
+// cliente): cadastro Unitrac a <=500m da parada real em 93% dos casos contra
+// 81% do nosso geocode.
+type PontoEntrega = { id: string; lat: number; lng: number; latAlt?: number; lngAlt?: number };
 type VisitaPonto = { id: string; chegada: string | null; saida: string | null; viaVizinhanca?: boolean; viaRaioAmpliado?: boolean };
 
 // Achado real 30/08 (mesma investigacao do bucket 500m-2km, ver
@@ -606,19 +614,26 @@ export function teveGpsCongelado(posicoes: Posicao[]): boolean {
 // dentro de raioM. Distancias que diferem <=25m contam como empate e
 // desempata pela parada mais longa (nunca pela primeira do dia).
 function acharParadaMaisProxima(pt: PontoEntrega, paradas: ParadaDerivada[], raioM: number, basesCentro: BaseCentro[]): ParadaDerivada | null {
-  let melhor: ParadaDerivada | null = null
-  let melhorDist = Infinity
-  for (const p of paradas) {
-    if (p.classificacao !== "FORA_BASE") continue
-    if (estaMaisPertoDaBaseQueDoPonto({ lat: p.lat, lng: p.lng, criado_em: "", velocidade: 0, atraso_min: 0 }, pt, basesCentro)) continue
-    const d = haversineM(pt.lat, pt.lng, p.lat, p.lng)
-    if (d > raioM) continue
-    if (melhor === null || d < melhorDist - 25 || (Math.abs(d - melhorDist) <= 25 && p.duracaoSeg > melhor.duracaoSeg)) {
-      melhor = p
-      melhorDist = d
+  const achar = (ref: PontoEntrega, raio: number): { parada: ParadaDerivada; dist: number } | null => {
+    let melhor: ParadaDerivada | null = null
+    let melhorDist = Infinity
+    for (const p of paradas) {
+      if (p.classificacao !== "FORA_BASE") continue
+      if (estaMaisPertoDaBaseQueDoPonto({ lat: p.lat, lng: p.lng, criado_em: "", velocidade: 0, atraso_min: 0 }, ref, basesCentro)) continue
+      const d = haversineM(ref.lat, ref.lng, p.lat, p.lng)
+      if (d > raio) continue
+      if (melhor === null || d < melhorDist - 25 || (Math.abs(d - melhorDist) <= 25 && p.duracaoSeg > melhor.duracaoSeg)) {
+        melhor = p
+        melhorDist = d
+      }
     }
+    return melhor ? { parada: melhor, dist: melhorDist } : null
   }
-  return melhor
+  const principal = achar(pt, raioM)
+  const temAlt = Number.isFinite(pt.latAlt) && Number.isFinite(pt.lngAlt)
+  const alternativa = temAlt ? achar({ id: pt.id, lat: pt.latAlt as number, lng: pt.lngAlt as number }, RAIO_ENTREGA_ALT_M) : null
+  if (principal && alternativa) return alternativa.dist < principal.dist ? alternativa.parada : principal.parada
+  return (principal ?? alternativa)?.parada ?? null
 }
 
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {

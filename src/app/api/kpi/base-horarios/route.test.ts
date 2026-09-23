@@ -370,6 +370,37 @@ describe("acharVisitasPorPonto", () => {
     expect(visitaVizinho.chegada).toBe("2026-08-25T10:00:00.000Z"); // detecta igual, nao compete por cluster
   });
 
+  describe("coordenada alternativa (cadastro Unitrac: latAlt/lngAlt)", () => {
+    const PARADA = { lat: -22.02, lng: -43.0 }; // ~2,2km de LOJA_A
+    const posicoes = [
+      { ...PARADA, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 0, atraso_min: 0 },
+      { ...PARADA, criado_em: "2026-08-25T10:20:00.000Z", velocidade: 0, atraso_min: 0 },
+      { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T10:30:00.000Z", velocidade: 40, atraso_min: 0 },
+    ];
+    it("geocode longe da parada, cadastro Unitrac perto: usa a parada", () => {
+      const [v] = acharVisitasPorPonto(posicoes as never, [{ ...LOJA_A, latAlt: -22.0202, lngAlt: -43.0 }]);
+      expect(v).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:20:00.000Z" });
+    });
+    it("sem coordenada alternativa: comportamento anterior (null)", () => {
+      expect(acharVisitasPorPonto(posicoes as never, [LOJA_A])[0]).toEqual({ id: "NF1", chegada: null, saida: null });
+    });
+    it("alternativa alem de 300m da parada e' ignorada", () => {
+      const [v] = acharVisitasPorPonto(posicoes as never, [{ ...LOJA_A, latAlt: -22.0245, lngAlt: -43.0 }]); // ~500m
+      expect(v.chegada).toBeNull();
+    });
+    it("duas paradas, uma perto de cada coordenada: vence a mais proxima da sua referencia", () => {
+      const outra = { lat: -22.0004, lng: -43.0 }; // ~45m do geocode
+      const pos2 = [
+        ...posicoes.slice(0, 2),
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T10:30:00.000Z", velocidade: 40, atraso_min: 0 },
+        { ...outra, criado_em: "2026-08-25T11:00:00.000Z", velocidade: 0, atraso_min: 0 },
+        { ...outra, criado_em: "2026-08-25T11:10:00.000Z", velocidade: 0, atraso_min: 0 },
+      ];
+      const [v] = acharVisitasPorPonto(pos2 as never, [{ ...LOJA_A, latAlt: -22.0209, lngAlt: -43.0 }]);
+      expect(v.chegada).toBe("2026-08-25T11:00:00.000Z");
+    });
+  });
+
   describe("parada real mais proxima (visita pela parada Unitrac-like)", () => {
     it("varias paradas no raio: escolhe a MAIS PROXIMA do ponto, nao a mais longa", () => {
       const perto = { lat: -22.0003, lng: -43.0 };
