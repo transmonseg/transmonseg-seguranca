@@ -309,7 +309,7 @@ const VELOCIDADE_MAX_PARADO_KMH = 5
 // abre nem reabre em movimento -- preserva o teste do TTH6G37/passagem
 // rapida); uma vez aberto, so' a posicao SAIR do raio do ponto fecha o
 // bloco -- velocidade sozinha nunca fecha uma permanencia ja' confirmada.
-function acharBlocoDentroDoRaio(
+export function acharBlocoDentroDoRaio(
   pt: PontoEntrega,
   posicoes: Posicao[],
   raioM: number,
