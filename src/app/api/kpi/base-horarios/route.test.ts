@@ -370,6 +370,76 @@ describe("acharVisitasPorPonto", () => {
     expect(visitaVizinho.chegada).toBe("2026-08-25T10:00:00.000Z"); // detecta igual, nao compete por cluster
   });
 
+  describe("parada real mais proxima (visita pela parada Unitrac-like)", () => {
+    it("varias paradas no raio: escolhe a MAIS PROXIMA do ponto, nao a mais longa", () => {
+      const perto = { lat: -22.0003, lng: -43.0 };
+      const longe = { lat: -22.0036, lng: -43.0 };
+      const posicoes = [
+        { ...longe, criado_em: "2026-08-25T09:00:00.000Z", velocidade: 0 },
+        { ...longe, criado_em: "2026-08-25T09:40:00.000Z", velocidade: 0 },
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T09:50:00.000Z", velocidade: 40 },
+        { ...perto, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 0 },
+        { ...perto, criado_em: "2026-08-25T10:06:00.000Z", velocidade: 0 },
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T10:10:00.000Z", velocidade: 40 },
+      ];
+      const [v] = acharVisitasPorPonto(posicoes as any, [LOJA_A]);
+      expect(v).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:06:00.000Z" });
+    });
+
+    it("distancias quase iguais (<=25m): desempata pela parada mais longa", () => {
+      const a = { lat: -22.0009, lng: -43.0 }; // ~100m
+      const b = { lat: -22.0011, lng: -43.0 }; // ~122m
+      const posicoes = [
+        { ...a, criado_em: "2026-08-25T09:00:00.000Z", velocidade: 0 },
+        { ...a, criado_em: "2026-08-25T09:05:00.000Z", velocidade: 0 },
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T09:10:00.000Z", velocidade: 40 },
+        { ...b, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 0 },
+        { ...b, criado_em: "2026-08-25T10:30:00.000Z", velocidade: 0 },
+        { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T10:40:00.000Z", velocidade: 40 },
+      ];
+      const [v] = acharVisitasPorPonto(posicoes as any, [LOJA_A]);
+      expect(v.chegada).toBe("2026-08-25T10:00:00.000Z");
+    });
+
+    it("parada de BASE proxima do cliente nao vira visita", () => {
+      const base = { lat: -22.0002, lng: -43.0 };
+      const posicoes = [
+        { lat: -22.0002, lng: -43.0, criado_em: "2026-08-25T00:00:00.000Z", velocidade: 0 },
+        { lat: -22.0002, lng: -43.0, criado_em: "2026-08-25T03:00:00.000Z", velocidade: 0 },
+      ];
+      const [v] = acharVisitasPorPonto(posicoes as any, [LOJA_A], [base]);
+      expect(v.chegada).toBeNull();
+    });
+
+    it("parada unica servindo dois pontos vizinhos: os dois recebem a mesma janela", () => {
+      const vizinho = { id: "NF3", lat: -22.0009, lng: -43.0 };
+      const posicoes = [
+        { lat: -22.0004, lng: -43.0, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 0 },
+        { lat: -22.0004, lng: -43.0, criado_em: "2026-08-25T10:20:00.000Z", velocidade: 0 },
+      ];
+      const [a, b] = acharVisitasPorPonto(posicoes as any, [LOJA_A, vizinho]);
+      expect(a.chegada).toBe("2026-08-25T10:00:00.000Z");
+      expect(b.chegada).toBe("2026-08-25T10:00:00.000Z");
+    });
+
+    it("sem parada em 500m mas com dwell ampliado: continua viaRaioAmpliado", () => {
+      const posicoes = [
+        { lat: -22.0058, lng: -43.0, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 0 },
+        { lat: -22.0058, lng: -43.0, criado_em: "2026-08-25T10:15:00.000Z", velocidade: 0 },
+      ];
+      const [v] = acharVisitasPorPonto(posicoes as any, [LOJA_A]);
+      expect(v.viaRaioAmpliado).toBe(true);
+    });
+
+    it("so ruido de velocidade: sem paradas, tudo null sem excecao", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 50 },
+        { lat: -22.01, lng: -43.0, criado_em: "2026-08-25T10:05:00.000Z", velocidade: 50 },
+      ];
+      expect(acharVisitasPorPonto(posicoes as any, [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null }]);
+    });
+  });
+
   it("sem posicao nenhuma: todos os pontos ficam null", () => {
     expect(acharVisitasPorPonto([], [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null }]);
   });

@@ -602,8 +602,30 @@ export function teveGpsCongelado(posicoes: Posicao[]): boolean {
   return false;
 }
 
+// Escolhe a parada real (derivarParadas) FORA_BASE mais proxima do ponto
+// dentro de raioM. Distancias que diferem <=25m contam como empate e
+// desempata pela parada mais longa (nunca pela primeira do dia).
+function acharParadaMaisProxima(pt: PontoEntrega, paradas: ParadaDerivada[], raioM: number, basesCentro: BaseCentro[]): ParadaDerivada | null {
+  let melhor: ParadaDerivada | null = null
+  let melhorDist = Infinity
+  for (const p of paradas) {
+    if (p.classificacao !== "FORA_BASE") continue
+    if (estaMaisPertoDaBaseQueDoPonto({ lat: p.lat, lng: p.lng, criado_em: "", velocidade: 0, atraso_min: 0 }, pt, basesCentro)) continue
+    const d = haversineM(pt.lat, pt.lng, p.lat, p.lng)
+    if (d > raioM) continue
+    if (melhor === null || d < melhorDist - 25 || (Math.abs(d - melhorDist) <= 25 && p.duracaoSeg > melhor.duracaoSeg)) {
+      melhor = p
+      melhorDist = d
+    }
+  }
+  return melhor
+}
+
 export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
+  const paradas = derivarParadas(posicoes, basesCentro)
   const diretas = pontos.map((pt) => {
+    const parada = acharParadaMaisProxima(pt, paradas, RAIO_ENTREGA_M, basesCentro)
+    if (parada) return { id: pt.id, chegada: parada.chegada, saida: parada.saida }
     const bloco = acharBlocoDentroDoRaio(pt, posicoes, RAIO_ENTREGA_M, basesCentro)
     return bloco ? { id: pt.id, chegada: bloco.inicio, saida: bloco.fim } : { id: pt.id, chegada: null, saida: null }
   })
