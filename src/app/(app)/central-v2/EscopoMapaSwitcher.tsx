@@ -119,15 +119,23 @@ export default function EscopoMapaSwitcher({
       <motion.button
         onClick={() => escolher("todos")}
         style={{
-          position: "relative", zIndex: 1, flex: 1, height: "100%",
+          position: "relative", flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center",
         }}
       >
         {/* zIndex 3: acima do thumb (zIndex 2) — senao o rotulo do segmento
-            ATIVO fica escondido embaixo do thumb opaco (bug achado ao vivo). */}
+            ATIVO fica escondido embaixo do thumb opaco (bug achado ao vivo).
+            26/09: isso so' funciona porque os <button> NAO tem z-index. Ate
+            aqui cada botao tinha `position: relative; zIndex: 1`, o que cria
+            um stacking context proprio: o zIndex 3 do texto valia so' DENTRO
+            do botao, e o botao inteiro (texto junto) pintava ABAIXO do thumb
+            (zIndex 2) -- o rotulo do segmento ativo sumia nos 4 estados e nos
+            2 temas (o fix de cor de 03/09, accentFg, estava certo mas
+            invisivel). pointerEvents "none" no texto deixa o arrasto comecar
+            em cima do rotulo ativo e o clique nos outros cair no botao. */}
         <motion.span style={{
-          position: "relative", zIndex: 3, color: corTodos,
+          position: "relative", zIndex: 3, pointerEvents: "none", color: corTodos,
           fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}>
@@ -138,13 +146,13 @@ export default function EscopoMapaSwitcher({
       <motion.button
         onClick={() => escolher("ambos")}
         style={{
-          position: "relative", zIndex: 1, flex: 1, height: "100%",
+          position: "relative", flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center",
         }}
       >
         <span style={{
-          position: "relative", zIndex: 3, color: modo === "ambos" ? accentFg : muted,
+          position: "relative", zIndex: 3, pointerEvents: "none", color: modo === "ambos" ? accentFg : muted,
           fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}>
@@ -155,13 +163,13 @@ export default function EscopoMapaSwitcher({
       <motion.button
         onClick={() => escolher("selecionados")}
         style={{
-          position: "relative", zIndex: 1, flex: 1, height: "100%",
+          position: "relative", flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
         }}
       >
         <span style={{
-          position: "relative", zIndex: 3, color: modo === "selecionados" ? accentFg : muted,
+          position: "relative", zIndex: 3, pointerEvents: "none", color: modo === "selecionados" ? accentFg : muted,
           fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}>
@@ -169,7 +177,7 @@ export default function EscopoMapaSwitcher({
         </span>
         {totalSelecionados > 0 && (
           <span style={{
-            position: "relative", zIndex: 3,
+            position: "relative", zIndex: 3, pointerEvents: "none",
             fontSize: 9, fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
             background: modo === "selecionados" ? `color-mix(in srgb, ${accentFg} 22%, transparent)` : `${accent}22`,
             color: modo === "selecionados" ? accentFg : accent,
@@ -183,13 +191,13 @@ export default function EscopoMapaSwitcher({
       <motion.button
         onClick={() => escolher("romaneio")}
         style={{
-          position: "relative", zIndex: 1, flex: 1, height: "100%",
+          position: "relative", flex: 1, height: "100%",
           background: "transparent", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
         }}
       >
         <motion.span style={{
-          position: "relative", zIndex: 3, color: corRomaneio,
+          position: "relative", zIndex: 3, pointerEvents: "none", color: corRomaneio,
           fontSize: 10.5, fontWeight: 700, letterSpacing: ".03em",
           fontFamily: "var(--font-geist), system-ui, sans-serif",
         }}>
@@ -197,7 +205,7 @@ export default function EscopoMapaSwitcher({
         </motion.span>
         {totalComRomaneio > 0 && (
           <span style={{
-            position: "relative", zIndex: 3,
+            position: "relative", zIndex: 3, pointerEvents: "none",
             fontSize: 9, fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
             background: modo === "romaneio" ? `color-mix(in srgb, ${accentFg} 22%, transparent)` : `${accent}22`,
             color: modo === "romaneio" ? accentFg : accent,
