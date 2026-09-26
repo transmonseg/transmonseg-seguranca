@@ -236,7 +236,14 @@ const RAIO_ENTREGA_ALT_M = 300;
 // cliente): cadastro Unitrac a <=500m da parada real em 93% dos casos contra
 // 81% do nosso geocode.
 type PontoEntrega = { id: string; lat: number; lng: number; latAlt?: number; lngAlt?: number; feitoEm?: string };
-type VisitaPonto = { id: string; chegada: string | null; saida: string | null; viaVizinhanca?: boolean; viaRaioAmpliado?: boolean };
+type VisitaPonto = {
+  id: string;
+  chegada: string | null;
+  saida: string | null;
+  viaVizinhanca?: boolean;
+  viaRaioAmpliado?: boolean;
+  menorDistanciaM?: number | null;
+};
 
 // Achado real 30/08 (mesma investigacao do bucket 500m-2km, ver
 // RAIO_VIZINHANCA_M em scripts/confirmar-presenca-romaneio.mjs): 27% dos
@@ -684,8 +691,37 @@ function acharParadaMaisProxima(pt: PontoEntrega, paradas: ParadaDerivada[], rai
   return alternativa ?? melhor
 }
 
-export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[], basesCentro: BaseCentro[] = []): VisitaPonto[] {
+// Achado real 26/09 (task 3b, verificacao manual): pontos SEM visita
+// confirmada (chegada/saida null) nao davam nenhuma pista de "quao perto"
+// o veiculo chegou de fato -- so' um null seco, indistinguivel entre "nunca
+// passou perto" e "passou a 8m mas nao parou o suficiente pra confirmar".
+// menorDistanciaM da' essa pista: menor distancia haversine entre o ponto
+// de entrega e QUALQUER leitura do trajeto continuo (nao so' os blocos
+// parados que derivarParadas/acharBlocoDentroDoRaio consideram), dentro da
+// janela da rota (saidaBase..chegadaBase, mesma janela de
+// filtrarJanelaRota) -- sem saidaBase, filtrarJanelaRota devolve o array
+// inteiro sem filtrar (mesmo fallback ja existente), entao chamadas antigas
+// sem esses 2 argumentos continuam calculando sobre a mesma serie que ja
+// recebiam. Sem nenhuma posicao na janela, fica null -- nunca inventa.
+function menorDistanciaAoPonto(pt: PontoEntrega, posicoesJanela: Posicao[]): number | null {
+  if (posicoesJanela.length === 0) return null
+  let menor = Infinity
+  for (const p of posicoesJanela) {
+    const d = haversineM(pt.lat, pt.lng, p.lat, p.lng)
+    if (d < menor) menor = d
+  }
+  return Number.isFinite(menor) ? Math.round(menor) : null
+}
+
+export function acharVisitasPorPonto(
+  posicoes: Posicao[],
+  pontos: PontoEntrega[],
+  basesCentro: BaseCentro[] = [],
+  saidaBase: string | null = null,
+  chegadaBase: string | null = null,
+): VisitaPonto[] {
   const paradas = derivarParadas(posicoes, basesCentro)
+  const posicoesJanela = filtrarJanelaRota(posicoes, saidaBase, chegadaBase)
   const diretas = pontos.map((pt) => {
     const parada = acharParadaMaisProxima(pt, paradas, RAIO_ENTREGA_M, basesCentro)
     if (parada) return { id: pt.id, chegada: parada.chegada, saida: parada.saida }
@@ -712,7 +748,7 @@ export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]
   // -- dwell direto no PROPRIO endereco (normal ou ampliado) sempre tem
   // prioridade sobre emprestar de vizinho.
   const pontoPorId = new Map(pontos.map((pt) => [pt.id, pt]));
-  return comAmpliado.map((v, i) => {
+  const comVizinhanca = comAmpliado.map((v, i) => {
     if (v.chegada !== null) return v;
     const pt = pontoPorId.get(v.id)!;
     let melhor: { chegada: string; saida: string } | null = null;
@@ -731,6 +767,11 @@ export function acharVisitasPorPonto(posicoes: Posicao[], pontos: PontoEntrega[]
     if (!melhor) return v;
     return { id: v.id, chegada: melhor.chegada, saida: melhor.saida, viaVizinhanca: true };
   });
+
+  return comVizinhanca.map((v) => ({
+    ...v,
+    menorDistanciaM: menorDistanciaAoPonto(pontoPorId.get(v.id)!, posicoesJanela),
+  }));
 }
 
 function normPlaca(p: string): string {
@@ -895,7 +936,7 @@ export async function POST(request: Request) {
     const chegadaBase = fimRota ? acharChegadaAposFimRota(posicoes, basesCentro, fimRota) : chegadaBaseDefault;
     const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const pontos = pontosPorPlaca.get(placaNorm);
-    const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos, basesCentro) : undefined;
+    const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos, basesCentro, saidaBase, chegadaBase) : undefined;
     // Paradas derivadas so' quando pedidas (`incluirParadas`) -- payload
     // cresce bastante e o consumidor normal (saida/chegada/km/visitas) nao
     // precisa. O KPI pede quando o dia caiu fora da janela de 48h da Unitrac.

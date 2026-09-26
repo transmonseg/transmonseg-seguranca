@@ -342,8 +342,8 @@ describe("acharVisitasPorPonto", () => {
       { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T10:30:00.000Z", velocidade: 0 }, // saiu
     ];
     const [visitaA, visitaB] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_B]);
-    expect(visitaA).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:15:00.000Z" });
-    expect(visitaB).toEqual({ id: "NF2", chegada: null, saida: null }); // nunca visitado
+    expect(visitaA).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:15:00.000Z" , menorDistanciaM: 0 });
+    expect(visitaB).toEqual({ id: "NF2", chegada: null, saida: null, menorDistanciaM: 75630 }); // nunca visitado
   });
 
   it("2 blocos de visita no mesmo ponto (passou, foi embora, voltou): fica com o de MAIOR duracao", () => {
@@ -356,7 +356,7 @@ describe("acharVisitasPorPonto", () => {
       { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T14:25:00.000Z", velocidade: 0 }, // saiu de novo
     ];
     const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-    expect(visita).toEqual({ id: "NF1", chegada: "2026-08-25T14:00:00.000Z", saida: "2026-08-25T14:20:00.000Z" });
+    expect(visita).toEqual({ id: "NF1", chegada: "2026-08-25T14:00:00.000Z", saida: "2026-08-25T14:20:00.000Z" , menorDistanciaM: 0 });
   });
 
   it("2 pontos proximos, 2 entregas na MESMA parada fisica: os 2 detectam a visita, sem 'roubar' um do outro", () => {
@@ -379,10 +379,10 @@ describe("acharVisitasPorPonto", () => {
     ];
     it("geocode longe da parada, cadastro Unitrac perto: usa a parada", () => {
       const [v] = acharVisitasPorPonto(posicoes as never, [{ ...LOJA_A, latAlt: -22.0202, lngAlt: -43.0 }]);
-      expect(v).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:20:00.000Z" });
+      expect(v).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:20:00.000Z" , menorDistanciaM: 2224 });
     });
     it("sem coordenada alternativa: comportamento anterior (null)", () => {
-      expect(acharVisitasPorPonto(posicoes as never, [LOJA_A])[0]).toEqual({ id: "NF1", chegada: null, saida: null });
+      expect(acharVisitasPorPonto(posicoes as never, [LOJA_A])[0]).toEqual({ id: "NF1", chegada: null, saida: null , menorDistanciaM: 2224 });
     });
     it("alternativa alem de 300m da parada e' ignorada", () => {
       const [v] = acharVisitasPorPonto(posicoes as never, [{ ...LOJA_A, latAlt: -22.0245, lngAlt: -43.0 }]); // ~500m
@@ -420,7 +420,7 @@ describe("acharVisitasPorPonto", () => {
     });
     it("feitoEm dentro da parada da manha (mais proxima esta >30min do feito): escolhe a da manha", () => {
       const [v] = acharVisitasPorPonto(pos as never, [{ ...LOJA_A, feitoEm: dia("09:10:00") }]);
-      expect(v).toEqual({ id: "NF1", chegada: dia("09:00:00"), saida: dia("09:30:00") });
+      expect(v).toEqual({ id: "NF1", chegada: dia("09:00:00"), saida: dia("09:30:00") , menorDistanciaM: 11 });
     });
     it("feitoEm consistente com a mais proxima: mantem a mais proxima", () => {
       expect(acharVisitasPorPonto(pos as never, [{ ...LOJA_A, feitoEm: dia("15:05:00") }])[0].chegada).toBe(dia("15:00:00"));
@@ -458,7 +458,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -23.0, lng: -44.0, criado_em: "2026-08-25T10:10:00.000Z", velocidade: 40 },
       ];
       const [v] = acharVisitasPorPonto(posicoes as any, [LOJA_A]);
-      expect(v).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:06:00.000Z" });
+      expect(v).toEqual({ id: "NF1", chegada: "2026-08-25T10:00:00.000Z", saida: "2026-08-25T10:06:00.000Z" , menorDistanciaM: 33 });
     });
 
     it("distancias quase iguais (<=25m): desempata pela parada mais longa", () => {
@@ -511,12 +511,35 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 50 },
         { lat: -22.01, lng: -43.0, criado_em: "2026-08-25T10:05:00.000Z", velocidade: 50 },
       ];
-      expect(acharVisitasPorPonto(posicoes as any, [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null }]);
+      expect(acharVisitasPorPonto(posicoes as any, [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null , menorDistanciaM: 0 }]);
     });
   });
 
   it("sem posicao nenhuma: todos os pontos ficam null", () => {
-    expect(acharVisitasPorPonto([], [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null }]);
+    expect(acharVisitasPorPonto([], [LOJA_A])).toEqual([{ id: "NF1", chegada: null, saida: null , menorDistanciaM: null }]);
+  });
+
+  // Task 3b (verificacao manual 26/09): menorDistanciaM da' uma pista de
+  // "quao perto" o veiculo chegou mesmo quando nao ha visita confirmada --
+  // e' calculado sobre TODA leitura do trajeto (nao so' os blocos parados),
+  // entao um veiculo que so' PASSA perto do ponto sem parar (velocidade
+  // alta, nunca abre bloco de dwell) ainda registra a distancia minima.
+  describe("menorDistanciaM (task 3b)", () => {
+    it("trajeto passa a ~8m do ponto sem parar: menorDistanciaM~=8, chegada continua null", () => {
+      const posicoes = [
+        { lat: -22.0, lng: -43.01, criado_em: "2026-08-25T09:59:00.000Z", velocidade: 60 },
+        { lat: -22.0000719, lng: -43.0, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 60 }, // ~8m de LOJA_A, so' passando
+        { lat: -22.0, lng: -42.99, criado_em: "2026-08-25T10:01:00.000Z", velocidade: 60 },
+      ];
+      const [v] = acharVisitasPorPonto(posicoes as never, [LOJA_A]);
+      expect(v.chegada).toBeNull();
+      expect(v.menorDistanciaM).toBeCloseTo(8, 0);
+    });
+
+    it("sem posicoes: menorDistanciaM fica null (ja coberto tambem pelo teste 'sem posicao nenhuma' acima)", () => {
+      const [v] = acharVisitasPorPonto([], [LOJA_A]);
+      expect(v.menorDistanciaM).toBeNull();
+    });
   });
 
   describe("corroboracao por vizinhanca (achado real 30/08, bucket 500m-2km: 27% eram 1 parada real servindo varios clientes vizinhos -- ex. TTM-2G02/Rocinha)", () => {
@@ -539,6 +562,7 @@ describe("acharVisitasPorPonto", () => {
         chegada: "2026-08-30T10:00:00.000Z",
         saida: "2026-08-30T10:15:00.000Z",
         viaRaioAmpliado: true,
+        menorDistanciaM: 600,
       });
     });
 
@@ -560,12 +584,13 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.00437, criado_em: "2026-08-30T10:15:00.000Z", velocidade: 0 },
       ];
       const [visitaD, visitaAlvo] = acharVisitasPorPonto(posicoes, [LOJA_D, ALVO_SO_VIZINHANCA]);
-      expect(visitaD).toEqual({ id: "NF_D", chegada: "2026-08-30T10:00:00.000Z", saida: "2026-08-30T10:15:00.000Z" });
+      expect(visitaD).toEqual({ id: "NF_D", chegada: "2026-08-30T10:00:00.000Z", saida: "2026-08-30T10:15:00.000Z" , menorDistanciaM: 451 });
       expect(visitaAlvo).toEqual({
         id: "NF_ALVO",
         chegada: "2026-08-30T10:00:00.000Z",
         saida: "2026-08-30T10:15:00.000Z",
         viaVizinhanca: true,
+        menorDistanciaM: 833,
       });
     });
 
@@ -575,7 +600,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-08-30T10:15:00.000Z", velocidade: 0 },
       ];
       const [, visitaB] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_B]);
-      expect(visitaB).toEqual({ id: "NF2", chegada: null, saida: null });
+      expect(visitaB).toEqual({ id: "NF2", chegada: null, saida: null , menorDistanciaM: 75756 });
     });
 
     it("visita direta tem prioridade sobre vizinhanca: ponto com dwell proprio nao herda de ninguem, mesmo com vizinho confirmado por perto", () => {
@@ -586,7 +611,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0054, lng: -43.0, criado_em: "2026-08-30T11:05:00.000Z", velocidade: 0 },
       ];
       const [, visitaVizinha] = acharVisitasPorPonto(posicoes, [LOJA_A, LOJA_VIZINHA]);
-      expect(visitaVizinha).toEqual({ id: "NF_VIZINHA", chegada: "2026-08-30T11:00:00.000Z", saida: "2026-08-30T11:05:00.000Z" });
+      expect(visitaVizinha).toEqual({ id: "NF_VIZINHA", chegada: "2026-08-30T11:00:00.000Z", saida: "2026-08-30T11:05:00.000Z" , menorDistanciaM: 0 });
     });
   });
 
@@ -598,7 +623,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:02:00.000Z", velocidade: 0 }, // ja saiu de novo
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null });
+      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null , menorDistanciaM: 0 });
     });
 
     it("bloco de 2 leituras mas ainda curto (< 60s de intervalo real): tambem nao confirma", () => {
@@ -608,7 +633,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:01:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null });
+      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null , menorDistanciaM: 0 });
     });
 
     it("bloco de exatamente 60s ou mais: confirma normalmente", () => {
@@ -618,7 +643,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T09:02:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-08-27T09:00:00.000Z", saida: "2026-08-27T09:01:00.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-08-27T09:00:00.000Z", saida: "2026-08-27T09:01:00.000Z" , menorDistanciaM: 0 });
     });
 
     it("bloco curto (ping isolado) E bloco longo no mesmo ponto: fica com o longo, o curto nao interfere (ja seria descartado por duracao mesmo sem o filtro)", () => {
@@ -630,7 +655,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -23.0, lng: -44.0, criado_em: "2026-08-27T14:25:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-08-27T14:00:00.000Z", saida: "2026-08-27T14:20:00.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-08-27T14:00:00.000Z", saida: "2026-08-27T14:20:00.000Z" , menorDistanciaM: 0 });
     });
   });
 
@@ -648,7 +673,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:02:00.000Z", velocidade: 49 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null });
+      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null , menorDistanciaM: 0 });
     });
 
     it("veiculo realmente parado (velocidade 0) dentro do raio: confirma normalmente", () => {
@@ -657,7 +682,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:01:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-11T09:00:00.000Z", saida: "2026-09-11T09:01:00.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-11T09:00:00.000Z", saida: "2026-09-11T09:01:00.000Z" , menorDistanciaM: 0 });
     });
 
     it("velocidade baixa mas nao-zero (deriva de GPS parado, ate 5km/h): ainda confirma", () => {
@@ -666,7 +691,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:01:00.000Z", velocidade: 5 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-11T09:00:00.000Z", saida: "2026-09-11T09:01:00.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-11T09:00:00.000Z", saida: "2026-09-11T09:01:00.000Z" , menorDistanciaM: 0 });
     });
 
     it("comeca rapido e para de verdade: so' o trecho parado conta, chegada/saida refletem so' o dwell real", () => {
@@ -676,7 +701,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:05:00.000Z", velocidade: 0 }, // ainda parado
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-11T09:01:00.000Z", saida: "2026-09-11T09:05:00.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-11T09:01:00.000Z", saida: "2026-09-11T09:05:00.000Z" , menorDistanciaM: 0 });
     });
 
     // Achado real 14/09 (grupo KPI AJUSTES, placa RQV6C75): GPS bruto real
@@ -695,7 +720,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-14T14:02:24.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-14T13:54:54.000Z", saida: "2026-09-14T14:02:24.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-14T13:54:54.000Z", saida: "2026-09-14T14:02:24.000Z" , menorDistanciaM: 0 });
     });
 
     it("veiculo sai de verdade do raio do ponto: fecha o bloco na leitura que saiu, nao inventa permanencia", () => {
@@ -706,7 +731,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -23.5, lng: -44.5, criado_em: "2026-09-14T13:10:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-14T13:00:00.000Z", saida: "2026-09-14T13:05:00.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-14T13:00:00.000Z", saida: "2026-09-14T13:05:00.000Z" , menorDistanciaM: 0 });
     });
 
     // Achado real 15/09 (auditoria em massa, RQV9B26/NF 2372896): mesma
@@ -724,7 +749,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-15T12:22:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-15T12:15:00.000Z", saida: "2026-09-15T12:22:00.000Z" });
+      expect(visita).toEqual({ id: "NF1", chegada: "2026-09-15T12:15:00.000Z", saida: "2026-09-15T12:22:00.000Z" , menorDistanciaM: 0 });
     });
 
     it("passagem rapida de verdade (velocidade alta, existente) continua sem confirmar", () => {
@@ -734,7 +759,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.0, lng: -43.0, criado_em: "2026-09-11T09:02:00.000Z", velocidade: 49 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [LOJA_A]);
-      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null });
+      expect(visita).toEqual({ id: "NF1", chegada: null, saida: null , menorDistanciaM: 0 });
     });
   });
 
@@ -755,7 +780,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T05:00:00.000Z", velocidade: 0 }, // 3h depois, ainda na base
       ];
       const [visita] = acharVisitasPorPonto(posicoesNaBase, [CLIENTE_PERTO_DA_BASE], [BASE]);
-      expect(visita).toEqual({ id: "NF_BASE", chegada: null, saida: null });
+      expect(visita).toEqual({ id: "NF_BASE", chegada: null, saida: null , menorDistanciaM: 546 });
     });
 
     it("mesmo cenario SEM passar basesCentro (parametro opcional): comportamento antigo preservado, confirma (potencialmente errado, mas e' o default documentado)", () => {
@@ -775,7 +800,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T20:00:00.000Z", velocidade: 0 }, // voltou pra base
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [CLIENTE_PERTO_DA_BASE], [BASE]);
-      expect(visita).toEqual({ id: "NF_BASE", chegada: "2026-08-27T08:00:00.000Z", saida: "2026-08-27T08:15:00.000Z" });
+      expect(visita).toEqual({ id: "NF_BASE", chegada: "2026-08-27T08:00:00.000Z", saida: "2026-08-27T08:15:00.000Z" , menorDistanciaM: 0 });
     });
   });
 
@@ -805,7 +830,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T20:00:00.000Z", velocidade: 0 }, // voltou pra base
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [CLIENTE_MUITO_PERTO_DA_BASE], [BASE]);
-      expect(visita).toEqual({ id: "NF_VIZINHO_BASE", chegada: "2026-08-27T09:00:00.000Z", saida: "2026-08-27T09:10:00.000Z" });
+      expect(visita).toEqual({ id: "NF_VIZINHO_BASE", chegada: "2026-08-27T09:00:00.000Z", saida: "2026-08-27T09:10:00.000Z" , menorDistanciaM: 0 });
     });
 
     it("caminhao so' fica na base a noite toda (nunca chega mais perto do cliente do que da base): NAO confirma", () => {
@@ -814,7 +839,7 @@ describe("acharVisitasPorPonto", () => {
         { lat: -22.816007, lng: -43.277827, criado_em: "2026-08-27T05:00:00.000Z", velocidade: 0 },
       ];
       const [visita] = acharVisitasPorPonto(posicoes, [CLIENTE_MUITO_PERTO_DA_BASE], [BASE]);
-      expect(visita).toEqual({ id: "NF_VIZINHO_BASE", chegada: null, saida: null });
+      expect(visita).toEqual({ id: "NF_VIZINHO_BASE", chegada: null, saida: null , menorDistanciaM: 273 });
     });
   });
 });
