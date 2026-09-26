@@ -12,7 +12,9 @@ const ARQUIVOS = [
   "src/app/(app)/components/MenuMotivoFalso.tsx",
   "src/app/(app)/components/AlertaSonoro.tsx",
 ];
-const RAIOS_OK = new Set(["0", "8", "14", "999", "\"50%\"", "'50%'", "RAIO.control", "RAIO.panel", "RAIO.capsule"]);
+const RAIOS_OK = new Set(["0", "8", "14", "999", "\"50%\"", "'50%'", "RAIO.control", "RAIO.panel", "RAIO.capsule", "RAIO.check"]);
+// RAIO.check (4) e' SO pra caixinha de checkbox; o test abaixo trava que ele
+// nao vaza pra outros elementos (so em caixas de 14x14).
 
 describe("guarda do design", () => {
   for (const f of ARQUIVOS) {
@@ -30,7 +32,11 @@ describe("guarda do design", () => {
         .some(x => Number(x[1]) < 12 && Number(x[1]) > 0));
       expect(ruins).toEqual([]);
     });
-    it(`${f}: borderRadius so 0/8/14/999/50%`, () => {
+    it(`${f}: RAIO.check so em checkbox 14x14`, () => {
+      const usos = [...src.matchAll(/^.*RAIO\.check.*$/gm)].map(m => m[0]);
+      expect(usos.filter(l => !/width: 14, height: 14, borderRadius: RAIO\.check/.test(l))).toEqual([]);
+    });
+    it(`${f}: borderRadius so 0/8/14/999/50% (+ RAIO.check em checkbox)`, () => {
       const ruins = [...src.matchAll(/borderRadius:\s*([^,}\n]+)/g)].map(m => m[1].trim())
         .filter(v => !RAIOS_OK.has(v) && !/^(?:RAIO\.|`|["']\d+px \d+px)/.test(v));
       expect(ruins).toEqual([]);

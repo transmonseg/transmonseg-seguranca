@@ -8,8 +8,11 @@ describe("design tokens", () => {
   it("tipografia nunca abaixo de 12px", () => {
     for (const t of Object.values(TIPO)) expect(t.fontSize).toBeGreaterThanOrEqual(12);
   });
-  it("raios so 8/14/999", () => {
-    expect(Object.values(RAIO).sort((a, b) => a - b)).toEqual([8, 14, 999]);
+  it("raios so 8/14/999 (+ check 4, exclusivo de checkbox)", () => {
+    const { check, ...sistema } = RAIO;
+    expect(Object.values(sistema).sort((a, b) => a - b)).toEqual([8, 14, 999]);
+    expect(check).toBe(4);
+    expect(Object.keys(RAIO).sort()).toEqual(["capsule", "check", "control", "panel"]);
   });
   for (const tema of ["dark", "light"] as const) {
     const p = PALETA[tema];
@@ -19,6 +22,9 @@ describe("design tokens", () => {
     });
     it(`${tema}: secundario >= 4.5 sobre surface`, () => {
       expect(contraste(p.secondary, p.surface)).toBeGreaterThanOrEqual(4.5);
+    });
+    it(`${tema}: terciario (T.dim, texto legivel) >= 3 sobre surface`, () => {
+      expect(contraste(p.tertiary, p.surface)).toBeGreaterThanOrEqual(3);
     });
     it(`${tema}: cores de status >= 3 sobre surface`, () => {
       for (const c of [p.red, p.orange, p.green, p.accent]) expect(contraste(c, p.surface)).toBeGreaterThanOrEqual(3);

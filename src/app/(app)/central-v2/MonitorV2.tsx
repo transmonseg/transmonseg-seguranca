@@ -649,8 +649,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // a lista (mesmo padrao de alertaAtivoId) -- string|null, nao Set/boolean
   // por card. Chave "p1:<id>"/"p2:<id>" (lado do split + id), ver renderCardAlerta.
   const [menuFalsoAbertoId, setMenuFalsoAbertoId] = useState<string | null>(null);
-  // Card sob o mouse: Correto/Falso so aparecem no ativo/hover (ver card-acoes.ts).
-  const [hoverCardId, setHoverCardId] = useState<string | null>(null);
   const toggleMotivoExpandido = useCallback((id: string) => {
     setMotivosExpandidos(prev => {
       const next = new Set(prev);
@@ -1508,7 +1506,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     // Falso sao chaveados por lado+id pra nao vazar pro card gemeo.
     const chaveCard = `${painel === painel2 ? "p2" : "p1"}:${a.id}`;
     const menuFalsoAberto = menuFalsoAbertoId === chaveCard;
-    const mostrarAcoes = acoesVisiveis({ ativo, hover: hoverCardId === chaveCard, menuFalsoAberto });
+    // Hover/foco revelam as acoes via CSS (.card-alerta, globals.css) pra nao
+    // re-renderizar o MonitorV2 inteiro (e os mapas) a cada mouseenter.
+    const acoesFixas = acoesVisiveis({ ativo, menuFalsoAberto });
     // Clique no card inteiro = o antigo botao Focar (removido 26/09).
     const focar = () => {
       painel.setAlertaAtivoId(a.id);
@@ -1533,12 +1533,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           if (e.target !== e.currentTarget) return;
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focar(); }
         }}
-        onMouseEnter={() => setHoverCardId(chaveCard)}
-        onMouseLeave={() => setHoverCardId(v => v === chaveCard ? null : v)}
+        data-acoes={acoesFixas ? "on" : undefined}
         role="button"
         tabIndex={0}
         aria-label={`Focar ${a.placa}`}
-        className="v2-alert-card"
+        className="v2-alert-card card-alerta"
         style={{
           margin: "6px 0", borderRadius: RAIO.panel, padding: "12px 14px",
           background: ativo || doCarro ? T.surface2 : T.card,
@@ -1684,29 +1683,27 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           );
         })()}
-        {mostrarAcoes && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+        <div className="card-alerta-acoes" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+          <motion.button whileTap={{ scale: 0.92 }}
+            onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
+            onClick={pararClique}
+            className="v2-btn-tiny" style={tinyBtn(T.green, { borderAlpha: "55", bgAlpha: "22" })}>
+            Correto
+          </motion.button>
+          <div style={{ position: "relative" }} onClick={pararClique} onKeyDown={pararClique}>
             <motion.button whileTap={{ scale: 0.92 }}
-              onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
-              onClick={pararClique}
-              className="v2-btn-tiny" style={tinyBtn(T.green, { borderAlpha: "55", bgAlpha: "22" })}>
-              Correto
+              onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === chaveCard ? null : chaveCard); }}
+              className="v2-btn-tiny" style={tinyBtn(T.yellow, { borderAlpha: "40", bgAlpha: "18" })}>
+              Falso
             </motion.button>
-            <div style={{ position: "relative" }} onClick={pararClique} onKeyDown={pararClique}>
-              <motion.button whileTap={{ scale: 0.92 }}
-                onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === chaveCard ? null : chaveCard); }}
-                className="v2-btn-tiny" style={tinyBtn(T.yellow, { borderAlpha: "40", bgAlpha: "18" })}>
-                Falso
-              </motion.button>
-              <MenuMotivoFalso
-                compacto
-                aberto={menuFalsoAberto}
-                onFechar={() => setMenuFalsoAbertoId(null)}
-                onEscolher={(categoria, detalhe) => handleFalso(a.id, categoria, detalhe)}
-              />
-            </div>
+            <MenuMotivoFalso
+              compacto
+              aberto={menuFalsoAberto}
+              onFechar={() => setMenuFalsoAbertoId(null)}
+              onEscolher={(categoria, detalhe) => handleFalso(a.id, categoria, detalhe)}
+            />
           </div>
-        )}
+        </div>
       </motion.div>
     );
   };
@@ -1809,6 +1806,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         animate={{ y: aberto ? 0 : "130%", opacity: aberto ? 1 : 0 }}
         transition={MOLA}
         aria-hidden={!aberto}
+        // Fechado ele so fica transparente/fora da tela: sem inert o Tab ainda
+        // chegava nos botoes invisiveis (Sirene/Bloqueio).
+        inert={!aberto}
         style={{
           position: "absolute", bottom: 12, zIndex: Z.drawer,
           left: `calc(${pos.left} + 12px)`,
@@ -1840,6 +1840,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
           {painel.carregando && (
             <span style={{ fontSize: 12, color: T.dim }}>carregando…</span>
+          )}
+
+          {/* Sem romaneio hoje: aviso discreto no header (a metrica ROTA DO DIA
+              so aparece quando ha rota). */}
+          {painel.cvSelecionado && !painel.carregando && painel.alvosTotal === 0 && (
+            <span style={{ fontSize: 12, color: T.muted }}>Sem rota hoje</span>
           )}
 
           <div style={{ flex: 1 }} />
@@ -1892,7 +1898,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           ))}
 
-          {/* Rota do dia — so quando ha rota (antes mostrava "Sem rota hoje") */}
+          {/* Rota do dia — so quando ha rota ("Sem rota hoje" fica no header) */}
           {painel.cvSelecionado && painel.alvosTotal > 0 && (
             <div style={{ minWidth: 0, gridColumn: "span 2" }}>
               <div style={{ ...TIPO.caption, color: T.muted, marginBottom: 2 }}>
@@ -2253,7 +2259,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                         transition: "all .1s",
                       }}>
                       <div style={{
-                        width: 12, height: 12, borderRadius: RAIO.control, flexShrink: 0,
+                        width: 14, height: 14, borderRadius: RAIO.check, flexShrink: 0,
                         background: val ? cor : "transparent",
                         border: `1.5px solid ${val ? cor : T.dim}`,
                         transition: "all .1s",
@@ -2279,7 +2285,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                       fontWeight: modoSelecionados ? 700 : 400,
                     }}>
                     <div style={{
-                      width: 12, height: 12, borderRadius: RAIO.control, flexShrink: 0,
+                      width: 14, height: 14, borderRadius: RAIO.check, flexShrink: 0,
                       background: modoSelecionados ? T.accent : "transparent",
                       border: `1.5px solid ${modoSelecionados ? T.accent : T.dim}`,
                     }} />
@@ -3079,7 +3085,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                         color: T.text, fontSize: 12, fontFamily: FONT_MONO, textAlign: "left",
                       }}>
                       <div style={{
-                        width: 14, height: 14, borderRadius: RAIO.control, flexShrink: 0,
+                        width: 14, height: 14, borderRadius: RAIO.check, flexShrink: 0,
                         background: marcado ? T.accent : "transparent",
                         border: `1.5px solid ${marcado ? T.accent : T.dim}`,
                       }} />

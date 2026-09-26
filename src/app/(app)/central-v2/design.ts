@@ -15,12 +15,12 @@ export interface Paleta {
 export const PALETA: Record<Tema, Paleta> = {
   dark: {
     bg: "#000000", surface: "#1c1c1e", surface2: "#2c2c2e", separator: "#38383a",
-    text: "#f5f5f7", secondary: "#98989d", tertiary: "#636366",
+    text: "#f5f5f7", secondary: "#98989d", tertiary: "#68686c",
     accent: "#0a84ff", red: "#ff453a", orange: "#ff9f0a", green: "#30d158",
   },
   light: {
     bg: "#f2f2f7", surface: "#ffffff", surface2: "#f2f2f7", separator: "#d1d1d6",
-    text: "#1d1d1f", secondary: "#6e6e73", tertiary: "#aeaeb2",
+    text: "#1d1d1f", secondary: "#6e6e73", tertiary: "#8e8e93",
     // #007aff da so 4,0:1 no branco; #0066cc e' o azul acessivel da Apple.
     accent: "#0066cc", red: "#d70015", orange: "#c93400", green: "#248a3d",
   },
@@ -36,7 +36,8 @@ export const TIPO = {
   caption:  { fontSize: 12, fontWeight: 600, letterSpacing: ".04em", textTransform: "uppercase" as const },
 } as const;
 
-export const RAIO = { control: 8, panel: 14, capsule: 999 } as const;
+// check: SO pra caixinha de checkbox (14px). Com 8 ela lia como radio.
+export const RAIO = { control: 8, panel: 14, capsule: 999, check: 4 } as const;
 
 export const MOLA = { type: "spring", stiffness: 380, damping: 32 } as const;
 
