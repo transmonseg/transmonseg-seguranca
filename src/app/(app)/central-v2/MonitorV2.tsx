@@ -1719,9 +1719,29 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // 1 selecao ativa entre os 2 paineis). `pos` e' a caixa do painel em % da
   // area do mapa (mesma conta do AvisoDesvioTopo no split): o cartao fica
   // 12px dentro dela e nunca passa da largura do proprio painel.
+  // Altura REAL de cada cartao (p1/p2), medida por ResizeObserver, pro badge
+  // de veiculos e a Legenda subirem exatamente acima dele. Ref callback com
+  // cleanup (React 19) desconecta o observer ao desmontar; so grava quando a
+  // altura arredondada muda (sem loop de setState).
+  const [alturaCartao, setAlturaCartao] = useState<{ p1: number; p2: number }>({ p1: 0, p2: 0 });
+  const observarCartao = useCallback((chave: "p1" | "p2") => (el: HTMLDivElement | null) => {
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const medir = () => {
+      const h = Math.round(el.offsetHeight);
+      setAlturaCartao(a => (a[chave] === h ? a : { ...a, [chave]: h }));
+    };
+    medir();
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const refCartaoP1 = useMemo(() => observarCartao("p1"), [observarCartao]);
+  const refCartaoP2 = useMemo(() => observarCartao("p2"), [observarCartao]);
+
   const renderDrawer = (
     painel: ReturnType<typeof usePainelFoco>,
-    pos: { left: string; width: string }
+    pos: { left: string; width: string },
+    refCartao: (el: HTMLDivElement | null) => void,
   ) => {
     const placaColor = placaColorDe(painel.vmAtual);
     const aberto = !!painel.cvSelecionado;
@@ -1784,6 +1804,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
     return (
       <motion.div
+        ref={refCartao}
         initial={false}
         animate={{ y: aberto ? 0 : "130%", opacity: aberto ? 1 : 0 }}
         transition={MOLA}
@@ -1852,7 +1873,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
         {/* Metricas */}
         <div style={{
-          display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gridAutoFlow: "row dense",
+          display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(120px, calc(50% - 8px)), 1fr))", gridAutoFlow: "row dense",
           gap: "10px 16px", padding: "2px 14px 12px",
         }}>
           {metricas.map((item, i) => (
@@ -2746,15 +2767,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             );
           })()}
 
-          {/* Badge de veiculos + Legenda sobem quando o cartao do veiculo do
-              painel embaixo deles esta aberto. Altura do cartao e' estimada
-              (sem ResizeObserver): ~200px com o mapa inteiro (1-2 linhas de
-              metricas, acoes numa linha) e ~300px no split, onde o painel
-              estreito quebra cabecalho/metricas/acoes em mais linhas. */}
+          {/* Badge de veiculos + Legenda sobem acima do cartao do veiculo do
+              painel em que estao (badge = esquerda = painel1; Legenda =
+              direita = painel2 no split, painel1 fora dele), pela altura
+              MEDIDA do cartao (alturaCartao, ResizeObserver). */}
           {(() => {
-            const acimaDoCartao = (splitView ? 320 : 232);
-            const bottomEsq = painel1.cvSelecionado ? acimaDoCartao : 12;
-            const bottomDir = (splitView ? painel2 : painel1).cvSelecionado ? acimaDoCartao : 12;
+            const acima = (painel: ReturnType<typeof usePainelFoco>, h: number) =>
+              painel.cvSelecionado ? 12 + h + 12 : 12;
+            const bottomEsq = acima(painel1, alturaCartao.p1);
+            const bottomDir = splitView ? acima(painel2, alturaCartao.p2) : bottomEsq;
             const transicao = "bottom .35s cubic-bezier(.32,.72,0,1)";
             return (
               <>
@@ -2834,11 +2855,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           {renderDrawer(painel1, {
             left: "0%",
             width: splitView ? `${splitRatio * 100}%` : "100%",
-          })}
+          }, refCartaoP1)}
           {splitView && renderDrawer(painel2, {
             left: `${splitRatio * 100}%`,
             width: `${(1 - splitRatio) * 100}%`,
-          })}
+          }, refCartaoP2)}
 
         </div>{/* MAP AREA end */}
 
