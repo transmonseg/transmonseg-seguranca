@@ -24,6 +24,10 @@
   --vermelho:    #ff453a;
   --amarelo:     #ff9f0a;
   --verde:       #30d158;
+
+  /* Thumb neutro (segmented control) — nao usar --card-hover aqui */
+  --thumb:       #636366;
+  --thumb-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
 
 /* =========================================================
@@ -46,6 +50,9 @@
   --vermelho:       #d70015;
   --amarelo:        #c93400;
   --verde:          #248a3d;
+
+  --thumb:          #ffffff;
+  --thumb-shadow:   0 1px 3px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.04);
 }
 
 @theme inline {
