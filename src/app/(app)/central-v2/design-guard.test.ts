@@ -8,6 +8,7 @@ const ARQUIVOS = [
   "src/app/(app)/central-v2/MonitorV2.tsx",
   "src/app/(app)/central-v2/EscopoMapaSwitcher.tsx",
   "src/app/(app)/central-v2/AvisoDesvioTopo.tsx",
+  "src/app/(app)/central-v2/PopoverMapa.tsx",
   "src/app/(app)/components/MenuMotivoFalso.tsx",
   "src/app/(app)/components/AlertaSonoro.tsx",
 ];

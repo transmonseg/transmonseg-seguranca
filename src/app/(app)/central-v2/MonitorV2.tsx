@@ -11,7 +11,8 @@ import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeD
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
-import { temaT, RAIO, FONT_SANS, FONT_MONO } from "./design";
+import { temaT, material, RAIO, MOLA, TIPO, FONT_SANS, FONT_MONO } from "./design";
+import PopoverMapa from "./PopoverMapa";
 import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
 import SplitDivider from "./SplitDivider";
 import { TIPOS_ABA_DESVIOS, TIPOS_REVISAO_INDIVIDUAL } from "./tipos-alerta";
@@ -900,18 +901,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const mapTokens = satelite
     ? { ...baseTokens, tileUrl: SAT_TILE_URL, tileSubdomains: SAT_TILE_SUBDOMAINS }
     : baseTokens;
-
-  function outlineBtn(active: boolean, color: string): React.CSSProperties {
-    return {
-      height: 28, padding: "0 10px", borderRadius: RAIO.capsule, cursor: "pointer",
-      background: active ? `${color}18` : "transparent",
-      border: `1px solid ${active ? color + "55" : T.border}`,
-      color: active ? color : T.muted,
-      fontSize: 12, fontWeight: 600, letterSpacing: ".02em",
-      fontFamily: FONT_SANS,
-      transition: "all .12s",
-    };
-  }
 
   function drawerOpBtn(active: boolean, color = T.accent): React.CSSProperties {
     return {
@@ -1985,16 +1974,21 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     }}>
 
       {/* ================================================================
-          TOOLBAR — 3 colunas: [clients] [controls centrados] [ações]
+          TOOLBAR — 3 colunas: [clientes] [busca centrada] [Mapa + ações]
+          26/09 (redesign Apple): zoom/VEÍCULOS/SAT/TRÂNSITO foram pro
+          popover "Mapa" (PopoverMapa) e o COMM 10/30/60min foi pro bloco
+          FILTROS da lateral -- mesmas funções, só mudaram de lugar.
       ================================================================ */}
       <div style={{
         display: "grid",
         gridTemplateColumns: "auto 1fr auto",
         alignItems: "center",
         gap: 0,
-        height: 46,
-        borderBottom: `1px solid ${T.border}`,
+        height: 48,
+        borderBottom: `0.5px solid ${T.border}`,
         background: T.toolbarBg,
+        backdropFilter: "blur(20px) saturate(180%)",
+        WebkitBackdropFilter: "blur(20px) saturate(180%)",
         flexShrink: 0,
         position: "relative",
         zIndex: Z.toolbar,
@@ -2002,68 +1996,70 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         paddingRight: 8,
       }}>
 
-        {/* ── Coluna ESQUERDA: cliente switchers ── */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingRight: 8 }}>
-          {clientes.map(c => {
-            const active = c.cod === cliente;
-            return (
-              <Link key={c.cod} href={`${hrefBaseClientes}?cliente=${encodeURIComponent(c.cod)}`}
-                style={{
-                  padding: "4px 12px", borderRadius: RAIO.capsule,
-                  fontSize: 12, fontWeight: 700, letterSpacing: ".06em",
-                  background: active ? `${T.accent}18` : "transparent",
-                  color: active ? T.accent : T.muted,
-                  border: `1px solid ${active ? T.accent + "44" : "transparent"}`,
-                  textDecoration: "none", whiteSpace: "nowrap",
-                  transition: "all .12s",
-                  fontFamily: FONT_SANS,
-                }}>
-                {c.nome.split(" ")[0].toUpperCase()}
-              </Link>
-            );
-          })}
+        {/* ── Coluna ESQUERDA: cliente switchers (segmented cápsula, thumb neutro) ── */}
+        <div style={{ display: "flex", alignItems: "center", paddingRight: 8 }}>
+          {clientes.length > 0 && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 2, padding: 2,
+              borderRadius: RAIO.capsule,
+              background: tema === "dark" ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)",
+            }}>
+              {clientes.map(c => {
+                const active = c.cod === cliente;
+                return (
+                  <Link key={c.cod} href={`${hrefBaseClientes}?cliente=${encodeURIComponent(c.cod)}`}
+                    style={{
+                      position: "relative", display: "flex", alignItems: "center",
+                      height: 28, padding: "0 12px", borderRadius: RAIO.capsule,
+                      fontSize: 12, fontWeight: active ? 600 : 500, letterSpacing: ".04em",
+                      color: active ? T.text : T.muted,
+                      textDecoration: "none", whiteSpace: "nowrap",
+                      transition: "color .12s",
+                      fontFamily: FONT_SANS,
+                    }}>
+                    {active && (
+                      <motion.span layoutId="thumbCliente" transition={MOLA}
+                        style={{ position: "absolute", inset: 0, borderRadius: RAIO.capsule, background: T.thumb, boxShadow: T.thumbShadow }} />
+                    )}
+                    <span style={{ position: "relative" }}>{c.nome.split(" ")[0].toUpperCase()}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* ── Coluna CENTRAL: zoom + busca + COMM — tudo centralizado ── */}
+        {/* ── Coluna CENTRAL: busca de placa centralizada ── */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "center",
           gap: 5, minWidth: 0,
         }}>
-          {ZOOM_LABELS.map(([label, z]) => (
-            <button key={label} onClick={() => cmdZoom(z)}
-              style={outlineBtn(zoomAtual === z, T.accent)}>
-              {label}
-            </button>
-          ))}
-          <button onClick={() => setGatilhoFrota(g => g + 1)}
-            style={outlineBtn(false, T.accent)}>
-            VEÍCULOS
-          </button>
-
-          <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px", flexShrink: 0 }} />
-
           {/* Busca placa */}
-          <div style={{ position: "relative", flexShrink: 0 }}>
+          <div style={{ position: "relative", flexShrink: 0, width: "clamp(220px, 28vw, 380px)" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>
+              <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
             <input
               value={busca}
               onChange={e => { setBusca(e.target.value); setComboAberto(true); }}
               onFocus={() => setComboAberto(true)}
               onBlur={() => setTimeout(() => setComboAberto(false), 200)}
-              placeholder="Buscar placa..."
+              placeholder="Buscar placa"
               style={{
-                background: painel1.cvSelecionado ? `${T.accent}12` : tema === "dark" ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)",
-                border: `1px solid ${painel1.cvSelecionado ? T.accent + "66" : T.border}`,
-                borderRadius: RAIO.control, color: painel1.cvSelecionado ? T.accent : T.text, padding: "0 10px", height: 28,
-                width: 130, fontSize: 12, fontFamily: FONT_MONO, outline: "none",
-                letterSpacing: ".04em", fontWeight: painel1.cvSelecionado ? 700 : 400,
+                background: painel1.cvSelecionado ? T.accentDim : tema === "dark" ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.05)",
+                border: `1px solid ${painel1.cvSelecionado ? T.accent + "66" : "transparent"}`,
+                borderRadius: RAIO.capsule, color: painel1.cvSelecionado ? T.accent : T.text,
+                padding: "0 12px 0 32px", height: 32, width: "100%", boxSizing: "border-box",
+                fontSize: 13, fontFamily: FONT_SANS, outline: "none",
+                fontWeight: painel1.cvSelecionado ? 600 : 400,
               }}
             />
             {comboAberto && veiculosBusca.length > 0 && (
               <div style={{
-                position: "absolute", top: 33, left: "50%", transform: "translateX(-50%)",
-                width: 210,
-                background: T.card, border: `1px solid ${T.border}`, borderRadius: 8,
-                zIndex: Z.combo, boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+                position: "absolute", top: 38, left: 0, right: 0,
+                ...material(tema), borderRadius: RAIO.panel, overflow: "hidden",
+                padding: 4, zIndex: Z.combo,
               }}>
                 {veiculosBusca.map(v => {
                   const al = alertas.find(a => a.placa === v.placa);
@@ -2072,11 +2068,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                       onMouseDown={() => { painel1.selecionarVeiculo(v.cv); setBusca(v.placa); setComboAberto(false); }}
                       style={{
                         display: "flex", alignItems: "center", justifyContent: "space-between",
-                        width: "100%", padding: "7px 12px", background: "transparent", border: "none",
-                        borderBottom: `1px solid ${T.border}`, color: T.text,
-                        fontSize: 12, fontFamily: FONT_MONO, cursor: "pointer",
+                        width: "100%", padding: "8px 10px", background: "transparent", border: "none",
+                        borderRadius: RAIO.control, color: T.text,
+                        fontSize: 13, fontFamily: FONT_SANS, cursor: "pointer",
                       }}>
-                      <span style={{ fontWeight: 700 }}>{v.placa}</span>
+                      <span style={{ fontWeight: 600, fontFamily: FONT_MONO }}>{v.placa}</span>
                       {al && (
                         <span style={{ fontSize: 12, color: al.nivel === "critico" ? T.red : T.yellow }}>
                           {nomeT(al.tipo)}
@@ -2088,31 +2084,26 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </div>
             )}
           </div>
-
-          <div style={{ width: 1, height: 20, background: T.border, margin: "0 2px", flexShrink: 0 }} />
-
-          <span style={{ fontSize: 12, color: T.dim, letterSpacing: ".07em", whiteSpace: "nowrap", flexShrink: 0 }}>
-            COMM
-          </span>
-          {[10, 30, 60].map(m => (
-            <button key={m} onClick={() => setFiltroComm(filtroComm === m ? null : m)}
-              style={outlineBtn(filtroComm === m, T.accent)}>
-              {m}min
-            </button>
-          ))}
         </div>
 
-        {/* ── Coluna DIREITA: SAT + settings + apito ── */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 8 }}>
-          <button onClick={() => setSateliteComPersistencia(!satelite)} title={satelite ? "Mapa padrao" : "Vista satelite"}
-            style={outlineBtn(satelite, T.accent)}>
-            SAT
-          </button>
-          <button onClick={() => setCamTrafegoComPersistencia(!camTrafego)} title={camTrafego ? "Ocultar transito" : "Mostrar transito ao vivo"}
-            style={outlineBtn(camTrafego, T.accent)}>
-            TRÂNSITO
-          </button>
-
+        {/* ── Coluna DIREITA: Mapa + settings + apito ── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 8 }}>
+          {/* Popover "Mapa": dentro do container da toolbar (zIndex 1500),
+              então pinta acima do mapa sem portal. Chama exatamente as
+              mesmas funções dos botões antigos (cmdZoom, setGatilhoFrota,
+              setSateliteComPersistencia, setCamTrafegoComPersistencia). */}
+          <PopoverMapa
+            tema={tema}
+            T={T}
+            zoomLabels={ZOOM_LABELS}
+            zoomAtual={zoomAtual}
+            onZoom={cmdZoom}
+            onEnquadrarFrota={() => setGatilhoFrota(g => g + 1)}
+            satelite={satelite}
+            onSatelite={setSateliteComPersistencia}
+            trafego={camTrafego}
+            onTrafego={setCamTrafegoComPersistencia}
+          />
           {/* Settings gear */}
           <div ref={settingsRef} style={{ position: "relative" }}>
             <button
@@ -2134,8 +2125,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               <div style={{
                 position: "absolute", top: 38, right: 0,
                 width: 196, zIndex: Z.settings,
-                background: T.card, border: `1px solid ${T.border}`,
-                borderRadius: RAIO.panel, boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                ...material(tema),
+                borderRadius: RAIO.panel,
                 overflow: "hidden",
               }}>
                 <div style={{ padding: "10px 14px 6px", fontSize: 12, color: T.dim, letterSpacing: ".04em", fontWeight: 700 }}>
@@ -2334,8 +2325,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             }).map(a => a.tipo))].sort((a, b) => (TIPO_PRIORITY[b] ?? 0) - (TIPO_PRIORITY[a] ?? 0));
             const temGrupos = grupos.length > 1;
             const temTipos = tiposDisponiveis.length > 0;
-            if (!temGrupos && !temTipos) return null;
-            const filtrosAtivos = gruposOcultos.size + filtroTipos.size;
+            // 26/09: sempre renderiza -- o filtro "sem comunicação há" (COMM,
+            // antes na toolbar) vive aqui e vale pra qualquer cliente, mesmo
+            // sem grupos/tipos. Conta no indicador do cabeçalho pra o operador
+            // saber que há filtro ligado com o bloco fechado.
+            const filtrosAtivos = gruposOcultos.size + filtroTipos.size + (filtroComm != null ? 1 : 0);
             return (
               <div style={{ borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
                 <button onClick={() => setFiltrosAbertos(v => !v)} style={{
@@ -2361,6 +2355,28 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
                 {filtrosAbertos && (
                   <div style={{ paddingBottom: 4 }}>
+                    {/* Sem comunicação há — mesmo setter/regra dos antigos botões
+                        COMM 10/30/60min da toolbar (clicar no ativo desliga). */}
+                    <div style={{ ...TIPO.caption, color: T.dim, padding: "2px 8px 4px" }}>
+                      Sem comunicação há
+                    </div>
+                    <div style={{ display: "flex", gap: 3, padding: "0 6px 6px", flexWrap: "wrap" }}>
+                      {[10, 30, 60].map(m => {
+                        const ativo = filtroComm === m;
+                        return (
+                          <button key={m} onClick={() => setFiltroComm(filtroComm === m ? null : m)} style={{
+                            height: 24, padding: "0 10px", borderRadius: RAIO.capsule,
+                            border: `1px solid ${ativo ? T.accent : T.border}`,
+                            background: ativo ? T.accentDim : "transparent",
+                            color: ativo ? T.accent : T.muted,
+                            fontSize: 12, fontWeight: ativo ? 600 : 500,
+                            cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
+                          }}>
+                            {m} min
+                          </button>
+                        );
+                      })}
+                    </div>
                     {/* Chips de grupo de frota (gvc/gvn) — clique oculta/mostra o grupo */}
                     {temGrupos && (
                       <div style={{ display: "flex", gap: 3, padding: "2px 6px 5px", flexWrap: "wrap" }}>
