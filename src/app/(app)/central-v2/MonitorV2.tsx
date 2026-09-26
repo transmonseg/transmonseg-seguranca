@@ -11,7 +11,8 @@ import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeD
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
-import { temaT, material, RAIO, MOLA, TIPO, FONT_SANS, FONT_MONO } from "./design";
+import { temaT, material, RAIO, MOLA, TIPO, FONT_SANS, FONT_MONO, NUM } from "./design";
+import { acoesVisiveis, corStatus } from "./card-acoes";
 import PopoverMapa from "./PopoverMapa";
 import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
 import SplitDivider from "./SplitDivider";
@@ -617,6 +618,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // a lista (mesmo padrao de alertaAtivoId) -- string|null, nao Set/boolean
   // por card.
   const [menuFalsoAbertoId, setMenuFalsoAbertoId] = useState<string | null>(null);
+  // Card sob o mouse: Correto/Falso so aparecem no ativo/hover (ver card-acoes.ts).
+  const [hoverCardId, setHoverCardId] = useState<string | null>(null);
   const toggleMotivoExpandido = useCallback((id: string) => {
     setMotivosExpandidos(prev => {
       const next = new Set(prev);
@@ -1466,186 +1469,194 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     // de itens novos: AnimatePresence initial={false} ja suprime a
     // animacao de entrada no primeiro carregamento da pagina.
     const atrasoEntrada = delayEntradaEscalonada(opts.index ?? 0);
-    const cor = a.nivel === "critico" ? T.red : T.yellow;
+    const cor = corStatus(a.nivel, T);
     const ativo = painel.alertaAtivoId === a.id;
     const doCarro = painel.cvSelecionado === a.cv;
+    const menuFalsoAberto = menuFalsoAbertoId === a.id;
+    const mostrarAcoes = acoesVisiveis({ ativo, hover: hoverCardId === a.id, menuFalsoAberto });
+    // Clique no card inteiro = o antigo botao Focar (removido 26/09).
     const focar = () => {
       painel.setAlertaAtivoId(a.id);
       painel.selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
     };
+    // Elementos internos (Correto/Falso/menu/ver motivo) nao podem focar junto:
+    // onMouseDown com stopPropagation nao impede o click de borbulhar ate o card.
+    const pararClique = (e: React.SyntheticEvent) => e.stopPropagation();
+    // Faixa de 3px a esquerda carrega o nivel; ativo ganha anel accent e o card
+    // do veiculo selecionado (doCarro) um anel accent mais fraco.
+    const anel = ativo ? `, 0 0 0 1px ${T.accent}` : doCarro ? `, 0 0 0 1px ${T.accent}55` : "";
 
     return (
       <motion.div key={a.id}
         layout="position"
         initial={{ opacity: 0, y: -6, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
-        transition={{ type: "spring", stiffness: 500, damping: 34, delay: atrasoEntrada }}
+        exit={{ opacity: 0, scale: 0.96 }}
+        transition={{ ...MOLA, delay: atrasoEntrada }}
         onClick={focar}
+        onKeyDown={e => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focar(); }
+        }}
+        onMouseEnter={() => setHoverCardId(a.id)}
+        onMouseLeave={() => setHoverCardId(v => v === a.id ? null : v)}
+        role="button"
+        tabIndex={0}
+        aria-label={`Focar ${a.placa}`}
         className="v2-alert-card"
         style={{
-          marginBottom: 4, borderRadius: 8,
-          borderTop: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
-          borderRight: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
-          borderBottom: `1px solid ${ativo ? cor + "99" : doCarro ? cor + "55" : cor + "22"}`,
-          borderLeft: `3px solid ${cor}`,
-          background: ativo
-            ? (tema === "dark" ? `${cor}22` : `${cor}14`)
-            : doCarro
-              ? (tema === "dark" ? `${cor}12` : `${cor}08`)
-              : (tema === "dark" ? `${cor}07` : `${cor}05`),
+          margin: "6px 0", borderRadius: RAIO.panel, padding: "12px 14px",
+          background: ativo || doCarro ? T.surface2 : T.card,
+          boxShadow: `inset 3px 0 0 ${cor}${anel}`,
           cursor: "pointer",
-          boxShadow: ativo ? `0 0 0 1px ${cor}44` : "none",
         }}>
-        <div style={{ padding: "8px 10px 7px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-            <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 13, letterSpacing: ".04em" }}>
-              {a.placa}
-            </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: cor, flexShrink: 0 }} />
+          <span style={{ ...NUM, fontSize: 15, fontWeight: 700, color: T.text }}>
+            {a.placa}
+          </span>
+          {(() => {
+            const idade = corIdadeAlerta(a.desde, tema);
+            const tituloIdade = idade.cor
+              ? `Parado sem revisao ha' muito tempo (detectado ha' ${tempoAtras(a.desde)})`
+              : `Detectado ha' ${tempoAtras(a.desde)}`;
+            return (
+              <span suppressHydrationWarning title={tituloIdade} style={{
+                ...NUM, fontSize: 12, color: idade.cor || T.dim, marginLeft: "auto",
+                fontWeight: idade.peso,
+              }}>
+                {tempoAtras(a.desde)}
+              </span>
+            );
+          })()}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", margin: "4px 0 6px" }}>
+          <span style={{ ...TIPO.footnote, color: cor }}>
+            {nomeT(a.tipo)}
+          </span>
+          {a.tipo === "parada_sem_marcacao" && (
             <span style={{
-              fontSize: 12, fontWeight: 700, padding: "1px 5px", borderRadius: RAIO.control,
-              background: `${cor}18`, color: cor, letterSpacing: ".04em",
+              fontSize: 12, fontWeight: 600, padding: "1px 8px", borderRadius: RAIO.capsule,
+              background: `${T.red}14`, color: T.red,
             }}>
-              {nomeT(a.tipo)}
+              POSSÍVEL DESVIO
             </span>
-            {a.tipo === "parada_sem_marcacao" && (
-              <span style={{
-                fontSize: 12, fontWeight: 800, padding: "1px 5px", borderRadius: RAIO.control,
-                background: `${T.red}22`, color: T.red, letterSpacing: ".03em",
-              }}>
-                POSSÍVEL DESVIO
-              </span>
-            )}
-            {a.atraso_min != null && a.atraso_min >= 10 && (
-              <span title={`GPS deste veiculo chegou com ${Math.round(a.atraso_min)}min de atraso da origem (Unitrac)`} style={{
-                fontSize: 12, fontWeight: 800, padding: "1px 5px", borderRadius: RAIO.control,
-                background: `${T.yellow}22`, color: T.yellow, letterSpacing: ".03em",
-              }}>
-                GPS +{Math.round(a.atraso_min)}min
-              </span>
-            )}
-            {a.reabertura && (
-              <span title="Novo episodio de desvio neste veiculo: o alerta ja estava aberto e foi reaberto (o horario ao lado e' do episodio atual)" style={{
-                fontSize: 12, fontWeight: 800, padding: "1px 5px", borderRadius: RAIO.control,
-                background: `${T.accent}22`, color: T.accent, letterSpacing: ".03em",
-              }}>
-                ↻ {a.reabertura}
-              </span>
-            )}
-            {(() => {
-              const idade = corIdadeAlerta(a.desde, tema);
-              const tituloIdade = idade.cor
-                ? `Parado sem revisao ha' muito tempo (detectado ha' ${tempoAtras(a.desde)})`
-                : `Detectado ha' ${tempoAtras(a.desde)}`;
-              return (
-                <span suppressHydrationWarning title={tituloIdade} style={{
-                  fontSize: 12, color: idade.cor || T.dim, marginLeft: "auto", fontFamily: FONT_MONO,
-                  fontWeight: idade.peso, letterSpacing: idade.cor ? ".02em" : "normal",
-                }}>
-                  ⏱ {tempoAtras(a.desde)}
-                </span>
-              );
-            })()}
-          </div>
-          {a.motivo && (() => {
-            const expandido = motivosExpandidos.has(a.id);
-            // Heuristica de tamanho (sem medir layout real): acima disso o
-            // texto quase sempre corta no card estreito da sidebar.
-            const longoDemaisPraCard = a.motivo.length > 55;
-            return (
-              <div style={{ margin: "0 0 2px" }}>
-                <p style={{
-                  margin: 0, fontSize: 12, color: T.muted, lineHeight: 1.35,
-                  whiteSpace: expandido ? "normal" : "nowrap",
-                  overflow: expandido ? "visible" : "hidden",
-                  textOverflow: expandido ? "clip" : "ellipsis",
-                }}>
-                  {a.motivo}
-                </p>
-                {longoDemaisPraCard && (
-                  <button
-                    onMouseDown={e => { e.stopPropagation(); toggleMotivoExpandido(a.id); }}
-                    className="v2-btn-tiny"
-                    style={{
-                      ...BASE_BTN, height: 16, padding: 0, marginTop: 1,
-                      fontSize: 12, fontWeight: 700, color: T.accent,
-                      justifyContent: "flex-start",
-                    }}
-                  >
-                    {expandido ? "ver menos" : "ver motivo completo"}
-                  </button>
-                )}
-              </div>
-            );
-          })()}
-          {a.progressoDestinoM != null && (() => {
-            const { texto, aproximando } = formatarProgressoDestino(a.progressoDestinoM);
-            return (
+          )}
+          {a.atraso_min != null && a.atraso_min >= 10 && (
+            <span title={`GPS deste veiculo chegou com ${Math.round(a.atraso_min)}min de atraso da origem (Unitrac)`} style={{
+              fontSize: 12, fontWeight: 600, padding: "1px 8px", borderRadius: RAIO.capsule,
+              background: `${T.yellow}14`, color: T.yellow,
+            }}>
+              GPS +{Math.round(a.atraso_min)}min
+            </span>
+          )}
+          {a.reabertura && (
+            <span title="Novo episodio de desvio neste veiculo: o alerta ja estava aberto e foi reaberto (o horario ao lado e' do episodio atual)" style={{
+              fontSize: 12, fontWeight: 600, padding: "1px 8px", borderRadius: RAIO.capsule,
+              background: `${T.accent}14`, color: T.accent,
+            }}>
+              ↻ {a.reabertura}
+            </span>
+          )}
+        </div>
+        {a.motivo && (() => {
+          const expandido = motivosExpandidos.has(a.id);
+          // Heuristica de tamanho (sem medir layout real): com 2 linhas de
+          // clamp, acima disso o texto quase sempre corta no card da sidebar.
+          const longoDemaisPraCard = a.motivo.length > 110;
+          return (
+            <div style={{ margin: "0 0 4px" }}>
               <p style={{
-                margin: "0 0 2px", fontSize: 12, fontWeight: 600,
-                color: aproximando ? T.accent : T.dim,
+                margin: 0, fontSize: 13, color: T.muted, lineHeight: 1.4,
+                ...(expandido ? {} : {
+                  display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const,
+                  overflow: "hidden",
+                }),
               }}>
-                {texto}
+                {a.motivo}
               </p>
-            );
-          })()}
-          {a.placarSombra != null && (
+              {longoDemaisPraCard && (
+                <button
+                  onMouseDown={e => { e.stopPropagation(); toggleMotivoExpandido(a.id); }}
+                  onClick={pararClique}
+                  className="v2-btn-tiny"
+                  style={{
+                    ...BASE_BTN, height: 18, padding: 0, marginTop: 2,
+                    fontSize: 12, fontWeight: 600, color: T.accent,
+                    justifyContent: "flex-start",
+                  }}
+                >
+                  {expandido ? "ver menos" : "ver motivo completo"}
+                </button>
+              )}
+            </div>
+          );
+        })()}
+        {a.progressoDestinoM != null && (() => {
+          const { texto, aproximando } = formatarProgressoDestino(a.progressoDestinoM);
+          return (
+            <p style={{
+              margin: "0 0 2px", fontSize: 12, fontWeight: 600,
+              color: aproximando ? T.accent : T.dim,
+            }}>
+              {texto}
+            </p>
+          );
+        })()}
+        {a.placarSombra != null && (
+          <p style={{
+            margin: "0 0 2px", fontSize: 12, color: T.dim,
+          }}>
+            {formatarPlacarSombra(a.placarSombra.placar, a.placarSombra.componentes)}
+          </p>
+        )}
+        {a.calibracao != null && (() => {
+          const texto = formatarConfiabilidadeDetector(a.calibracao.taxa_falso_positivo);
+          if (texto == null) return null;
+          return (
             <p style={{
               margin: "0 0 2px", fontSize: 12, color: T.dim,
             }}>
-              {formatarPlacarSombra(a.placarSombra.placar, a.placarSombra.componentes)}
+              {texto}
             </p>
-          )}
-          {a.calibracao != null && (() => {
-            const texto = formatarConfiabilidadeDetector(a.calibracao.taxa_falso_positivo);
-            if (texto == null) return null;
-            return (
-              <p style={{
-                margin: "0 0 2px", fontSize: 12, color: T.dim,
-              }}>
-                {texto}
-              </p>
-            );
-          })()}
-          {a.local && (
-            <p style={{
-              margin: "0 0 6px", fontSize: 12, color: T.dim, lineHeight: 1.3,
-              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            }}>
-              {a.local}
-            </p>
-          )}
-          {(() => {
-            const prog = progressoPorPlaca.get(a.placa);
-            if (!prog || prog.total === 0) return null;
-            return (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                <span style={{ fontSize: 12, color: T.dim, fontFamily: FONT_MONO, flexShrink: 0 }}>
-                  {prog.feitos}/{prog.total} entr.
-                </span>
-                <div style={{ flex: 1, height: 2, background: `${T.border}`, borderRadius: 0, overflow: "hidden" }}>
-                  <div style={{
-                    height: "100%",
-                    width: `${prog.total > 0 ? Math.round((prog.feitos / prog.total) * 100) : 0}%`,
-                    background: prog.feitos === prog.total ? T.green : T.accent,
-                    borderRadius: 0, transition: "width .3s",
-                  }} />
-                </div>
+          );
+        })()}
+        {a.local && (
+          <p style={{
+            margin: "0 0 6px", fontSize: 12, color: T.dim, lineHeight: 1.3,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>
+            {a.local}
+          </p>
+        )}
+        {(() => {
+          const prog = progressoPorPlaca.get(a.placa);
+          if (!prog || prog.total === 0) return null;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+              <span style={{ ...NUM, fontSize: 12, color: T.dim, flexShrink: 0 }}>
+                {prog.feitos}/{prog.total} entr.
+              </span>
+              <div style={{ flex: 1, height: 4, background: T.border, borderRadius: RAIO.capsule, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%",
+                  width: `${prog.total > 0 ? Math.round((prog.feitos / prog.total) * 100) : 0}%`,
+                  background: prog.feitos === prog.total ? T.green : T.accent,
+                  borderRadius: RAIO.capsule, transition: "width .3s",
+                }} />
               </div>
-            );
-          })()}
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            <motion.button whileTap={{ scale: 0.92 }}
-              onMouseDown={e => { e.stopPropagation(); focar(); }}
-              className="v2-btn-tiny" style={tinyBtn(T.accent)}>
-              Focar
-            </motion.button>
+            </div>
+          );
+        })()}
+        {mostrarAcoes && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
             <motion.button whileTap={{ scale: 0.92 }}
               onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
+              onClick={pararClique}
               className="v2-btn-tiny" style={tinyBtn(T.green, { borderAlpha: "55", bgAlpha: "22" })}>
               Correto
             </motion.button>
-            <div style={{ position: "relative" }}>
+            <div style={{ position: "relative" }} onClick={pararClique} onKeyDown={pararClique}>
               <motion.button whileTap={{ scale: 0.92 }}
                 onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === a.id ? null : a.id); }}
                 className="v2-btn-tiny" style={tinyBtn(T.yellow, { borderAlpha: "40", bgAlpha: "18" })}>
@@ -1653,13 +1664,13 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </motion.button>
               <MenuMotivoFalso
                 compacto
-                aberto={menuFalsoAbertoId === a.id}
+                aberto={menuFalsoAberto}
                 onFechar={() => setMenuFalsoAbertoId(null)}
                 onEscolher={(categoria, detalhe) => handleFalso(a.id, categoria, detalhe)}
               />
             </div>
           </div>
-        </div>
+        )}
       </motion.div>
     );
   };
@@ -2247,29 +2258,27 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         <div style={{
           width: splitView ? "clamp(190px, 14vw, 230px)" : "clamp(220px, 18vw, 280px)",
           flexShrink: 0, display: "flex", flexDirection: "column",
-          borderRight: `1px solid ${T.border}`,
+          borderRight: `0.5px solid ${T.border}`,
           background: T.sidebarBg,
           overflow: "hidden",
         }}>
-          {/* Count strip */}
+          {/* Contadores (26/09): dois stats lado a lado, sem fundo vermelho no
+              bloco -- so o numero fica vermelho quando ha' critico. */}
           <div style={{
-            display: "flex", alignItems: "center", gap: 0,
-            borderBottom: `1px solid ${T.border}`, flexShrink: 0,
+            display: "flex", alignItems: "stretch",
+            borderBottom: `0.5px solid ${T.border}`, flexShrink: 0,
           }}>
-            <div style={{
-              flex: 1, padding: "9px 12px", borderRight: `1px solid ${T.border}`,
-              background: nCriticos > 0 ? `${T.red}12` : "transparent",
-            }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: nCriticos > 0 ? T.red : T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
+            <div style={{ flex: 1, padding: 14 }}>
+              <div style={{ ...TIPO.title, ...NUM, color: nCriticos > 0 ? T.red : T.text, lineHeight: 1 }}>
                 {nCriticos}
               </div>
-              <div style={{ fontSize: 12, color: T.dim, letterSpacing: ".04em", marginTop: 2 }}>CRÍTICO</div>
+              <div style={{ ...TIPO.caption, color: T.muted, marginTop: 4 }}>Críticos</div>
             </div>
-            <div style={{ flex: 1, padding: "9px 12px" }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: T.muted, lineHeight: 1, fontFamily: FONT_MONO }}>
+            <div style={{ flex: 1, padding: 14 }}>
+              <div style={{ ...TIPO.title, ...NUM, color: T.text, lineHeight: 1 }}>
                 {veiculosMapa.length}
               </div>
-              <div style={{ fontSize: 12, color: T.dim, letterSpacing: ".04em", marginTop: 2 }}>VEÍC.</div>
+              <div style={{ ...TIPO.caption, color: T.muted, marginTop: 4 }}>Veículos</div>
             </div>
           </div>
 
@@ -2294,26 +2303,30 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               mapeamento por cod_user_unitrac. "TUDO" continua mostrando
               literalmente todos os tipos, sem mudança de comportamento --
               rede de segurança deliberada, aditiva à aba nova. */}
-          <div style={{ display: "flex", padding: "5px 6px", gap: 3, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
-            {(["tudo", "desvios"] as const).map(v => {
-              const color = v === "tudo" ? T.accent : T.red;
-              const ativo = vista === v;
-              return (
-                <motion.button key={v} whileTap={{ scale: 0.96 }} onClick={() => setVistaComPersistencia(v)} style={{
-                  position: "relative", flex: 1, height: 27, borderRadius: RAIO.capsule, border: "none", cursor: "pointer",
-                  background: "transparent", overflow: "hidden",
-                  color: ativo ? color : T.muted,
-                  fontSize: 12, fontWeight: 700, letterSpacing: ".06em",
-                  fontFamily: FONT_SANS, transition: "color .12s",
-                }}>
-                  {ativo && (
-                    <motion.div layoutId="pillVista" transition={{ type: "spring", stiffness: 500, damping: 40 }}
-                      style={{ position: "absolute", inset: 0, borderRadius: RAIO.capsule, background: `${color}18`, zIndex: 0 }} />
-                  )}
-                  <span style={{ position: "relative", zIndex: 1 }}>{v === "tudo" ? "TUDO" : LABEL_ABA_DESVIOS}</span>
-                </motion.button>
-              );
-            })}
+          <div style={{ padding: "8px 10px", borderBottom: `0.5px solid ${T.border}`, flexShrink: 0 }}>
+            <div style={{ display: "flex", padding: 2, gap: 2, borderRadius: RAIO.capsule, background: T.surface2 }}>
+              {(["tudo", "desvios"] as const).map(v => {
+                const ativo = vista === v;
+                // Segmented neutro (26/09): thumb do sistema, sem cor por aba.
+                // Rotulo em caixa normal; a constante LABEL_ABA_DESVIOS segue a fonte.
+                const rotulo = v === "tudo" ? "Tudo" : LABEL_ABA_DESVIOS.charAt(0) + LABEL_ABA_DESVIOS.slice(1).toLowerCase();
+                return (
+                  <motion.button key={v} whileTap={{ scale: 0.96 }} onClick={() => setVistaComPersistencia(v)} style={{
+                    position: "relative", flex: 1, height: 28, borderRadius: RAIO.capsule, border: "none", cursor: "pointer",
+                    background: "transparent",
+                    color: ativo ? T.text : T.muted,
+                    fontSize: 13, fontWeight: 600,
+                    fontFamily: FONT_SANS, transition: "color .12s",
+                  }}>
+                    {ativo && (
+                      <motion.div layoutId="pillVista" transition={MOLA}
+                        style={{ position: "absolute", inset: 0, borderRadius: RAIO.capsule, background: T.thumb, boxShadow: T.thumbShadow, zIndex: 0 }} />
+                    )}
+                    <span style={{ position: "relative", zIndex: 1 }}>{rotulo}</span>
+                  </motion.button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Filtros de grupo de frota + tipo — colapsados por padrão, um único
@@ -2476,57 +2489,57 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               alertasOrdenados inteiro -- nunca afirmou revisão caso a caso,
               não é o alvo desta mudança. */}
           {alertasOrdenados.length > 0 && (
-            <div style={{ padding: "5px 8px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+            <div style={{ padding: "8px 10px", borderBottom: `0.5px solid ${T.border}`, flexShrink: 0 }}>
               {confirmarResolver ? (
-                <div style={{ display: "flex", gap: 5 }}>
+                <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={handleResolverTodos} disabled={resolvendoTodos} style={{
-                    flex: 1, height: 26, borderRadius: RAIO.control,
-                    background: `${T.red}18`, border: `1px solid ${T.red}44`, color: T.red,
-                    fontSize: 12, cursor: "pointer", fontWeight: 700, fontFamily: FONT_SANS,
+                    flex: 1, height: 30, borderRadius: RAIO.capsule,
+                    background: `${T.red}18`, border: "none", color: T.red,
+                    fontSize: 12, cursor: "pointer", fontWeight: 600, fontFamily: FONT_SANS,
                   }}>
                     {resolvendoTodos ? "..." : "CONFIRMAR"}
                   </button>
                   <button onClick={() => setConfirmarResolver(false)} style={{
-                    flex: 1, height: 26, borderRadius: RAIO.control,
-                    background: "transparent", border: `1px solid ${T.border}`,
-                    color: T.muted, fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
+                    flex: 1, height: 30, borderRadius: RAIO.capsule,
+                    background: T.surface2, border: "none",
+                    color: T.text, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT_SANS,
                   }}>
                     Cancelar
                   </button>
                 </div>
               ) : confirmarLimpar ? (
-                <div style={{ display: "flex", gap: 5 }}>
+                <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={handleLimparTodos} disabled={limpandoTodos} style={{
-                    flex: 1, height: 26, borderRadius: RAIO.control,
-                    background: `${T.accent}22`, border: `1px solid ${T.accent}66`, color: T.accent,
-                    fontSize: 12, cursor: "pointer", fontWeight: 700, fontFamily: FONT_SANS,
+                    flex: 1, height: 30, borderRadius: RAIO.capsule,
+                    background: `${T.accent}22`, border: "none", color: T.accent,
+                    fontSize: 12, cursor: "pointer", fontWeight: 600, fontFamily: FONT_SANS,
                   }}>
                     {limpandoTodos ? "..." : "CONFIRMAR"}
                   </button>
                   <button onClick={() => setConfirmarLimpar(false)} style={{
-                    flex: 1, height: 26, borderRadius: RAIO.control,
-                    background: "transparent", border: `1px solid ${T.border}`,
-                    color: T.muted, fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
+                    flex: 1, height: 30, borderRadius: RAIO.capsule,
+                    background: T.surface2, border: "none",
+                    color: T.text, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT_SANS,
                   }}>
                     Cancelar
                   </button>
                 </div>
               ) : (
-                <div style={{ display: "flex", gap: 5 }}>
+                <div style={{ display: "flex", gap: 6 }}>
                   {alertasResolviveisEmMassa.length > 0 && (
                     <button onClick={() => setConfirmarResolver(true)} style={{
-                      flex: 1, height: 26, borderRadius: RAIO.control,
-                      background: "transparent", border: `1px solid ${T.border}`,
-                      color: T.muted, fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
+                      flex: 1, height: 30, borderRadius: RAIO.capsule,
+                      background: T.surface2, border: "none",
+                      color: T.text, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT_SANS,
                     }}>
                       {vista === "desvios" ? `Resolver ${LABEL_ABA_DESVIOS.toLowerCase()} (${alertasResolviveisEmMassa.length})`
                         : `Resolver todos (${alertasResolviveisEmMassa.length})`}
                     </button>
                   )}
                   <button onClick={() => setConfirmarLimpar(true)} style={{
-                    flex: 1, height: 26, borderRadius: RAIO.control,
-                    background: "transparent", border: `1px solid ${T.accent}66`,
-                    color: T.accent, fontSize: 12, cursor: "pointer", fontFamily: FONT_SANS,
+                    flex: 1, height: 30, borderRadius: RAIO.capsule,
+                    background: T.surface2, border: "none",
+                    color: T.text, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT_SANS,
                   }}>
                     {`Limpar avisos (${alertasOrdenados.length})`}
                   </button>
@@ -2559,7 +2572,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               "uma coluna do lado de cada tela", pedido do cliente 08/07,
               nao 2 secoes empilhadas numa sidebar so). Cards sempre com
               detalhe completo (motivo/progresso/acoes) nas 2 colunas. */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "4px 6px 8px" }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: "2px 8px 8px" }}>
             {/* Achado real 20/08 (revisão de branch inteira): checar só a
                 lista principal aqui mentia quando "Outros avisos" tinha
                 conteúdo -- favela/baseline_veiculo são 67% do volume, então
@@ -2803,20 +2816,20 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           <div style={{
             width: "clamp(190px, 14vw, 230px)",
             flexShrink: 0, display: "flex", flexDirection: "column",
-            borderLeft: `1px solid ${T.border}`,
+            borderLeft: `0.5px solid ${T.border}`,
             background: T.sidebarBg,
             overflow: "hidden",
           }}>
             <div style={{
-              display: "flex", alignItems: "center", padding: "9px 12px",
-              borderBottom: `1px solid ${T.border}`, flexShrink: 0,
+              display: "flex", alignItems: "center", padding: 14,
+              borderBottom: `0.5px solid ${T.border}`, flexShrink: 0,
             }}>
-              <div style={{ fontSize: 12, color: T.dim, letterSpacing: ".04em" }}>SELECIONADOS</div>
-              <div style={{ marginLeft: "auto", fontSize: 13, fontWeight: 800, color: T.muted, fontFamily: FONT_MONO }}>
+              <div style={{ ...TIPO.caption, color: T.muted }}>SELECIONADOS</div>
+              <div style={{ ...TIPO.headline, ...NUM, marginLeft: "auto", color: T.text }}>
                 {alertasOrdenadosSplitSelecionados.length}
               </div>
             </div>
-            <div style={{ flex: 1, overflowY: "auto", padding: "4px 6px 8px" }}>
+            <div style={{ flex: 1, overflowY: "auto", padding: "2px 8px 8px" }}>
               {alertasOrdenadosSplitSelecionados.length === 0 && (
                 <div style={{ padding: "28px 12px", textAlign: "center", color: T.dim, fontSize: 12 }}>
                   <div style={{ marginBottom: 6, opacity: 0.6 }}>
