@@ -1683,14 +1683,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           );
         })()}
-        <div className="card-alerta-acoes" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+        <div className="card-alerta-acoes" style={{ gap: 6, flexWrap: "wrap", marginTop: 8, position: "relative" }}>
           <motion.button whileTap={{ scale: 0.92 }}
             onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
             onClick={pararClique}
             className="v2-btn-tiny" style={tinyBtn(T.green, { borderAlpha: "55", bgAlpha: "22" })}>
             Correto
           </motion.button>
-          <div style={{ position: "relative" }} onClick={pararClique} onKeyDown={pararClique}>
+          <div onClick={pararClique} onKeyDown={pararClique}>
             <motion.button whileTap={{ scale: 0.92 }}
               onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === chaveCard ? null : chaveCard); }}
               className="v2-btn-tiny" style={tinyBtn(T.yellow, { borderAlpha: "40", bgAlpha: "18" })}>
@@ -1698,6 +1698,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </motion.button>
             <MenuMotivoFalso
               compacto
+              larguraDaLinha
               aberto={menuFalsoAberto}
               onFechar={() => setMenuFalsoAbertoId(null)}
               onEscolher={(categoria, detalhe) => handleFalso(a.id, categoria, detalhe)}
