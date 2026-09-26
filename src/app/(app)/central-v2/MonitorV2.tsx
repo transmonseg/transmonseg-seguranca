@@ -14,6 +14,7 @@ import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./
 import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
 import SplitDivider from "./SplitDivider";
 import { TIPOS_ABA_DESVIOS, TIPOS_REVISAO_INDIVIDUAL } from "./tipos-alerta";
+import AvisoDesvioTopo, { type ItemAvisoDesvio } from "./AvisoDesvioTopo";
 import { delayEntradaEscalonada } from "@/lib/stagger";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -240,10 +241,6 @@ function rotuloPainelStyle(
 // (badge/toasts/combo/drawer) e abaixo do overlay de pânico, que precisa
 // cobrir a tela inteira incluindo a toolbar.
 const Z = { badge: 100, toasts: 800, combo: 850, drawer: 1000, panico: 2000, settings: 900, toolbar: 1500 } as const;
-
-// Chips visiveis por padrao na faixa de desvios do topo do mapa antes de
-// colapsar num contador "+N" (poluicao visual quando ha muitos simultaneos).
-const MAX_CHIPS_DESVIO = 6;
 
 // Duplicada de unitrac.ts (mesmo motivo do difAnguloGraus em detectores.ts:
 // modulo client-side, sem importar lib de servidor). So pra mostrar "parado
@@ -611,11 +608,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [busca, setBusca] = useState("");
   const [comboAberto, setComboAberto] = useState(false);
   const [novosIdsArr, setNovosIdsArr] = useState<string[]>([]);
-  const [mostrarTodosDesvios, setMostrarTodosDesvios] = useState(false);
-  // Split view: cada painel expande/recolhe sua propria faixa de desvios,
-  // independente do outro (ver renderFaixaDesvio).
-  const [mostrarTodosDesviosSplitTodos, setMostrarTodosDesviosSplitTodos] = useState(false);
-  const [mostrarTodosDesviosSplitSelecionados, setMostrarTodosDesviosSplitSelecionados] = useState(false);
+  // Último lote de alertas notificáveis NOVOS vindos do poll (ids que não
+  // existiam no poll anterior). seq muda a cada lote não vazio, pra o
+  // AvisoDesvioTopo reagir mesmo se os ids se repetirem entre painéis.
+  const [ultimoLoteNovos, setUltimoLoteNovos] = useState<{ ids: string[]; seq: number }>({ ids: [], seq: 0 });
   // Motivo do alerta truncado (nowrap+ellipsis) fica ilegivel quando e longo —
   // toggle por card pra expandir/recolher o texto completo sob demanda.
   const [motivosExpandidos, setMotivosExpandidos] = useState<Set<string>>(new Set());
@@ -1004,6 +1000,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         const novosParaNotificar = novos.filter(a => ehNotificavel(a) && a.status === "ativo" && !idsAntes.has(a.id));
         if (novosParaNotificar.length > 0) {
           setNovosIdsArr(arr => [...arr, ...novosParaNotificar.map(a => a.id)]);
+          setUltimoLoteNovos(prev => ({
+            ids: novosParaNotificar.filter(a => a.tipo !== "panico").map(a => a.id),
+            seq: prev.seq + 1,
+          }));
 
           const panicos = novosParaNotificar.filter(a => a.tipo === "panico" && !panicoVistosRef.current.has(a.id));
           if (panicos.length > 0) {
@@ -1424,7 +1424,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Desvios de rota — faixa dedicada no topo do mapa, sempre visivel independente
   // dos filtros da sidebar (vista/tipo). Ordenado do mais recente pro mais antigo.
   const desviosAtivos = alertas
-    .filter(a => a.tipo === "desvio" || a.tipo === "parada_fora_tapete")
+    .filter(a => tiposNotificamCliente.includes(a.tipo) && a.tipo !== "panico")
     .filter(a => {
       if (modoSelecionados && veiculosSelecionados.size > 0 && !veiculosSelecionados.has(a.cv)) return false;
       if (modoRomaneio && !cvsComRomaneio.has(a.cv)) return false;
@@ -1439,7 +1439,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // nunca pode ficar filtrada por selecao (mesma classe de bug ja corrigida
   // na malha de entregas e na lista de alertas da sidebar).
   const desviosAtivosSplitTodos = alertas
-    .filter(a => a.tipo === "desvio" || a.tipo === "parada_fora_tapete")
+    .filter(a => tiposNotificamCliente.includes(a.tipo) && a.tipo !== "panico")
     .filter(a => {
       if (gruposOcultos.size === 0) return true;
       const g = cvParaGrupo.get(a.cv);
@@ -1724,112 +1724,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           </div>
         </div>
       </motion.div>
-    );
-  };
-
-  // Faixa de desvios do topo do mapa — extraida pra funcao (o split view
-  // precisa de 2 instancias independentes, uma centrada em cada painel, cada
-  // uma com seu proprio limite de chips/expandir — ver MAX_CHIPS_DESVIO).
-  const renderFaixaDesvio = (
-    desvios: AlertaEnriquecido[],
-    opts: {
-      left: string; width: string; maxChips: number;
-      mostrarTodos: boolean; onToggleMostrarTodos: () => void;
-      painel: ReturnType<typeof usePainelFoco>; compacto?: boolean;
-    }
-  ) => {
-    if (!tiposNotificamCliente.includes("desvio") || desvios.length === 0) return null;
-    const visiveis = opts.mostrarTodos ? desvios : desvios.slice(0, opts.maxChips);
-    const pad = opts.compacto ? "5px 9px" : "7px 13px";
-    const painel = opts.painel;
-    return (
-      <div style={{
-        position: "absolute", top: 56, left: opts.left, width: opts.width,
-        display: "flex", justifyContent: "center", zIndex: Z.toasts, pointerEvents: "none",
-      }}>
-        <div style={{
-          display: "flex", flexWrap: "wrap", justifyContent: "center", gap: opts.compacto ? 6 : 8,
-          maxWidth: "calc(100% - 24px)", maxHeight: 150, overflowY: "auto", padding: 2,
-          pointerEvents: "auto",
-        }}>
-          {visiveis.map(a => {
-            const cor = a.nivel === "critico" ? T.red : T.yellow;
-            const ativo = painel.alertaAtivoId === a.id;
-            const focar = () => {
-              painel.setAlertaAtivoId(a.id);
-              painel.selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
-            };
-            return (
-              <button key={a.id}
-                onClick={focar}
-                style={{
-                  ...BASE_BTN, flexShrink: 0, gap: opts.compacto ? 6 : 8,
-                  padding: pad, borderRadius: 8,
-                  background: ativo
-                    ? (tema === "dark" ? `${cor}22` : `${cor}14`)
-                    : (tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)"),
-                  backdropFilter: "blur(6px)",
-                  border: `1px solid ${cor}55`, borderLeft: `3px solid ${cor}`,
-                  boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
-                }}
-                title={`${nomeT(a.tipo)} — ${a.placa} — clique pra focar`}
-              >
-                <span className="animate-pulse-live" style={{ width: 7, height: 7, borderRadius: "50%", background: cor, flexShrink: 0 }} />
-                <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: opts.compacto ? 11 : 13, color: T.text, letterSpacing: ".04em" }}>
-                  {a.placa}
-                </span>
-                {!opts.compacto && (
-                  <span style={{ fontSize: 10, fontWeight: 700, color: cor, letterSpacing: ".03em" }}>
-                    {nomeT(a.tipo).toUpperCase()}
-                  </span>
-                )}
-                {(() => {
-                  const idade = corIdadeAlerta(a.desde, tema);
-                  const tituloIdade = idade.cor
-                    ? `Parado sem revisao ha' muito tempo (detectado ha' ${tempoAtras(a.desde)})`
-                    : `Detectado ha' ${tempoAtras(a.desde)}`;
-                  return (
-                    <span suppressHydrationWarning title={tituloIdade} style={{ fontSize: 10, color: idade.cor || T.dim, fontFamily: FONT_MONO, fontWeight: idade.peso }}>
-                      ⏱ {tempoAtras(a.desde)}
-                    </span>
-                  );
-                })()}
-              </button>
-            );
-          })}
-          {!opts.mostrarTodos && desvios.length > opts.maxChips && (
-            <button
-              onClick={opts.onToggleMostrarTodos}
-              style={{
-                ...BASE_BTN, flexShrink: 0, padding: pad, borderRadius: 8, gap: 4,
-                background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
-                backdropFilter: "blur(6px)", border: `1px dashed ${T.border}`,
-                boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
-                fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
-              }}
-              title="Mostrar todos os desvios ativos"
-            >
-              +{desvios.length - opts.maxChips}
-              <span aria-hidden style={{ fontSize: 10 }}>⌄</span>
-            </button>
-          )}
-          {opts.mostrarTodos && desvios.length > opts.maxChips && (
-            <button
-              onClick={opts.onToggleMostrarTodos}
-              style={{
-                ...BASE_BTN, flexShrink: 0, padding: pad, borderRadius: 8,
-                background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)",
-                backdropFilter: "blur(6px)", border: `1px solid ${T.border}`,
-                boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
-                fontFamily: FONT_MONO, fontWeight: 700, fontSize: 12, color: T.muted,
-              }}
-              title="Recolher"
-            >
-              ver menos
-            </button>
-          )}
-        </div>
-      </div>
     );
   };
 
@@ -2816,45 +2710,28 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             />
           </div>
 
-          {/* Faixa de desvios de rota — topo central, clicavel. So aparece pro
-              cliente que tem desvio como foco (TIPOS_NOTIFICAM_POR_CLIENTE) -
-              achado ao vivo 07/07: a faixa aparecia pra QUALQUER cliente com
-              desvio ativo, mesmo a Benassi (que so deveria ser notificada por
-              parada_cliente >1h). A faixa pulsante e uma forma de notificacao
-              visual tanto quanto o apito - tem que respeitar o mesmo mapa.
-              Limite de chips visiveis (poluicao visual quando ha muitos
-              desvios simultaneos): mostra os mais recentes + contador "+N"
-              que expande a lista inteira sob demanda. Nunca ESCONDE um
-              desvio ativo do sistema, so limita quantos chips aparecem de
-              uma vez na faixa.
-              Split view: 2 faixas independentes, uma centrada em cada painel
-              (nao mais 1 faixa so cobrindo os 2 mapas) — a do TODOS fica mais
-              fina (menos chips por padrao, sem o rotulo "DESVIO DE ROTA" em
-              cada chip) pedido do cliente 08/07, ja que ela cobre a frota
-              inteira. */}
-          {!splitView
-            ? renderFaixaDesvio(desviosAtivos, {
-                left: "0%", width: "100%", maxChips: MAX_CHIPS_DESVIO,
-                mostrarTodos: mostrarTodosDesvios,
-                onToggleMostrarTodos: () => setMostrarTodosDesvios(v => !v),
-                painel: painel1,
-              })
-            : (
+          {/* Topo do mapa: aviso de desvio (spec 2026-09-26-topo-mapa-aviso-desvio). */}
+          {(() => {
+            // Mesmo gate da faixa antiga: cliente sem "desvio" nos tipos que
+            // notificam (ex.: Benassi) não ganha pílula.
+            if (!tiposNotificamCliente.includes("desvio")) return null;
+            const cores = { red: T.red, yellow: T.yellow, text: T.text, muted: T.muted, dim: T.dim, border: T.border, card: T.card };
+            const focarCom = (painel: ReturnType<typeof usePainelFoco>) => (a: ItemAvisoDesvio) => {
+              painel.setAlertaAtivoId(a.id);
+              painel.selecionarVeiculo(a.cv, a.lat && a.lng ? { lat: a.lat, lng: a.lng } : undefined);
+            };
+            const comum = { lote: ultimoLoteNovos, tema, cores, nomeTipo: nomeT, tempoAtras };
+            return !splitView ? (
+              <AvisoDesvioTopo {...comum} itens={desviosAtivos} left="0%" width="100%" onVerNoMapa={focarCom(painel1)} />
+            ) : (
               <>
-                {renderFaixaDesvio(desviosAtivosSplitTodos, {
-                  left: "0%", width: `${splitRatio * 100}%`, maxChips: 3, compacto: true,
-                  painel: painel1,
-                  mostrarTodos: mostrarTodosDesviosSplitTodos,
-                  onToggleMostrarTodos: () => setMostrarTodosDesviosSplitTodos(v => !v),
-                })}
-                {renderFaixaDesvio(desviosAtivosSplitSelecionados, {
-                  left: `${splitRatio * 100}%`, width: `${(1 - splitRatio) * 100}%`,
-                  maxChips: MAX_CHIPS_DESVIO, painel: painel2,
-                  mostrarTodos: mostrarTodosDesviosSplitSelecionados,
-                  onToggleMostrarTodos: () => setMostrarTodosDesviosSplitSelecionados(v => !v),
-                })}
+                <AvisoDesvioTopo {...comum} itens={desviosAtivosSplitTodos} compacto
+                  left="0%" width={`${splitRatio * 100}%`} onVerNoMapa={focarCom(painel1)} />
+                <AvisoDesvioTopo {...comum} itens={desviosAtivosSplitSelecionados}
+                  left={`${splitRatio * 100}%`} width={`${(1 - splitRatio) * 100}%`} onVerNoMapa={focarCom(painel2)} />
               </>
-            )}
+            );
+          })()}
 
           {/* Vehicle count badge */}
           <div style={{
