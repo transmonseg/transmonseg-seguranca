@@ -101,7 +101,7 @@ export default function AvisoDesvioTopo(props: {
 
         {modo === "lista" && (
           <div role="dialog" aria-label="Desvios abertos" style={{
-            width: props.compacto ? 260 : 320, maxHeight: 320, overflowY: "auto",
+            width: props.compacto ? 300 : 380, maxHeight: 320, overflowY: "auto",
             background: cores.card, border: `1px solid ${cores.border}`, borderRadius: 10, padding: 6,
             boxShadow: "0 14px 30px rgba(0,0,0,0.45)",
           }}>
@@ -115,10 +115,10 @@ export default function AvisoDesvioTopo(props: {
                     padding: "7px 8px", borderRadius: 7, background: "transparent", border: "none",
                     borderLeft: `3px solid ${cor}`, marginBottom: 2, color: cores.text, textAlign: "left",
                   }}>
-                  <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 12 }}>{a.placa}</span>
-                  <span style={{ fontSize: 10.5, color: cor, fontWeight: 700 }}>{props.nomeTipo(a.tipo)}</span>
-                  <span suppressHydrationWarning style={{ fontSize: 10.5, color: cores.dim, fontFamily: FONT_MONO }}>{props.tempoAtras(a.desde)}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 10.5, color: cores.muted }}>ver no mapa →</span>
+                  <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>{a.placa}</span>
+                  <span style={{ fontSize: 10.5, color: cor, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{props.nomeTipo(a.tipo)}</span>
+                  <span suppressHydrationWarning style={{ fontSize: 10.5, color: cores.dim, fontFamily: FONT_MONO, whiteSpace: "nowrap", flexShrink: 0 }}>{props.tempoAtras(a.desde)}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 10.5, color: cores.muted, whiteSpace: "nowrap", flexShrink: 0 }}>ver no mapa →</span>
                 </button>
               );
             })}
