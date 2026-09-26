@@ -11,6 +11,7 @@ import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeD
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
 import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
+import { temaT } from "./design";
 import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
 import SplitDivider from "./SplitDivider";
 import { TIPOS_ABA_DESVIOS, TIPOS_REVISAO_INDIVIDUAL } from "./tipos-alerta";
@@ -896,57 +897,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     } catch { /* sem audio */ }
   }, []);
 
-  // ── Theme tokens ──────────────────────────────────────────────────────
-  const T = useMemo(() => tema === "dark" ? {
-    bg: "#0a0a0a",
-    card: "#131313",
-    cardHover: "#181818",
-    border: "#242424",
-    borderSubtle: "#1c1c1c",
-    text: "#fafaf9",
-    muted: "#a8a29e",
-    dim: "#57534e",
-    accent: "#9fb3ce",
-    // Achado real 03/09 (reclamacao no grupo DESVIO DE ROTA: "problema
-    // antigo... tela fica assim" + print mostrando o rotulo "TODOS" do
-    // EscopoMapaSwitcher ilegivel): accent do tema escuro e' um azul PASTEL
-    // claro de proposito (contraste suave contra o fundo quase-preto), mas
-    // EscopoMapaSwitcher escrevia texto BRANCO fixo por cima do thumb
-    // (`color: "#fff"`/gradiente pra branco) assumindo que accent e' sempre
-    // escuro o bastante -- verdade no tema claro (accent #2b5ea7, azul
-    // saturado), falso aqui (branco sobre #9fb3ce e' quase ilegivel,
-    // confirmado reproduzindo ao vivo com Puppeteer). accentFg = a cor de
-    // texto que CONTRASTA com accent, nao a cor do tema em si.
-    accentFg: "#0a0a0a",
-    accentDim: "#1e2a38",
-    red: "#ef4444",
-    yellow: "#f59e0b",
-    green: "#22c55e",
-    drawerBg: "rgba(10,10,10,0.98)",
-    sidebarBg: "#0d0d0d",
-    toolbarBg: "rgba(10,10,10,0.96)",
-  } : {
-    bg: "#f5f2ec",
-    card: "#ffffff",
-    cardHover: "#f0ede7",
-    border: "#ddd9d0",
-    borderSubtle: "#e8e4dc",
-    text: "#1a1714",
-    muted: "#6b6359",
-    dim: "#9c9288",
-    accent: "#2b5ea7",
-    // Ver comentario da mesma chave no tema escuro acima -- aqui accent
-    // (#2b5ea7) e' saturado o bastante pra branco ler bem, entao accentFg
-    // continua branco (nunca teve o bug neste tema).
-    accentFg: "#ffffff",
-    accentDim: "#dce8f5",
-    red: "#c0202a",
-    yellow: "#a05a00",
-    green: "#1a7a3a",
-    drawerBg: "rgba(252,250,246,0.98)",
-    sidebarBg: "#ede9e1",
-    toolbarBg: "rgba(241,238,230,0.97)",
-  }, [tema]);
+  // ── Theme tokens ── (26/09: fonte unica em design.ts; ver comentario la)
+  const T = useMemo(() => temaT(tema), [tema]);
 
   const baseTokens = tema === "dark" ? DARK_TOKENS : LIGHT_TOKENS;
   const mapTokens = satelite

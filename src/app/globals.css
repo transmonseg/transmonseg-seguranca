@@ -5,47 +5,47 @@
    ========================================================= */
 :root {
   /* Fundo e superficies */
-  --bg:          #0a0a0a;
-  --card:        #131313;
-  --card-hover:  #181818;
-  --border:      #242424;
-  --border-subtle: #1c1c1c;
+  --bg:          #000000;
+  --card:        #1c1c1e;
+  --card-hover:  #2c2c2e;
+  --border:      #38383a;
+  --border-subtle: #2c2c2e;
 
   /* Texto */
-  --text:        #fafaf9;
-  --text-muted:  #a8a29e;
-  --text-dim:    #57534e;
+  --text:        #f5f5f7;
+  --text-muted:  #98989d;
+  --text-dim:    #636366;
 
-  /* Acento unico neutro — navy */
-  --accent:      #9fb3ce;
-  --accent-dim:  #1e2a38;
+  /* Acento unico — azul do sistema (design.ts) */
+  --accent:      #0a84ff;
+  --accent-dim:  rgba(10,132,255,0.18);
 
   /* Niveis de alerta (SOMENTE para indicadores de risco) */
-  --vermelho:    #ef4444;
-  --amarelo:     #f59e0b;
-  --verde:       #22c55e;
+  --vermelho:    #ff453a;
+  --amarelo:     #ff9f0a;
+  --verde:       #30d158;
 }
 
 /* =========================================================
    Tokens light mode
    ========================================================= */
 [data-theme="light"] {
-  --bg:             #f4f4f3;
+  --bg:             #f2f2f7;
   --card:           #ffffff;
-  --card-hover:     #ebebea;
-  --border:         #e2e2e0;
-  --border-subtle:  #ebebea;
+  --card-hover:     #f2f2f7;
+  --border:         #d1d1d6;
+  --border-subtle:  #e5e5ea;
 
-  --text:           #111110;
-  --text-muted:     #6b7280;
-  --text-dim:       #9ca3af;
+  --text:           #1d1d1f;
+  --text-muted:     #6e6e73;
+  --text-dim:       #aeaeb2;
 
-  --accent:         #4b6f9a;
-  --accent-dim:     #dce7f3;
+  --accent:         #0066cc;
+  --accent-dim:     rgba(0,102,204,0.10);
 
-  --vermelho:       #dc2626;
-  --amarelo:        #d97706;
-  --verde:          #16a34a;
+  --vermelho:       #d70015;
+  --amarelo:        #c93400;
+  --verde:          #248a3d;
 }
 
 @theme inline {
