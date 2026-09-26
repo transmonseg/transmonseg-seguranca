@@ -27,6 +27,7 @@ import {
   suprimidoPorCooldownCandidato,
 } from "./route";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
+import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS } from "@/lib/config-clientes";
 import type { PontoEntrega } from "@/lib/unitrac";
 import { celulaDe } from "@/lib/celulas";
 
@@ -254,22 +255,43 @@ describe("decidirEscopoDoVeiculo", () => {
   // CLIENTES_COM_MOTOR_ROMANEIO_PARALELO (@/lib/config-clientes) -- a mesma
   // lista que DESLIGA os 3 detectores de parada na Central Unitrac.
   const NUTRY = "4096";
+  // Flag de 26/09 (CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS): os testes abaixo
+  // passam o valor explicito pra cobrir os DOIS estados, independente do que
+  // esta ligado em producao.
+  const REGRA_27_08 = { desvioTodosVeiculos: false }; // flag false
+  const TODOS = { desvioTodosVeiculos: true }; // flag true
 
-  it("veiculo SEM alvo Unitrac: avalia desvio E paradas (comportamento historico, nao mudou)", () => {
-    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: NUTRY }))
-      .toEqual({ avaliaDesvio: true, avaliaParadas: true });
+  it("default do parametro = CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS da config", () => {
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 5, codUserUnitrac: NUTRY }).avaliaDesvio)
+      .toBe(CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS);
   });
 
-  it("CASO DA TASK B2: veiculo COM alvo Unitrac avalia paradas, mas NUNCA desvio", () => {
-    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 1, codUserUnitrac: NUTRY }))
+  it("veiculo SEM alvo Unitrac: avalia desvio E paradas nos dois estados da flag", () => {
+    for (const flag of [REGRA_27_08, TODOS]) {
+      expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: NUTRY, ...flag }))
+        .toEqual({ avaliaDesvio: true, avaliaParadas: true });
+    }
+  });
+
+  it("flag false (regra 27/08, task B2): veiculo COM alvo Unitrac avalia paradas, mas NUNCA desvio", () => {
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 1, codUserUnitrac: NUTRY, ...REGRA_27_08 }))
       .toEqual({ avaliaDesvio: false, avaliaParadas: true });
-    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 37, codUserUnitrac: NUTRY }))
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 37, codUserUnitrac: NUTRY, ...REGRA_27_08 }))
       .toEqual({ avaliaDesvio: false, avaliaParadas: true });
   });
 
-  it("ter alvo Unitrac NUNCA desliga as paradas -- so o desvio (regressao da B2)", () => {
-    for (const n of [0, 1, 2, 5, 100]) {
-      expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: n, codUserUnitrac: NUTRY }).avaliaParadas).toBe(true);
+  it("flag true (26/09): veiculo COM alvo Unitrac TAMBEM avalia desvio -- todo veiculo com romaneio", () => {
+    for (const n of [1, 2, 37, 100]) {
+      expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: n, codUserUnitrac: NUTRY, ...TODOS }))
+        .toEqual({ avaliaDesvio: true, avaliaParadas: true });
+    }
+  });
+
+  it("ter alvo Unitrac NUNCA desliga as paradas -- so o desvio (regressao da B2), nos dois estados", () => {
+    for (const flag of [REGRA_27_08, TODOS]) {
+      for (const n of [0, 1, 2, 5, 100]) {
+        expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: n, codUserUnitrac: NUTRY, ...flag }).avaliaParadas).toBe(true);
+      }
     }
   });
 
@@ -278,10 +300,12 @@ describe("decidirEscopoDoVeiculo", () => {
     // Sem este corte, o dia em que um segundo cliente ganhar romaneio os 3
     // detectores rodam em DOBRO pra ele: a Central Unitrac cobre normalmente
     // (nao desligou nada, porque ele nao esta na lista) e esta rota tambem.
-    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "4586" }))
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "4586", ...REGRA_27_08 }))
       .toEqual({ avaliaDesvio: true, avaliaParadas: false });
-    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 3, codUserUnitrac: "9999" }))
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 3, codUserUnitrac: "9999", ...REGRA_27_08 }))
       .toEqual({ avaliaDesvio: false, avaliaParadas: false });
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 3, codUserUnitrac: "9999", ...TODOS }))
+      .toEqual({ avaliaDesvio: true, avaliaParadas: false });
   });
 
   it("cliente sem cod_user_unitrac cadastrado: paradas desligadas (fail-safe contra duplicata)", () => {
@@ -290,9 +314,9 @@ describe("decidirEscopoDoVeiculo", () => {
 
   it("o gate de parada NAO mexe no gate de desvio, e vice-versa", () => {
     // Os dois efeitos sao independentes de proposito: desvio depende so de
-    // alvo Unitrac, parada depende so do cliente.
-    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "outro" }).avaliaDesvio).toBe(true);
-    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 9, codUserUnitrac: NUTRY }).avaliaParadas).toBe(true);
+    // alvo Unitrac (e da flag), parada depende so do cliente.
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "outro", ...REGRA_27_08 }).avaliaDesvio).toBe(true);
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 9, codUserUnitrac: NUTRY, ...REGRA_27_08 }).avaliaParadas).toBe(true);
   });
 });
 
@@ -342,10 +366,14 @@ describe("B2 fim-a-fim (composicao das regras puras)", () => {
     pontoRomaneio(PONTO.lat, PONTO.lng, { feito: true, raio: 400, documento: "123456" }),
   ];
 
-  it("veiculo COM alvo Unitrac parado longe do romaneio: os 3 detectores avaliam e disparam, desvio nao roda", () => {
-    const escopo = decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: alvosUnitrac.length, codUserUnitrac: "4096" });
+  it("veiculo COM alvo Unitrac parado longe do romaneio: os 3 detectores avaliam e disparam; desvio depende da flag de 26/09", () => {
+    const escopo = decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: alvosUnitrac.length, codUserUnitrac: "4096", desvioTodosVeiculos: false });
     expect(escopo.avaliaDesvio).toBe(false);
     expect(escopo.avaliaParadas).toBe(true);
+    // Flag ligada (CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS): o mesmo veiculo
+    // passa a avaliar desvio -- com os MESMOS pontos (so' romaneio, [] abaixo).
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: alvosUnitrac.length, codUserUnitrac: "4096", desvioTodosVeiculos: true }))
+      .toEqual({ avaliaDesvio: true, avaliaParadas: true });
 
     // A rota passa [] literal aqui de proposito (decisao de produto da B2):
     // a Central Romaneio nunca mistura marcacao Unitrac em `pontos`.

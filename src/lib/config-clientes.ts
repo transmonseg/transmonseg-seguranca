@@ -40,7 +40,22 @@ export const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096"]); // Nutry 
 // romaneio; a Central Romaneio segue rodando as dela (aba propria) -- custo
 // aceito: possivel alerta duplicado entre as duas abas. Voltar a false
 // restaura o comportamento por-veiculo de 14/09.
-export const PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA = true;
+//
+// 26/09 (decisao do usuario: o foco do produto e' a Central Romaneio): volta a
+// false. Paradas de veiculo COM romaneio hoje voltam pra Central Romaneio; a
+// Central Unitrac segue cobrindo so' os veiculos SEM romaneio pela regra
+// por-veiculo de 14/09 (placasComRomaneioHoje em motor/route.ts). Cada
+// veiculo fica em exatamente um motor -- nem zero, nem dois.
+export const PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA = false;
+
+// 26/09 (decisao do usuario: o foco do produto e' a Central Romaneio): a
+// Central Romaneio avalia desvio pra TODO veiculo com romaneio hoje, inclusive
+// os que tem alvo na Unitrac. A regra de 27/08 (9c3b0de) pulava o desvio
+// desses so' pra nao duplicar alerta com a Central; com o foco na Central
+// Romaneio isso deixava a maior parte da frota sem desvio na aba que importa.
+// Os pontos continuam SO' do romaneio (sem misturar alvo Unitrac -- causa do
+// quase-flood de 24/08). false = restaura o comportamento de 27/08.
+export const CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS = true;
 
 // 21/09 (pedido do usuario, "deixar como dava certo"): chave mestra dos 3
 // filtros que so' SUPRIMEM alerta de desvio e nao existiam em 24-27/08, quando

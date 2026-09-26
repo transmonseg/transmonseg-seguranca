@@ -84,7 +84,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
+import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS, CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
@@ -381,15 +381,26 @@ export function suprimidoPorCooldownCandidato(ctx: {
 // paradas desligadas aqui: esse cliente não está na lista, logo a Central
 // Unitrac NÃO desligou nada pra ele e continua cobrindo normalmente. Fail-safe
 // contra duplicata, nunca contra recall.
+//
+// ATUALIZADO 26/09 (decisão do usuário: o foco do produto é a Central
+// Romaneio): com CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS=true (@/lib/config-
+// clientes) `avaliaDesvio` vale pra TODO veículo com romaneio hoje, com ou sem
+// alvo Unitrac. O risco de 24/08 era o casamento de NF por aproximação contra
+// a Unitrac em `pontos` -- e isso segue fora: montarPontosDeRomaneio continua
+// recebendo `[]` (só pontos do romaneio). false restaura a regra de 27/08.
+// `desvioTodosVeiculos` é parâmetro (default = flag) só pra testar os dois
+// estados sem mexer na config.
 export function decidirEscopoDoVeiculo(ctx: {
   qtdAlvosUnitracDoVeiculo: number;
   codUserUnitrac: string | null;
+  desvioTodosVeiculos?: boolean;
 }): {
   avaliaDesvio: boolean;
   avaliaParadas: boolean;
 } {
+  const desvioTodosVeiculos = ctx.desvioTodosVeiculos ?? CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS;
   return {
-    avaliaDesvio: ctx.qtdAlvosUnitracDoVeiculo === 0,
+    avaliaDesvio: desvioTodosVeiculos || ctx.qtdAlvosUnitracDoVeiculo === 0,
     avaliaParadas:
       ctx.codUserUnitrac !== null &&
       CLIENTES_COM_MOTOR_ROMANEIO_PARALELO.has(ctx.codUserUnitrac),
@@ -1583,7 +1594,9 @@ export async function POST(request: Request) {
         const { avaliaDesvio } = escopoVeiculo;
         // 21/09: com a Central Unitrac cobrindo parada pra frota inteira (como
         // em 25/08) a Central Romaneio nao roda as suas -- evita alerta
-        // duplicado entre as duas abas (reclamacao de 28/08).
+        // duplicado entre as duas abas (reclamacao de 28/08). 26/09: flag
+        // voltou a false -- paradas de veiculo com romaneio sao daqui de novo
+        // (a Central desliga as 3 so' pra placa com romaneio hoje).
         const avaliaParadas = escopoVeiculo.avaliaParadas && !PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA;
 
         // Step 1: posição atual -- mesma fonte da Central (posicoes_atuais), SOMENTE LEITURA.
@@ -1796,8 +1809,8 @@ export async function POST(request: Request) {
         // calculado pra todo veículo de propósito (task B2): é tudo aritmética
         // em memória (haversine sobre pendentes + bases + escala), sem query,
         // sem rede, sem escrita -- e o resultado só é consumido dentro do gate
-        // de deveAvaliarSinalA logo abaixo, que já corta o veículo com alvo
-        // Unitrac. Duplicar o gate aqui em cima só pra economizar dezenas de
+        // de deveAvaliarSinalA logo abaixo, que corta o veículo com alvo
+        // Unitrac só com CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS=false. Duplicar o gate aqui em cima só pra economizar dezenas de
         // haversines aumentaria a chance de quebrar o desvio sem ganho real.
         //
         // I1: gate de chegada (suspenderPorChegada, pura, @/lib/unitrac) --
