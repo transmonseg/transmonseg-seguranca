@@ -616,7 +616,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [motivosExpandidos, setMotivosExpandidos] = useState<Set<string>>(new Set());
   // So um menu de motivo de falso positivo pode estar aberto por vez em toda
   // a lista (mesmo padrao de alertaAtivoId) -- string|null, nao Set/boolean
-  // por card.
+  // por card. Chave "p1:<id>"/"p2:<id>" (lado do split + id), ver renderCardAlerta.
   const [menuFalsoAbertoId, setMenuFalsoAbertoId] = useState<string | null>(null);
   // Card sob o mouse: Correto/Falso so aparecem no ativo/hover (ver card-acoes.ts).
   const [hoverCardId, setHoverCardId] = useState<string | null>(null);
@@ -1472,8 +1472,11 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const cor = corStatus(a.nivel, T);
     const ativo = painel.alertaAtivoId === a.id;
     const doCarro = painel.cvSelecionado === a.cv;
-    const menuFalsoAberto = menuFalsoAbertoId === a.id;
-    const mostrarAcoes = acoesVisiveis({ ativo, hover: hoverCardId === a.id, menuFalsoAberto });
+    // No split (AMBOS) o mesmo alerta aparece nas 2 laterais: hover e menu
+    // Falso sao chaveados por lado+id pra nao vazar pro card gemeo.
+    const chaveCard = `${painel === painel2 ? "p2" : "p1"}:${a.id}`;
+    const menuFalsoAberto = menuFalsoAbertoId === chaveCard;
+    const mostrarAcoes = acoesVisiveis({ ativo, hover: hoverCardId === chaveCard, menuFalsoAberto });
     // Clique no card inteiro = o antigo botao Focar (removido 26/09).
     const focar = () => {
       painel.setAlertaAtivoId(a.id);
@@ -1498,8 +1501,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
           if (e.target !== e.currentTarget) return;
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focar(); }
         }}
-        onMouseEnter={() => setHoverCardId(a.id)}
-        onMouseLeave={() => setHoverCardId(v => v === a.id ? null : v)}
+        onMouseEnter={() => setHoverCardId(chaveCard)}
+        onMouseLeave={() => setHoverCardId(v => v === chaveCard ? null : v)}
         role="button"
         tabIndex={0}
         aria-label={`Focar ${a.placa}`}
@@ -1561,9 +1564,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         </div>
         {a.motivo && (() => {
           const expandido = motivosExpandidos.has(a.id);
-          // Heuristica de tamanho (sem medir layout real): com 2 linhas de
-          // clamp, acima disso o texto quase sempre corta no card da sidebar.
-          const longoDemaisPraCard = a.motivo.length > 110;
+          // Heuristica de tamanho (sem medir layout real): sidebar de 190-280px
+          // a 13px da ~30-38 caracteres/linha, entao 2 linhas cortam ~60-75.
+          // Erra pra oferecer expansao.
+          const longoDemaisPraCard = a.motivo.length > 60;
           return (
             <div style={{ margin: "0 0 4px" }}>
               <p style={{
@@ -1658,7 +1662,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </motion.button>
             <div style={{ position: "relative" }} onClick={pararClique} onKeyDown={pararClique}>
               <motion.button whileTap={{ scale: 0.92 }}
-                onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === a.id ? null : a.id); }}
+                onMouseDown={e => { e.stopPropagation(); setMenuFalsoAbertoId(v => v === chaveCard ? null : chaveCard); }}
                 className="v2-btn-tiny" style={tinyBtn(T.yellow, { borderAlpha: "40", bgAlpha: "18" })}>
                 Falso
               </motion.button>
