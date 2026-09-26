@@ -35,13 +35,13 @@ export default function RelogioAoVivo() {
   return (
     <div className="text-right">
       <p
-        className="num-mono text-base font-semibold leading-none tracking-tight"
+        className="num-mono text-[15px] font-medium leading-none tracking-tight tabular-nums"
         style={{ color: "var(--text)", fontFamily: "var(--font-geist-mono, monospace)" }}
       >
         {hora}
       </p>
       <p
-        className="text-xs leading-none mt-0.5 capitalize"
+        className="text-[12px] leading-none mt-0.5 capitalize"
         style={{ color: "var(--text-muted)" }}
       >
         {data}

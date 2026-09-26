@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   AVISO_DESVIO_MS, type ModoAviso, proximoModo, rotuloPilula, textoAviso, novosDoLoteNoEscopo,
 } from "./aviso-desvio";
+import { RAIO, FONT_MONO, material, type Tema } from "./design";
 
 export type ItemAvisoDesvio = {
   id: string; placa: string; tipo: string; nivel: "critico" | "atencao";
@@ -15,14 +16,12 @@ export type ItemAvisoDesvio = {
 };
 export type CoresAviso = { red: string; yellow: string; text: string; muted: string; dim: string; border: string; card: string };
 
-const FONT_MONO = "var(--font-geist-mono), ui-monospace, 'Cascadia Code', monospace";
-
 export default function AvisoDesvioTopo(props: {
   itens: ItemAvisoDesvio[];
   lote: { ids: string[]; seq: number };
   left: string; width: string;
   compacto?: boolean;
-  tema: "dark" | "light";
+  tema: Tema;
   cores: CoresAviso;
   nomeTipo: (tipo: string) => string;
   tempoAtras: (desde: string) => string;
@@ -92,18 +91,17 @@ export default function AvisoDesvioTopo(props: {
             display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
             padding: props.compacto ? "5px 11px" : "6px 13px", borderRadius: 999,
             background: fundo, border: `1px solid ${cores.red}66`, backdropFilter: "blur(6px)",
-            color: cores.red, fontWeight: 800, fontSize: props.compacto ? 11 : 12,
+            color: cores.red, fontWeight: 800, fontSize: 12,
             boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
           }}>
-            {rotulo}<span aria-hidden style={{ fontSize: 10 }}>{modo === "lista" ? "▴" : "▾"}</span>
+            {rotulo}<span aria-hidden style={{ fontSize: 12 }}>{modo === "lista" ? "▴" : "▾"}</span>
           </button>
         )}
 
         {modo === "lista" && (
           <div role="dialog" aria-label="Desvios abertos" style={{
             width: props.compacto ? 300 : 380, maxHeight: 320, overflowY: "auto",
-            background: cores.card, border: `1px solid ${cores.border}`, borderRadius: 10, padding: 6,
-            boxShadow: "0 14px 30px rgba(0,0,0,0.45)",
+            ...material(tema), borderRadius: RAIO.panel, padding: 6,
           }}>
             {itens.map(a => {
               const cor = a.nivel === "critico" ? cores.red : cores.yellow;
@@ -112,13 +110,13 @@ export default function AvisoDesvioTopo(props: {
                   onClick={() => { props.onVerNoMapa(a); setModo(m => proximoModo(m, { tipo: "fechar" }, n)); }}
                   style={{
                     width: "100%", display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
-                    padding: "7px 8px", borderRadius: 7, background: "transparent", border: "none",
+                    padding: "7px 8px", borderRadius: RAIO.control, background: "transparent", border: "none",
                     borderLeft: `3px solid ${cor}`, marginBottom: 2, color: cores.text, textAlign: "left",
                   }}>
                   <span style={{ fontFamily: FONT_MONO, fontWeight: 900, fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>{a.placa}</span>
-                  <span style={{ fontSize: 10.5, color: cor, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{props.nomeTipo(a.tipo)}</span>
-                  <span suppressHydrationWarning style={{ fontSize: 10.5, color: cores.dim, fontFamily: FONT_MONO, whiteSpace: "nowrap", flexShrink: 0 }}>{props.tempoAtras(a.desde)}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 10.5, color: cores.muted, whiteSpace: "nowrap", flexShrink: 0 }}>ver no mapa →</span>
+                  <span style={{ fontSize: 12, color: cor, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{props.nomeTipo(a.tipo)}</span>
+                  <span suppressHydrationWarning style={{ fontSize: 12, color: cores.dim, fontFamily: FONT_MONO, whiteSpace: "nowrap", flexShrink: 0 }}>{props.tempoAtras(a.desde)}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, color: cores.muted, whiteSpace: "nowrap", flexShrink: 0 }}>ver no mapa →</span>
                 </button>
               );
             })}

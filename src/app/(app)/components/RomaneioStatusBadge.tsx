@@ -21,11 +21,11 @@ export default async function RomaneioStatusBadge() {
   if (!data) {
     return (
       <div
-        className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md text-xs"
-        style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+        className="hidden md:flex items-center gap-2 rounded-full h-7 px-3 text-[12px] bg-card"
+        style={{ color: "var(--text-muted)" }}
         title="Nenhum romaneio processado ainda hoje"
       >
-        <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: "var(--text-muted)" }} />
+        <span className="inline-block w-[6px] h-[6px] rounded-full flex-shrink-0" style={{ backgroundColor: "var(--text-muted)" }} />
         Romaneio pendente hoje
       </div>
     );
@@ -39,11 +39,11 @@ export default async function RomaneioStatusBadge() {
 
   return (
     <div
-      className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md text-xs"
-      style={{ color: "var(--verde)", border: "1px solid var(--border)" }}
+      className="hidden md:flex items-center gap-2 rounded-full h-7 px-3 text-[12px] bg-card"
+      style={{ color: "var(--verde)" }}
       title={data.enviado_por ? `Processado por ${data.enviado_por}` : undefined}
     >
-      <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: "var(--verde)" }} />
+      <span className="inline-block w-[6px] h-[6px] rounded-full flex-shrink-0" style={{ backgroundColor: "var(--verde)" }} />
       Romaneio de hoje processado às {hora}
       {data.enviado_por ? ` por ${data.enviado_por}` : ""}
     </div>

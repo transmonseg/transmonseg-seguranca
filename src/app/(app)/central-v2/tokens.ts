@@ -1,5 +1,7 @@
 // Tokens para uso em Leaflet (SVG inline nao consegue ler CSS custom properties).
-// Devem refletir exatamente os valores de globals.css.
+// Derivam de design.ts (fonte unica).
+
+import { PALETA, PARADO } from "./design";
 
 export interface MapTokens {
   bg: string;
@@ -20,34 +22,36 @@ export interface MapTokens {
 export const SAT_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 export const SAT_TILE_SUBDOMAINS = "";
 
+const d = PALETA.dark, l = PALETA.light;
+
 export const DARK_TOKENS: MapTokens = {
-  bg:             "#0a0a0a",
-  card:           "#131313",
-  border:         "#242424",
-  text:           "#fafaf9",
-  muted:          "#a8a29e",
-  accent:         "#9fb3ce",
-  red:            "#ef4444",
-  yellow:         "#f59e0b",
-  green:          "#22c55e",
-  parado:         "#2563eb",
-  dim:            "#57534e",
+  bg:             d.bg,
+  card:           d.surface,
+  border:         d.separator,
+  text:           d.text,
+  muted:          d.secondary,
+  accent:         d.accent,
+  red:            d.red,
+  yellow:         d.orange,
+  green:          d.green,
+  parado:         PARADO,
+  dim:            d.tertiary,
   tileUrl:        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
   tileSubdomains: "abcd",
 };
 
 export const LIGHT_TOKENS: MapTokens = {
-  bg:             "#f4f4f3",
-  card:           "#ffffff",
-  border:         "#e2e2e0",
-  text:           "#111110",
-  muted:          "#6b7280",
-  accent:         "#4b6f9a",
-  red:            "#dc2626",
-  yellow:         "#d97706",
-  green:          "#16a34a",
-  parado:         "#2563eb",
-  dim:            "#9ca3af",
+  bg:             l.bg,
+  card:           l.surface,
+  border:         l.separator,
+  text:           l.text,
+  muted:          l.secondary,
+  accent:         l.accent,
+  red:            l.red,
+  yellow:         l.orange,
+  green:          l.green,
+  parado:         PARADO,
+  dim:            l.tertiary,
   tileUrl:        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
   tileSubdomains: "abcd",
 };

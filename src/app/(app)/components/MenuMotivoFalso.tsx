@@ -74,7 +74,7 @@ export default function MenuMotivoFalso({
             aria-pressed={ativa}
             onClick={() => setSelecionada(c.valor)}
             style={{
-              textAlign: "left", padding: "6px 8px", borderRadius: 6,
+              textAlign: "left", padding: "6px 8px", borderRadius: 8,
               border: ativa ? "1px solid var(--accent)" : "1px solid transparent",
               background: ativa ? "var(--border-subtle)" : "transparent", cursor: "pointer",
             }}
@@ -82,7 +82,7 @@ export default function MenuMotivoFalso({
             onMouseLeave={e => { if (!ativa) e.currentTarget.style.background = "transparent"; }}
           >
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{c.label}</div>
-            {!compacto && <div style={{ fontSize: 10.5, color: "var(--text-muted)" }}>{c.apoio}</div>}
+            {!compacto && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{c.apoio}</div>}
           </button>
         );
       })}
@@ -94,8 +94,8 @@ export default function MenuMotivoFalso({
           placeholder="Motivo (opcional) -- escreva se nenhuma opção acima descreve o caso"
           rows={2}
           style={{
-            width: "100%", resize: "vertical", fontSize: 11, padding: "5px 6px",
-            borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)",
+            width: "100%", resize: "vertical", fontSize: 12, padding: "5px 6px",
+            borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg)",
             color: "var(--text)", fontFamily: "inherit", boxSizing: "border-box",
           }}
         />
@@ -107,7 +107,7 @@ export default function MenuMotivoFalso({
             de onEscolher acima), entao a regra continua a mesma -- so'
             ficou visivel por que o botao nao reage. */}
         {!selecionada && detalhe.trim().length > 0 && (
-          <div style={{ fontSize: 10.5, color: "var(--vermelho)", marginTop: 4, marginBottom: 2 }}>
+          <div style={{ fontSize: 12, color: "var(--vermelho)", marginTop: 4, marginBottom: 2 }}>
             Selecione uma opção acima também para confirmar
           </div>
         )}
@@ -115,8 +115,8 @@ export default function MenuMotivoFalso({
           onClick={confirmar}
           disabled={!selecionada}
           style={{
-            width: "100%", marginTop: 5, padding: "6px 8px", borderRadius: 6,
-            border: "none", fontSize: 11.5, fontWeight: 600,
+            width: "100%", marginTop: 5, padding: "6px 8px", borderRadius: 8,
+            border: "none", fontSize: 12, fontWeight: 600,
             background: selecionada ? "var(--accent)" : "var(--border-subtle)",
             color: selecionada ? "var(--accent-fg, #fff)" : "var(--text-muted)",
             cursor: selecionada ? "pointer" : "not-allowed",

@@ -63,27 +63,29 @@ export default function NavPrincipal() {
   const menuAtivo = ITENS_MENU.some((i) => rotaAtiva(pathname, i.href));
 
   return (
-    <nav className="hidden sm:flex items-center gap-1" aria-label="Navegação principal">
-      {ABAS.map((aba) => {
-        const ativa = rotaAtiva(pathname, aba.href);
-        return (
-          <Link
-            key={aba.href}
-            href={aba.href}
-            aria-current={ativa ? "page" : undefined}
-            className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors hover:bg-[color:var(--card-hover)]"
-            style={
-              ativa
-                ? { color: "var(--accent)", backgroundColor: "var(--accent-dim)", border: "1px solid var(--border)" }
-                : { color: "var(--text-muted)", border: "1px solid transparent" }
-            }
-          >
-            {aba.rotulo}
-          </Link>
-        );
-      })}
+    <nav className="hidden sm:flex items-center gap-2" aria-label="Navegação principal">
+      <div className="flex items-center gap-[3px] rounded-full bg-card p-[3px]">
+        {ABAS.map((aba) => {
+          const ativa = rotaAtiva(pathname, aba.href);
+          return (
+            <Link
+              key={aba.href}
+              href={aba.href}
+              aria-current={ativa ? "page" : undefined}
+              className="flex items-center px-3 h-[30px] rounded-full text-[13px] font-medium transition-colors"
+              style={
+                ativa
+                  ? { color: "var(--text)", backgroundColor: "var(--thumb)", boxShadow: "var(--thumb-shadow)" }
+                  : { color: "var(--text-muted)" }
+              }
+            >
+              {aba.rotulo}
+            </Link>
+          );
+        })}
+      </div>
 
-      <div className="relative ml-1" ref={containerRef}>
+      <div className="relative" ref={containerRef}>
         <button
           ref={botaoRef}
           type="button"
@@ -92,11 +94,10 @@ export default function NavPrincipal() {
           aria-expanded={aberto}
           aria-label="Configurações"
           title="Configurações"
-          className="flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-[color:var(--card-hover)]"
+          className="flex items-center justify-center w-[30px] h-[30px] rounded-full transition-colors hover:bg-card-hover"
           style={{
             color: aberto || menuAtivo ? "var(--accent)" : "var(--text-muted)",
             backgroundColor: aberto || menuAtivo ? "var(--accent-dim)" : "transparent",
-            border: `1px solid ${aberto || menuAtivo ? "var(--border)" : "transparent"}`,
           }}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -115,7 +116,7 @@ export default function NavPrincipal() {
           <div
             role="menu"
             aria-label="Configurações"
-            className="absolute right-0 mt-1.5 min-w-[200px] rounded-md py-1 z-50"
+            className="absolute right-0 mt-1.5 min-w-[200px] rounded-[14px] backdrop-blur-xl py-1 z-50"
             style={{
               backgroundColor: "var(--card)",
               border: "1px solid var(--border)",
@@ -132,7 +133,7 @@ export default function NavPrincipal() {
                   ref={i === 0 ? primeiroItemRef : undefined}
                   onClick={() => setAberto(false)}
                   aria-current={ativa ? "page" : undefined}
-                  className="flex items-center justify-between gap-3 px-3 py-2 text-xs transition-colors hover:bg-[color:var(--card-hover)] focus:bg-[color:var(--card-hover)] focus:outline-none"
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-[12px] transition-colors hover:bg-card-hover focus:bg-card-hover focus:outline-none"
                   style={{ color: ativa ? "var(--accent)" : "var(--text-muted)" }}
                 >
                   {item.rotulo}
