@@ -18,6 +18,7 @@ import EscopoMapaSwitcher, { type EscopoMapa } from "./EscopoMapaSwitcher";
 import SplitDivider from "./SplitDivider";
 import { TIPOS_ABA_DESVIOS, TIPOS_REVISAO_INDIVIDUAL } from "./tipos-alerta";
 import AvisoDesvioTopo, { type ItemAvisoDesvio } from "./AvisoDesvioTopo";
+import { pedirConfirmacao, podeExecutar, aoTrocarVeiculo, type AcaoCritica, type EstadoConfirmacao } from "./confirmacao-acao";
 import { delayEntradaEscalonada } from "@/lib/stagger";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -498,6 +499,36 @@ function usePainelFoco(params: {
     }
   }, [cvSelecionado]);
 
+  // Confirmacao em 2 cliques de Sirene/Bloqueio/Desbloqueio (26/09): antes
+  // disparavam no primeiro clique. Estado por painel (este hook existe 1x por
+  // painel do split), expira em JANELA_CONFIRMACAO_MS e cai ao trocar de veiculo.
+  const [confirmacao, setConfirmacao] = useState<EstadoConfirmacao>(null);
+  // Trocar de veiculo cancela: ajuste de estado durante o render (padrao do
+  // React pra "resetar quando a prop muda"), sem setState dentro de effect.
+  const [cvDaConfirmacao, setCvDaConfirmacao] = useState(cvSelecionado);
+  if (cvDaConfirmacao !== cvSelecionado) {
+    setCvDaConfirmacao(cvSelecionado);
+    setConfirmacao(e => aoTrocarVeiculo(e, cvSelecionado));
+  }
+  useEffect(() => {
+    if (!confirmacao) return;
+    const t = setTimeout(() => setConfirmacao(null), Math.max(0, confirmacao.ate - Date.now()));
+    return () => clearTimeout(t);
+  }, [confirmacao]);
+  const cancelarConfirmacao = useCallback(() => setConfirmacao(null), []);
+  const clicarAcaoCritica = useCallback((acao: AcaoCritica) => {
+    if (!cvSelecionado) return;
+    // Comando em voo: nada (sem disparo duplo nem re-armar a confirmacao).
+    if ((acao === "sirene" ? cmdSirene : cmdBloqueio) === "loading") return;
+    const agora = Date.now();
+    if (podeExecutar(confirmacao, acao, cvSelecionado, agora)) {
+      setConfirmacao(null);
+      acionar(acao);
+    } else {
+      setConfirmacao(pedirConfirmacao(acao, cvSelecionado, agora));
+    }
+  }, [cvSelecionado, cmdSirene, cmdBloqueio, confirmacao, acionar]);
+
   const centralizar = useCallback(() => {
     const vm = cvSelecionado ? veiculosMapa.find(v => v.cv === cvSelecionado) : null;
     if (vm?.lat && vm?.lng) {
@@ -555,7 +586,7 @@ function usePainelFoco(params: {
     seguir, setSeguir, flyPara,
     alertaAtivoId, setAlertaAtivoId,
     selecionarVeiculo, limparSelecao, handleVeiculoClick, carregarVeiculo,
-    acionar, centralizar,
+    acionar, centralizar, confirmacao, clicarAcaoCritica, cancelarConfirmacao,
     vmAtual, placaSelecionada, desvioSelecionado, alvosEfetivos, alvosFeitos, alvosTotal, placaColorKey: placaColor,
     paradoMin, pontoMaisProximo,
   };
@@ -905,14 +936,15 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     ? { ...baseTokens, tileUrl: SAT_TILE_URL, tileSubdomains: SAT_TILE_SUBDOMAINS }
     : baseTokens;
 
-  function drawerOpBtn(active: boolean, color = T.accent): React.CSSProperties {
+  // Botao de acao do cartao do veiculo: capsula 30px neutra; ativo = azul.
+  function drawerOpBtn(active: boolean): React.CSSProperties {
     return {
-      height: 32, padding: "0 12px", borderRadius: RAIO.control, cursor: "pointer",
-      background: active ? `${color}18` : "transparent",
-      border: `1px solid ${active ? color + "44" : T.border}`,
-      color: active ? color : T.muted,
-      fontSize: 12, fontWeight: 600, letterSpacing: ".02em",
-      transition: "all .12s",
+      height: 30, padding: "0 12px", borderRadius: RAIO.capsule, cursor: "pointer",
+      background: active ? T.accentDim : T.surface2,
+      border: "none",
+      color: active ? T.accent : T.text,
+      fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+      transition: "background .15s, color .15s",
       fontFamily: FONT_SANS,
     };
   }
@@ -1679,133 +1711,159 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     );
   };
 
-  // Barra inferior de detalhe do veiculo selecionado — extraida pra funcao
+  // Cartao flutuante do veiculo selecionado (26/09: era barra de largura
+  // total colada no rodape; agora material translucido, max 760px) — extraido pra funcao
   // porque agora existe 1 POR PAINEL (painel1/painel2, ver usePainelFoco):
   // o split view permite selecionar um veiculo DIFERENTE em cada painel ao
   // MESMO TEMPO (pedido explicito do cliente 08/07 — antes so dava pra ter
-  // 1 selecao ativa entre os 2 paineis). `pos` ancora cada drawer embaixo do
-  // seu proprio painel (full width fora do split, ja que so painel1 e usado).
+  // 1 selecao ativa entre os 2 paineis). `pos` e' a caixa do painel em % da
+  // area do mapa (mesma conta do AvisoDesvioTopo no split): o cartao fica
+  // 12px dentro dela e nunca passa da largura do proprio painel.
   const renderDrawer = (
     painel: ReturnType<typeof usePainelFoco>,
-    pos: { left: number | string; right: number | string }
+    pos: { left: string; width: string }
   ) => {
     const placaColor = placaColorDe(painel.vmAtual);
+    const aberto = !!painel.cvSelecionado;
+    const confirmandoSirene = painel.confirmacao?.pendente === "sirene" && painel.cmdSirene !== "loading";
+    const confirmandoBloqueio = painel.confirmacao?.pendente === "bloqueio" && painel.cmdBloqueio !== "loading";
+    const botaoCritico = (estado: "idle" | "loading" | "ok" | "fallback", confirmando: boolean, corBase: string): React.CSSProperties => ({
+      height: 30, padding: "0 14px", borderRadius: RAIO.capsule,
+      cursor: estado === "loading" ? "wait" : "pointer",
+      border: confirmando ? `0.5px solid ${T.red}` : `0.5px solid ${
+        estado === "ok" ? T.green + "44" : estado === "fallback" ? T.yellow + "44" : corBase + "44"
+      }`,
+      background: confirmando ? T.red :
+        estado === "ok" ? `${T.green}14` : estado === "fallback" ? `${T.yellow}14` : `${corBase}14`,
+      color: confirmando ? "#ffffff" :
+        estado === "ok" ? T.green : estado === "fallback" ? T.yellow : corBase,
+      fontSize: 12, fontWeight: 700, fontFamily: FONT_SANS, whiteSpace: "nowrap",
+      transition: "background .15s, color .15s",
+    });
+    const cancelar = (
+      <button onClick={painel.cancelarConfirmacao} style={drawerOpBtn(false)}>
+        Cancelar
+      </button>
+    );
+
+    const metricas: { label: string; value: string; color?: string; wide?: boolean; num?: boolean }[] = [
+      {
+        label: "VELOCIDADE",
+        value: painel.vmAtual ? `${painel.vmAtual.velocidade} km/h` : "—",
+        color: painel.vmAtual && painel.vmAtual.velocidade > 80 ? T.yellow : undefined,
+        num: true,
+      },
+      {
+        label: "IGNIÇÃO",
+        value: painel.vmAtual ? (painel.vmAtual.ignicao ? "Ligada" : "Desligada") : "—",
+        color: painel.vmAtual ? (painel.vmAtual.ignicao ? T.green : T.muted) : undefined,
+      },
+      {
+        label: "COMUNICAÇÃO",
+        value: painel.vmAtual ? (painel.vmAtual.atraso_min > 0 ? `${Math.round(painel.vmAtual.atraso_min)}min` : "ao vivo") : "—",
+        color: painel.vmAtual && painel.vmAtual.atraso_min > 30 ? T.yellow : undefined,
+        num: true,
+      },
+      { label: "LOCAL", value: painel.vmAtual?.local || "—", wide: true },
+      ...(painel.vmAtual?.velocidade === 0 && painel.paradoMin != null
+        ? [{
+            label: "PARADO",
+            value: !painel.pontoMaisProximo
+              ? `${painel.paradoMin}min`
+              : painel.pontoMaisProximo.candidatos.length === 1
+                ? `${painel.paradoMin}min · ${fmtDist(painel.pontoMaisProximo.candidatos[0].distM)} de ${painel.pontoMaisProximo.candidatos[0].ponto.nome || "ponto"}`
+                // 2+ pontos a distancia parecida: nao dá pra saber qual é
+                // so pela distância (ver MARGEM_AMBIGUIDADE_M) — mostra
+                // todos em vez de escolher 1 arbitrariamente.
+                : `${painel.paradoMin}min · pode ser: ${painel.pontoMaisProximo.candidatos.map(c => c.ponto.nome || "ponto").join(" ou ")}`,
+            wide: true,
+            color: painel.pontoMaisProximo && painel.pontoMaisProximo.candidatos[0].distM <= 500 ? T.green : undefined,
+          }]
+        : []),
+    ];
+
     return (
       <motion.div
-        animate={{ y: painel.cvSelecionado ? "0%" : "108%" }}
-        transition={{ type: "spring", stiffness: 420, damping: 38 }}
+        initial={false}
+        animate={{ y: aberto ? 0 : "130%", opacity: aberto ? 1 : 0 }}
+        transition={MOLA}
+        aria-hidden={!aberto}
         style={{
-          position: "absolute", bottom: 0, zIndex: Z.drawer,
-          left: pos.left, right: pos.right,
-          background: T.drawerBg, backdropFilter: "blur(16px)",
-          borderTop: `2px solid ${T.accent}22`,
-          boxShadow: tema === "dark" ? "0 -10px 40px rgba(0,0,0,0.65)" : "0 -8px 32px rgba(0,0,0,0.10)",
+          position: "absolute", bottom: 12, zIndex: Z.drawer,
+          left: `calc(${pos.left} + 12px)`,
+          width: `min(760px, calc(${pos.width} - 24px))`,
+          ...material(tema),
+          borderRadius: RAIO.panel, overflow: "hidden",
+          pointerEvents: aberto ? "auto" : "none",
+          fontFamily: FONT_SANS,
         }}>
 
         {/* Header */}
         <div style={{
-          display: "flex", alignItems: "center", gap: 10, padding: "9px 16px 8px",
-          borderBottom: `1px solid ${T.border}`,
+          display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+          flexWrap: "wrap", rowGap: 8,
         }}>
-          {/* Placa + status */}
-          <span style={{
-            fontFamily: FONT_MONO, fontWeight: 900,
-            fontSize: "clamp(15px, 1.4vw, 20px)",
-            letterSpacing: ".07em", color: placaColor,
-          }}>
+          <span style={{ ...NUM, fontSize: 20, fontWeight: 700, letterSpacing: ".02em", color: placaColor }}>
             {painel.placaSelecionada ?? "—"}
           </span>
 
           {painel.vmAtual && (
             <span style={{
-              fontSize: 12, fontWeight: 700, padding: "2px 8px", borderRadius: RAIO.capsule,
-              background: painel.vmAtual.ignicao ? `${T.green}15` : `${T.border}66`,
-              border: `1px solid ${painel.vmAtual.ignicao ? T.green + "44" : T.border}`,
+              fontSize: 12, fontWeight: 600, padding: "2px 9px", borderRadius: RAIO.capsule,
+              background: painel.vmAtual.ignicao ? `${T.green}1f` : T.surface2,
               color: painel.vmAtual.ignicao ? T.green : T.muted,
-              letterSpacing: ".05em",
             }}>
               {painel.vmAtual.ignicao ? "IGN ON" : "IGN OFF"}
             </span>
           )}
 
           {painel.carregando && (
-            <span style={{ fontSize: 12, color: T.accent, letterSpacing: ".04em" }}>
-              carregando...
-            </span>
+            <span style={{ fontSize: 12, color: T.dim }}>carregando…</span>
           )}
 
           <div style={{ flex: 1 }} />
 
-          {/* Period selector */}
-          <div style={{ display: "flex", gap: 1 }}>
+          {/* Periodo: segmented capsula (thumb neutro) */}
+          <div role="radiogroup" aria-label="Período do rastro" style={{
+            display: "flex", gap: 2, padding: 2, borderRadius: RAIO.capsule, background: T.surface2,
+          }}>
             {PERIODOS.map(h => (
-              <button key={h} onClick={() => setHoras(h)} style={{
-                height: 24, padding: "0 7px", borderRadius: RAIO.control, border: "none", cursor: "pointer",
-                background: horas === h ? `${T.accent}20` : "transparent",
-                color: horas === h ? T.accent : T.dim,
-                fontSize: 12, fontWeight: 700, fontFamily: FONT_MONO,
-                transition: "all .1s",
+              <button key={h} role="radio" aria-checked={horas === h} onClick={() => setHoras(h)} style={{
+                ...NUM, height: 24, padding: "0 9px", borderRadius: RAIO.capsule, border: "none", cursor: "pointer",
+                background: horas === h ? T.thumb : "transparent",
+                boxShadow: horas === h ? T.thumbShadow : "none",
+                color: horas === h ? T.text : T.muted,
+                fontSize: 12, fontWeight: 600,
+                transition: "background .15s, color .15s",
               }}>
                 {h}h
               </button>
             ))}
           </div>
 
-          <button onClick={painel.limparSelecao}
+          <button onClick={painel.limparSelecao} aria-label="Fechar"
             style={{
               ...BASE_BTN, width: 28, height: 28, borderRadius: "50%",
-              fontSize: 16, color: T.dim, border: `1px solid ${T.border}`,
+              background: T.surface2, fontSize: 16, color: T.muted,
             }}>
             &times;
           </button>
         </div>
 
-        {/* Metrics row */}
-        <div style={{ display: "flex", borderBottom: `1px solid ${T.border}` }}>
-          {[
-            {
-              label: "VELOCIDADE",
-              value: painel.vmAtual ? `${painel.vmAtual.velocidade} km/h` : "—",
-              color: painel.vmAtual && painel.vmAtual.velocidade > 80 ? T.yellow : undefined,
-            },
-            {
-              label: "IGNIÇÃO",
-              value: painel.vmAtual ? (painel.vmAtual.ignicao ? "Ligada" : "Desligada") : "—",
-              color: painel.vmAtual ? (painel.vmAtual.ignicao ? T.green : T.muted) : undefined,
-            },
-            {
-              label: "COMUNICAÇÃO",
-              value: painel.vmAtual ? (painel.vmAtual.atraso_min > 0 ? `${Math.round(painel.vmAtual.atraso_min)}min` : "ao vivo") : "—",
-              color: painel.vmAtual && painel.vmAtual.atraso_min > 30 ? T.yellow : undefined,
-            },
-            { label: "LOCAL", value: painel.vmAtual?.local || "—", wide: true },
-            ...(painel.vmAtual?.velocidade === 0 && painel.paradoMin != null
-              ? [{
-                  label: "PARADO",
-                  value: !painel.pontoMaisProximo
-                    ? `${painel.paradoMin}min`
-                    : painel.pontoMaisProximo.candidatos.length === 1
-                      ? `${painel.paradoMin}min · ${fmtDist(painel.pontoMaisProximo.candidatos[0].distM)} de ${painel.pontoMaisProximo.candidatos[0].ponto.nome || "ponto"}`
-                      // 2+ pontos a distancia parecida: nao dá pra saber qual é
-                      // so pela distância (ver MARGEM_AMBIGUIDADE_M) — mostra
-                      // todos em vez de escolher 1 arbitrariamente.
-                      : `${painel.paradoMin}min · pode ser: ${painel.pontoMaisProximo.candidatos.map(c => c.ponto.nome || "ponto").join(" ou ")}`,
-                  wide: true,
-                  color: painel.pontoMaisProximo && painel.pontoMaisProximo.candidatos[0].distM <= 500 ? T.green : undefined,
-                }]
-              : []),
-          ].map((item, i, arr) => (
-            <div key={i} style={{
-              flex: item.wide ? 2 : 1, padding: "8px 14px",
-              borderRight: i < arr.length - 1 ? `1px solid ${T.border}` : "none",
-              minWidth: 0,
-            }}>
-              <div style={{ fontSize: 12, color: T.dim, letterSpacing: ".04em", marginBottom: 3 }}>
+        {/* Metricas */}
+        <div style={{
+          display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gridAutoFlow: "row dense",
+          gap: "10px 16px", padding: "2px 14px 12px",
+        }}>
+          {metricas.map((item, i) => (
+            <div key={i} style={{ minWidth: 0, gridColumn: item.wide ? "span 2" : undefined }}>
+              <div style={{ ...TIPO.caption, color: T.muted, marginBottom: 2 }}>
                 {item.label}
               </div>
               <div style={{
-                fontSize: "clamp(12px, 1.1vw, 14px)", fontWeight: 700,
-                fontFamily: FONT_MONO, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                ...(item.num ? NUM : {}),
+                fontSize: 15, fontWeight: 600,
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                 color: item.color ?? T.text,
               }}>
                 {item.value}
@@ -1813,44 +1871,41 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           ))}
 
-          {/* Rota do dia */}
-          {painel.cvSelecionado && (
-            <div style={{ flex: 2, padding: "8px 14px", minWidth: 0, borderLeft: `1px solid ${T.border}` }}>
-              <div style={{ fontSize: 12, color: T.dim, letterSpacing: ".04em", marginBottom: 4 }}>
+          {/* Rota do dia — so quando ha rota (antes mostrava "Sem rota hoje") */}
+          {painel.cvSelecionado && painel.alvosTotal > 0 && (
+            <div style={{ minWidth: 0, gridColumn: "span 2" }}>
+              <div style={{ ...TIPO.caption, color: T.muted, marginBottom: 2 }}>
                 ROTA DO DIA
               </div>
-              {painel.carregando && painel.alvosTotal === 0 ? (
-                <div style={{ fontSize: 12, color: T.dim }}>...</div>
-              ) : painel.alvosTotal === 0 ? (
-                <div style={{ fontSize: 12, color: T.dim }}>Sem rota hoje</div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, fontFamily: FONT_MONO, color: T.text, flexShrink: 0 }}>
-                    {painel.alvosFeitos}/{painel.alvosTotal}
-                  </span>
-                  <div style={{ flex: 1, height: 3, background: `${T.border}88`, borderRadius: 0, overflow: "hidden" }}>
-                    <div style={{
-                      height: "100%",
-                      width: `${painel.alvosTotal > 0 ? Math.round((painel.alvosFeitos / painel.alvosTotal) * 100) : 0}%`,
-                      background: T.green, borderRadius: 0, transition: "width .4s",
-                    }} />
-                  </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, height: 20 }}>
+                <span style={{ ...NUM, fontSize: 15, fontWeight: 600, color: T.text, flexShrink: 0 }}>
+                  {painel.alvosFeitos}/{painel.alvosTotal}
+                </span>
+                <div style={{ flex: 1, height: 4, background: T.surface2, borderRadius: RAIO.capsule, overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%",
+                    width: `${Math.round((painel.alvosFeitos / painel.alvosTotal) * 100)}%`,
+                    background: T.green, borderRadius: RAIO.capsule, transition: "width .4s",
+                  }} />
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>
 
-        {/* Ops + sirene/bloqueio */}
-        <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 14px", flexWrap: "wrap" }}>
-          <button onClick={() => painel.setMostrarRastro(v => !v)} style={drawerOpBtn(painel.mostrarRastro)}>
-            Rastro{painel.mostrarRastro ? " ✓" : ""}
+        {/* Acoes + sirene/bloqueio */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 6, padding: "10px 14px 12px", flexWrap: "wrap",
+          borderTop: `0.5px solid ${T.border}`,
+        }}>
+          <button onClick={() => painel.setMostrarRastro(v => !v)} aria-pressed={painel.mostrarRastro} style={drawerOpBtn(painel.mostrarRastro)}>
+            Rastro
           </button>
-          <button onClick={() => painel.setMostrarParadas(v => !v)} style={drawerOpBtn(painel.mostrarParadas)}>
-            Paradas{painel.mostrarParadas ? " ✓" : ""}
+          <button onClick={() => painel.setMostrarParadas(v => !v)} aria-pressed={painel.mostrarParadas} style={drawerOpBtn(painel.mostrarParadas)}>
+            Paradas
           </button>
-          <button onClick={() => painel.setSeguir(v => !v)} style={drawerOpBtn(painel.seguir, T.green)}>
-            Seguir{painel.seguir ? " ✓" : ""}
+          <button onClick={() => painel.setSeguir(v => !v)} aria-pressed={painel.seguir} style={drawerOpBtn(painel.seguir)}>
+            Seguir
           </button>
           <button onClick={painel.centralizar} style={drawerOpBtn(false)}>
             Centralizar
@@ -1859,7 +1914,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             <a
               href={`https://www.google.com/maps?q=${painel.vmAtual.lat},${painel.vmAtual.lng}`}
               target="_blank" rel="noreferrer"
-              style={{ ...drawerOpBtn(false), display: "inline-flex", alignItems: "center", textDecoration: "none", gap: 4 }}>
+              style={{ ...drawerOpBtn(false), display: "inline-flex", alignItems: "center", textDecoration: "none" }}>
               Maps
             </a>
           )}
@@ -1873,62 +1928,37 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </button>
           )}
 
-          <div style={{ flex: 1 }} />
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            {/* Sirene — 1o clique arma a confirmacao, 2o (em 5 s) dispara */}
+            <button
+              onClick={() => painel.clicarAcaoCritica("sirene")}
+              disabled={painel.cmdSirene === "loading"}
+              style={botaoCritico(painel.cmdSirene, confirmandoSirene, T.accent)}>
+              {confirmandoSirene ? "Confirmar sirene?" :
+                painel.cmdSirene === "loading" ? "Acionando..." :
+                painel.cmdSirene === "ok" ? "Sirene acionada" :
+                painel.cmdSirene === "fallback" ? "Ver portal" : "Sirene"}
+            </button>
+            {confirmandoSirene && cancelar}
 
-          {/* Sirene */}
-          <button
-            onClick={() => painel.acionar("sirene")}
-            disabled={painel.cmdSirene === "loading"}
-            style={{
-              height: 34, padding: "0 16px", borderRadius: 8,
-              cursor: painel.cmdSirene === "loading" ? "wait" : "pointer",
-              border: `1px solid ${
-                painel.cmdSirene === "ok" ? T.green + "44" :
-                painel.cmdSirene === "fallback" ? T.yellow + "44" : T.accent + "44"
-              }`,
-              background: painel.cmdSirene === "ok" ? `${T.green}14` :
-                painel.cmdSirene === "fallback" ? `${T.yellow}14` : `${T.accent}0e`,
-              color: painel.cmdSirene === "ok" ? T.green :
-                painel.cmdSirene === "fallback" ? T.yellow : T.accent,
-              fontSize: 12, fontWeight: 700, fontFamily: FONT_SANS,
-              transition: "all .15s",
-            }}>
-            {painel.cmdSirene === "loading" ? "Acionando..." :
-              painel.cmdSirene === "ok" ? "Sirene acionada" :
-              painel.cmdSirene === "fallback" ? "Ver portal" : "Sirene"}
-          </button>
-
-          {/* Bloquear/desbloquear motor — alterna a cada acionamento */}
-          <button
-            onClick={() => painel.acionar("bloqueio")}
-            disabled={painel.cmdBloqueio === "loading"}
-            style={{
-              height: 34, padding: "0 16px", borderRadius: 8,
-              cursor: painel.cmdBloqueio === "loading" ? "wait" : "pointer",
-              border: `1px solid ${
-                painel.cmdBloqueio === "ok" ? T.green + "44" :
-                painel.cmdBloqueio === "fallback" ? T.yellow + "44" :
-                painel.motorBloqueado ? T.green + "44" : T.red + "44"
-              }`,
-              background: painel.cmdBloqueio === "ok" ? `${T.green}14` :
-                painel.cmdBloqueio === "fallback" ? `${T.yellow}14` :
-                painel.motorBloqueado ? `${T.green}10` : `${T.red}10`,
-              color: painel.cmdBloqueio === "ok" ? T.green :
-                painel.cmdBloqueio === "fallback" ? T.yellow :
-                painel.motorBloqueado ? T.green : T.red,
-              fontSize: 12, fontWeight: 700, fontFamily: FONT_SANS,
-              transition: "all .15s",
-            }}>
-            {painel.cmdBloqueio === "loading" ? (painel.motorBloqueado ? "Desbloqueando..." : "Bloqueando...") :
-              painel.cmdBloqueio === "ok" ? (painel.motorBloqueado ? "Motor bloqueado" : "Motor desbloqueado") :
-              painel.cmdBloqueio === "fallback" ? "Ver portal" :
-              painel.motorBloqueado ? "Desbloquear motor" : "Bloquear motor"}
-          </button>
+            {/* Bloquear/desbloquear motor — alterna a cada acionamento; ambos confirmam */}
+            <button
+              onClick={() => painel.clicarAcaoCritica("bloqueio")}
+              disabled={painel.cmdBloqueio === "loading"}
+              style={botaoCritico(painel.cmdBloqueio, confirmandoBloqueio, painel.motorBloqueado ? T.green : T.red)}>
+              {confirmandoBloqueio ? (painel.motorBloqueado ? "Confirmar desbloqueio?" : "Confirmar bloqueio?") :
+                painel.cmdBloqueio === "loading" ? (painel.motorBloqueado ? "Desbloqueando..." : "Bloqueando...") :
+                painel.cmdBloqueio === "ok" ? (painel.motorBloqueado ? "Motor bloqueado" : "Motor desbloqueado") :
+                painel.cmdBloqueio === "fallback" ? "Ver portal" :
+                painel.motorBloqueado ? "Desbloquear motor" : "Bloquear motor"}
+            </button>
+            {confirmandoBloqueio && cancelar}
+          </div>
         </div>
 
         {/* Fallback portal link */}
         {(painel.cmdSirene === "fallback" || painel.cmdBloqueio === "fallback") && painel.fallbackUrl && (
-          <div style={{ padding: "2px 16px 9px", fontSize: 12, color: T.muted }}>
+          <div style={{ padding: "0 14px 12px", fontSize: 12, color: T.muted }}>
             Acao nao confirmada automaticamente.{" "}
             <a href={painel.fallbackUrl} target="_blank" rel="noreferrer" style={{ color: T.accent }}>
               Abrir portal Unitrac
@@ -2716,82 +2746,84 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             );
           })()}
 
-          {/* Vehicle count badge */}
-          <div style={{
-            position: "absolute",
-            bottom: painel1.cvSelecionado ? 224 : 12,
-            left: 12, zIndex: Z.badge,
-            transition: "bottom .25s cubic-bezier(.4,0,.2,1)",
-            background: tema === "dark" ? "rgba(0,0,0,0.68)" : "rgba(255,255,255,0.88)",
-            backdropFilter: "blur(6px)",
-            border: `1px solid ${T.border}`, borderRadius: 8,
-            padding: "5px 11px", fontSize: 12, color: T.muted, pointerEvents: "none",
-            fontFamily: FONT_MONO, letterSpacing: ".03em",
-          }}>
-            <span style={{ fontWeight: 700 }}>{vmFiltrado.length}</span>
-            <span style={{ color: T.dim }}> veículos</span>
-            {filtroComm != null && <span style={{ color: T.accent }}> &lt;{filtroComm}min</span>}
-          </div>
-
-          {/* Legenda dos símbolos do mapa — recolhida por padrão */}
-          <div style={{
-            position: "absolute",
-            bottom: painel1.cvSelecionado ? 224 : 12,
-            right: 12, zIndex: Z.badge,
-            transition: "bottom .25s cubic-bezier(.4,0,.2,1)",
-            display: "flex", flexDirection: "column-reverse", alignItems: "flex-end", gap: 6,
-          }}>
-            <button onClick={toggleLegenda} style={{
-              ...BASE_BTN,
-              background: tema === "dark" ? "rgba(0,0,0,0.68)" : "rgba(255,255,255,0.88)",
-              backdropFilter: "blur(6px)",
-              border: `1px solid ${T.border}`, borderRadius: 8,
-              padding: "5px 11px", fontSize: 12, color: T.muted,
-              letterSpacing: ".03em", gap: 5,
-            }}>
-              <span style={{ fontSize: 12 }}>{legendaAberta ? "▾" : "▴"}</span>
-              Legenda
-            </button>
-
-            {legendaAberta && (
-              <div style={{
-                background: tema === "dark" ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.94)",
-                backdropFilter: "blur(6px)",
-                border: `1px solid ${T.border}`, borderRadius: RAIO.panel,
-                padding: "10px 13px", minWidth: 190,
-                fontFamily: FONT_SANS,
-              }}>
-                <div style={{ fontSize: 12, color: T.dim, letterSpacing: ".04em", fontWeight: 700, marginBottom: 6 }}>
-                  VEÍCULO
+          {/* Badge de veiculos + Legenda sobem quando o cartao do veiculo do
+              painel embaixo deles esta aberto. Altura do cartao e' estimada
+              (sem ResizeObserver): ~200px com o mapa inteiro (1-2 linhas de
+              metricas, acoes numa linha) e ~300px no split, onde o painel
+              estreito quebra cabecalho/metricas/acoes em mais linhas. */}
+          {(() => {
+            const acimaDoCartao = (splitView ? 320 : 232);
+            const bottomEsq = painel1.cvSelecionado ? acimaDoCartao : 12;
+            const bottomDir = (splitView ? painel2 : painel1).cvSelecionado ? acimaDoCartao : 12;
+            const transicao = "bottom .35s cubic-bezier(.32,.72,0,1)";
+            return (
+              <>
+                <div style={{
+                  position: "absolute", bottom: bottomEsq, left: 12, zIndex: Z.badge,
+                  transition: transicao,
+                  ...material(tema), borderRadius: RAIO.capsule,
+                  padding: "5px 12px", fontSize: 12, fontWeight: 600, color: T.text,
+                  pointerEvents: "none", fontFamily: FONT_SANS,
+                }}>
+                  <span style={NUM}>{vmFiltrado.length}</span> veículos
+                  {filtroComm != null && <span style={{ ...NUM, color: T.accent }}> &lt;{filtroComm}min</span>}
                 </div>
-                {[
-                  { cor: T.red, label: "Alerta crítico" },
-                  { cor: T.green, label: "Em movimento" },
-                  { cor: mapTokens.parado, label: "Parado, motor ligado" },
-                  { cor: T.dim, label: "Motor desligado" },
-                ].map(({ cor, label }) => (
-                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
-                    <span style={{ fontSize: 12, color: T.text }}>{label}</span>
-                  </div>
-                ))}
 
-                <div style={{ fontSize: 12, color: T.dim, letterSpacing: ".04em", fontWeight: 700, margin: "8px 0 6px", borderTop: `1px solid ${T.border}`, paddingTop: 8 }}>
-                  PONTO DE ENTREGA
+                {/* Legenda dos símbolos do mapa — recolhida por padrão */}
+                <div style={{
+                  position: "absolute", bottom: bottomDir, right: 12, zIndex: Z.badge,
+                  transition: transicao,
+                  display: "flex", flexDirection: "column-reverse", alignItems: "flex-end", gap: 8,
+                }}>
+                  <button onClick={toggleLegenda} aria-expanded={legendaAberta} style={{
+                    ...BASE_BTN,
+                    ...material(tema), borderRadius: RAIO.capsule,
+                    padding: "5px 12px", fontSize: 12, fontWeight: 600, color: T.text, gap: 6,
+                  }}>
+                    <span style={{ fontSize: 12, color: T.muted }}>{legendaAberta ? "▾" : "▴"}</span>
+                    Legenda
+                  </button>
+
+                  {legendaAberta && (
+                    <div style={{
+                      ...material(tema), borderRadius: RAIO.panel,
+                      padding: "12px 14px", minWidth: 190,
+                      fontFamily: FONT_SANS,
+                    }}>
+                      <div style={{ ...TIPO.caption, color: T.muted, marginBottom: 6 }}>
+                        Veículo
+                      </div>
+                      {[
+                        { cor: T.red, label: "Alerta crítico" },
+                        { cor: T.green, label: "Em movimento" },
+                        { cor: mapTokens.parado, label: "Parado, motor ligado" },
+                        { cor: T.dim, label: "Motor desligado" },
+                      ].map(({ cor, label }) => (
+                        <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
+                          <span style={{ fontSize: 12, color: T.text }}>{label}</span>
+                        </div>
+                      ))}
+
+                      <div style={{ ...TIPO.caption, color: T.muted, margin: "8px 0 6px", borderTop: `0.5px solid ${T.border}`, paddingTop: 8 }}>
+                        Ponto de entrega
+                      </div>
+                      {[
+                        { cor: COR_PENDENTE, label: "Pendente" },
+                        { cor: COR_ENTREGUE, label: "Entregue" },
+                        { cor: COR_OUTRO, label: "Esteve no local" },
+                      ].map(({ cor, label }) => (
+                        <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
+                          <span style={{ fontSize: 12, color: T.text }}>{label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {[
-                  { cor: COR_PENDENTE, label: "Pendente" },
-                  { cor: COR_ENTREGUE, label: "Entregue" },
-                  { cor: COR_OUTRO, label: "Esteve no local" },
-                ].map(({ cor, label }) => (
-                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />
-                    <span style={{ fontSize: 12, color: T.text }}>{label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+              </>
+            );
+          })()}
 
 
           {/* ================================================================
@@ -2800,12 +2832,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               Fora do split, so o drawer do painel1 aparece (full width).
           ================================================================ */}
           {renderDrawer(painel1, {
-            left: 0,
-            right: splitView ? `${(1 - splitRatio) * 100}%` : 0,
+            left: "0%",
+            width: splitView ? `${splitRatio * 100}%` : "100%",
           })}
           {splitView && renderDrawer(painel2, {
             left: `${splitRatio * 100}%`,
-            right: 0,
+            width: `${(1 - splitRatio) * 100}%`,
           })}
 
         </div>{/* MAP AREA end */}
