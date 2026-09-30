@@ -577,6 +577,60 @@ export function teveApagaoDeSinal(posicoes: Posicao[], limiarMin = LIMIAR_APAGAO
   return posicoes.some((p) => p.atraso_min > limiarMin);
 }
 
+// Achado real 29/09 (medicao 22-28/09 em posicoes_historico): o criterio
+// acima dispara com UMA leitura >15min -- 544 de 2150 placa-dias com
+// movimento, inclusive madrugada com caminhao parado (TOS0F89 28/09) e
+// silencio curto de 18min (RQT2I29 24/09). O KPI rotulava NF 'nao foi' como
+// SINAL DO RASTREADOR por isso. `teveApagaoDeSinal` fica INTACTO (resolverParadas
+// no KPI usa pra decidir Unitrac-vs-ponte, e ali o gatilho frouxo e' seguro);
+// este e' o criterio ESTRITO, exposto como `apagaoDeSinalForte`.
+//
+// Uma janela continua de leituras com atraso >15min conta como apagao forte
+// quando, AO MESMO TEMPO:
+//  - silencio >= 40min (atraso maximo da janela = idade da ultima leitura
+//    real). Mais alto entre os falsos medidos: 33min (RQP0G77 24/09); apagao
+//    verdadeiro RQU4B93 28/09: 145min.
+//  - a janela toca 05h-21h BRT (operacao). Madrugada parada nao perde entrega.
+//  - deslocamento >= 500m entre o ponto congelado e a 1a leitura fresca apos
+//    a janela -- sem isso o caminhao nao andou no escuro e o ponto congelado
+//    e' o real (nada perdido). Janela que vai ate' o fim do dia sem leitura
+//    fresca nao tem como medir -> nao conta.
+// Resultado 22-28/09: 544 -> 88 placa-dias.
+const SILENCIO_MIN_APAGAO_FORTE_MIN = 40;
+const DESLOCAMENTO_MIN_APAGAO_FORTE_M = 500;
+const HORA_INICIO_OPERACAO_BRT = 5;
+const HORA_FIM_OPERACAO_BRT = 21;
+const OFFSET_BRT_MS = 3 * 60 * 60 * 1000; // Brasil sem horario de verao desde 2019
+
+function minutoDoDiaBRT(iso: string): { dia: number; hora: number } {
+  const t = Date.parse(iso) - OFFSET_BRT_MS;
+  return { dia: Math.floor(t / 86_400_000), hora: new Date(t).getUTCHours() };
+}
+
+export function teveApagaoDeSinalForte(posicoes: Posicao[]): boolean {
+  let i = 0;
+  while (i < posicoes.length) {
+    if (posicoes[i].atraso_min <= LIMIAR_APAGAO_MIN) { i++; continue; }
+    let j = i;
+    let maxAtraso = 0;
+    while (j < posicoes.length && posicoes[j].atraso_min > LIMIAR_APAGAO_MIN) {
+      maxAtraso = Math.max(maxAtraso, posicoes[j].atraso_min);
+      j++;
+    }
+    const congelada = posicoes[i];
+    const depois = posicoes[j];
+    i = j;
+    if (!depois || maxAtraso < SILENCIO_MIN_APAGAO_FORTE_MIN) continue;
+    const ini = minutoDoDiaBRT(congelada.criado_em);
+    const fim = minutoDoDiaBRT(depois.criado_em);
+    const tocaOperacao = ini.hora < HORA_FIM_OPERACAO_BRT && (fim.hora >= HORA_INICIO_OPERACAO_BRT || fim.dia > ini.dia);
+    if (!tocaOperacao) continue;
+    if (haversineM(congelada.lat, congelada.lng, depois.lat, depois.lng) < DESLOCAMENTO_MIN_APAGAO_FORTE_M) continue;
+    return true;
+  }
+  return false;
+}
+
 // Achado real 15/09 (auditoria em massa via subagentes, "PASSOU NO ENDEREÇO
 // MAS NÃO REGISTROU PARADA" -- placas RQU3B36/RQP0G77/RBJ2H28): trechos de
 // 3-16min com lat/lng BIT-IDENTICOS enquanto velocidade reportada ficava
@@ -906,6 +960,7 @@ export async function POST(request: Request) {
     visitas?: VisitaPonto[];
     paradas?: ParadaDerivada[];
     apagaoDeSinal?: boolean;
+    apagaoDeSinalForte?: boolean;
     gpsCongelado?: boolean;
   }[] = [];
   for (const placaBruta of placas) {
@@ -942,6 +997,7 @@ export async function POST(request: Request) {
     // precisa. O KPI pede quando o dia caiu fora da janela de 48h da Unitrac.
     const paradas = incluirParadas ? derivarParadas(posicoes, basesCentro) : undefined;
     const apagaoDeSinal = incluirParadas ? teveApagaoDeSinal(posicoes) : undefined;
+    const apagaoDeSinalForte = incluirParadas ? teveApagaoDeSinalForte(posicoes) : undefined;
     const gpsCongelado = incluirParadas ? teveGpsCongelado(posicoes) : undefined;
     resultados.push({
       placa: placaBruta,
@@ -951,6 +1007,7 @@ export async function POST(request: Request) {
       ...(visitas ? { visitas } : {}),
       ...(paradas ? { paradas } : {}),
       ...(apagaoDeSinal !== undefined ? { apagaoDeSinal } : {}),
+      ...(apagaoDeSinalForte !== undefined ? { apagaoDeSinalForte } : {}),
       ...(gpsCongelado !== undefined ? { gpsCongelado } : {}),
     });
   }

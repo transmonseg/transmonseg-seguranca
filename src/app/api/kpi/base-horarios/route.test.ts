@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { acharSaidaEChegadaBase, acharChegadaAposFimRota, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveGpsCongelado } from "./route";
+import { acharSaidaEChegadaBase, acharChegadaAposFimRota, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveApagaoDeSinalForte, teveGpsCongelado } from "./route";
 
 // ─── Mocks pro bloco de teste de integracao do POST (fimRotaPorPlaca, ver
 // describe abaixo). Mesmo precedente de estilo do mock chain encadeavel de
@@ -1038,6 +1038,66 @@ describe('teveApagaoDeSinal', () => {
   it('exatamente no limiar nao conta como apagao (estritamente maior que)', () => {
     const posicoes = [{ ...base, velocidade: 0, atraso_min: 15 }]
     expect(teveApagaoDeSinal(posicoes)).toBe(false)
+  })
+})
+
+// Criterio estrito medido em 22-28/09 (posicoes_historico, 2150 placa-dias
+// com movimento): a regra antiga (1 leitura >15min) disparava em 544; esta
+// exige silencio >=40min (atraso maximo da janela continua >15), dentro de
+// 05h-21h (BRT) e deslocamento >=500m entre o ponto congelado e a 1a leitura
+// fresca -- 88 placa-dias.
+describe('teveApagaoDeSinalForte', () => {
+  // Uma leitura por minuto a partir de `inicioBRT` (hora local, UTC-3).
+  function serie(inicioBRT: string, atrasos: number[], latDepois = -22.9, velocidade = 40) {
+    const t0 = new Date(inicioBRT + '-03:00').getTime()
+    return atrasos.map((atraso_min, i) => ({
+      lat: atraso_min > 2 || i < atrasos.findIndex((a) => a > 2) ? -22.9 : latDepois,
+      lng: -43.2,
+      criado_em: new Date(t0 + i * 60_000).toISOString(),
+      velocidade,
+      atraso_min,
+    }))
+  }
+  const subindo = (de: number, ate: number) => Array.from({ length: ate - de + 1 }, (_, i) => de + i)
+
+  it('false com um unico ping tardio (caso RQT2I29 24/09: 18min e volta)', () => {
+    const posicoes = serie('2026-09-24T18:20:00', [2, 2, ...subindo(3, 18), 3, 2], -22.95)
+    expect(teveApagaoDeSinal(posicoes)).toBe(true) // regra antiga dispara
+    expect(teveApagaoDeSinalForte(posicoes)).toBe(false)
+  })
+
+  it('true com janela longa de silencio andando (caso RQU4B93 28/09: ate 145min, 8.8km)', () => {
+    const posicoes = serie('2026-09-28T15:00:00', [2, 2, ...subindo(3, 145), 2, 2], -22.98)
+    expect(teveApagaoDeSinalForte(posicoes)).toBe(true)
+  })
+
+  it('false com silencio longo de madrugada (caso TOS0F89 28/09 00:46, caminhao parado)', () => {
+    const posicoes = serie('2026-09-28T00:10:00', [2, ...subindo(3, 60), 2], -22.98)
+    expect(teveApagaoDeSinalForte(posicoes)).toBe(false)
+  })
+
+  it('true quando o silencio comeca de madrugada mas termina ja na operacao (TOS5E38 28/09, 00:00-06:34)', () => {
+    const posicoes = serie('2026-09-28T04:00:00', [2, ...subindo(3, 90), 2], -22.98)
+    expect(teveApagaoDeSinalForte(posicoes)).toBe(true)
+  })
+
+  it('false com silencio longo parado no mesmo lugar (nada perdido: o ponto congelado e\' o real)', () => {
+    const posicoes = serie('2026-09-24T12:00:00', [2, ...subindo(3, 60), 2], -22.9)
+    expect(teveApagaoDeSinalForte(posicoes)).toBe(false)
+  })
+
+  it('false quando o silencio nao chega a 40min (caso RQP0G77 24/09: 33min)', () => {
+    const posicoes = serie('2026-09-24T16:20:00', [2, ...subindo(3, 33), 2], -22.98)
+    expect(teveApagaoDeSinalForte(posicoes)).toBe(false)
+  })
+
+  it('false quando o dia acaba ainda em silencio (sem leitura fresca pra medir deslocamento)', () => {
+    const posicoes = serie('2026-09-24T15:00:00', [2, ...subindo(3, 90)])
+    expect(teveApagaoDeSinalForte(posicoes)).toBe(false)
+  })
+
+  it('false com lista vazia', () => {
+    expect(teveApagaoDeSinalForte([])).toBe(false)
   })
 })
 
