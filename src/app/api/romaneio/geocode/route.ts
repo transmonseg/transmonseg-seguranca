@@ -39,6 +39,7 @@ import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodifica
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade, extrairRuaDoEndereco, normalizarNomeRua } from "@/lib/romaneio-geocode-local";
 import { validarTerritorio, type MotivoTerritorio } from "@/lib/territorio";
 import { montarDepsTerritorio } from "./territorio-deps";
+import { buscarSimilaridadeLimitada } from "@/lib/cnefe-similaridade-limitada";
 
 // Achado real 03/09 (investigacao "geolocalizacao ruim" -- 2 tentativas
 // seguidas de geracao do KPI Nutry Max bateram "geocodificacao falhou
@@ -98,6 +99,10 @@ export async function POST(request: Request) {
   // usam esta mesma rota e nao podem mudar de comportamento -- so' a geracao
   // do Nutry Max liga. Ver a secao "Nao-objetivos" da spec de 12/09.
   const validarTerritorioLigado = (body as { validarTerritorio?: unknown })?.validarTerritorio === true;
+  // Incidente 01/10 (ver src/lib/cnefe-similaridade-limitada.ts): o KPI liga
+  // isto quando a geracao ja' passou do teto de buscas por similaridade --
+  // o passo e' pulado e os enderecos afetados voltam em `incompletos`.
+  const semSimilaridade = (body as { semSimilaridade?: unknown })?.semSimilaridade === true;
 
   const lista = enderecos as string[];
   const admin = createAdminClient();
@@ -141,9 +146,24 @@ export async function POST(request: Request) {
     const { data } = await query;
     return data ?? [];
   };
-  const buscarCnefePorSimilaridade = async (nomeNormalizado: string, municipioCodigo: string | null) => {
-    const { data } = await admin.rpc("cnefe_buscar_por_similaridade", { termo: nomeNormalizado, limite: 5, filtro_municipio_codigo: municipioCodigo });
-    return data ?? [];
+  // Incidente 01/10: semaforo GLOBAL do processo (2 simultaneas, somando
+  // todas as requisicoes/geracoes em andamento) + timeout por busca. Timeout
+  // ou passo pulado = "nao achado nesse passo" pra cascata (lista vazia, a
+  // logica de match nao muda), mas o endereco vai em `incompletos` pra o KPI
+  // nao gravar cache negativo de algo que nao foi tentado por inteiro.
+  let buscasSimilaridade = 0;
+  const buscarCnefePorSimilaridadeLimitada = async (nomeNormalizado: string, municipioCodigo: string | null) => {
+    const r = await buscarSimilaridadeLimitada<{ lat: number; lng: number }>(
+      async (sinal) => {
+        buscasSimilaridade++;
+        const { data } = await admin
+          .rpc("cnefe_buscar_por_similaridade", { termo: nomeNormalizado, limite: 5, filtro_municipio_codigo: municipioCodigo })
+          .abortSignal(sinal);
+        return data ?? [];
+      },
+      { pular: semSimilaridade, rotulo: nomeNormalizado },
+    );
+    return r;
   };
   // Achado real 08/09 (ver geocodificarCnefePorBairro em romaneio-geocode.ts):
   // ultimo recurso antes de sair pra rede -- centroide dos pontos do CNEFE
@@ -181,12 +201,16 @@ export async function POST(request: Request) {
   async function precisaDePontoReferencia(enderecoBruto: string, municipioCodigo: string | null): Promise<boolean> {
     const rua = extrairRuaDoEndereco(enderecoBruto);
     const nomeNormalizado = normalizarNomeRua(rua);
-    const [porRua, porSimilaridade, porLocal] = await Promise.all([
+    const [porRua, porLocal] = await Promise.all([
       buscarCnefePorRua(nomeNormalizado, municipioCodigo, null),
-      buscarCnefePorSimilaridade(nomeNormalizado, municipioCodigo),
       buscarCandidatosPorNome(nomeNormalizado),
     ]);
-    return porRua.length > 0 || porSimilaridade.length > 0 || porLocal.length > 0;
+    if (porRua.length > 0 || porLocal.length > 0) return true;
+    // Similaridade so' quando as consultas exatas (baratas) nao bastaram --
+    // mesmo resultado booleano, sem gastar a busca pesada a toa. Timeout ou
+    // passo pulado: assume que precisa (mesma sobre-aproximacao segura).
+    const porSimilaridade = await buscarCnefePorSimilaridadeLimitada(nomeNormalizado, municipioCodigo);
+    return porSimilaridade.status !== "ok" || porSimilaridade.data.length > 0;
   }
 
   // Achado real 03/09 (grupo KPI AJUSTES, geocode de Nutry Max do dia):
@@ -341,9 +365,19 @@ export async function POST(request: Request) {
   // "nao foi ao cliente" em cima de ponto errado. Campos ADITIVOS: chamador
   // antigo que so' le lat/lng continua funcionando igual.
   const resultados: ({ lat: number; lng: number; fonte: string; validado: boolean; motivo?: MotivoTerritorio } | null)[] = [];
+  const incompletos: number[] = [];
   const depsTerritorio = montarDepsTerritorio(admin);
   for (const enderecoBruto of lista) {
     if (prazoEsgotado()) break;
+    let similaridadeIncompleta = false;
+    const buscarCnefePorSimilaridade = async (nomeNormalizado: string, municipioCodigo: string | null) => {
+      const r = await buscarCnefePorSimilaridadeLimitada(nomeNormalizado, municipioCodigo);
+      if (r.status !== "ok") {
+        similaridadeIncompleta = true;
+        return [];
+      }
+      return r.data;
+    };
     const cidade = cidadePorEndereco.get(enderecoBruto) ?? null;
     const bairro = extrairBairroDoEndereco(enderecoBruto);
     const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
@@ -376,6 +410,7 @@ export async function POST(request: Request) {
     });
 
     if (!geocode) {
+      if (similaridadeIncompleta) incompletos.push(resultados.length);
       resultados.push(null);
       continue;
     }
@@ -395,5 +430,5 @@ export async function POST(request: Request) {
     resultados.push({ lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, validado, motivo });
   }
 
-  return Response.json({ resultados });
+  return Response.json({ resultados, incompletos, buscasSimilaridade });
 }
