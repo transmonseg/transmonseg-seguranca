@@ -1000,6 +1000,102 @@ describe("derivarParadas (paradas a partir do historico permanente de posicao)",
       expect(paradas[0].chegada).toBe(p(2, -22.7, -43.0, 8).criado_em); // volta so' ate' o inicio do ruido em B, nao em A
     });
   });
+
+  // Achado real 30/09 (auditoria RQV3G18, terco2.md): lacuna de 118 min no
+  // GPS (10:19-12:17) virou uma parada falsa de 2h14 em Córrego do Ouro
+  // porque derivarParadas so' checa distancia entre leituras consecutivas --
+  // quando o sinal volta apos longa ausencia no MESMO local (ou proximo),
+  // os pontos pre e pos-lacuna ficam dentro de RAIO_CLUSTER_PARADA_M e sao
+  // fundidos numa unica parada, engolindo paradas reais da Unitrac no
+  // intervalo perdido. Fix: LACUNA_MAX_FUSAO_MS (30min) -- lacuna maior que
+  // isso fecha o bloco atual e abre um novo, mesmo dentro do raio.
+  describe("lacuna longa no GPS nao funde duas paradas numa so (achado real 30/09, RQV3G18)", () => {
+    it("lacuna de 118 min no mesmo local: duas paradas separadas, nunca uma de 2h14", () => {
+      const paradas = derivarParadas([
+        p(0, -22.9, -43.2),   // 09:00 -- bloco 1 começa
+        p(10, -22.9, -43.2),  // 09:10 -- ainda bloco 1
+        p(19, -22.9, -43.2),  // 09:19 -- ultima leitura antes da lacuna
+        // lacuna de 118 min (09:19 -> 11:17)
+        p(137, -22.9, -43.2), // 11:17 -- primeira leitura apos lacuna (mesmo local!)
+        p(147, -22.9, -43.2), // 11:27 -- ainda bloco 2
+        p(157, -22.9, -43.2), // 11:37 -- fim do bloco 2
+        p(170, -23.5, -44.5, 60), // vai embora
+      ], []);
+
+      expect(paradas).toHaveLength(2);
+      // Bloco 1: 09:00-09:19 = 19 min
+      expect(paradas[0].duracaoSeg).toBe(19 * 60);
+      // Bloco 2: 11:17-11:37 = 20 min
+      expect(paradas[1].duracaoSeg).toBe(20 * 60);
+    });
+
+    it("lacuna de exatamente 30 min (no limiar): NAO quebra (estritamente maior que)", () => {
+      const paradas = derivarParadas([
+        p(0, -22.9, -43.2),
+        p(10, -22.9, -43.2),
+        p(30, -22.9, -43.2),  // 30 min depois -- ainda conta como continuidade
+        p(40, -22.9, -43.2),
+        p(50, -23.5, -44.5, 60),
+      ], []);
+
+      expect(paradas).toHaveLength(1);
+      // duracao = fim - inicio = p(40) - p(0) = 40 min (ultimo ponto parado define fim)
+      expect(paradas[0].duracaoSeg).toBe(40 * 60);
+    });
+
+    it("lacuna de 31 min (acima do limiar): quebra em duas paradas", () => {
+      const paradas = derivarParadas([
+        p(0, -22.9, -43.2),
+        p(10, -22.9, -43.2),
+        p(41, -22.9, -43.2),  // 31 min depois -- acima do limiar
+        p(51, -22.9, -43.2),
+        p(61, -23.5, -44.5, 60),
+      ], []);
+
+      expect(paradas).toHaveLength(2);
+      expect(paradas[0].duracaoSeg).toBe(10 * 60); // 0-10 min
+      // bloco 2: p(41)-p(51) = 10 min (p(61) esta fora do raio, nao entra no bloco)
+      expect(paradas[1].duracaoSeg).toBe(10 * 60);
+    });
+
+    it("parada longa legitima sem lacuna continua funcionando (nao regressao)", () => {
+      const paradas = derivarParadas([
+        p(0, -22.9, -43.2),
+        p(10, -22.9, -43.2),
+        p(20, -22.9, -43.2),
+        p(30, -22.9, -43.2),
+        p(40, -22.9, -43.2),
+        p(50, -22.9, -43.2),
+        p(60, -22.9, -43.2),
+        p(70, -22.9, -43.2),
+        p(80, -22.9, -43.2),
+        p(90, -22.9, -43.2),
+        p(100, -22.9, -43.2),
+        p(110, -22.9, -43.2),
+        p(120, -22.9, -43.2),
+        p(130, -23.5, -44.5, 60),
+      ], []);
+
+      expect(paradas).toHaveLength(1);
+      // duracao = p(120) - p(0) = 120 min (p(130) esta fora do raio, fecha em p(120))
+      expect(paradas[0].duracaoSeg).toBe(120 * 60);
+    });
+
+    it("bloco pos-lacuna curto demais (<2min) e descartado independentemente", () => {
+      const paradas = derivarParadas([
+        p(0, -22.9, -43.2),
+        p(10, -22.9, -43.2),
+        p(19, -22.9, -43.2),
+        // lacuna de 118 min
+        p(137, -22.9, -43.2), // volta mas so' fica 1 min
+        p(138, -23.5, -44.5, 60), // vai embora
+      ], []);
+
+      // So' o bloco 1 sobrevive; bloco 2 tem <2min e e' descartado
+      expect(paradas).toHaveLength(1);
+      expect(paradas[0].duracaoSeg).toBe(19 * 60);
+    });
+  });
 });
 
 describe('teveApagaoDeSinal', () => {

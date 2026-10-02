@@ -490,6 +490,19 @@ export type ParadaDerivada = {
 // precisa de mais casos reais pra apertar o numero com confianca.
 const VELOCIDADE_RUIDO_ABERTURA_KMH = 15;
 
+// Achado real 30/09 (auditoria RQV3G18, terco2.md): lacuna de 118 min no GPS
+// (10:19-12:17) virou uma parada falsa de 2h14 em Córrego do Ouro porque
+// derivarParadas so' checa distancia entre leituras consecutivas -- quando o
+// sinal volta apos longa ausencia no MESMO local (ou proximo), os pontos
+// pre e pos-lacuna ficam dentro de RAIO_CLUSTER_PARADA_M e sao fundidos numa
+// unica parada, engolindo paradas reais da Unitrac no intervalo perdido.
+// Limiar: lacunas >30 min entre duas leituras dentro do raio de cluster
+// NUNCA contam como continuidade da mesma parada -- fecha o bloco atual e
+// abre um novo. 30 min e' generoso o bastante pra nao quebrar paradas longas
+// legitimas com micro-interrupcoes de sinal (nunca visto >10 min em parada
+// real continua), mas corta fusoes como a de 118 min do caso real.
+const LACUNA_MAX_FUSAO_MS = 30 * 60_000;
+
 export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = []): ParadaDerivada[] {
   const paradas: ParadaDerivada[] = [];
   let atual: { inicio: string; fim: string; lats: number[]; lngs: number[] } | null = null;
@@ -542,6 +555,19 @@ export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = 
         continue;
       }
       pendentes = []; // trafego de verdade -- descarta qualquer ruido acumulado
+      continue;
+    }
+    // Achado real 30/09 (RQV3G18): lacuna longa no GPS dentro do raio de
+    // cluster fundia dois blocos separados numa unica parada falsa. Se a
+    // lacuna entre a ultima leitura do bloco atual e esta excede o limiar,
+    // fecha o bloco mesmo que a posicao ainda esteja dentro do raio -- abre
+    // um novo so' se esta leitura for de verdade parada (nao ruido).
+    const gapMs = new Date(p.criado_em).getTime() - new Date(atual.fim).getTime();
+    if (gapMs > LACUNA_MAX_FUSAO_MS) {
+      fechar();
+      pendentes = [];
+      if (p.velocidade > VELOCIDADE_MAX_PARADO_KMH) continue;
+      atual = { inicio: p.criado_em, fim: p.criado_em, lats: [p.lat], lngs: [p.lng] };
       continue;
     }
     if (haversineM(atual.lats[0], atual.lngs[0], p.lat, p.lng) > RAIO_CLUSTER_PARADA_M) {
