@@ -57,6 +57,21 @@ export default function MenuMotivoFalso({
   }, [aberto]);
 
   if (!aberto) return null;
+// 02/10: fixed na viewport pra escapar do overflow:hidden da lateral.
+const [pos, setPos] = useState<{top:number,left:number,width:number}|null>(null);
+useEffect(() => {
+if (!aberto) { setPos(null); return; }
+const el = ref.current; if (!el) return;
+const trigger = el.parentElement?.querySelector("button");
+const card = el.closest(".card-alerta") as HTMLElement | null;
+if (!trigger) return;
+const r = trigger.getBoundingClientRect();
+const cr = card?.getBoundingClientRect();
+const left = cr ? cr.left : r.left;
+const width = cr ? cr.width : Math.min(320, window.innerWidth - 24);
+setPos({ top: r.bottom + 4, left, width });
+}, [aberto]);
+if (!pos) return null;
   return (
     <div ref={ref} style={{
       // Achado real 01/09 (reclamacao da Rose no grupo DESVIO DE ROTA, com
@@ -70,9 +85,8 @@ export default function MenuMotivoFalso({
       // ESQUERDA -- funciona porque o botao "Falso" costuma estar perto da
       // borda direita do card (ultimo da fileira), entao crescer pra
       // esquerda mantem o menu dentro da area visivel.
-      position: "absolute", ...(ancoraNoCard ? { left: 0, right: 0, top: "100%" } : larguraDaLinha ? { left: 0, right: 0, top: "100%" } : { right: 0 }), zIndex: 50, marginTop: 4,
+      position: "fixed", zIndex: 9999, top: pos.top, left: pos.left, width: pos.width, boxSizing: "border-box",
       background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8,
-      boxShadow: "0 8px 24px rgba(0,0,0,0.25)", padding: 6, minWidth: (larguraDaLinha || ancoraNoCard) ? undefined : compacto ? 200 : 260,
       maxWidth: "min(92vw, 320px)",
       display: "flex", flexDirection: "column", gap: 3,
     }}>
