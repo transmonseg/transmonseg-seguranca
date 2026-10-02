@@ -11,7 +11,7 @@ export const CATEGORIAS_FALSO = [
 export type CategoriaFalso = typeof CATEGORIAS_FALSO[number]["valor"];
 
 export default function MenuMotivoFalso({
-  onEscolher, aberto, onFechar, compacto = false, larguraDaLinha = false,
+  onEscolher, aberto, onFechar, compacto = false, larguraDaLinha = false, ancoraNoCard = false,
 }: {
   // Pedido do time (grupo DESVIO DE ROTA, 26/08): "colocar uma aba para
   // escrever o motivo" -- detalhe em texto livre OPCIONAL, ao lado da
@@ -25,6 +25,10 @@ export default function MenuMotivoFalso({
   // menu pra fora da lateral. Com larguraDaLinha o menu ocupa a largura do
   // container posicionado (a fileira de acoes do card) e nunca vaza.
   larguraDaLinha?: boolean;
+  // 02/10: quando true, o menu se posiciona relativo ao CARD inteiro (nao a
+  // fileira de acoes). Resolve o corte a esquerda quando a fileira Correto+Falso
+  // e mais estreita que o minWidth do menu.
+  ancoraNoCard?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [detalhe, setDetalhe] = useState("");
@@ -66,9 +70,9 @@ export default function MenuMotivoFalso({
       // ESQUERDA -- funciona porque o botao "Falso" costuma estar perto da
       // borda direita do card (ultimo da fileira), entao crescer pra
       // esquerda mantem o menu dentro da area visivel.
-      position: "absolute", ...(larguraDaLinha ? { left: 0, right: 0, top: "100%" } : { right: 0 }), zIndex: 50, marginTop: 4,
+      position: "absolute", ...(ancoraNoCard ? { left: 0, right: 0, top: "100%" } : larguraDaLinha ? { left: 0, right: 0, top: "100%" } : { right: 0 }), zIndex: 50, marginTop: 4,
       background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8,
-      boxShadow: "0 8px 24px rgba(0,0,0,0.25)", padding: 6, minWidth: larguraDaLinha ? undefined : compacto ? 200 : 260,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.25)", padding: 6, minWidth: (larguraDaLinha || ancoraNoCard) ? undefined : compacto ? 200 : 260,
       maxWidth: "min(92vw, 320px)",
       display: "flex", flexDirection: "column", gap: 3,
     }}>

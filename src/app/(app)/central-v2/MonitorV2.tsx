@@ -1683,7 +1683,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           );
         })()}
-        <div className="card-alerta-acoes" style={{ gap: 6, flexWrap: "wrap", marginTop: 8, position: "relative" }}>
+        <div className="card-alerta-acoes" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
           <motion.button whileTap={{ scale: 0.92 }}
             onMouseDown={e => { e.stopPropagation(); handleResolver(a.id); }}
             onClick={pararClique}
@@ -1698,7 +1698,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </motion.button>
             <MenuMotivoFalso
               compacto
-              larguraDaLinha
+              ancoraNoCard
               aberto={menuFalsoAberto}
               onFechar={() => setMenuFalsoAbertoId(null)}
               onEscolher={(categoria, detalhe) => handleFalso(a.id, categoria, detalhe)}
@@ -3004,7 +3004,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                 style={{
                   height: 40, width: 40, borderRadius: 8,
                   background: "transparent", border: "1px solid #ffffff14",
-                  color: "#78716c", fontSize: 16, cursor: "pointer",
+                  color: "#78716c", fontSize: 16, cursor: "pointer", position: "relative",
                 }}>
                 ♪
               </button>
