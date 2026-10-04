@@ -15,10 +15,13 @@
 // Mudancas do dia: git log do proprio checkout de producao, so' commits
 // que tocaram o motor de desvio (src/lib/desvio.ts, src/app/api/motor/route.ts).
 //
-// Envio: SSH restrito pro VPS contabo-joaquim (chave dedicada
+// Envio: SSH restrito pro servidor do WhatsApp (desde 03/10/2026 o do Norte,
+// 185.193.66.240 -- o contabo-joaquim venceu; chave dedicada
 // ~/.ssh/id_ed25519_whatsapp_send, alias "whatsapp-send" no ~/.ssh/config),
-// que roda um script fixo (/opt/whatsapp-bridge/send-dm.sh) via Evolution
-// API local -- nunca ve a API key, so manda {number, text} por stdin.
+// que roda um script fixo (/opt/whatsapp-bridge/send-dm.sh, command= forcado
+// no authorized_keys) via Evolution API local -- nunca ve a API key, so manda
+// {number, text} por stdin. O send-dm.sh so aceita NUMERO_DESTINO e sai !=0
+// quando a Evolution nao devolve 2xx, entao "Enviado" no log e' entrega aceita.
 //
 // Uso: node --env-file=.env.production scripts/relatorio-diario-desvio.mjs [YYYY-MM-DD]
 // Sem argumento, roda pro dia de HOJE (America/Sao_Paulo).
