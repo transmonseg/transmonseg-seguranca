@@ -26,6 +26,8 @@
 //   ... (repete uma linha por NF)
 //   <totalCaixas> \t<totalPesoBruto> \t<totalPesoLiquido> \t<totalValor>[\tR$]   <- linha de totais, SO' 4-5 campos
 //   ROMANEIO \t<proximo numero> ...   <- repete pro proximo carro
+import { montarEnderecoPao } from "./romaneio-pao-municipio";
+
 export type LinhaRomaneioTabular = {
   placaBruta: string;
   nf: string;
@@ -93,7 +95,8 @@ export function parseRomaneioTabular(textoCompleto: string): LinhaRomaneioTabula
         placaBruta: placaAtual,
         nf,
         clienteNome,
-        enderecoBruto: bairro ? `${endereco}, ${bairro}` : endereco,
+        // 05/10: com a cidade deduzida do bairro/cliente (ver romaneio-pao-municipio.ts).
+        enderecoBruto: montarEnderecoPao(endereco, bairro, clienteNome),
       });
     }
   }

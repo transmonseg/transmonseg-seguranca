@@ -27,14 +27,14 @@ describe("parseRomaneioTabular", () => {
       placaBruta: "ABC1D23",
       nf: "900001",
       clienteNome: "MERCADO TESTE A",
-      enderecoBruto: "RUA DAS FLORES,100, CENTRO",
+      enderecoBruto: "RUA DAS FLORES, 100 - CENTRO, RIO DE JANEIRO",
     });
     expect(linhas![1].placaBruta).toBe("ABC1D23");
     expect(linhas![2]).toEqual({
       placaBruta: "XYZ9W88",
       nf: "900003",
       clienteNome: "LOJA TESTE C",
-      enderecoBruto: "RUA NOVA,300, JARDIM",
+      enderecoBruto: "RUA NOVA, 300 - JARDIM, RIO DE JANEIRO",
     });
   });
 
