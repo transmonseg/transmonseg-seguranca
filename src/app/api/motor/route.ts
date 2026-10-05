@@ -110,6 +110,10 @@ import { buscarDistanciasReais } from "@/lib/distancia-real";
 import { corrigirPosicoesComMatch } from "@/lib/osrm-match";
 import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, LIMIAR_MIN_PARADA_FORA_DE_ROTA, ehSaltoDeReconciliacaoDeAtraso, ehRetornoSustentadoABase, ehRetornoABaseHorarioAvancado, RETORNO_BASE_JANELA_S, ehSaidaDeBaseSemDestinoAvaliavel } from "@/lib/desvio";
 import { segmentoCalibracaoPreferido, aplicarFatorCalibrado } from "@/lib/calibracao-desvio";
+import { deveRodarLimpezaPeriodica } from "@/lib/limpeza-periodica";
+
+// Ultima limpeza periodica deste processo (ver limpeza-periodica.ts).
+let ultimaLimpezaPeriodica: Date | null = null;
 
 type PontoComId = { id: string; lat: number; lng: number };
 
@@ -4865,7 +4869,8 @@ export async function POST(request: Request) {
 
     // Limpeza periódica — janela de 5 min para tolerar variacao de cold-start do Vercel.
     // A query de fim de expediente ja e idempotente, entao rodar em :00-:05 nao causa dano.
-    if (agora.getMinutes() <= 5) {
+    if (deveRodarLimpezaPeriodica(agora, ultimaLimpezaPeriodica)) {
+      ultimaLimpezaPeriodica = agora;
       const pgClean = await pool.connect();
       try {
         // Fim de expediente (20h SP): resolve alertas de rotina que ficaram
