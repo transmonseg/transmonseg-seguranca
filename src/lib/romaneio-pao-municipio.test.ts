@@ -46,4 +46,12 @@ describe("montarEnderecoPao", () => {
   it("sem bairro: devolve o endereço como veio", () => {
     expect(montarEnderecoPao("RUA X,10", "", "CLIENTE")).toBe("RUA X,10");
   });
+  it("bairro veio como número e o bairro de verdade ficou no fim da rua (PDF colado, NF 216581)", () => {
+    expect(montarEnderecoPao("RUA GUILHERME SANTOS ANDRADE 1315 MUTONDO", "40", "MERCADO ACOUGUE MOURA DO MUTONDO"))
+      .toBe("RUA GUILHERME SANTOS ANDRADE, 1315 - MUTONDO, SAO GONCALO");
+  });
+  it("endereço com QUADRA/LOTE: não inventa número (NF 216600)", () => {
+    expect(montarEnderecoPao("AVENIDA NILO PECANHA 0 QUADRA A LOTE 1 103 RUA BRENO RESENDE QUADRA A LOTE 6 E 7", "CENTRO", "CASAFRUTI ARARUAMA"))
+      .toBe("AVENIDA NILO PECANHA 0 QUADRA A LOTE 1 103 RUA BRENO RESENDE QUADRA A LOTE 6 E 7, S/N - CENTRO, ARARUAMA");
+  });
 });

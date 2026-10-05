@@ -44,12 +44,23 @@ export function municipioDoPao(bairro: string, clienteNome: string): string {
 
 /** "RUA X,43" + "SANTA ROSA" -> "RUA X, 43 - SANTA ROSA, NITEROI" (formato
  *  que extrairCidadeDoEndereco/extrairBairroDoEndereco entendem). */
-export function montarEnderecoPao(endereco: string, bairro: string, clienteNome: string): string {
-  if (!bairro.trim()) return endereco;
+export function montarEnderecoPao(endereco: string, bairroBruto: string, clienteNome: string): string {
+  if (!bairroBruto.trim()) return endereco;
   let rua = endereco.trim();
+  let bairro = bairroBruto.trim();
+  // PDF colado (NF 216581, 05/10): bairro veio como número e o bairro de
+  // verdade ficou no fim da rua ("... 1315 MUTONDO" + "40").
+  if (!/[A-Za-zÀ-ú]/.test(bairro)) {
+    const conhecido = Object.keys(BAIRROS).find(b => norm(rua).endsWith(` ${b}`));
+    if (conhecido) {
+      rua = rua.slice(0, rua.length - conhecido.length).trim();
+      bairro = conhecido;
+    }
+  }
   let numero = "S/N";
   const comVirgula = rua.match(/^(.*?)\s*,\s*([^,]*)$/);
-  const semVirgula = rua.match(/^(.*?)\s+(?:N[º°.]?\s*)?(\d+[A-Z]?)$/i);
+  // QUADRA/LOTE (NF 216600): o número no fim é do lote, não da rua.
+  const semVirgula = /\b(QUADRA|LOTE|QD|LT)\b/i.test(rua) ? null : rua.match(/^(.*?)\s+(?:N[º°.]?\s*)?(\d+[A-Z]?)$/i);
   if (comVirgula) {
     rua = comVirgula[1].trim();
     numero = comVirgula[2].trim() || "S/N";
