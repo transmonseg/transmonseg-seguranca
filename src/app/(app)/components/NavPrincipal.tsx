@@ -23,6 +23,7 @@ const ABAS = [
 const ITENS_MENU = [
   { href: "/romaneio", rotulo: "Configurar Romaneio" },
   { href: "/escala", rotulo: "Escala" },
+  { href: "/veiculos", rotulo: "Veículos" },
   { href: "/analise", rotulo: "Análise" },
 ] as const;
 

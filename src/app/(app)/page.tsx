@@ -31,7 +31,8 @@ export default async function CentralPage({
   const [{ data: clientesRaw }, { data: veiculosRaw }, { data: posicoesRaw }, { data: alertasRaw }] =
     await Promise.all([
       supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
-      supabase.from("veiculos").select("id, cliente_id, placa, cv"),
+      // So' a frota ativa (tela Veiculos, 05/10): placa tirada da frota sai da Central.
+      supabase.from("veiculos").select("id, cliente_id, placa, cv").eq("ativo", true),
       supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
       supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").eq("modo_teste", false).in("status", ["ativo", "reconhecido"]),
     ]);
