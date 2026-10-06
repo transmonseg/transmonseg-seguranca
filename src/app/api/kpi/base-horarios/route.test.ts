@@ -115,6 +115,29 @@ describe("acharSaidaEChegadaBase", () => {
     expect(r.chegadaBase).toBe("2026-08-25T21:00:00.000Z"); // ultima chegada, nao a do meio-dia
   });
 
+  it("GPS pisca dentro da cerca logo depois de sair e o carro segue a rota: NAO e' volta (RQU-0B47 06/10, 'voltou 06:10')", () => {
+    const posicoes = [
+      { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-10-06T09:05:00.000Z", velocidade: 0 },
+      { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-10-06T09:07:00.000Z", velocidade: 30 }, // saiu
+      { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-10-06T09:10:00.000Z", velocidade: 20 }, // pisca dentro
+      { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-10-06T09:11:00.000Z", velocidade: 40 },
+      { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-10-06T14:00:00.000Z", velocidade: 0 }, // rota seguindo
+    ];
+    const r = acharSaidaEChegadaBase(posicoes, [BASE]);
+    expect(r.chegadaBase).toBeNull();
+  });
+
+  it("volta de verdade no meio do dia (fica 30 min) e ainda nao voltou da 2a saida: conta a volta do meio do dia", () => {
+    const posicoes = [
+      { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-08-25T09:00:00.000Z", velocidade: 0 },
+      { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-08-25T10:00:00.000Z", velocidade: 0 },
+      { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-08-25T13:00:00.000Z", velocidade: 0 },
+      { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-08-25T13:30:00.000Z", velocidade: 0 },
+      { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-08-25T13:35:00.000Z", velocidade: 0 },
+    ];
+    expect(acharSaidaEChegadaBase(posicoes, [BASE]).chegadaBase).toBe("2026-08-25T13:00:00.000Z");
+  });
+
   it("aceita array de bases (2 garagens) -- conta como dentro se bater QUALQUER uma", () => {
     const campos = { lat: -21.6886, lng: -41.3113 };
     const posicoes = [

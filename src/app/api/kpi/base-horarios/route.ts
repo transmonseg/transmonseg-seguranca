@@ -37,6 +37,9 @@ export const maxDuration = 30;
 // kpi-romaneio/constants.ts) -- mantido igual aqui pra nao introduzir uma
 // segunda nocao divergente de "o que conta como estar na base".
 const RAIO_BASE_M = 500;
+// Entrada na cerca so' e' volta se o carro fica la' dentro ao menos isso (ou
+// ainda esta' dentro na ultima leitura) -- ver acharSaidaEChegadaBase.
+const MIN_DENTRO_PRA_SER_VOLTA_MS = 20 * 60_000;
 
 const MAX_PLACAS_POR_CHAMADA = 200;
 
@@ -65,6 +68,10 @@ export function acharSaidaEChegadaBase(
 
   let saidaBase: string | null = null;
   let chegadaBase: string | null = null;
+  // Entrada na cerca ainda nao confirmada como volta (achado 06/10, RQU-0B47:
+  // saiu 06:07, GPS piscou dentro 06:10 e o carro seguiu a rota -- virava
+  // "voltou a base as 06:10" e a rota inteira fechava no meio da manha).
+  let entradaPendente: string | null = null;
   let estadoAnterior: boolean | null = null;
   let anterior: Posicao | null = null;
 
@@ -75,16 +82,22 @@ export function acharSaidaEChegadaBase(
       // da manha) -- se ja tiver uma, uma saida posterior no meio do dia
       // (ex: volta rapida pra base e sai de novo) nao substitui.
       if (saidaBase === null) saidaBase = anterior.criado_em;
+      // Ficou dentro tempo bastante: era volta de verdade. Senao, piscada.
+      if (entradaPendente && Date.parse(anterior.criado_em) - Date.parse(entradaPendente) >= MIN_DENTRO_PRA_SER_VOLTA_MS) {
+        chegadaBase = entradaPendente;
+      }
+      entradaPendente = null;
     }
     if (estadoAnterior === false && estaDentro === true) {
-      // Transicao fora->dentro: guarda a ULTIMA do dia (sempre sobrescreve
-      // -- a chegada que importa e' a mais recente, mesmo que o veiculo
-      // tenha passado pela base mais de uma vez).
-      chegadaBase = p.criado_em;
+      // Transicao fora->dentro: candidata a chegada; vale a ULTIMA do dia que
+      // se confirmar (ficou >= MIN_DENTRO_PRA_SER_VOLTA_MS ou ainda esta' la').
+      entradaPendente = p.criado_em;
     }
     estadoAnterior = estaDentro;
     anterior = p;
   }
+  // Ainda dentro na ultima leitura: a entrada vale (chegou e esta' na base).
+  if (entradaPendente) chegadaBase = entradaPendente;
 
   return { saidaBase, chegadaBase };
 }
