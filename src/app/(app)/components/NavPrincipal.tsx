@@ -65,7 +65,7 @@ export default function NavPrincipal() {
   const menuAtivo = ITENS_MENU.some((i) => rotaAtiva(pathname, i.href));
 
   return (
-    <nav className="so-fora-embed hidden sm:flex items-center gap-2" aria-label="Navegação principal">
+    <nav className="hidden sm:flex items-center gap-2" aria-label="Navegação principal">
       <div className="flex items-center gap-[3px] rounded-full bg-card p-[3px]">
         {ABAS.map((aba) => {
           const ativa = rotaAtiva(pathname, aba.href);
