@@ -416,3 +416,39 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     expect(body.linhasDuplicadas).toBe(2);
   });
 });
+
+describe("POST /api/romaneio/upload -- repasse do Ao vivo do KPI (06/10)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    proximoUpsertResultado = null;
+    mockGetUser.mockResolvedValue({ data: { user: null } });
+    mockExtrairDataRomaneio.mockReturnValue("2026-10-06");
+    mockSelect.mockResolvedValue({ data: [] });
+    process.env.MOTOR_SECRET = "segredo-teste";
+  });
+
+  function comChave(chave: string | null) {
+    const req = criarRequisicao("romaneio.pdf");
+    const headers = new Headers(req.headers);
+    if (chave) headers.set("x-motor-key", chave);
+    headers.set("x-enviado-por", "erica@x.com");
+    return new Request(req, { headers });
+  }
+
+  it("chave certa e sem sessao: aceita e grava como enviado pelo Ao vivo do KPI", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
+    const { POST } = await import("./route");
+    const res = await POST(comChave("segredo-teste"));
+    expect(res.status).toBe(200);
+    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockUpsert).toHaveBeenCalled();
+  });
+
+  it("chave errada e sem sessao: 401, nao grava nada", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
+    const { POST } = await import("./route");
+    const res = await POST(comChave("outra"));
+    expect(res.status).toBe(401);
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+});

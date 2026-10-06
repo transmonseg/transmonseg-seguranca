@@ -96,9 +96,14 @@ function normalizarLinhasLLM(linhas: LinhaRomaneioExtraida[]): LinhaNormalizada[
 export async function POST(request: Request) {
   // Rotas de API nao passam pelo proxy.ts (so protege paginas) -- validar
   // sessao aqui, mesmo padrao que /api/mapa ja usa.
+  // 06/10: o Ao vivo do KPI repassa o romaneio e o pao subidos la' (mesmo
+  // arquivo, sem subir duas vezes) -- servidor a servidor, com a chave das
+  // rotas de ponte (x-motor-key + MOTOR_SECRET). Fora isso, sessao de operador.
+  const chaveMotor = request.headers.get("x-motor-key");
+  const viaKpi = !!chaveMotor && !!process.env.MOTOR_SECRET && chaveMotor === process.env.MOTOR_SECRET;
   const auth = await createClient();
-  const { data: { user } } = await auth.auth.getUser();
-  if (!user) return Response.json({ ok: false, erro: "nao autorizado" }, { status: 401 });
+  const user = viaKpi ? null : (await auth.auth.getUser()).data.user;
+  if (!viaKpi && !user) return Response.json({ ok: false, erro: "nao autorizado" }, { status: 401 });
 
   const formData = await request.formData();
   const arquivo = formData.get("arquivo");
@@ -210,7 +215,9 @@ export async function POST(request: Request) {
   const veiculoPorPlaca = new Map((veiculos ?? []).map((v) => [v.placa, v]));
   const placasNaoEncontradas = placasUnicas.filter((p) => !veiculoPorPlaca.has(p));
 
-  const enviadoPor = (user.user_metadata?.nome as string | undefined) ?? user.email ?? null;
+  const enviadoPor = viaKpi
+    ? `${(request.headers.get("x-enviado-por") ?? "KPI").slice(0, 80)} (pelo Ao vivo do KPI)`
+    : (user?.user_metadata?.nome as string | undefined) ?? user?.email ?? null;
 
   const linhasParaInserir = linhasNormalizadas.map((l) => {
     const placaNormalizada = normalizarPlaca(l.placaBruta);
