@@ -122,7 +122,7 @@ export interface Props {
 
 const CENTER_DEFAULT = { lat: -22.9, lng: -43.2 };
 
-const DARK_STYLES: google.maps.MapTypeStyle[] = [
+export const DARK_STYLES: google.maps.MapTypeStyle[] = [
   { elementType: "geometry", stylers: [{ color: "#1a1a1a" }] },
   { elementType: "labels.icon", stylers: [{ visibility: "off" }] },
   { elementType: "labels.text.fill", stylers: [{ color: "#6b7280" }] },

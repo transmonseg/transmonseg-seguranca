@@ -19,7 +19,14 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   const data = /^\d{4}-\d{2}-\d{2}$/.test(txt(q.data)) ? txt(q.data) : hoje();
   const cliente = { nome: txt(q.cliente), nf: txt(q.nf), endereco: txt(q.endereco), lat: num(q.lat), lng: num(q.lng) };
   const chegada = txt(q.chegada) || null, saida = txt(q.saida) || null;
-  const situacao = txt(q.situacao), status = txt(q.status);
+  const situacao = txt(q.situacao), status = txt(q.status), volta = txt(q.volta);
+  const paradaKpi = num(q.plat) != null && num(q.plng) != null ? { lat: num(q.plat)!, lng: num(q.plng)! } : null;
+  // Rota inteira da placa (vem do KPI): "ordem|nf|situação|lat|lng|cliente;..."
+  const rota = txt(q.pts).split(";").filter(Boolean).slice(0, 80).map(item => {
+    const [ordem, nf, sit, lat, lng, nome] = item.split("|");
+    const la = Number(lat), ln = Number(lng);
+    return { ordem: Number(ordem) || 0, nf: nf ?? "", situacao: sit ?? "", nome: nome ?? "", lat: lat && Number.isFinite(la) ? la : null, lng: lng && Number.isFinite(ln) ? ln : null };
+  });
 
   const admin = createAdminClient();
   const { data: veiculos } = await admin.from("veiculos").select("id, placa, ativo").in("placa", normPlacaVariantes(placa));
@@ -39,19 +46,25 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   }
 
   const alvo = cliente.lat != null && cliente.lng != null ? { lat: cliente.lat, lng: cliente.lng } : null;
-  const parada = paradaDaEntrega(pontos, data, chegada, saida);
+  // A parada da entrega vem do KPI (Unitrac, a mesma que contou a NF); sem ela,
+  // a média das posições do monitoramento entre chegada e saída.
+  const parada = paradaKpi ?? paradaDaEntrega(pontos, data, chegada, saida);
+  // Rastreador que grava sempre o mesmo ponto (achado 05/10, RQO-9H37).
+  const lugares = new Set(pontos.map(p => `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`)).size;
+  const rastroTravado = pontos.length > 20 && lugares <= 2;
   const perto = alvo && !parada ? maisPerto(pontos, alvo) : null;
-  const atual = data === hoje() && pontos.length ? pontos[pontos.length - 1] : null;
+  const atual = data === hoje() && pontos.length && !rastroTravado ? pontos[pontos.length - 1] : null;
 
   return (
     <EntregaMapaWrapper
       info={{
         placa: veiculo?.placa ?? placa, data, ...cliente, chegada, saida, situacao, status,
-        semVeiculo: !veiculo, semRastro: !!veiculo && pontos.length === 0,
+        semVeiculo: !veiculo, semRastro: !!veiculo && pontos.length === 0, rastroTravado, volta,
         distParadaM: parada && alvo ? Math.round(distanciaM(parada, alvo)) : null,
         perto: perto ? { lat: perto.lat, lng: perto.lng, em: perto.em, distM: Math.round(perto.distM) } : null,
       }}
-      rastro={afinarRastro(pontos, 2500).map(p => [p.lat, p.lng] as [number, number])}
+      rastro={rastroTravado ? [] : afinarRastro(pontos, 2500).map(p => [p.lat, p.lng] as [number, number])}
+      rota={rota}
       alvo={alvo}
       parada={parada}
       atual={atual}
