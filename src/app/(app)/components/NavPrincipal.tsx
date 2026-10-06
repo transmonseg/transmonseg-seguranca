@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { rotaAtiva } from "@/lib/nav-rota";
+import { URL_KPI } from "@/lib/sistema-transmonseg";
 
 // Pedido do usuario 23/08: "melhor so' colocar duas opcoes la em cima:
 // Central e Central Romaneio". As outras tres telas nao somem -- viram itens
@@ -85,6 +86,19 @@ export default function NavPrincipal() {
           );
         })}
       </div>
+
+      {/* Outro sistema da Transmonseg (05/10): endereço próprio, mesma aba. */}
+      <a
+        href={URL_KPI}
+        className="flex items-center gap-1 px-3 h-[30px] rounded-full text-[13px] font-medium transition-colors hover:bg-card-hover"
+        style={{ color: "var(--text-muted)" }}
+      >
+        KPI
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M7 17L17 7M8 7h9v9" />
+        </svg>
+      </a>
 
       <div className="relative" ref={containerRef}>
         <button
