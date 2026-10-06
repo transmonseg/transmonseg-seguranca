@@ -39,6 +39,10 @@ export type LinhaRomaneio = {
 // existe na frota + placa certa existe e bate com a rota) -- nunca chute.
 const PLACA_CORRECOES_FONTE: Record<string, string> = {
   "RGU-5G33": "RQU-5G33",
+  // 06/10: a frota tem RQO-9H37 (letra O, rastreador 24138, posicao parada o
+  // dia todo) e RQ0-9H37 (zero, rastreador 24343, o que anda). O romaneio vem
+  // com O; o caminhao de verdade e' o do rastreador que funciona.
+  "RQO-9H37": "RQ0-9H37",
 };
 
 // Placa do romaneio vem sem hifen (ex. "TUL1C38"); o banco usa com hifen

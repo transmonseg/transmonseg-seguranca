@@ -61,8 +61,19 @@ export function afinarRastro<T>(pontos: T[], max: number): T[] {
   return r;
 }
 
-/** "rqo9h37" -> ["RQO9H37", "RQO-9H37"] (o KPI usa sem hífen, a frota com). */
+/** "rqo9h37" -> ["RQO9H37", "RQO-9H37", "RQ09H37", "RQ0-9H37", ...]: o KPI usa
+ *  sem hífen, a frota com; e a frota tem cadastro duplicado com O/0 e I/1
+ *  trocados (achado 06/10, RQO-9H37 x RQ0-9H37). A página escolhe, entre os
+ *  que existirem, o rastreador que mais se mexeu no dia. */
 export function normPlacaVariantes(placa: string): string[] {
   const n = placa.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return [n, `${n.slice(0, 3)}-${n.slice(3)}`];
+  const troca: Record<string, string> = { O: "0", "0": "O", I: "1", "1": "I" };
+  let formas = [""];
+  for (const ch of n) {
+    const alt = troca[ch];
+    formas = formas.flatMap(f => (alt ? [f + ch, f + alt] : [f + ch]));
+    if (formas.length > 32) formas = formas.slice(0, 32);
+  }
+  const todas = formas.flatMap(f => [f, f.length === 7 ? `${f.slice(0, 3)}-${f.slice(3)}` : f]);
+  return [...new Set([n, `${n.slice(0, 3)}-${n.slice(3)}`, ...todas])];
 }

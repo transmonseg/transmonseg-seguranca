@@ -194,3 +194,10 @@ describe("montarPontosDeRomaneio", () => {
     expect(resultado[0].feito).toBe(true);
   });
 });
+
+describe("correcao de placa da fonte (06/10, RQO-9H37 com rastreador travado)", () => {
+  it("RQO-9H37 do romaneio vai pro rastreador que funciona (RQ0-9H37, com zero)", () => {
+    expect(normalizarPlaca("RQO9H37")).toBe("RQ0-9H37");
+    expect(normalizarPlaca("RQO-9H37")).toBe("RQ0-9H37");
+  });
+});

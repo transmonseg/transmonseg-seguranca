@@ -32,8 +32,10 @@ describe("entrega no mapa", () => {
     expect(r[0]).toBe(pts[0]);
     expect(r[r.length - 1]).toBe(pts[9]);
   });
-  it("placa do KPI casa com a do monitoramento (com e sem hífen)", () => {
-    expect(normPlacaVariantes("rqo9h37")).toEqual(["RQO9H37", "RQO-9H37"]);
-    expect(normPlacaVariantes("RQO-9H37")).toEqual(["RQO9H37", "RQO-9H37"]);
+  it("placa do KPI casa com a do monitoramento: com e sem hífen e com O/0 e I/1 trocados (frota com cadastro duplicado)", () => {
+    const v = normPlacaVariantes("rqo9h37");
+    expect(v).toEqual(expect.arrayContaining(["RQO9H37", "RQO-9H37", "RQ09H37", "RQ0-9H37"]));
+    expect(new Set(v).size).toBe(v.length);
+    expect(normPlacaVariantes("TTK4D17")).toEqual(expect.arrayContaining(["TTK4D17", "TTK-4D17", "TTK4DI7", "TTK-4DI7"]));
   });
 });

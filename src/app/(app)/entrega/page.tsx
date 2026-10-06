@@ -29,20 +29,29 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   });
 
   const admin = createAdminClient();
-  const { data: veiculos } = await admin.from("veiculos").select("id, placa, ativo").in("placa", normPlacaVariantes(placa));
-  const veiculo = (veiculos ?? []).sort((a, b) => Number(b.ativo) - Number(a.ativo))[0] ?? null;
-
-  const pontos: PontoRastro[] = [];
-  if (veiculo) {
-    const { inicio, fim } = janelaDiaBR(data);
+  // Cadastro duplicado na frota (O/0, I/1 trocados -- achado 06/10, RQO-9H37 x
+  // RQ0-9H37): entre as grafias que existem, vale o rastreador que mais se
+  // mexeu no dia (o outro fica parado no mesmo ponto).
+  const { data: candidatos } = await admin.from("veiculos").select("id, placa, ativo").in("placa", normPlacaVariantes(placa));
+  const { inicio, fim } = janelaDiaBR(data);
+  async function posicoesDoDia(veiculoId: string): Promise<PontoRastro[]> {
+    const out: PontoRastro[] = [];
     for (let de = 0; de < 20000; de += 1000) {
       const { data: lote, error } = await admin.from("posicoes_historico").select("lat, lng, criado_em")
-        .eq("veiculo_id", veiculo.id).gte("criado_em", inicio).lt("criado_em", fim)
+        .eq("veiculo_id", veiculoId).gte("criado_em", inicio).lt("criado_em", fim)
         .order("criado_em", { ascending: true }).range(de, de + 999);
       if (error || !lote?.length) break;
-      for (const p of lote) if (p.lat != null && p.lng != null && (p.lat !== 0 || p.lng !== 0)) pontos.push({ lat: Number(p.lat), lng: Number(p.lng), em: p.criado_em as string });
+      for (const p of lote) if (p.lat != null && p.lng != null && (p.lat !== 0 || p.lng !== 0)) out.push({ lat: Number(p.lat), lng: Number(p.lng), em: p.criado_em as string });
       if (lote.length < 1000) break;
     }
+    return out;
+  }
+  const lugaresDe = (pts: PontoRastro[]) => new Set(pts.map(p => `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`)).size;
+  let veiculo: { id: string; placa: string; ativo: boolean } | null = null;
+  let pontos: PontoRastro[] = [];
+  for (const v of (candidatos ?? []).slice(0, 4)) {
+    const pts = await posicoesDoDia(v.id);
+    if (!veiculo || lugaresDe(pts) > lugaresDe(pontos) || (lugaresDe(pts) === lugaresDe(pontos) && v.ativo && !veiculo.ativo)) { veiculo = v; pontos = pts; }
   }
 
   const alvo = cliente.lat != null && cliente.lng != null ? { lat: cliente.lat, lng: cliente.lng } : null;
