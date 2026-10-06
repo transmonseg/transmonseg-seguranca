@@ -46,12 +46,14 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   }
 
   const alvo = cliente.lat != null && cliente.lng != null ? { lat: cliente.lat, lng: cliente.lng } : null;
-  // A parada da entrega vem do KPI (Unitrac, a mesma que contou a NF); sem ela,
-  // a média das posições do monitoramento entre chegada e saída.
-  const parada = paradaKpi ?? paradaDaEntrega(pontos, data, chegada, saida);
   // Rastreador que grava sempre o mesmo ponto (achado 05/10, RQO-9H37).
   const lugares = new Set(pontos.map(p => `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`)).size;
   const rastroTravado = pontos.length > 20 && lugares <= 2;
+  // Onde o caminhão ficou na entrega: as posições do monitoramento entre a
+  // chegada e a saída do KPI (achado 05/10: a coordenada da parada da Unitrac
+  // às vezes fica a 1 km+ do lugar real -- Atacadão Friburgo, 1,4 km vs 65 m).
+  // Rastreador travado/sem posição: o ponto da parada da Unitrac (vem do KPI).
+  const parada = (!rastroTravado ? paradaDaEntrega(pontos, data, chegada, saida) : null) ?? paradaKpi;
   const perto = alvo && !parada ? maisPerto(pontos, alvo) : null;
   const atual = data === hoje() && pontos.length && !rastroTravado ? pontos[pontos.length - 1] : null;
 
