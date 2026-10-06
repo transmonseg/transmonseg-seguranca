@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCod } from "@/lib/acesso-cliente";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { formatarReabertura } from "@/lib/desvio-episodio";
@@ -34,6 +35,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente");
   if (!cod) return Response.json({ alertas: [] });
+  if (!(await podeVerCod(await acessoDoUsuario(), cod))) return Response.json({ erro: "sem permissao" }, { status: 403 });
   const modoTeste = searchParams.get("modoTeste") === "true";
   const chaveCache = `${cod}:${modoTeste ? "teste" : "producao"}`;
 

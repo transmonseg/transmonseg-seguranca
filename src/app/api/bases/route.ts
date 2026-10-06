@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCliente } from "@/lib/acesso-cliente";
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { createClient } from "@/lib/supabase/server";
@@ -13,6 +14,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const clienteId = searchParams.get("clienteId");
   if (!clienteId) return Response.json({ type: "FeatureCollection", features: [] }, { status: 400 });
+  if (!podeVerCliente(await acessoDoUsuario(), clienteId)) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   const pool = new pg.Pool({
     ...configPoolContabo(process.env.DATABASE_URL),

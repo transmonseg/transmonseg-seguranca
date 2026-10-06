@@ -1,3 +1,4 @@
+import { acessoDoUsuario, cvsPermitidos } from "@/lib/acesso-cliente";
 import { buscarAlvos, agruparPontosPorPlaca, corrigirComPontoAprendido, type PontoEntrega } from "@/lib/unitrac";
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
@@ -163,6 +164,8 @@ export async function GET(request: Request) {
   // Suporta ?cv=X (único) ou múltiplos ?cv=A&cv=B (frota completa)
   const cvs = searchParams.getAll("cv");
   if (cvs.length === 0) return Response.json({ pontos: [] }, { status: 400 });
+  const acesso = await acessoDoUsuario();
+  if ((await cvsPermitidos(acesso, cvs)).length !== cvs.length) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   const chave = [...cvs].sort().join(",");
   const cache = cacheAlvosPorChave.get(chave);

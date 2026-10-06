@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCod } from "@/lib/acesso-cliente";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
@@ -29,6 +30,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente");
   if (!cod) return Response.json({ alertas: [] });
+  if (!(await podeVerCod(await acessoDoUsuario(), cod))) return Response.json({ erro: "sem permissao" }, { status: 403 });
   const chaveCache = cod;
 
   const cached = cachePorCliente.get(chaveCache);

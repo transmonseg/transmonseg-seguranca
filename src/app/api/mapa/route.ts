@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCod } from "@/lib/acesso-cliente";
 // Dados do mapa: veículos do cliente, bases e a malha de pontos de entrega.
 import pg from "pg";
 import { buscarAlvos, agruparPontosPorPlaca, corrigirComPontoAprendido } from "@/lib/unitrac";
@@ -133,6 +134,7 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente") || "4096";
+  if (!(await podeVerCod(await acessoDoUsuario(), cod))) return Response.json({ erro: "sem permissao" }, { status: 403 });
   // Default = "central": qualquer chamador que não passe `fonte` (o mapa da
   // Central, o MapaMonitor antigo, o heat) continua com o comportamento
   // exato de antes.

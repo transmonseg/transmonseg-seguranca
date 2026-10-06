@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCod } from "@/lib/acesso-cliente";
 // Retorna os veiculos do cliente agrupados por grupo Unitrac (gvc/gvn).
 // GET /api/grupos?cliente={cod_unitrac}
 import { createClient } from "@/lib/supabase/server";
@@ -30,6 +31,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente");
   if (!cod) return Response.json({ grupos: [] });
+  if (!(await podeVerCod(await acessoDoUsuario(), cod))) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   try {
     const res = await fetch(

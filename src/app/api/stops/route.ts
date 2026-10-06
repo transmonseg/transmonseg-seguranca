@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCv } from "@/lib/acesso-cliente";
 // Retorna as paradas de um veiculo nas ultimas N horas.
 import { buscarStops } from "@/lib/unitrac";
 import { createClient } from "@/lib/supabase/server";
@@ -22,6 +23,7 @@ export async function GET(request: Request) {
   if (!cv) {
     return Response.json({ erro: "parametro cv e obrigatorio" }, { status: 400 });
   }
+  if (!(await podeVerCv(await acessoDoUsuario(), cv))) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   // horas: default 24, clamp entre 1 e 96
   const horasRaw = Number(searchParams.get("horas") ?? "24");

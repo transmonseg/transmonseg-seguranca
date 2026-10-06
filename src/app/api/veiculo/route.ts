@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCv } from "@/lib/acesso-cliente";
 // Retorna snapshot atual de um veiculo.
 // Tenta a API Unitrac primeiro (campos brutos completos: sensores, datagps, tipevnome).
 // Se a Unitrac retornar null, usa posicoes_atuais do banco como fallback.
@@ -16,6 +17,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cv = searchParams.get("cv");
   if (!cv) return Response.json({ erro: "parametro cv e obrigatorio" }, { status: 400 });
+  if (!(await podeVerCv(await acessoDoUsuario(), cv))) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   // 1) Tenta Unitrac — retorna objeto bruto completo (posicvelocidade, posicignicao,
   //    posicentrada1..10, posicsaida1..4, datagps, tipevnome, etc.)

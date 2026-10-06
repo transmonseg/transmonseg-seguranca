@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCliente } from "@/lib/acesso-cliente";
 // Linha do tempo de eventos nativos da Unitrac (tipevnome) por veiculo.
 // GET /api/eventos?clienteId={uuid}&cv={cv}
 import pg from "pg";
@@ -16,6 +17,7 @@ export async function GET(request: Request) {
   const clienteId = searchParams.get("clienteId");
   const cv = searchParams.get("cv");
   if (!clienteId || !cv) return Response.json({ eventos: [] });
+  if (!podeVerCliente(await acessoDoUsuario(), clienteId)) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   const client = new pg.Client({
     ...configPoolContabo(process.env.DATABASE_URL),

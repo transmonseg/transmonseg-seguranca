@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { acessoDoUsuario, filtrarPorAcesso } from "@/lib/acesso-cliente";
 import MonitorV2 from "./central-v2/MonitorV2";
 import { formatarReabertura } from "@/lib/desvio-episodio";
 
@@ -37,7 +38,8 @@ export default async function CentralPage({
       supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").eq("modo_teste", false).in("status", ["ativo", "reconhecido"]),
     ]);
 
-  const clientes: Cliente[] = clientesRaw ?? [];
+  // Conta de um cliente só (ex.: login da Nutry Max) não vê as outras abas.
+  const clientes: Cliente[] = filtrarPorAcesso(await acessoDoUsuario(), clientesRaw ?? []);
   const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
   const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
   const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];

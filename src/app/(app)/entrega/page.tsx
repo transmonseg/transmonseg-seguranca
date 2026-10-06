@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { acessoDoUsuario } from "@/lib/acesso-cliente";
 import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, type PontoRastro } from "@/lib/entrega-mapa";
 import EntregaMapaWrapper from "./EntregaMapaWrapper";
 
@@ -32,7 +33,11 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   // Cadastro duplicado na frota (O/0, I/1 trocados -- achado 06/10, RQO-9H37 x
   // RQ0-9H37): entre as grafias que existem, vale o rastreador que mais se
   // mexeu no dia (o outro fica parado no mesmo ponto).
-  const { data: candidatos } = await admin.from("veiculos").select("id, placa, ativo").in("placa", normPlacaVariantes(placa));
+  const acesso = await acessoDoUsuario();
+  let consultaVeiculos = admin.from("veiculos").select("id, placa, ativo").in("placa", normPlacaVariantes(placa));
+  // Conta de um cliente só: placa de outra frota não abre (vira "sem rastro").
+  if (acesso.tipo === "um") consultaVeiculos = consultaVeiculos.eq("cliente_id", acesso.clienteId);
+  const { data: candidatos } = acesso.tipo === "nenhum" ? { data: [] } : await consultaVeiculos;
   const { inicio, fim } = janelaDiaBR(data);
   async function posicoesDoDia(veiculoId: string): Promise<PontoRastro[]> {
     const out: PontoRastro[] = [];

@@ -1,3 +1,4 @@
+import { acessoDoUsuario, podeVerCv } from "@/lib/acesso-cliente";
 // Retorna o historico de posicoes (rastro) de um veiculo nas ultimas N horas.
 import { buscarRastro, removerPicosRastro } from "@/lib/unitrac";
 import { ajustarRastroParaRuas } from "@/lib/rastro-matching";
@@ -32,6 +33,7 @@ export async function GET(request: Request) {
   if (!cv) {
     return Response.json({ erro: "parametro cv e obrigatorio" }, { status: 400 });
   }
+  if (!(await podeVerCv(await acessoDoUsuario(), cv))) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   // horas: default 24, clamp entre 1 e 96
   const horasRaw = Number(searchParams.get("horas") ?? "24");

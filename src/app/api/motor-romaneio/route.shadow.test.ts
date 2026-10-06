@@ -200,6 +200,12 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: "operador-teste" } } }) } }),
 }));
 
+// Isolamento por cliente (06/10) não é o assunto aqui: operador central.
+vi.mock("@/lib/acesso-cliente", () => ({
+  acessoDoUsuario: async () => ({ tipo: "todos" }),
+  podeVerCod: async () => true,
+}));
+
 // Fake do pg.Pool: só o CONSTRUTOR é substituído (criaPgPool, route.ts,
 // continua chamando configPoolContabo de verdade -- é parsing puro, sem
 // I/O). Dispatch por trecho da SQL, não por posição -- a rota faz dezenas

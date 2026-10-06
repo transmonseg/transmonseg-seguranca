@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { acessoDoUsuario, filtrarPorAcesso } from "@/lib/acesso-cliente";
 import MonitorV2 from "../central-v2/MonitorV2";
 import GateRomaneio from "./GateRomaneio";
 import AvisoEscalaPao from "./AvisoEscalaPao";
@@ -98,7 +99,8 @@ export default async function CentralRomaneioPage({
     return <GateRomaneio hoje={hoje} linhasHojeSemVeiculo={linhasHoje} />;
   }
 
-  const clientes: Cliente[] = clientesRaw ?? [];
+  // Conta de um cliente só (ex.: login da Nutry Max) não vê as outras abas.
+  const clientes: Cliente[] = filtrarPorAcesso(await acessoDoUsuario(), clientesRaw ?? []);
   const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
   const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
   const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];
