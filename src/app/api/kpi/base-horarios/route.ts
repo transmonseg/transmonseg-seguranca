@@ -102,6 +102,47 @@ export function acharSaidaEChegadaBase(
   return { saidaBase, chegadaBase };
 }
 
+/** Achado 06/10 (RBG-8J72, carro de Lagos): sai do patio de Lagos 00:56,
+ *  entra em Penha 04:51 pra carregar e entrega ate' o meio-dia -- a entrada em
+ *  Penha virava "voltou a base 04:51" e a rota fechava antes da 1a entrega
+ *  (NFs saindo "NAO FOI AO CLIENTE"). Com as visitas DIRETAS do dia (horario
+ *  do proprio endereco, nao emprestado de vizinho nem raio ampliado):
+ *  - chegada antes da ultima entrega nao e' volta: vira a 1a entrada na base
+ *    depois da ultima entrega (ou null, ainda nao voltou);
+ *  - saida vale a ULTIMA saida de base antes da 1a entrega (a saida pra rota,
+ *    nao a do patio de madrugada).
+ *  Sem visita direta, nada muda. */
+export function ajustarJanelaPelasVisitas(
+  posicoes: Posicao[],
+  basesCentro: BaseCentro[],
+  saidaBase: string | null,
+  chegadaBase: string | null,
+  visitas: { chegada: string | null; saida: string | null; viaVizinhanca?: boolean; viaRaioAmpliado?: boolean }[],
+): { saidaBase: string | null; chegadaBase: string | null } {
+  const diretas = visitas.filter((v) => v.chegada && v.saida && !v.viaVizinhanca && !v.viaRaioAmpliado);
+  if (diretas.length === 0 || basesCentro.length === 0) return { saidaBase, chegadaBase };
+  const primeira = Math.min(...diretas.map((v) => Date.parse(v.chegada!)));
+  const ultimaISO = diretas.map((v) => v.saida!).reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
+
+  const dentro = (p: Posicao) => basesCentro.some((b) => haversineM(b.lat, b.lng, p.lat, p.lng) <= RAIO_BASE_M);
+  let saida = saidaBase;
+  let estadoAnterior: boolean | null = null;
+  let anterior: Posicao | null = null;
+  for (const p of posicoes) {
+    if (Date.parse(p.criado_em) > primeira) break;
+    const estaDentro = dentro(p);
+    if (estadoAnterior === true && !estaDentro && anterior) saida = anterior.criado_em;
+    estadoAnterior = estaDentro;
+    anterior = p;
+  }
+
+  let chegada = chegadaBase;
+  if (chegada && Date.parse(chegada) < Date.parse(ultimaISO)) {
+    chegada = acharChegadaAposFimRota(posicoes, basesCentro, ultimaISO);
+  }
+  return { saidaBase: saida, chegadaBase: chegada };
+}
+
 /** Achado real 21/09 (RBG-5G18, grupo KPI): `acharSaidaEChegadaBase` devolve
  *  a ULTIMA entrada do dia como `chegadaBase` -- quando o veiculo faz
  *  manobra, 2a saida ou fica de pernoite na base HORAS depois da ultima
@@ -1022,14 +1063,20 @@ export async function POST(request: Request) {
       continue;
     }
     const posicoes = (posicoesRows ?? []) as Posicao[];
-    const { saidaBase, chegadaBase: chegadaBaseDefault } = acharSaidaEChegadaBase(posicoes, basesCentro);
+    const { saidaBase: saidaBaseBruta, chegadaBase: chegadaBaseDefault } = acharSaidaEChegadaBase(posicoes, basesCentro);
     // Achado real 21/09 (RBG-5G18): com `fimRotaPorPlaca`, `chegadaBase` deixa
     // de ser a ultima entrada do dia e vira a 1a entrada apos a ultima
     // entrega real -- corta manobra/pernoite pos-rota de `kmPercorrido`.
     const fimRota = fimRotaPorPlaca.get(placaNorm);
-    const chegadaBase = fimRota ? acharChegadaAposFimRota(posicoes, basesCentro, fimRota) : chegadaBaseDefault;
-    const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const pontos = pontosPorPlaca.get(placaNorm);
+    // Janela da rota acertada pelas entregas do dia (ver ajustarJanelaPelasVisitas).
+    const ajustada = pontos
+      ? ajustarJanelaPelasVisitas(posicoes, basesCentro, saidaBaseBruta, chegadaBaseDefault,
+          acharVisitasPorPonto(posicoes, pontos, basesCentro, saidaBaseBruta, null))
+      : { saidaBase: saidaBaseBruta, chegadaBase: chegadaBaseDefault };
+    const saidaBase = ajustada.saidaBase;
+    const chegadaBase = fimRota ? acharChegadaAposFimRota(posicoes, basesCentro, fimRota) : ajustada.chegadaBase;
+    const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos, basesCentro, saidaBase, chegadaBase) : undefined;
     // Paradas derivadas so' quando pedidas (`incluirParadas`) -- payload
     // cresce bastante e o consumidor normal (saida/chegada/km/visitas) nao

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { acharSaidaEChegadaBase, acharChegadaAposFimRota, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveApagaoDeSinalForte, teveGpsCongelado } from "./route";
+import { acharSaidaEChegadaBase, acharChegadaAposFimRota, ajustarJanelaPelasVisitas, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveApagaoDeSinalForte, teveGpsCongelado } from "./route";
 
 // ─── Mocks pro bloco de teste de integracao do POST (fimRotaPorPlaca, ver
 // describe abaixo). Mesmo precedente de estilo do mock chain encadeavel de
@@ -58,6 +58,47 @@ const { POST } = await import("./route");
 const BASE = { lat: -22.816007, lng: -43.277827 };
 // ~50km da base -- claramente fora do raio de 500m.
 const LONGE = { lat: -22.35, lng: -42.9 };
+
+describe("ajustarJanelaPelasVisitas (RBG-8J72 06/10: carro de Lagos carrega em Penha)", () => {
+  const LAGOS = { lat: -22.79255, lng: -42.0915 };
+  // Sai do patio de Lagos 00:56, entra em Penha 04:51 (carrega), sai 05:40,
+  // entrega 07:00-11:26 e ainda nao voltou.
+  const posicoes = [
+    { lat: LAGOS.lat, lng: LAGOS.lng, criado_em: "2026-10-06T03:50:00.000Z", velocidade: 0, atraso_min: 0 },
+    { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-10-06T03:56:00.000Z", velocidade: 60, atraso_min: 0 },
+    { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-10-06T07:51:00.000Z", velocidade: 0, atraso_min: 0 },
+    { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-10-06T08:40:00.000Z", velocidade: 0, atraso_min: 0 },
+    { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-10-06T08:41:00.000Z", velocidade: 40, atraso_min: 0 },
+    { lat: LONGE.lat, lng: LONGE.lng, criado_em: "2026-10-06T14:26:00.000Z", velocidade: 0, atraso_min: 0 },
+  ];
+  const visitas = [
+    { id: "A", chegada: "2026-10-06T10:00:00.000Z", saida: "2026-10-06T10:10:00.000Z" },
+    { id: "B", chegada: "2026-10-06T14:20:00.000Z", saida: "2026-10-06T14:26:00.000Z" },
+    { id: "C", chegada: null, saida: null },
+  ];
+
+  it("entrada na base com entrega depois NAO e' volta; saida vale a ultima antes da 1a entrega", () => {
+    const base = acharSaidaEChegadaBase(posicoes, [BASE, LAGOS]);
+    expect(base).toEqual({ saidaBase: "2026-10-06T03:50:00.000Z", chegadaBase: "2026-10-06T07:51:00.000Z" });
+    const r = ajustarJanelaPelasVisitas(posicoes, [BASE, LAGOS], base.saidaBase, base.chegadaBase, visitas);
+    expect(r.saidaBase).toBe("2026-10-06T08:40:00.000Z");
+    expect(r.chegadaBase).toBeNull();
+  });
+
+  it("volta de verdade depois da ultima entrega continua valendo", () => {
+    const comVolta = [...posicoes, { lat: BASE.lat, lng: BASE.lng, criado_em: "2026-10-06T16:00:00.000Z", velocidade: 0, atraso_min: 0 }];
+    const base = acharSaidaEChegadaBase(comVolta, [BASE, LAGOS]);
+    const r = ajustarJanelaPelasVisitas(comVolta, [BASE, LAGOS], base.saidaBase, base.chegadaBase, visitas);
+    expect(r.chegadaBase).toBe("2026-10-06T16:00:00.000Z");
+  });
+
+  it("horario emprestado de vizinho ou raio ampliado nao move a janela; sem visita nada muda", () => {
+    const fracas = [{ id: "A", chegada: "2026-10-06T10:00:00.000Z", saida: "2026-10-06T10:10:00.000Z", viaVizinhanca: true }];
+    const base = { saidaBase: "x", chegadaBase: "y" };
+    expect(ajustarJanelaPelasVisitas(posicoes, [BASE], base.saidaBase, base.chegadaBase, fracas)).toEqual(base);
+    expect(ajustarJanelaPelasVisitas(posicoes, [BASE], base.saidaBase, base.chegadaBase, [])).toEqual(base);
+  });
+});
 
 describe("acharSaidaEChegadaBase", () => {
   it("dia normal: dentro de manha, fora o dia todo, dentro de novo a noite -- saida e chegada corretas", () => {
