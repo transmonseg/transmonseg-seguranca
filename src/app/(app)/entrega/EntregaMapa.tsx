@@ -33,8 +33,8 @@ function minutos(a: string | null, b: string | null): number | null {
   return hb * 60 + mb - (ha * 60 + ma);
 }
 
-const COR_SITUACAO: Record<string, string> = { entregue: "#22c55e", sem_rastreador: "#94a3b8", pendente: "#9ca3af", nao_foi: "#ef4444", revisar: "#f59e0b" };
-const ROTULO_SITUACAO: Record<string, string> = { entregue: "Entregue", sem_rastreador: "Sem rastreador", pendente: "Pendente", nao_foi: "Não foi", revisar: "A revisar" };
+const COR_SITUACAO: Record<string, string> = { entregue: "#22c55e", sem_rastreador: "#94a3b8", pendente: "#9ca3af", nao_confirmada: "#ef4444", nao_foi: "#ef4444", revisar: "#f59e0b" };
+const ROTULO_SITUACAO: Record<string, string> = { entregue: "Entregue", sem_rastreador: "Sem rastreador", pendente: "Pendente", nao_confirmada: "Não confirmada", nao_foi: "Não foi", revisar: "A revisar" };
 
 /** Bolinha numerada da entrega (SVG em data URL, sem asset externo). */
 function iconeEntrega(ordem: number, cor: string, destaque: boolean): google.maps.Icon {
