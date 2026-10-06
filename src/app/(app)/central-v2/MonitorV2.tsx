@@ -2094,7 +2094,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                       <motion.span layoutId="thumbCliente" transition={MOLA}
                         style={{ position: "absolute", inset: 0, borderRadius: RAIO.capsule, background: T.thumb, boxShadow: T.thumbShadow }} />
                     )}
-                    <span style={{ position: "relative" }}>{c.nome.split(" ")[0].toUpperCase()}</span>
+                    <span style={{ position: "relative" }}>{c.nome === "Nutry Max" ? "NUTRY" : c.nome.toUpperCase()}</span>
                   </Link>
                 );
               })}
