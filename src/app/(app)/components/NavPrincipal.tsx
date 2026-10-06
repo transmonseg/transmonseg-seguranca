@@ -90,7 +90,7 @@ export default function NavPrincipal() {
       {/* Outro sistema da Transmonseg (05/10): endereço próprio, mesma aba. */}
       <a
         href={URL_KPI}
-        className="flex items-center gap-1 px-3 h-[30px] rounded-full text-[13px] font-medium transition-colors hover:bg-card-hover"
+        className="so-fora-embed flex items-center gap-1 px-3 h-[30px] rounded-full text-[13px] font-medium transition-colors hover:bg-card-hover"
         style={{ color: "var(--text-muted)" }}
       >
         KPI
