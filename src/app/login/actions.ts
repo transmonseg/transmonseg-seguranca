@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { destinoAposLogin } from "@/lib/destino-login";
 
 export type EstadoAuth = { erro?: string; ok?: string };
 
@@ -18,7 +19,7 @@ export async function entrar(_prev: EstadoAuth, formData: FormData): Promise<Est
   const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
   if (error) return { erro: "Email ou senha incorretos." };
 
-  redirect("/");
+  redirect(destinoAposLogin(String(formData.get("volta") ?? "")));
 }
 
 // Cadastro aberto (decisão do produto): cria o operador já confirmado e entra.
@@ -67,7 +68,7 @@ export async function cadastrar(_prev: EstadoAuth, formData: FormData): Promise<
   const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
   if (error) return { ok: "Conta criada. Faca login." };
 
-  redirect("/");
+  redirect(destinoAposLogin(String(formData.get("volta") ?? "")));
 }
 
 // Sair: encerra a sessão e volta pro login.

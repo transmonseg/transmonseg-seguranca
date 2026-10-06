@@ -11,6 +11,11 @@ export default function LoginForm() {
   const [estado, formAction, pending] = useActionState(acao, estadoInicial);
 
   const ehCadastro = modo === "cadastrar";
+  // Tela pedida antes do login (?volta=/escala): vai junto no envio.
+  const enviar = (fd: FormData) => {
+    fd.set("volta", new URLSearchParams(window.location.search).get("volta") ?? "");
+    return formAction(fd);
+  };
 
   return (
     <div className="w-full max-w-sm">
@@ -25,7 +30,7 @@ export default function LoginForm() {
         </p>
       </div>
 
-      <form action={formAction} className="flex flex-col gap-4">
+      <form action={enviar} className="flex flex-col gap-4">
         {ehCadastro && (
           <div className="flex flex-col gap-1.5">
             <label htmlFor="nome" className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>

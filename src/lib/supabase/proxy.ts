@@ -50,6 +50,7 @@ export async function updateSession(request: NextRequest) {
   if (!user && !ehRotaPublica) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
+    url.search = path === "/" ? "" : `?volta=${encodeURIComponent(path + request.nextUrl.search)}`;
     return NextResponse.redirect(url);
   }
   // Já autenticado tentando ver o login → manda pra central.
