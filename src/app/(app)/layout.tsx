@@ -1,5 +1,6 @@
 import NavPrincipal from "./components/NavPrincipal";
 import { URL_CENTRAL } from "@/lib/sistema-transmonseg";
+import PonteCentral from "./components/PonteCentral";
 import RelogioAoVivo from "./components/RelogioAoVivo";
 import RomaneioStatusBadge from "./components/RomaneioStatusBadge";
 import { createClient } from "@/lib/supabase/server";
@@ -31,7 +32,7 @@ export default async function AppLayout({
           <a
             href={URL_CENTRAL}
             title="Voltar para a Central Transmonseg"
-            className="group flex items-center gap-2 -ml-1 pl-1 pr-2 h-9 rounded-[10px] transition-colors hover:bg-card-hover"
+            className="so-fora-embed group flex items-center gap-2 -ml-1 pl-1 pr-2 h-9 rounded-[10px] transition-colors hover:bg-card-hover"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
               strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="text-muted transition-colors group-hover:text-text">
@@ -57,6 +58,7 @@ export default async function AppLayout({
               component porque o menu precisa de estado; este layout continua
               server por causa do await createClient() acima). */}
           <NavPrincipal />
+          <PonteCentral />
 
           {/* Lado direito: relógio + ao vivo + operador */}
           <div className="flex items-center gap-4">

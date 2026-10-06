@@ -234,3 +234,7 @@ textarea:focus-visible {
 /* Remove controles nativos do Leaflet — zoom e atribuicao ficam escondidos */
 .leaflet-control-zoom { display: none !important; }
 .leaflet-control-attribution { display: none !important; }
+
+/* Central Transmonseg (05/10): aberto dentro da Central, a moldura própria
+   (logo, abas) some -- a navegação fica no menu da Central. */
+html[data-embed] .so-fora-embed { display: none !important; }
