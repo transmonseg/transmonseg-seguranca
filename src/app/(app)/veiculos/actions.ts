@@ -18,7 +18,7 @@ async function exigirLogin(): Promise<boolean> {
 
 export async function listarClientes(): Promise<ClienteLinha[]> {
   if (!(await exigirLogin())) return [];
-  const { data } = await createAdminClient().from("clientes").select("id, nome").order("nome");
+  const { data } = await createAdminClient().from("clientes").select("id, nome").eq("ativo", true).order("nome");
   return (data ?? []) as ClienteLinha[];
 }
 

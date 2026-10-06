@@ -60,7 +60,7 @@ export default async function CentralRomaneioPage({
     contagemHoje,
     contagemEscalaPao,
   ] = await Promise.all([
-    supabase.from("clientes").select("id, nome, cod_user_unitrac").order("cod_user_unitrac"),
+    supabase.from("clientes").select("id, nome, cod_user_unitrac").eq("ativo", true).order("cod_user_unitrac"),
     supabase.from("veiculos").select("id, cliente_id, placa, cv"),
     supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
     // sombra=false filtra pra fora panico/jammer/excesso em shadow mode
