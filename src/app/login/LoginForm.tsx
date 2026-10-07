@@ -1,16 +1,12 @@
 "use client";
 
-import { useActionState, useState } from "react";
-import { entrar, cadastrar, type EstadoAuth } from "./actions";
+import { useActionState } from "react";
+import { entrar, type EstadoAuth } from "./actions";
 
 const estadoInicial: EstadoAuth = {};
 
 export default function LoginForm() {
-  const [modo, setModo] = useState<"entrar" | "cadastrar">("entrar");
-  const acao = modo === "entrar" ? entrar : cadastrar;
-  const [estado, formAction, pending] = useActionState(acao, estadoInicial);
-
-  const ehCadastro = modo === "cadastrar";
+  const [estado, formAction, pending] = useActionState(entrar, estadoInicial);
   // Tela pedida antes do login (?volta=/escala): vai junto no envio.
   const enviar = (fd: FormData) => {
     fd.set("volta", new URLSearchParams(window.location.search).get("volta") ?? "");
@@ -21,38 +17,14 @@ export default function LoginForm() {
     <div className="w-full max-w-sm">
       <div className="mb-8">
         <h2 className="text-2xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>
-          {ehCadastro ? "Criar acesso" : "Acesso a central"}
+          Acesso a central
         </h2>
         <p className="text-sm mt-1.5" style={{ color: "var(--text-muted)" }}>
-          {ehCadastro
-            ? "Cadastre um operador para monitorar as frotas."
-            : "Entre para acompanhar as frotas em tempo real."}
+          Entre para acompanhar as frotas em tempo real.
         </p>
       </div>
 
       <form action={enviar} className="flex flex-col gap-4">
-        {ehCadastro && (
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="nome" className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
-              Nome
-            </label>
-            <input
-              id="nome"
-              name="nome"
-              type="text"
-              autoComplete="name"
-              required
-              placeholder="Seu nome"
-              className="px-3.5 py-2.5 rounded-lg text-sm outline-none transition-colors"
-              style={{
-                backgroundColor: "var(--card)",
-                border: "1px solid var(--border)",
-                color: "var(--text)",
-              }}
-            />
-          </div>
-        )}
-
         <div className="flex flex-col gap-1.5">
           <label htmlFor="email" className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
             Email
@@ -81,9 +53,9 @@ export default function LoginForm() {
             id="senha"
             name="senha"
             type="password"
-            autoComplete={ehCadastro ? "new-password" : "current-password"}
+            autoComplete="current-password"
             required
-            placeholder={ehCadastro ? "Ao menos 6 caracteres" : "Sua senha"}
+            placeholder="Sua senha"
             className="px-3.5 py-2.5 rounded-lg text-sm outline-none transition-colors focus:border-[color:var(--accent)]"
             style={{
               backgroundColor: "var(--card)",
@@ -116,21 +88,13 @@ export default function LoginForm() {
           className="mt-1 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all active:translate-y-px disabled:opacity-60 disabled:cursor-not-allowed"
           style={{ backgroundColor: "var(--accent)", color: "#0a0a0a" }}
         >
-          {pending ? "Aguarde..." : ehCadastro ? "Criar e entrar" : "Entrar"}
+          {pending ? "Aguarde..." : "Entrar"}
         </button>
       </form>
 
-      <div className="mt-6 text-sm" style={{ color: "var(--text-muted)" }}>
-        {ehCadastro ? "Ja tem acesso? " : "Primeiro acesso? "}
-        <button
-          type="button"
-          onClick={() => setModo(ehCadastro ? "entrar" : "cadastrar")}
-          className="font-medium underline-offset-4 hover:underline"
-          style={{ color: "var(--accent)" }}
-        >
-          {ehCadastro ? "Entrar" : "Criar acesso"}
-        </button>
-      </div>
+      <p className="mt-6 text-sm" style={{ color: "var(--text-muted)" }}>
+        Sem acesso? Peça um convite a quem administra o sistema.
+      </p>
     </div>
   );
 }
