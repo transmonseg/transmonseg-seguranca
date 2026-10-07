@@ -23,6 +23,7 @@ export type PosicaoNormalizada = {
 // GET /veiculos/masn/{cod}
 export async function buscarVeiculos(cod: string): Promise<unknown[]> {
   const res = await fetch(`${BASE_URL}/veiculos/masn/${cod}`, {
+    cache: "no-store", // 06/10: o cache de fetch do Next pode servir lista velha
     headers: { accept: "application/json" },
   });
   if (!res.ok) {

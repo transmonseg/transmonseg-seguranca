@@ -33,6 +33,7 @@ async function obterToken(): Promise<string | null> {
   try {
     const r = await fetch(`${BASE}/auth/login`, {
       method: "POST",
+      cache: "no-store",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ email, password: senha }),
     });
@@ -74,7 +75,9 @@ export async function buscarTiroteiosRJ(dias = 1): Promise<Tiroteio[]> {
   try {
     for (let page = 1; page <= 5; page++) {
       const url = `${BASE}/occurrences?idState=${RJ_STATE_ID}&initialdate=${ymd(ini)}&finaldate=${ymd(fim)}&order=DESC&take=100&page=${page}`;
-      let r = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+      // no-store (06/10): o cache de fetch do Next servia uma resposta vazia
+      // velha -- a camada de tiroteios ficava sem nada enquanto a API tinha dados.
+      let r = await fetch(url, { cache: "no-store", headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
       // Token derrubado por outro login com a mesma conta (06/10: a camada ficava
       // vazia por ate' 55 min, "cliquei e nao aconteceu nada"): pede outro e tenta de novo.
       if (r.status === 401 || r.status === 403) {
@@ -82,7 +85,7 @@ export async function buscarTiroteiosRJ(dias = 1): Promise<Tiroteio[]> {
         const novo = await obterToken();
         if (!novo) { falhou = true; break; }
         token = novo;
-        r = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+        r = await fetch(url, { cache: "no-store", headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
       }
       if (!r.ok) { falhou = true; break; }
       const j = (await r.json()) as { data?: RawOcorrencia[]; pageMeta?: { hasNextPage?: boolean } };
@@ -140,7 +143,7 @@ async function buscarOcorrenciasPeriodo(inicio: Date, fim: Date): Promise<Tirote
   try {
     for (let page = 1; page <= 20; page++) {
       const url = `${BASE}/occurrences?idState=${RJ_STATE_ID}&initialdate=${ymd(inicio)}&finaldate=${ymd(fim)}&order=DESC&take=100&page=${page}`;
-      const r = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
+      const r = await fetch(url, { cache: "no-store", headers, signal: AbortSignal.timeout(10000) });
       if (!r.ok) break;
       const j = (await r.json()) as { data?: RawOcorrencia[]; pageMeta?: { hasNextPage?: boolean } };
       for (const o of j.data ?? []) {
