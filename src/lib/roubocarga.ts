@@ -40,7 +40,10 @@ async function agregarISP(): Promise<{
   const linhas = txt.split(/\r?\n/).filter(Boolean);
   if (linhas.length < 2) return null;
 
-  const h = linhas[0].split(";");
+  // O ISP passou a publicar o CSV com aspas ("cisp";"mes";...) -- 06/10 a
+  // camada de roubo de carga voltava vazia porque nenhuma coluna batia.
+  const campos = (l: string) => l.split(";").map((c) => c.trim().replace(/^"(.*)"$/, "$1"));
+  const h = campos(linhas[0]);
   const iCisp = h.findIndex((c) => /^cisp$/i.test(c));
   const iMunic = h.findIndex((c) => /^munic$/i.test(c));
   const iAno = h.findIndex((c) => /^ano$/i.test(c));
@@ -52,7 +55,7 @@ async function agregarISP(): Promise<{
   let maxChave = 0;
   const dados: { cisp: string; munic: string; ano: number; mes: number; carga: number }[] = [];
   for (const l of linhas.slice(1)) {
-    const c = l.split(";");
+    const c = campos(l);
     const ano = parseInt(c[iAno], 10);
     const mes = parseInt(c[iMes], 10);
     if (!Number.isFinite(ano) || !Number.isFinite(mes)) continue;

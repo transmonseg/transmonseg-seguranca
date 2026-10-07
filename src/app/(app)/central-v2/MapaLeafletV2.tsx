@@ -149,14 +149,37 @@ function corVeiculo(v: VeiculoMapa, tok: MapTokens): string {
   return tok.dim;
 }
 
-function corRoubo(n: number): string {
-  if (n >= 1000) return "#ef4444";
-  if (n >= 300) return "#f87171";
-  if (n >= 100) return "#fb923c";
-  if (n >= 30)  return "#fbbf24";
-  if (n >= 10)  return "#fde047";
-  if (n >= 1)   return "#fef9c3";
-  return "transparent";
+// Roubo de carga em VIOLETA (06/10): a escala antiga (amarelo->laranja->
+// vermelho) apagava o ponto pendente (amarelo) e se misturava com favela
+// (vermelho). Violeta nao e' usado por mais nada no mapa.
+export const ESCALA_ROUBO: { min: number; cor: string; rotulo: string }[] = [
+  { min: 100, cor: "#5b21b6", rotulo: "100+" },
+  { min: 30, cor: "#7c3aed", rotulo: "30–99" },
+  { min: 10, cor: "#a78bfa", rotulo: "10–29" },
+  { min: 1, cor: "#ddd6fe", rotulo: "1–9" },
+];
+export function corRoubo(n: number): string {
+  return ESCALA_ROUBO.find(e => n >= e.min)?.cor ?? "transparent";
+}
+
+// Tiroteio (06/10): icone de mira com tamanho FIXO na tela -- o circulo de
+// 35-55 m sumia na escala da cidade ("cliquei e nao aconteceu nada").
+function iconeTiroteio(recente: boolean): google.maps.Icon {
+  const tam = recente ? 30 : 24
+  const anel = recente ? `<circle cx="16" cy="16" r="15" fill="#dc2626" fill-opacity="0.25"/>` : ""
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">${anel}
+    <circle cx="16" cy="16" r="10" fill="#111827" stroke="#ffffff" stroke-width="2"/>
+    <circle cx="16" cy="16" r="5.5" fill="none" stroke="#f97316" stroke-width="2"/>
+    <line x1="16" y1="7" x2="16" y2="11" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
+    <line x1="16" y1="21" x2="16" y2="25" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
+    <line x1="7" y1="16" x2="11" y2="16" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
+    <line x1="21" y1="16" x2="25" y2="16" stroke="#f97316" stroke-width="2" stroke-linecap="round"/></svg>`
+  return { url: "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(svg), scaledSize: new window.google.maps.Size(tam, tam), anchor: new window.google.maps.Point(tam / 2, tam / 2) }
+}
+function haQuanto(min: number): string {
+  if (min < 60) return `há ${min} min`
+  const h = Math.floor(min / 60)
+  return h < 24 ? `há ${h} h` : `há ${Math.floor(h / 24)} d`
 }
 
 // GeoJSON geometry → array of Google Maps polygon shapes (outer ring + holes)
@@ -457,6 +480,7 @@ export default function MapaLeafletV2({
 
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [paradaSelecionada, setParadaSelecionada] = useState<Parada | null>(null);
+  const [tiroteioSelecionado, setTiroteioSelecionado] = useState<Tiroteio | null>(null);
   const [alvoSelecionado, setAlvoSelecionado] = useState<PontoEntrega | null>(null);
   // Quando o ponto clicado agrupa varias NFs (mesmo pontocodigo), guarda os demais itens pro popup listar todos.
   const [itensAlvoSelecionado, setItensAlvoSelecionado] = useState<PontoEntrega[]>([]);
@@ -639,7 +663,7 @@ export default function MapaLeafletV2({
       zoom={11}
       onLoad={onLoad}
       onUnmount={onUnmount}
-      onClick={() => { setParadaSelecionada(null); setAlvoSelecionado(null); setItensAlvoSelecionado([]); onMapaVazioClick(); }}
+      onClick={() => { setParadaSelecionada(null); setAlvoSelecionado(null); setItensAlvoSelecionado([]); setTiroteioSelecionado(null); onMapaVazioClick(); }}
       onZoomChanged={() => { if (map) { const z = map.getZoom() ?? 11; setZoomLocal(z); onZoomChange?.(z); } }}
       options={{
         mapTypeId: satelite ? "hybrid" : "roadmap",
@@ -664,10 +688,10 @@ export default function MapaLeafletV2({
             paths={paths}
             options={{
               fillColor: cor,
-              fillOpacity: 0.22,
-              strokeColor: "#b91c1c",
-              strokeWeight: 0.4,
-              strokeOpacity: 0.4,
+              fillOpacity: 0.28,
+              strokeColor: "#6d28d9",
+              strokeWeight: 0.6,
+              strokeOpacity: 0.5,
               clickable: false,
               zIndex: 1,
             }}
@@ -716,21 +740,36 @@ export default function MapaLeafletV2({
 
       {/* ── Tiroteios (Fogo Cruzado, 24h) ── */}
       {tiroteios.map((t, i) => (
-        <Circle
+        <Marker
           key={`tiro-${i}`}
-          center={{ lat: t.lat, lng: t.lng }}
-          radius={t.recente ? 55 : 35}
-          options={{
-            fillColor:    t.recente ? "#ff6a00" : "#d97706",
-            fillOpacity:  1,
-            strokeColor:  t.recente ? "#ffffff" : "#fde68a",
-            strokeWeight: t.recente ? 2 : 1,
-            strokeOpacity: 1,
-            clickable: false,
-            zIndex: 3,
-          }}
+          position={{ lat: t.lat, lng: t.lng }}
+          icon={iconeTiroteio(t.recente)}
+          title={`Tiroteio · ${t.bairro} · ${haQuanto(t.idadeMin)}`}
+          onClick={() => setTiroteioSelecionado(t)}
+          zIndex={t.recente ? 40 : 30}
         />
       ))}
+      {tiroteioSelecionado && (
+        <InfoWindow
+          position={{ lat: tiroteioSelecionado.lat, lng: tiroteioSelecionado.lng }}
+          onCloseClick={() => setTiroteioSelecionado(null)}
+          options={{ pixelOffset: new window.google.maps.Size(0, -14), disableAutoPan: true }}
+        >
+          <div style={{ fontFamily: "var(--font-geist-sans), system-ui, sans-serif", background: "#111", color: "#e5e5e5", padding: "10px 14px", minWidth: 180, maxWidth: 240, lineHeight: 1.5, borderRadius: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontWeight: 700, fontSize: 13, color: "#f97316" }}>Tiroteio {haQuanto(tiroteioSelecionado.idadeMin)}</span>
+              <button onClick={() => setTiroteioSelecionado(null)} style={{ background: "none", border: "none", color: "#777", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: "#d1d5db" }}>{tiroteioSelecionado.bairro}, {tiroteioSelecionado.cidade}</div>
+            <div style={{ fontSize: 11, color: "#9ca3af" }}>{formatarHoraParada(tiroteioSelecionado.date)}</div>
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>
+              {tiroteioSelecionado.vitimas > 0 ? `${tiroteioSelecionado.vitimas} vítima(s)` : "Sem vítimas registradas"}
+              {tiroteioSelecionado.acaoPolicial ? " · ação policial" : ""}
+              {tiroteioSelecionado.motivo ? ` · ${tiroteioSelecionado.motivo}` : ""}
+            </div>
+          </div>
+        </InfoWindow>
+      )}
 
       {/* rastro gerenciado imperativamente via useEffect + rastroLinesRef */}
 

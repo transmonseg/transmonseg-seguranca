@@ -1,5 +1,6 @@
 "use client";
 
+import { filtrarEntregas, type FiltroEntregas } from "@/lib/filtro-entregas";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -9,7 +10,7 @@ import MenuMotivoFalso, { type CategoriaFalso } from "../components/MenuMotivoFa
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeDetector, IDADE_MINIMA_ACAO_MASSA_MIN, elegivelParaAcaoMassa } from "@/lib/detectores";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
-import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO } from "./MapaLeafletV2";
+import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO, ESCALA_ROUBO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
 import { temaT, material, RAIO, MOLA, TIPO, FONT_SANS, FONT_MONO, NUM } from "./design";
 import { acoesVisiveis, corStatus } from "./card-acoes";
@@ -612,6 +613,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [favelas, setFavelas] = useState<GeoJsonCollection | null>(null);
   const [tiroteios, setTiroteios] = useState<Tiroteio[]>([]);
   const [rouboCarga, setRouboCarga] = useState<GeoJsonCollection | null>(null);
+  const [periodoRoubo, setPeriodoRoubo] = useState<string>("");
   const [bases, setBases] = useState<GeoJsonCollection | null>(null);
 
   // Map controls (compartilhados pelos 2 paineis — controles gerais de
@@ -760,6 +762,12 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   const [camRouboCarga, setCamRouboCarga] = useState(true);
   const [camTrafego, setCamTrafego] = useState(false);
   const [legendaAberta, setLegendaAberta] = useState(false);
+  // Filtro dos pontos de entrega no mapa (06/10): todas / pendentes / entregues.
+  const [filtroEntregas, setFiltroEntregasState] = useState<FiltroEntregas>("todas");
+  const setFiltroEntregas = useCallback((f: FiltroEntregas) => {
+    try { localStorage.setItem("transmonseg-filtro-entregas", f); } catch { /* ignore */ }
+    setFiltroEntregasState(f);
+  }, []);
 
   // Panico overlay
   const [panicoAlerta, setPanicoAlerta] = useState<AlertaEnriquecido | null>(null);
@@ -777,6 +785,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     if (localStorage.getItem("transmonseg-roubo") === "false") setCamRouboCarga(false);
     if (localStorage.getItem("transmonseg-trafego") === "true") setCamTrafego(true);
     if (localStorage.getItem("transmonseg-legenda") === "true") setLegendaAberta(true);
+    const filtroE = localStorage.getItem("transmonseg-filtro-entregas");
+    if (filtroE === "pendentes" || filtroE === "entregues") setFiltroEntregasState(filtroE);
     const vistaS = localStorage.getItem("transmonseg-vista");
     // "critico" e "foco" sao valores legados (pre-rename da 2a aba pra
     // "Desvios" fixa em 27/08, task A1) — tratados como "desvios" pra nao
@@ -1051,7 +1061,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       .catch(() => {});
     fetch("/api/roubo-carga")
       .then(r => r.ok ? r.json() : null)
-      .then((d: { geojson?: GeoJsonCollection } | null) => { if (d?.geojson) setRouboCarga(d.geojson); })
+      .then((d: { geojson?: GeoJsonCollection; periodo?: string } | null) => { if (d?.geojson) setRouboCarga(d.geojson); if (d?.periodo) setPeriodoRoubo(d.periodo); })
       .catch(() => {});
     const buscarTiroteios = () => {
       fetch("/api/tiroteios")
@@ -2014,10 +2024,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       : undefined,
     rastro: painel1.rastro,
     paradas: painel1.paradas,
-    alvos: painel1.alvosEfetivos,
+    alvos: filtrarEntregas(painel1.alvosEfetivos, filtroEntregas),
     mostrarRastro: painel1.mostrarRastro,
     mostrarParadas: painel1.mostrarParadas,
-    alvosGlobais,
+    alvosGlobais: filtrarEntregas(alvosGlobais, filtroEntregas),
     onVeiculoClick: painel1.handleVeiculoClick,
   };
   const propsPainelSelecionados = {
@@ -2031,10 +2041,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       : undefined,
     rastro: painel2.rastro,
     paradas: painel2.paradas,
-    alvos: painel2.alvosEfetivos,
+    alvos: filtrarEntregas(painel2.alvosEfetivos, filtroEntregas),
     mostrarRastro: painel2.mostrarRastro,
     mostrarParadas: painel2.mostrarParadas,
-    alvosGlobais: alvosGlobaisSelecionados,
+    alvosGlobais: filtrarEntregas(alvosGlobaisSelecionados, filtroEntregas),
     onVeiculoClick: painel2.handleVeiculoClick,
   };
 
@@ -2246,7 +2256,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   {([
                     { label: "Favelas", val: camFavelas, set: setCamFavelasComPersistencia, cor: "#ff2d2d" },
                     { label: "Tiroteios (24h)", val: camTiroteios, set: setCamTiroteiosComPersistencia, cor: "#f97316" },
-                    { label: "Roubo de carga", val: camRouboCarga, set: setCamRouboCargaComPersistencia, cor: "#fbbf24" },
+                    { label: "Roubo de carga", val: camRouboCarga, set: setCamRouboCargaComPersistencia, cor: "#7c3aed" },
                   ] as { label: string; val: boolean; set: (v: boolean) => void; cor: string }[]).map(({ label, val, set, cor }) => (
                     <button key={label} onClick={() => set(!val)}
                       style={{
@@ -2724,7 +2734,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
               </div>
             </div>
           ) : (
-            <MapaLeafletV2 veiculosMapa={vmFiltrado} {...propsPainelTodos} alvosGlobais={alvosGlobaisMapa} />
+            <MapaLeafletV2 veiculosMapa={vmFiltrado} {...propsPainelTodos} alvosGlobais={filtrarEntregas(alvosGlobaisMapa, filtroEntregas)} />
           )}
 
           {/* Alternador TODOS / AMBOS / SELECIONADOS / ROMANEIO — topo central do mapa.
@@ -2812,6 +2822,23 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                     Legenda
                   </button>
 
+                  {/* Filtro dos pontos de entrega (06/10) */}
+                  <div role="group" aria-label="Pontos de entrega no mapa" style={{
+                    ...material(tema), borderRadius: RAIO.capsule, padding: 3, display: "flex", gap: 2,
+                  }}>
+                    {([["todas", "Todas"], ["pendentes", "Pendentes"], ["entregues", "Entregues"]] as [FiltroEntregas, string][]).map(([v, label]) => (
+                      <button key={v} type="button" onClick={() => setFiltroEntregas(v)} aria-pressed={filtroEntregas === v}
+                        style={{
+                          ...BASE_BTN, borderRadius: RAIO.capsule, padding: "4px 10px", fontSize: 12,
+                          fontWeight: filtroEntregas === v ? 700 : 500,
+                          background: filtroEntregas === v ? (v === "pendentes" ? COR_PENDENTE : v === "entregues" ? COR_ENTREGUE : T.accent) : "transparent",
+                          color: filtroEntregas === v ? (v === "pendentes" ? "#1a1a1a" : "#fff") : T.text,
+                        }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
                   {legendaAberta && (
                     <div style={{
                       ...material(tema), borderRadius: RAIO.panel,
@@ -2846,6 +2873,38 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                           <span style={{ fontSize: 12, color: T.text }}>{label}</span>
                         </div>
                       ))}
+
+                      {(camFavelas || camRouboCarga || camTiroteios) && (
+                        <div style={{ ...TIPO.caption, color: T.muted, margin: "8px 0 6px", borderTop: `0.5px solid ${T.border}`, paddingTop: 8 }}>
+                          Camadas de risco
+                        </div>
+                      )}
+                      {camFavelas && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ width: 12, height: 9, borderRadius: 0, background: "rgba(255,45,45,0.25)", border: "1.5px solid #ff2d2d", flexShrink: 0 }} />
+                          <span style={{ fontSize: 12, color: T.text }}>Favela</span>
+                        </div>
+                      )}
+                      {camTiroteios && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#111827", border: "2px solid #f97316", flexShrink: 0, boxShadow: "0 0 0 1px #fff" }} />
+                          <span style={{ fontSize: 12, color: T.text }}>Tiroteio (24 h){tiroteios.length === 0 ? " — nenhum" : ` — ${tiroteios.length}`}</span>
+                        </div>
+                      )}
+                      {camRouboCarga && (
+                        <div style={{ marginBottom: 2 }}>
+                          <div style={{ fontSize: 12, color: T.text, marginBottom: 4 }}>Roubo de carga por delegacia{periodoRoubo ? ` (${periodoRoubo})` : ""}</div>
+                          <div style={{ display: "flex", gap: 3 }}>
+                            {[...ESCALA_ROUBO].reverse().map(e => (
+                              <div key={e.rotulo} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                                <span style={{ width: 30, height: 8, borderRadius: 0, background: e.cor }} />
+                                <span style={{ fontSize: 12, color: T.muted }}>{e.rotulo}</span>
+                              </div>
+                            ))}
+                          </div>
+                          {!rouboCarga && <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>Sem dados do ISP no momento.</div>}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
