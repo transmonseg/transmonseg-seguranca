@@ -62,7 +62,8 @@ export default async function CentralRomaneioPage({
     contagemEscalaPao,
   ] = await Promise.all([
     supabase.from("clientes").select("id, nome, cod_user_unitrac").eq("ativo", true).order("cod_user_unitrac"),
-    supabase.from("veiculos").select("id, cliente_id, placa, cv"),
+    // So' a frota ativa (06/10, frota = planilha da operação).
+    supabase.from("veiculos").select("id, cliente_id, placa, cv").eq("ativo", true),
     supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
     // sombra=false filtra pra fora panico/jammer/excesso em shadow mode
     // (Task Fase 4 Incremento 1, 27/08 -- ver motor-romaneio/route.ts,

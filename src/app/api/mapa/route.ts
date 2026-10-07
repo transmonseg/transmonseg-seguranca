@@ -171,7 +171,8 @@ export async function GET(request: Request) {
          from posicoes_atuais p
          join veiculos v on v.id = p.veiculo_id
          ${fonteAlertaSql}
-         where v.cliente_id = $1 and p.lat is not null and p.atraso_min <= 720`;
+         where v.cliente_id = $1 and v.ativo = true and p.lat is not null and p.atraso_min <= 720`;
+      // v.ativo (06/10): o mapa contava 134 carros com os da frota antiga.
 
       // Só usa a variante sem filtro direto (pulando a tentativa com
       // `sombra`) se JÁ sabemos que a coluna falta E o probe é recente --

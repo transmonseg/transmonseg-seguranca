@@ -1,3 +1,4 @@
+import { createAdminClient } from "@/lib/supabase/admin";
 import { acessoDoUsuario, podeVerCod } from "@/lib/acesso-cliente";
 // Retorna os veiculos do cliente agrupados por grupo Unitrac (gvc/gvn).
 // GET /api/grupos?cliente={cod_unitrac}
@@ -41,7 +42,12 @@ export async function GET(request: Request) {
     if (!res.ok) return Response.json({ grupos: [] });
 
     const data = (await res.json()) as { veiculos: VeiculoRaw[] };
-    const lista: VeiculoRaw[] = Array.isArray(data?.veiculos) ? data.veiculos : [];
+    const daUnitrac: VeiculoRaw[] = Array.isArray(data?.veiculos) ? data.veiculos : [];
+    // So' a frota ativa (06/10): a Unitrac ainda lista os carros que sairam da
+    // frota (planilha da operação = veiculos.ativo).
+    const { data: ativos } = await createAdminClient().from("veiculos").select("cv").eq("ativo", true)
+    const cvsAtivos = new Set((ativos ?? []).map((v) => String(v.cv)))
+    const lista = daUnitrac.filter((v) => cvsAtivos.has(String(v.cv)))
 
     // Agrupa por gvc/gvn preservando a ordem de aparicao
     const mapa = new Map<number, GrupoSaida>();
