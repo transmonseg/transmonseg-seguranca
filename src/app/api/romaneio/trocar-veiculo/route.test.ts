@@ -38,4 +38,19 @@ describe("POST /api/romaneio/trocar-veiculo", () => {
   it("placa nova fora da frota: 404", async () => {
     expect((await POST(req({ data: "2026-10-06", placaDe: "TTK8A87", placaPara: "AAA0000" }))).status).toBe(404);
   });
+
+  it("com nfs (troca mutua 07/10): so' as notas da carga mudam de carro", async () => {
+    const r = await POST(req({ data: "2026-10-07", placaDe: "TTK8A87", placaPara: "RQR2G85", nfs: ["2410175", "2410176"] }));
+    expect((await r.json()).ok).toBe(true);
+    expect(estado.filtros).toContainEqual(["in", "nf", ["2410175", "2410176"]]);
+  });
+
+  it("sem nfs: troca a placa inteira (sem filtro de nota)", async () => {
+    await POST(req({ data: "2026-10-07", placaDe: "TTK8A87", placaPara: "RQR2G85" }));
+    expect(estado.filtros.some((f) => Array.isArray(f) && f[1] === "nf")).toBe(false);
+  });
+
+  it("nfs vazio: 400 (nao vira troca da placa inteira por engano)", async () => {
+    expect((await POST(req({ data: "2026-10-07", placaDe: "TTK8A87", placaPara: "RQR2G85", nfs: [] }))).status).toBe(400);
+  });
 });
