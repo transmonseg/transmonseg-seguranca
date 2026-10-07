@@ -1,5 +1,6 @@
 "use client";
 
+import { situacaoExibida } from "@/lib/filtro-entregas";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, TrafficLayer, useJsApiLoader } from "@react-google-maps/api";
 import { type MapTokens } from "./tokens";
@@ -456,8 +457,8 @@ function agruparAlvosPorPonto(alvos: PontoEntrega[]): GrupoAlvo[] {
   const grupos: GrupoAlvo[] = [];
   for (const [chave, itens] of porChave.entries()) {
     const representante = [...itens].sort((x, y) => x.ordem - y.ordem)[0];
-    const temPendente = itens.some(i => i.situacao === 0);
-    const temOutro = itens.some(i => i.situacao !== 0 && i.situacao !== 1);
+    const temPendente = itens.some(i => situacaoExibida(i) === 0);
+    const temOutro = itens.some(i => situacaoExibida(i) !== 0 && situacaoExibida(i) !== 1);
     const situacaoEfetiva = temPendente ? 0 : temOutro ? 98 : 1;
     grupos.push({ chave, representante, situacaoEfetiva, qtd: itens.length, itens });
   }
@@ -951,8 +952,8 @@ export default function MapaLeafletV2({
       {alvoSelecionado && (() => {
         const itens = itensAlvoSelecionado.length > 0 ? itensAlvoSelecionado : [alvoSelecionado];
         const agrupado = itens.length > 1;
-        const temPendente = itens.some(i => i.situacao === 0);
-        const temOutro = itens.some(i => i.situacao !== 0 && i.situacao !== 1);
+        const temPendente = itens.some(i => situacaoExibida(i) === 0);
+        const temOutro = itens.some(i => situacaoExibida(i) !== 0 && situacaoExibida(i) !== 1);
         const situacaoGrupo = temPendente ? 0 : temOutro ? 98 : 1;
         const corGrupo = situacaoGrupo === 1 ? COR_ENTREGUE : situacaoGrupo === 0 ? COR_PENDENTE : COR_OUTRO;
         const fechar = () => { setAlvoSelecionado(null); setItensAlvoSelecionado([]); };
@@ -992,7 +993,7 @@ export default function MapaLeafletV2({
               {agrupado ? (
                 <div style={{ maxHeight: 160, overflowY: "auto", marginTop: 4 }}>
                   {itens.map((it, idx) => {
-                    const cor = it.situacao === 1 ? COR_ENTREGUE : it.situacao === 0 ? COR_PENDENTE : COR_OUTRO;
+                    const cor = situacaoExibida(it) === 1 ? COR_ENTREGUE : situacaoExibida(it) === 0 ? COR_PENDENTE : COR_OUTRO;
                     return (
                       <div key={it.codigo ?? idx} style={{
                         display: "flex", alignItems: "center", gap: 6,
