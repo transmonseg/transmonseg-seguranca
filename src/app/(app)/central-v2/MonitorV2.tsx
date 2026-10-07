@@ -1,6 +1,7 @@
 "use client";
 
 import { filtrarEntregas, type FiltroEntregas } from "@/lib/filtro-entregas";
+import { filtrarTransmissao, contarTransmissao, type FiltroTransmissao } from "@/lib/filtro-transmissao";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -636,7 +637,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // global pra qualquer cliente; apito/faixa continuam respeitando só o que
   // cada operação pediu pra ser avisada, ver TIPOS_NOTIFICAM_POR_CLIENTE).
   const tiposNotificamCliente = TIPOS_NOTIFICAM_POR_CLIENTE[cliente] ?? [];
-  const [filtroComm, setFiltroComm] = useState<number | null>(null);
+  // Transmissao (06/10): todos / transmitindo / sem transmissao, igual a Unitrac.
+  const [filtroTransm, setFiltroTransm] = useState<FiltroTransmissao>("todos");
   const [busca, setBusca] = useState("");
   const [comboAberto, setComboAberto] = useState(false);
   const [novosIdsArr, setNovosIdsArr] = useState<string[]>([]);
@@ -1184,7 +1186,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // veiculo selecionado NESSE painel (painel1/painel2) sempre permanece
   // visivel, mesmo que outros filtros o esconderiam.
   const aplicarFiltrosVeiculos = useCallback((comSelecao: boolean, cvForcado: string | null, comRomaneio = false): VeiculoMapa[] => {
-    let base = filtroComm ? veiculosMapa.filter(v => v.atraso_min <= filtroComm) : veiculosMapa;
+    let base = filtrarTransmissao(veiculosMapa, filtroTransm);
     if (comSelecao && veiculosSelecionados.size > 0) {
       // Veículo selecionado sempre permanece visível, mesmo fora da lista escolhida
       base = base.filter(v => veiculosSelecionados.has(v.cv) || v.cv === cvForcado);
@@ -1217,7 +1219,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       lat: al.lat, lng: al.lng, local: al.local, rumo: null,
     };
     return [...base, sintetico];
-  }, [veiculosMapa, filtroComm, veiculosSelecionados, cvsComRomaneio, gruposOcultos, cvParaGrupo, filtroTipos, alertas]);
+  }, [veiculosMapa, filtroTransm, veiculosSelecionados, cvsComRomaneio, gruposOcultos, cvParaGrupo, filtroTipos, alertas]);
 
   const vmFiltrado: VeiculoMapa[] = useMemo(
     () => aplicarFiltrosVeiculos(modoSelecionados, painel1.cvSelecionado, modoRomaneio),
@@ -2414,7 +2416,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             // antes na toolbar) vive aqui e vale pra qualquer cliente, mesmo
             // sem grupos/tipos. Conta no indicador do cabeçalho pra o operador
             // saber que há filtro ligado com o bloco fechado.
-            const filtrosAtivos = gruposOcultos.size + filtroTipos.size + (filtroComm != null ? 1 : 0);
+            const filtrosAtivos = gruposOcultos.size + filtroTipos.size + (filtroTransm !== "todos" ? 1 : 0);
             return (
               <div style={{ borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
                 <button onClick={() => setFiltrosAbertos(v => !v)} style={{
@@ -2440,27 +2442,31 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
                 {filtrosAbertos && (
                   <div style={{ paddingBottom: 4 }}>
-                    {/* Sem comunicação há — mesmo setter/regra dos antigos botões
-                        COMM 10/30/60min da toolbar (clicar no ativo desliga). */}
+                    {/* Transmissao (06/10, pedido da tia Erica: igual a Unitrac).
+                        Substitui o "Sem comunicacao ha 10/30/60 min", que na
+                        verdade mostrava so os que TINHAM comunicado. */}
                     <div style={{ ...TIPO.caption, color: T.dim, padding: "2px 8px 4px" }}>
-                      Sem comunicação há
+                      Transmissão
                     </div>
                     <div style={{ display: "flex", gap: 3, padding: "0 6px 6px", flexWrap: "wrap" }}>
-                      {[10, 30, 60].map(m => {
-                        const ativo = filtroComm === m;
-                        return (
-                          <button key={m} onClick={() => setFiltroComm(filtroComm === m ? null : m)} style={{
-                            height: 24, padding: "0 10px", borderRadius: RAIO.capsule,
-                            border: `1px solid ${ativo ? T.accent : T.border}`,
-                            background: ativo ? T.accentDim : "transparent",
-                            color: ativo ? T.accent : T.muted,
-                            fontSize: 12, fontWeight: ativo ? 600 : 500,
-                            cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
-                          }}>
-                            {m} min
-                          </button>
-                        );
-                      })}
+                      {(() => {
+                        const n = contarTransmissao(veiculosMapa);
+                        return ([["todos", `Todos ${veiculosMapa.length}`], ["transmitindo", `Transmitindo ${n.transmitindo}`], ["sem", `Sem transmissão ${n.sem}`]] as const).map(([v, rotulo]) => {
+                          const ativo = filtroTransm === v;
+                          return (
+                            <button key={v} type="button" aria-pressed={ativo} onClick={() => setFiltroTransm(v)} title={v === "sem" ? "Sem posição nova há mais de 1 hora" : v === "transmitindo" ? "Posição recebida na última hora" : undefined} style={{
+                              height: 24, padding: "0 10px", borderRadius: RAIO.capsule,
+                              border: `1px solid ${ativo ? T.accent : T.border}`,
+                              background: ativo ? T.accentDim : "transparent",
+                              color: ativo ? T.accent : T.muted,
+                              fontSize: 12, fontWeight: ativo ? 600 : 500,
+                              cursor: "pointer", fontFamily: FONT_SANS, whiteSpace: "nowrap",
+                            }}>
+                              {rotulo}
+                            </button>
+                          );
+                        });
+                      })()}
                     </div>
                     {/* Chips de grupo de frota (gvc/gvn) — clique oculta/mostra o grupo */}
                     {temGrupos && (
@@ -2804,7 +2810,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                   pointerEvents: "none", fontFamily: FONT_SANS,
                 }}>
                   <span style={NUM}>{vmFiltrado.length}</span> veículos
-                  {filtroComm != null && <span style={{ ...NUM, color: T.accent }}> &lt;{filtroComm}min</span>}
+                  {filtroTransm !== "todos" && <span style={{ color: T.accent }}> {filtroTransm === "sem" ? "sem transmissão" : "transmitindo"}</span>}
                 </div>
 
                 {/* Legenda dos símbolos do mapa — recolhida por padrão */}

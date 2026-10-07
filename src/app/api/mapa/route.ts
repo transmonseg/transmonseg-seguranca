@@ -171,8 +171,10 @@ export async function GET(request: Request) {
          from posicoes_atuais p
          join veiculos v on v.id = p.veiculo_id
          ${fonteAlertaSql}
-         where v.cliente_id = $1 and v.ativo = true and p.lat is not null and p.atraso_min <= 720`;
+         where v.cliente_id = $1 and v.ativo = true and p.lat is not null`;
       // v.ativo (06/10): o mapa contava 134 carros com os da frota antiga.
+      // Sem o corte de 12 h (06/10): carro da frota ativa sem sinal tem que
+      // aparecer (filtro "Sem transmissão"); o ícone já mostra sem comunicação.
 
       // Só usa a variante sem filtro direto (pulando a tentativa com
       // `sombra`) se JÁ sabemos que a coluna falta E o probe é recente --
