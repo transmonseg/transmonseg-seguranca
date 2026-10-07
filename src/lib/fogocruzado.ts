@@ -62,21 +62,29 @@ export async function buscarTiroteiosRJ(dias = 1): Promise<Tiroteio[]> {
   const cached = listaCache.get(dias);
   if (cached && cached.exp > agoraMs) return cached.tiros;
 
-  const token = await obterToken();
+  let token = await obterToken();
   if (!token) return cached?.tiros ?? [];
 
   const fim = new Date();
   const ini = new Date(fim.getTime() - dias * 24 * 60 * 60 * 1000);
   const fimMs = fim.getTime();
   const limite3h = fimMs - 3 * 60 * 60 * 1000;
-  const headers = { authorization: `Bearer ${token}`, accept: "application/json" };
-
   const tiros: Tiroteio[] = [];
+  let falhou = false;
   try {
     for (let page = 1; page <= 5; page++) {
       const url = `${BASE}/occurrences?idState=${RJ_STATE_ID}&initialdate=${ymd(ini)}&finaldate=${ymd(fim)}&order=DESC&take=100&page=${page}`;
-      const r = await fetch(url, { headers });
-      if (!r.ok) break;
+      let r = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+      // Token derrubado por outro login com a mesma conta (06/10: a camada ficava
+      // vazia por ate' 55 min, "cliquei e nao aconteceu nada"): pede outro e tenta de novo.
+      if (r.status === 401 || r.status === 403) {
+        tokenCache = null;
+        const novo = await obterToken();
+        if (!novo) { falhou = true; break; }
+        token = novo;
+        r = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+      }
+      if (!r.ok) { falhou = true; break; }
       const j = (await r.json()) as { data?: RawOcorrencia[]; pageMeta?: { hasNextPage?: boolean } };
       for (const o of j.data ?? []) {
         const lat = parseFloat(String(o.latitude));
@@ -101,6 +109,8 @@ export async function buscarTiroteiosRJ(dias = 1): Promise<Tiroteio[]> {
   } catch {
     return cached?.tiros ?? tiros;
   }
+  // Falha nao vira "zero tiroteios" guardado por 2 min: devolve o ultimo bom.
+  if (falhou && tiros.length === 0) return cached?.tiros ?? [];
   listaCache.set(dias, { tiros, exp: agoraMs + 2 * 60 * 1000 });
   return tiros;
 }
