@@ -595,6 +595,9 @@ function usePainelFoco(params: {
 }
 
 // ── Main Component ────────────────────────────────────────────────────
+// Camadas favelas/roubo: espera antes de cada nova tentativa quando a busca falha.
+const ESPERAS_RETENTATIVA_CAMADA_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
+
 export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais, fonteAlertas = "central", hrefBaseClientes = "/central-v2" }: Props) {
   // Fix pos-revisao (2026-08-22): as acoes de operador (Correto/Falso/Resolver
   // todos/Limpar avisos) tem que escrever na MESMA tabela de onde o alerta
@@ -1057,14 +1060,31 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
 
   // Camadas de risco: favelas (estática), roubo-carga (diária), tiroteios (30min)
   useEffect(() => {
-    fetch("/api/favelas")
-      .then(r => r.ok ? r.json() : null)
-      .then((d: GeoJsonCollection | null) => { if (d) setFavelas(d); })
-      .catch(() => {});
-    fetch("/api/roubo-carga")
-      .then(r => r.ok ? r.json() : null)
-      .then((d: { geojson?: GeoJsonCollection; periodo?: string } | null) => { if (d?.geojson) setRouboCarga(d.geojson); if (d?.periodo) setPeriodoRoubo(d.periodo); })
-      .catch(() => {});
+    // 07/10 (Erica: "marco favela/roubo e nao aparece nada"): favelas (2 MB) e
+    // roubo (4 MB) eram buscados UMA vez -- na internet instavel do escritorio a
+    // busca caia e a camada ficava vazia ate' recarregar a pagina. Tenta de novo.
+    let cancelado = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const comRetentativa = (url: string, aplicar: (d: unknown) => boolean, tentativa = 0) => {
+      fetch(url)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => d != null && aplicar(d))
+        .catch(() => false)
+        .then(ok => {
+          if (!ok && !cancelado && tentativa < ESPERAS_RETENTATIVA_CAMADA_MS.length) {
+            timers.push(setTimeout(() => comRetentativa(url, aplicar, tentativa + 1), ESPERAS_RETENTATIVA_CAMADA_MS[tentativa]));
+          }
+        });
+    };
+    comRetentativa("/api/favelas", d => { if (cancelado) return true; setFavelas(d as GeoJsonCollection); return true; });
+    comRetentativa("/api/roubo-carga", d => {
+      const x = d as { geojson?: GeoJsonCollection | null; periodo?: string };
+      if (cancelado) return true;
+      if (x.periodo) setPeriodoRoubo(x.periodo);
+      if (!x.geojson) return false;
+      setRouboCarga(x.geojson);
+      return true;
+    });
     const buscarTiroteios = () => {
       fetch("/api/tiroteios")
         .then(r => r.ok ? r.json() : null)
@@ -1073,7 +1093,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     };
     buscarTiroteios();
     const t = setInterval(buscarTiroteios, 30 * 60_000);
-    return () => clearInterval(t);
+    return () => { cancelado = true; clearInterval(t); timers.forEach(clearTimeout); };
   }, []);
 
   // Pontos de entrega globais — busca em segundo plano, lotes de 50
