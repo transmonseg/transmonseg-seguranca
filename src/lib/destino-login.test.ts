@@ -13,4 +13,10 @@ describe("destinoAposLogin", () => {
     expect(destinoAposLogin(null)).toBe("/");
     expect(destinoAposLogin("/\\evil.com")).toBe("/");
   });
+  it("caractere de controle/espaco nao fura o filtro (navegador tira TAB/CR/LF e vira //evil.com)", () => {
+    expect(destinoAposLogin("/\t/evil.com")).toBe("/");
+    expect(destinoAposLogin("/\n/evil.com")).toBe("/");
+    expect(destinoAposLogin("/\r/evil.com")).toBe("/");
+    expect(destinoAposLogin("/ /evil.com")).toBe("/");
+  });
 });
