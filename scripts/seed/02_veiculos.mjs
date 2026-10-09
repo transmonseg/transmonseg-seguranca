@@ -3,11 +3,13 @@
 // Uso: node --env-file=.env.local scripts/seed/02_veiculos.mjs
 
 import pg from "pg";
+import { sincronizarVeiculo } from "./veiculos-sync.mjs";
 
 const conn = process.env.DATABASE_URL;
 if (!conn) { console.error("DATABASE_URL ausente no .env.local"); process.exit(1); }
 
 const CLIENTES_COD = ["4096", "4586"];
+const erros = [];
 
 async function buscarVeiculos(cod) {
   const url = `https://datalayer.portalunitrac.com/veiculos/masn/${cod}`;
@@ -39,7 +41,8 @@ try {
     const veiculos = await buscarVeiculos(cod);
     console.log(`  API retornou ${veiculos.length} veículos`);
 
-    // Insere em lote (um por um com on conflict do nothing)
+    // Um veiculo com problema NAO derruba a sincronizacao dos outros (09/10: um
+    // conflito de placa abortava tudo em silencio, por horas). Erros viram ALERTA.
     let inseridos = 0;
     let atualizados = 0;
     for (const v of veiculos) {
@@ -49,25 +52,14 @@ try {
 
       if (!cv) continue; // pula veículos sem cv
 
-      // Achado real 20/08: quando a Unitrac reemplaca um veiculo (mesmo cv,
-      // placa nova -- caso real confirmado, 9 caminhoes Nutry Max migraram
-      // pro padrao Mercosul), o antigo DO NOTHING nunca atualizava a placa
-      // local, quebrando silenciosamente o casamento placa->veiculo do
-      // romaneio ate alguem notar no WhatsApp. DO UPDATE so em placa --
-      // grupo/perfil/ativo podem ter ajuste manual, nunca sobrescrever.
-      // xmax=0 (coluna de sistema do Postgres) distingue INSERT de UPDATE
-      // no mesmo comando: xmax so' e' setado num UPDATE de verdade.
-      const res = await client.query(`
-        INSERT INTO veiculos (cliente_id, cv, placa, grupo, perfil, ativo)
-        VALUES ($1, $2, $3, $4, 'auto', true)
-        ON CONFLICT (cliente_id, cv) DO UPDATE SET placa = EXCLUDED.placa
-        WHERE veiculos.placa IS DISTINCT FROM EXCLUDED.placa
-        RETURNING id, (xmax = 0) AS foi_insercao
-      `, [clienteId, cv, placa, grupo]);
-
-      if (res.rows.length > 0) {
-        if (res.rows[0].foi_insercao) inseridos++;
-        else atualizados++;
+      // Achado real 20/08: mesmo cv com placa nova (Mercosul) tem que atualizar a
+      // placa local; grupo/perfil/ativo podem ter ajuste manual, nunca sobrescrever.
+      try {
+        const acao = await sincronizarVeiculo(client, { clienteId, cv, placa, grupo });
+        if (acao === "inserido") inseridos++;
+        else if (acao.startsWith("atualizado")) { atualizados++; console.log(`  cv ${cv}: placa -> ${placa}${acao === "atualizado_renomeando_inativo" ? " (cadastro inativo que segurava o nome foi renomeado)" : ""}`); }
+      } catch (e) {
+        erros.push(`${clienteNome} cv ${cv} (${placa}): ${e.message}`);
       }
     }
 
@@ -79,4 +71,8 @@ try {
   process.exitCode = 1;
 } finally {
   await client.end();
+}
+if (erros.length > 0) {
+  for (const e of erros) console.error(`ALERTA: ${e}`);
+  process.exitCode = 1;
 }
