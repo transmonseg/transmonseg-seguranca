@@ -351,8 +351,9 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
 // mesmo ponto/endereco — comum em cliente tipo supermercado), desenha um
 // badge com a contagem em vez de empilhar N marcadores exatamente um sobre o outro.
 function criarIconeAlvo(situacao: number, proximo: boolean, qtd: number = 1): google.maps.Icon {
-  const confirmado = situacao === 1;
-  const outro = situacao !== 0 && situacao !== 1;
+  // "esteve no local" (98) conta como entregue (decisao da operacao 13/10).
+  const confirmado = situacao === 1 || situacao === 98;
+  const outro = situacao !== 0 && situacao !== 1 && situacao !== 98;
   const core = proximo && !confirmado && !outro ? 28 : 18;
   const half = core / 2;
   const extra = qtd > 1 ? 11 : 0;

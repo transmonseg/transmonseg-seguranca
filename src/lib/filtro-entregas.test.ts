@@ -9,11 +9,13 @@ describe("filtrarEntregas", () => {
 });
 
 describe("situacaoExibida", () => {
-  it("feito pelo GPS com situacao 0 da Unitrac aparece como entregue; o resto nao muda", async () => {
+  it("feito pelo GPS e 'esteve no local' (98) aparecem como entregue; pendente nao muda", async () => {
     const { situacaoExibida } = await import("@/lib/filtro-entregas");
     expect(situacaoExibida({ feito: true, situacao: 0 })).toBe(1);
     expect(situacaoExibida({ feito: false, situacao: 0 })).toBe(0);
-    expect(situacaoExibida({ feito: true, situacao: 98 })).toBe(98);
+    // "esteve no local" (98) agora conta como entregue (pedido da operacao 13/10).
+    expect(situacaoExibida({ feito: true, situacao: 98 })).toBe(1);
+    expect(situacaoExibida({ feito: false, situacao: 98 })).toBe(1);
     expect(situacaoExibida({ feito: true, situacao: 1 })).toBe(1);
   });
 });

@@ -11,7 +11,7 @@ import MenuMotivoFalso, { type CategoriaFalso } from "../components/MenuMotivoFa
 import { enviarComandoVeiculo } from "@/lib/unitrac-comandos";
 import { formatarProgressoDestino, formatarPlacarSombra, formatarConfiabilidadeDetector, IDADE_MINIMA_ACAO_MASSA_MIN, elegivelParaAcaoMassa } from "@/lib/detectores";
 import type { VeiculoMapa, Parada, PontoEntrega, Tiroteio, GeoJsonCollection } from "./MapaLeafletV2";
-import { COR_PENDENTE, COR_ENTREGUE, COR_OUTRO, ESCALA_ROUBO } from "./MapaLeafletV2";
+import { COR_PENDENTE, COR_ENTREGUE, ESCALA_ROUBO } from "./MapaLeafletV2";
 import { DARK_TOKENS, LIGHT_TOKENS, SAT_TILE_URL, SAT_TILE_SUBDOMAINS } from "./tokens";
 import { temaT, material, RAIO, MOLA, TIPO, FONT_SANS, FONT_MONO, NUM } from "./design";
 import { acoesVisiveis, corStatus } from "./card-acoes";
@@ -2892,7 +2892,6 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                       {[
                         { cor: COR_PENDENTE, label: "Pendente" },
                         { cor: COR_ENTREGUE, label: "Entregue" },
-                        { cor: COR_OUTRO, label: "Esteve no local" },
                       ].map(({ cor, label }) => (
                         <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                           <span style={{ width: 9, height: 9, borderRadius: "50%", background: cor, flexShrink: 0, border: "1px solid rgba(255,255,255,0.25)" }} />

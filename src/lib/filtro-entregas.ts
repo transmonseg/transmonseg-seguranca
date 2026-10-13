@@ -13,5 +13,8 @@ export function filtrarEntregas<T extends { feito: boolean }>(pontos: T[], filtr
  *  entrega confirmada pelo GPS (feito, mas a Unitrac ainda com situacao 0)
  *  aparece como entregue -- a mesma regra do filtro acima. */
 export function situacaoExibida(p: { feito: boolean; situacao: number }): number {
+  // "esteve no local" (98 da Unitrac) conta como entregue no mapa -- decisao
+  // da operacao (13/10). E o feito pelo GPS com situacao 0 tambem.
+  if (p.situacao === 98) return 1;
   return p.situacao === 0 && p.feito ? 1 : p.situacao;
 }
