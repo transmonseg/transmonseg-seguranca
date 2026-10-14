@@ -2,7 +2,6 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, normalizarEndereco, escolherPontoReferencia } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
-import { municipioDoEndereco } from "@/lib/municipio-do-endereco";
 
 export const maxDuration = 60;
 
@@ -472,7 +471,7 @@ export async function POST(request: Request) {
   // volta ao comportamento de hoje (retentar sem limite) em vez de parar de
   // fazer o fallback por completo. Mesmo padrao ja usado pra coluna
   // `origem` em romaneio/status/route.ts.
-  type LinhaFallback = { id: string; nf: string; placa: string; veiculo_id: string | null; geocode_tentativas?: number | null; endereco_bruto: string; cliente_nome?: string | null };
+  type LinhaFallback = { id: string; nf: string; placa: string; veiculo_id: string | null; geocode_tentativas?: number | null; endereco_bruto: string };
   let tentativasDisponivel = true;
   let semGeocode: LinhaFallback[] | null = null;
 
@@ -499,7 +498,7 @@ export async function POST(request: Request) {
   // veiculo.
   const comLimite = await admin
     .from("romaneio_pontos")
-    .select("id, nf, placa, veiculo_id, geocode_tentativas, endereco_bruto, cliente_nome")
+    .select("id, nf, placa, veiculo_id, geocode_tentativas, endereco_bruto")
     .eq("geocode_status", "falhou")
     .lt("geocode_tentativas", MAX_TENTATIVAS_FALLBACK_UNITRAC)
     .or(`geocode_ultima_tentativa_em.is.null,geocode_ultima_tentativa_em.lt.${tentavelAntesDe}`)
@@ -516,7 +515,7 @@ export async function POST(request: Request) {
     tentativasDisponivel = false;
     const semLimite = await admin
       .from("romaneio_pontos")
-      .select("id, nf, placa, veiculo_id, endereco_bruto, cliente_nome")
+      .select("id, nf, placa, veiculo_id, endereco_bruto")
       .eq("geocode_status", "falhou")
       .limit(LOTE_FALLBACK_UNITRAC);
     semGeocode = semLimite.data as LinhaFallback[] | null;
@@ -529,7 +528,6 @@ export async function POST(request: Request) {
   let corrigidosViaRomaneio = 0;
   let veiculoIdReatribuido = 0;
   let resolvidoViaRetentativaTexto = 0;
-  let resolvidoViaNome = 0;
 
   // Conta uma tentativa que NAO resolveu (nem achou alvo da Unitrac, nem
   // recasou a placa com um veiculo) e, esgotado o limite, promove ao estado
@@ -675,28 +673,6 @@ export async function POST(request: Request) {
             }
           }
 
-          // Fallback por NOME (13/10): endereco sem numero/truncado que nem o
-          // texto nem a Unitrac resolveram. Muitos clientes da RQ sao
-          // estabelecimentos (restaurante, padaria) que o Google/Nominatim
-          // acham pelo NOME + municipio. tentarGeocodeTexto JA' valida contra o
-          // ponto da cidade (rejeita match em cidade errada) -- seguro, e a RQ
-          // confirma por corredor/GPS, entao coordenada aproximada nao gera
-          // falso "entregue". Melhor que ficar "sem coordenada".
-          const municipio = municipioDoEndereco(linha.endereco_bruto);
-          if (linha.cliente_nome && municipio) {
-            const porNome = await tentarGeocodeTexto(`${linha.cliente_nome}, ${municipio}`);
-            if (porNome) {
-              const { error: erroNome } = await admin
-                .from("romaneio_pontos")
-                .update({ lat: porNome.lat, lng: porNome.lng, geocode_status: "ok" })
-                .eq("id", linha.id);
-              if (!erroNome) {
-                resolvidoViaNome++;
-                continue;
-              }
-            }
-          }
-
           // Nao resolveu nesta tentativa. Conta a tentativa e, esgotado o
           // limite, para de retentar automaticamente (ver migration
           // contabo/061). Nao inventa coordenada: STATUS_SEM_COORDENADA e'
@@ -767,5 +743,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, resolvidoViaRetentativaTexto, resolvidoViaNome, limiteTentativasAtivo: tentativasDisponivel });
+  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, resolvidoViaRetentativaTexto, limiteTentativasAtivo: tentativasDisponivel });
 }
