@@ -39,7 +39,8 @@ export default async function CentralPage({
     ]);
 
   // Conta de um cliente só (ex.: login da Nutry Max) não vê as outras abas.
-  const clientes: Cliente[] = filtrarPorAcesso(await acessoDoUsuario(), clientesRaw ?? []);
+  const acesso = await acessoDoUsuario();
+  const clientes: Cliente[] = filtrarPorAcesso(acesso, clientesRaw ?? []);
   const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
   const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
   const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];
@@ -86,6 +87,7 @@ export default async function CentralPage({
       clienteAtivoId={clienteAtivo.id}
       veiculos={veiculos.map(v => ({ placa: v.placa, cv: v.cv }))}
       alertasIniciais={alertasIniciais}
+      clienteUnico={acesso.tipo === "um"}
     />
   );
 }

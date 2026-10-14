@@ -70,6 +70,14 @@ interface Props {
   // Base do link do cliente-switcher (coluna esquerda da toolbar). Default
   // "/central-v2" é o valor hardcoded que já existia (redireciona pra "/").
   hrefBaseClientes?: string;
+  // Login de UM cliente só (ex.: Nutry Max / Rio Quality via Central): nunca
+  // herda os filtros de frota salvos no localStorage daquele navegador
+  // (grupos ocultos / tipos / seleção). Achado real 14/10: a conta da Nutry
+  // abria com grupos de frota ocultos salvos e via "só uns 5 carros", sem
+  // conseguir limpar (os chips de filtro vêm colapsados por padrão e o embed
+  // da Central esconde a barra do painel). O cliente sempre vê a frota
+  // inteira ("entrar como Unitrac"). Default false = admin/central, intocado.
+  clienteUnico?: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -598,7 +606,7 @@ function usePainelFoco(params: {
 // Camadas favelas/roubo: espera antes de cada nova tentativa quando a busca falha.
 const ESPERAS_RETENTATIVA_CAMADA_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 
-export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais, fonteAlertas = "central", hrefBaseClientes = "/central-v2" }: Props) {
+export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos: veiculosBase, alertasIniciais, fonteAlertas = "central", hrefBaseClientes = "/central-v2", clienteUnico = false }: Props) {
   // Fix pos-revisao (2026-08-22): as acoes de operador (Correto/Falso/Resolver
   // todos/Limpar avisos) tem que escrever na MESMA tabela de onde o alerta
   // veio -- senao viram no-op silencioso (ver acoes-alertas.ts). Constante,
@@ -798,19 +806,32 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     // perder a preferencia salva de quem ja usava.
     if (vistaS === "tudo") setVista("tudo");
     else if (vistaS === "critico" || vistaS === "foco" || vistaS === "desvios") setVista("desvios");
-    const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
-    if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
-    const gruposOcultosS = localStorage.getItem("transmonseg-grupos-ocultos");
-    if (gruposOcultosS) { try { setGruposOcultos(new Set(JSON.parse(gruposOcultosS))); } catch { /* ignore */ } }
-    const veiculosSelS = localStorage.getItem("transmonseg-veiculos-selecionados");
-    if (veiculosSelS) { try { setVeiculosSelecionados(new Set(JSON.parse(veiculosSelS))); } catch { /* ignore */ } }
+    // Login de um cliente só (Central): NUNCA herda os filtros de frota salvos
+    // neste navegador — eles escondem carros e os controles vêm colapsados/sem
+    // a barra do painel no embed, então o cliente ficava preso vendo "uns 5
+    // carros" sem conseguir limpar (achado real 14/10, conta da Nutry). Começa
+    // sempre com a frota inteira e apaga as chaves pra não voltar a prender.
+    if (clienteUnico) {
+      try {
+        localStorage.removeItem("transmonseg-filtro-tipos");
+        localStorage.removeItem("transmonseg-grupos-ocultos");
+        localStorage.removeItem("transmonseg-veiculos-selecionados");
+      } catch { /* ignore */ }
+    } else {
+      const tiposS = localStorage.getItem("transmonseg-filtro-tipos");
+      if (tiposS) { try { setFiltroTipos(new Set(JSON.parse(tiposS))); } catch { /* ignore */ } }
+      const gruposOcultosS = localStorage.getItem("transmonseg-grupos-ocultos");
+      if (gruposOcultosS) { try { setGruposOcultos(new Set(JSON.parse(gruposOcultosS))); } catch { /* ignore */ } }
+      const veiculosSelS = localStorage.getItem("transmonseg-veiculos-selecionados");
+      if (veiculosSelS) { try { setVeiculosSelecionados(new Set(JSON.parse(veiculosSelS))); } catch { /* ignore */ } }
+    }
     // modoSelecionados NUNCA persiste entre carregamentos — deliberado (achado
     // ao vivo 06/07: filtro ficou ligado com so 5 veiculos marcados e escondeu
     // a frota inteira, incluindo alertas ativos de OUTROS veiculos, sem que
     // ninguem percebesse ate reabrir a tela dias depois). A lista de veiculos
     // marcados continua salva pra reativar rapido, mas o modo em si sempre
     // comeca desligado a cada sessao — precisa de um clique consciente.
-  }, []);
+  }, [clienteUnico]);
 
   const setTemaComPersistencia = useCallback((novo: "dark" | "light") => {
     localStorage.setItem("transmonseg-tema", novo);

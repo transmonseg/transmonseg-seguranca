@@ -101,7 +101,8 @@ export default async function CentralRomaneioPage({
   }
 
   // Conta de um cliente só (ex.: login da Nutry Max) não vê as outras abas.
-  const clientes: Cliente[] = filtrarPorAcesso(await acessoDoUsuario(), clientesRaw ?? []);
+  const acesso = await acessoDoUsuario();
+  const clientes: Cliente[] = filtrarPorAcesso(acesso, clientesRaw ?? []);
   const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
   const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
   const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];
@@ -149,6 +150,7 @@ export default async function CentralRomaneioPage({
       alertasIniciais={alertasIniciais}
       fonteAlertas="romaneio"
       hrefBaseClientes="/central-romaneio"
+      clienteUnico={acesso.tipo === "um"}
     />
   );
 
