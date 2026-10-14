@@ -643,6 +643,17 @@ export async function POST(request: Request) {
               .eq("id", linha.id);
             if (!erroFallback) {
               fallbackUnitrac++;
+              // Aprende (13/10): a coordenada da entrega REAL (Unitrac) e' o
+              // endereco do cliente. Grava no cache de geocode por endereco --
+              // nos proximos dias o mesmo cliente resolve sozinho, mesmo sem
+              // alvo da Unitrac naquele dia. Fecha "sem coordenada" recorrente
+              // de graca, sem API. So' aprende endereco minimamente especifico
+              // (tem numero OU nome de via, nao so' cidade) pra nao cachear
+              // uma coordenada de entrega sob uma chave generica demais.
+              const chaveAprendida = normalizarEndereco(linha.endereco_bruto);
+              if (chaveAprendida && chaveAprendida.length >= 8 && chaveAprendida.includes(",")) {
+                await salvarCache(chaveAprendida, { lat: alvo.pontolatitude, lng: alvo.pontolongitude, fonte: "unitrac_aprendido" });
+              }
               continue;
             }
           }
