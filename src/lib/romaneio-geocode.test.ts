@@ -33,6 +33,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     geocodificarLocalDep: () => Promise<{ lat: number; lng: number } | null>;
     geocodificarCnefeBairroDep: (() => Promise<{ lat: number; lng: number } | null>) | undefined;
     geocodificarGoogle: () => Promise<{ lat: number; lng: number } | null>;
+    geocodificarPhoton: (() => Promise<{ lat: number; lng: number } | null>) | undefined;
     geocodificarNominatim: () => Promise<{ lat: number; lng: number } | null>;
   }> = {}) => ({
     buscarCache: vi.fn(overrides.buscarCache ?? (async () => null)),
@@ -41,6 +42,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     geocodificarLocalDep: vi.fn(overrides.geocodificarLocalDep ?? (async () => null)),
     geocodificarCnefeBairroDep: "geocodificarCnefeBairroDep" in overrides ? overrides.geocodificarCnefeBairroDep && vi.fn(overrides.geocodificarCnefeBairroDep) : vi.fn(async () => null),
     geocodificarGoogle: vi.fn(overrides.geocodificarGoogle ?? (async () => null)),
+    geocodificarPhoton: "geocodificarPhoton" in overrides ? overrides.geocodificarPhoton && vi.fn(overrides.geocodificarPhoton) : vi.fn(async () => null),
     geocodificarNominatim: vi.fn(overrides.geocodificarNominatim ?? (async () => null)),
   });
 
@@ -117,6 +119,46 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
     expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 3, lng: 4, fonte: "google" }));
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
+  });
+
+  // Photon (OSM, gratis) entrou na cascata em 14/10: Google morreu (billing
+  // off no projeto Google Cloud -> REQUEST_DENIED), e num teste dos 61
+  // enderecos RQ que falhavam o Nominatim estruturado resolveu 0/61 na cidade
+  // certa contra 57/61 do Photon. Entra DEPOIS do Google (que hoje quase
+  // sempre devolve null) e ANTES do Nominatim (pior cobertura de rua em BR).
+  describe("geocodificarPhoton (achado real 14/10: Google morto, Photon e' o fallback gratis bom)", () => {
+    const PONTO_CIDADE = { lat: -22.9, lng: -43.2 };
+    it("CNEFE/local/Google falham, Photon funciona: usa Photon (fonte photon), salva no cache, nao chama Nominatim", async () => {
+      const deps = mockDeps({ geocodificarPhoton: async () => ({ lat: 5, lng: 6 }) });
+      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(r).toMatchObject({ lat: 5, lng: 6, fonte: "photon" });
+      expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 5, lng: 6, fonte: "photon" }));
+      expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
+    });
+
+    it("Google funciona: nao chega a chamar Photon (Google vem antes)", async () => {
+      const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }), geocodificarPhoton: async () => ({ lat: 5, lng: 6 }) });
+      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
+      expect(deps.geocodificarPhoton).not.toHaveBeenCalled();
+    });
+
+    it("Photon longe do ponto de cidade (>30km) e' REJEITADO pela mesma trava de distancia, cai pro Nominatim", async () => {
+      // PONTO_CIDADE ~ Rio capital; PhotonLonge em Macae (~180km)
+      const deps = mockDeps({
+        geocodificarPhoton: async () => ({ lat: -22.37, lng: -41.78 }),
+        geocodificarNominatim: async () => ({ lat: PONTO_CIDADE.lat + 0.001, lng: PONTO_CIDADE.lng + 0.001 }),
+      });
+      const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade", PONTO_CIDADE, deps);
+      expect(r?.fonte).toBe("nominatim");
+      expect(deps.geocodificarPhoton).toHaveBeenCalled();
+    });
+
+    it("dep nao fornecido (undefined): pula Photon, cai direto no Nominatim (comportamento antigo preservado)", async () => {
+      const deps = mockDeps({ geocodificarPhoton: undefined, geocodificarNominatim: async () => ({ lat: 1, lng: 2 }) });
+      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      expect(r).toMatchObject({ lat: 1, lng: 2, fonte: "nominatim" });
+    });
   });
 
   // Achado real 08/09 (auditoria KPI Nutry Max, "os enderecos que nao foram,

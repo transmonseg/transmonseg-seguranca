@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, normalizarEndereco, escolherPontoReferencia } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, normalizarEndereco, escolherPontoReferencia } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
@@ -184,6 +184,13 @@ export async function POST(request: Request) {
   const geocodificarNominatimThrottled = async (enderecoBruto: string) => {
     await esperar(ESPERA_ENTRE_CHAMADAS_MS);
     return geocodificarNominatim(enderecoBruto);
+  };
+
+  // Photon tambem com throttle (API publica do komoot, mesma cortesia do
+  // Nominatim). Entrou 14/10 entre Google e Nominatim na cascata.
+  const geocodificarPhotonThrottled = async (enderecoBruto: string) => {
+    await esperar(ESPERA_ENTRE_CHAMADAS_MS);
+    return geocodificarPhoton(enderecoBruto);
   };
 
   // Achado real 03/09 (grupo KPI AJUSTES, geocode de Nutry Max do dia,
@@ -385,6 +392,7 @@ export async function POST(request: Request) {
       }, precisaoBairro),
       geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome, precisaoBairro),
       geocodificarGoogle,
+      geocodificarPhoton: geocodificarPhotonThrottled,
       geocodificarNominatim: geocodificarNominatimThrottled,
     });
   };

@@ -35,7 +35,7 @@
 // -- chamada servidor-a-servidor, nunca do browser.
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarNominatim, escolherPontoReferencia, normalizarEndereco } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, escolherPontoReferencia, normalizarEndereco } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade, extrairRuaDoEndereco, normalizarNomeRua } from "@/lib/romaneio-geocode-local";
 import { validarTerritorio, type MotivoTerritorio } from "@/lib/territorio";
 import { montarDepsTerritorio } from "./territorio-deps";
@@ -114,6 +114,11 @@ export async function POST(request: Request) {
   const geocodificarNominatimThrottled = async (enderecoBruto: string) => {
     await esperar(ESPERA_ENTRE_CHAMADAS_MS);
     return geocodificarNominatim(enderecoBruto);
+  };
+
+  const geocodificarPhotonThrottled = async (enderecoBruto: string) => {
+    await esperar(ESPERA_ENTRE_CHAMADAS_MS);
+    return geocodificarPhoton(enderecoBruto);
   };
 
   const buscarCandidatosPorNome = async (nomeNormalizado: string) => {
@@ -406,6 +411,7 @@ export async function POST(request: Request) {
       geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome, precisaoBairro),
       geocodificarCnefeBairroDep: (endereco) => geocodificarCnefePorBairro(endereco, municipioCodigo, buscarCnefePorLocalidade),
       geocodificarGoogle,
+      geocodificarPhoton: geocodificarPhotonThrottled,
       geocodificarNominatim: geocodificarNominatimThrottled,
     });
 

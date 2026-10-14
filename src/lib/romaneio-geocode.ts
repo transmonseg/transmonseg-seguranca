@@ -356,7 +356,7 @@ export async function geocodificarCnefePorBairro(
 // 11-12/09: e' exatamente por aqui que entram os erros grosseiros (22km,
 // 27km, 131km -- rua homonima de outro municipio), entao quem consome precisa
 // saber a diferenca. Ver migration 078 e avisarSemPontoCidade abaixo.
-export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro"; validado: boolean } | null;
+export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_bairro"; validado: boolean } | null;
 
 type Deps = {
   buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string; validado?: boolean } | null>;
@@ -374,6 +374,13 @@ type Deps = {
   // antigo pra quem nao passar (nunca quebra teste existente).
   geocodificarCnefeBairroDep?: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
   geocodificarGoogle: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
+  // Photon (OSM, komoot) entrou 14/10 como fallback gratis entre Google e
+  // Nominatim -- achado real: Google morreu (billing off no projeto Cloud ->
+  // REQUEST_DENIED), e nos 61 enderecos RQ que falhavam o Nominatim
+  // estruturado resolveu 0/61 na cidade certa contra 57/61 do Photon.
+  // Opcional (como geocodificarCnefeBairroDep): undefined pula o nivel,
+  // preserva o comportamento antigo de quem nao passar.
+  geocodificarPhoton?: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
   geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
 };
 
@@ -420,7 +427,7 @@ export async function geocodificarEndereco(
   if (doCache) return {
     lat: doCache.lat,
     lng: doCache.lng,
-    fonte: doCache.fonte as "google" | "nominatim" | "local" | "cnefe" | "cnefe_bairro",
+    fonte: doCache.fonte as "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_bairro",
     validado: doCache.validado ?? true,
   };
 
@@ -485,6 +492,19 @@ export async function geocodificarEndereco(
       return { ...google, fonte: "google", validado: validadoCidade };
     }
   }
+  // Photon ANTES do Nominatim (achado 14/10, ver Deps.geocodificarPhoton) --
+  // mesma trava `perto` de distancia que Google/Nominatim, mesma flag
+  // `validado` (depende so' de ter ponto de cidade). So' roda se o dep foi
+  // fornecido; sem ele a cascata e' identica a de antes (Google -> Nominatim).
+  if (deps.geocodificarPhoton) {
+    for (const variante of variantes) {
+      const photon = await deps.geocodificarPhoton(variante);
+      if (photon && perto(photon)) {
+        await deps.salvarCache(chave, { ...photon, fonte: "photon", validado: validadoCidade });
+        return { ...photon, fonte: "photon", validado: validadoCidade };
+      }
+    }
+  }
   for (const variante of variantes) {
     const nominatim = await deps.geocodificarNominatim(variante);
     if (nominatim && perto(nominatim)) {
@@ -515,6 +535,36 @@ export async function geocodificarGoogle(enderecoBruto: string): Promise<{ lat: 
     // OSM ja resolveram antes, entao hoje isso quase nunca importa), mas
     // se a chave expirar de vez isso fica invisivel pra sempre sem log.
     console.error("geocodificarGoogle: falha na chamada:", err);
+    return null;
+  }
+}
+
+// Photon (photon.komoot.io) -- geocoder gratis sobre OpenStreetMap, SEM
+// chave de API. Entrou 14/10 na cascata (ver Deps.geocodificarPhoton e o
+// comentario do loop em geocodificarEndereco). Cobertura de rua em PT-BR
+// bem melhor que o Nominatim cru (teste real: 57/61 vs 0/61 nos enderecos
+// RQ que falhavam). Nao tem filtro de pais, entao confia na trava `perto`
+// de geocodificarEndereco (30km do ponto de cidade) pra barrar match
+// estrangeiro/errado -- exatamente como Google e Nominatim. Sem teste
+// automatizado (chamada de rede real), igual aos outros dois.
+export async function geocodificarPhoton(enderecoBruto: string): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(enderecoBruto)}&limit=1&lang=default`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "TransmonsegCentral/1.0" },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { features?: { geometry?: { coordinates?: [number, number] } }[] };
+    const coords = data.features?.[0]?.geometry?.coordinates;
+    // Photon devolve [lng, lat] (padrao GeoJSON), ordem invertida do resto.
+    if (!coords || coords.length < 2) return null;
+    const [lng, lat] = coords;
+    return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+  } catch (err) {
+    // Mesmo motivo do catch de geocodificarGoogle/Nominatim: degrada pro
+    // proximo tier da cascata (Nominatim), com log pra nao sumir silencioso.
+    console.error("geocodificarPhoton: falha na chamada:", err);
     return null;
   }
 }
