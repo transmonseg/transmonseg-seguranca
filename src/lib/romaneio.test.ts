@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizarPlaca, extrairDataRomaneio, parseRomaneio, montarPontosDeRomaneio } from "./romaneio";
+import { normalizarPlaca, extrairDataRomaneio, parseRomaneio, montarPontosDeRomaneio, variantesOZero, resolverPlacaNoCadastro } from "./romaneio";
 import type { PontoEntrega } from "./unitrac";
 
 function pontoUnitrac(overrides: Partial<PontoEntrega> = {}): PontoEntrega {
@@ -195,9 +195,42 @@ describe("montarPontosDeRomaneio", () => {
   });
 });
 
-describe("correcao de placa da fonte (06/10, RQO-9H37 com rastreador travado)", () => {
-  it("RQO-9H37 do romaneio vai pro rastreador que funciona (RQ0-9H37, com zero)", () => {
-    expect(normalizarPlaca("RQO9H37")).toBe("RQ0-9H37");
-    expect(normalizarPlaca("RQO-9H37")).toBe("RQ0-9H37");
+describe("correcao de placa da fonte", () => {
+  it("RGU-5G33 do documento e' RQU-5G33 (confirmado na Unitrac)", () => {
+    expect(normalizarPlaca("RGU5G33")).toBe("RQU-5G33");
+  });
+
+  // 15/10 (auditoria DR-05): a correcao RQO->RQ0 de 06/10 virou regressao -- o
+  // cadastro hoje so' tem RQO-9H37 (cv 24343, o que anda) e 55 pontos ficaram
+  // sem veiculo. O O/0 agora se resolve CONTRA o cadastro, nao por chute fixo.
+  it("RQO-9H37 fica como veio do documento (o cadastro e' quem decide O/0)", () => {
+    expect(normalizarPlaca("RQO9H37")).toBe("RQO-9H37");
+    expect(normalizarPlaca("RQO-9H37")).toBe("RQO-9H37");
+  });
+});
+
+describe("variantesOZero / resolverPlacaNoCadastro (DR-05)", () => {
+  it("variantesOZero troca um O<->0 por vez", () => {
+    expect(variantesOZero("RQ0-9H37")).toEqual(["RQO-9H37"]);
+    expect(variantesOZero("RQO-5E38").sort()).toEqual(["RQ0-5E38"]);
+    expect(variantesOZero("ABC-1D23")).toEqual([]);
+  });
+
+  it("exata vence", () => {
+    expect(resolverPlacaNoCadastro("RQO-9H37", new Set(["RQO-9H37", "RQ0-9H37"]))).toBe("RQO-9H37");
+  });
+
+  it("placa com zero resolve para a letra O do cadastro (e vice-versa)", () => {
+    expect(resolverPlacaNoCadastro("RQ0-9H37", new Set(["RQO-9H37"]))).toBe("RQO-9H37");
+    expect(resolverPlacaNoCadastro("RQO-5E38", new Set(["RQ0-5E38"]))).toBe("RQ0-5E38");
+  });
+
+  it("duas candidatas: nao chuta", () => {
+    expect(resolverPlacaNoCadastro("R00-1A11", new Set(["RO0-1A11", "R0O-1A11"]))).toBeNull();
+  });
+
+  it("sem candidata no cadastro: null (placa sem veiculo de verdade)", () => {
+    expect(resolverPlacaNoCadastro("TUP-0B49", new Set(["TUP-0B50"]))).toBeNull();
+    expect(resolverPlacaNoCadastro("-", new Set(["RQO-9H37"]))).toBeNull();
   });
 });

@@ -39,10 +39,10 @@ export type LinhaRomaneio = {
 // existe na frota + placa certa existe e bate com a rota) -- nunca chute.
 const PLACA_CORRECOES_FONTE: Record<string, string> = {
   "RGU-5G33": "RQU-5G33",
-  // 06/10: a frota tem RQO-9H37 (letra O, rastreador 24138, posicao parada o
-  // dia todo) e RQ0-9H37 (zero, rastreador 24343, o que anda). O romaneio vem
-  // com O; o caminhao de verdade e' o do rastreador que funciona.
-  "RQO-9H37": "RQ0-9H37",
+  // RQO-9H37 -> RQ0-9H37 (06/10) REMOVIDA em 15/10 (auditoria DR-05): o cadastro
+  // hoje so' tem RQO-9H37 (cv 24343, o que anda); a regra reescrevia o documento
+  // para uma placa inexistente e 55 pontos ficaram sem veiculo. O O/0 agora se
+  // resolve contra o cadastro (resolverPlacaNoCadastro).
 };
 
 // Placa do romaneio vem sem hifen (ex. "TUL1C38"); o banco usa com hifen
@@ -56,6 +56,25 @@ export function normalizarPlaca(placaBruta: string): string {
     ? limpa
     : `${limpa.slice(0, 3)}-${limpa.slice(3)}`;
   return PLACA_CORRECOES_FONTE[normalizada] ?? normalizada;
+}
+
+/** Placas com UMA troca O<->0 (documento impresso confunde letra O e zero). */
+export function variantesOZero(placa: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < placa.length; i++) {
+    const c = placa[i];
+    if (c !== "O" && c !== "0") continue;
+    out.push(placa.slice(0, i) + (c === "O" ? "0" : "O") + placa.slice(i + 1));
+  }
+  return out;
+}
+
+/** Placa do documento -> placa do cadastro: exata; senao a UNICA variante O/0
+ *  cadastrada; ambigua ou inexistente = null (nunca chuta). */
+export function resolverPlacaNoCadastro(placaNorm: string, cadastradas: Set<string>): string | null {
+  if (cadastradas.has(placaNorm)) return placaNorm;
+  const candidatas = [...new Set(variantesOZero(placaNorm))].filter((p) => cadastradas.has(p));
+  return candidatas.length === 1 ? candidatas[0] : null;
 }
 
 // Data do romaneio vem do cabecalho impresso em CADA pagina (ex. "15/07/2026

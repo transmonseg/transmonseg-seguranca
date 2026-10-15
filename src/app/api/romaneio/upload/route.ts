@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, type LinhaRomaneio } from "@/lib/romaneio";
+import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, variantesOZero, resolverPlacaNoCadastro, type LinhaRomaneio } from "@/lib/romaneio";
 import { parseRomaneioTabular, extrairDataTabular } from "@/lib/romaneio-tabular";
 import { extrairTextoPlanilha } from "@/lib/romaneio-planilha";
 import { extrairRomaneioViaLLM, chamarOllama, chamarMistral, type LinhaRomaneioExtraida } from "@/lib/romaneio-llm-extrator";
@@ -211,8 +211,19 @@ export async function POST(request: Request) {
 
   // Resolve veiculo_id por placa normalizada.
   const placasUnicas = [...new Set(linhasNormalizadas.map((l) => normalizarPlaca(l.placaBruta)))];
-  const { data: veiculos } = await admin.from("veiculos").select("id, placa").in("placa", placasUnicas);
-  const veiculoPorPlaca = new Map((veiculos ?? []).map((v) => [v.placa, v]));
+  // DR-05 (auditoria 15/10): consulta tambem as variantes O<->0, porque o
+  // documento troca letra O e zero (RQ0-9H37 x RQO-9H37) e a linha ficava
+  // sem veiculo pra sempre, invisivel ao motor.
+  const placasConsulta = [...new Set([...placasUnicas, ...placasUnicas.flatMap(variantesOZero)])];
+  const { data: veiculos } = await admin.from("veiculos").select("id, placa").in("placa", placasConsulta);
+  const cadastradas = new Set((veiculos ?? []).map((v) => v.placa as string));
+  const veiculoPorCadastro = new Map((veiculos ?? []).map((v) => [v.placa, v]));
+  const veiculoPorPlaca = new Map<string, { id: string; placa: string }>();
+  for (const p of placasUnicas) {
+    const alvo = resolverPlacaNoCadastro(p, cadastradas);
+    const v = alvo ? veiculoPorCadastro.get(alvo) : undefined;
+    if (v) veiculoPorPlaca.set(p, v as { id: string; placa: string });
+  }
   const placasNaoEncontradas = placasUnicas.filter((p) => !veiculoPorPlaca.has(p));
 
   const enviadoPor = viaKpi
