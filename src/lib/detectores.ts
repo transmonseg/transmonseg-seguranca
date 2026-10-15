@@ -331,6 +331,7 @@ export function detectarParadaLonga(ctx: {
   foraDaBase: boolean;
   noCliente?: boolean;
   temPOIProximo?: boolean;
+  poiNaoVerificado?: boolean;
   entregasFeitas?: number;
   entregasTotal?: number;
 }): Alerta | null {
@@ -344,7 +345,7 @@ export function detectarParadaLonga(ctx: {
     return {
       nivel: "critico",
       tipo: "parada_longa",
-      motivo: `Parado ha ${formataDuracao(ctx.paradoMin)}, contatar equipe`,
+      motivo: `Parado ha ${formataDuracao(ctx.paradoMin)}, contatar equipe${ctx.poiNaoVerificado ? SUFIXO_POI_NAO_VERIFICADO : ""}`,
       score: 50,
     };
   }
@@ -369,6 +370,7 @@ export function detectarParadaAnomala(ctx: {
   esMadrugada: boolean;       // 00h-05h fuso Sao Paulo
   emZonaRisco: boolean;       // dentro de geofence tipo "risco"
   temPOIProximo: boolean;     // posto/restaurante/farmacia a <80m
+  poiNaoVerificado?: boolean; // Overpass fora do ar: nao deu pra checar POI
   jaParedoNoCicloAnterior: boolean; // anti-pisca
   vizinhosParados?: number;   // outros veiculos da frota parados num raio curto
 }): Alerta | null {
@@ -389,7 +391,8 @@ export function detectarParadaAnomala(ctx: {
   // conservador que repetir o par exato que falhou pra estrada. Se
   // reproduzir ruido de transito pesado, e uma reversao facil (1 linha) e
   // o monitoramento periodico ja em andamento vai pegar isso.
-  const limiteMin = ctx.estavEmMovimento ? 12 : 20;
+  const limiteBase = ctx.estavEmMovimento ? 12 : 20;
+  const limiteMin = ctx.poiNaoVerificado ? Math.max(limiteBase, PARADA_POI_NAO_VERIFICADO_MIN) : limiteBase;
   if (ctx.paradoMin < limiteMin || ctx.paradoMin >= 90) return null; // >= 90 ja e parada_longa
 
   let score = 55;
@@ -402,13 +405,14 @@ export function detectarParadaAnomala(ctx: {
   const nivel: "critico" | "atencao" = "critico";
 
   const duracao = formataDuracao(ctx.paradoMin);
-  const sufixo = (ctx.esMadrugada && ctx.emZonaRisco)
+  const sufixoRisco = (ctx.esMadrugada && ctx.emZonaRisco)
     ? " (MADRUGADA + AREA DE RISCO)"
     : ctx.esMadrugada
       ? " (madrugada)"
       : ctx.emZonaRisco
         ? " (area de risco)"
         : "";
+  const sufixo = sufixoRisco + (ctx.poiNaoVerificado ? SUFIXO_POI_NAO_VERIFICADO : "");
   return {
     nivel,
     tipo: "parada_anomala",
@@ -479,6 +483,14 @@ export function detectarParadaAnomala(ctx: {
 // ciclo.
 export const PARADA_FORA_TAPETE_MIN = 3;
 
+// Auditoria 15/10 (DM-03/DR-02): Overpass fora do ar virava "POI presente" e
+// calava parada_anomala/parada_fora_tapete na frota inteira (12-70/dia ->
+// 2-4/dia). Politica do usuario: aceitar falso positivo, nunca perder real.
+// "Nao verificado" NAO e' "tem POI": a parada passa, so' com piso de 20 min
+// (rodovia/posto legitimo sai sozinho antes) e o motivo diz que o POI nao foi checado.
+export const PARADA_POI_NAO_VERIFICADO_MIN = 20;
+const SUFIXO_POI_NAO_VERIFICADO = " (POI não verificado)";
+
 export function detectarParadaForaTapete(ctx: {
   paradoMin: number;
   emOperacao: boolean;
@@ -486,6 +498,7 @@ export function detectarParadaForaTapete(ctx: {
   noCliente: boolean;
   dentroTapete: boolean | null;
   temPOIProximo: boolean;
+  poiNaoVerificado?: boolean;
   vizinhosParados?: number;
   riscoAreaAtual: number;
 }): Alerta | null {
@@ -497,6 +510,7 @@ export function detectarParadaForaTapete(ctx: {
   if (ctx.dentroTapete !== false) return null;
   if (ctx.paradoMin < PARADA_FORA_TAPETE_MIN) return null;
   if (ctx.temPOIProximo) return null; // parada em local legitimo (posto/apoio)
+  if (ctx.poiNaoVerificado && ctx.paradoMin < PARADA_POI_NAO_VERIFICADO_MIN) return null;
   // Congestionamento: 2+ outros veiculos da frota parados na mesma area =
   // transito/fila, nao roubo — mesma régua de detectarParadaAnomala.
   if ((ctx.vizinhosParados ?? 0) >= 2) return null;
@@ -506,7 +520,7 @@ export function detectarParadaForaTapete(ctx: {
   return {
     nivel,
     tipo: "parada_fora_tapete",
-    motivo: `Parado há ${duracao} fora de qualquer via conhecida da frota, sem ponto de entrega por perto`,
+    motivo: `Parado há ${duracao} fora de qualquer via conhecida da frota, sem ponto de entrega por perto${ctx.poiNaoVerificado ? SUFIXO_POI_NAO_VERIFICADO : ""}`,
     score: nivel === "critico" ? 65 : 45,
   };
 }
@@ -1112,6 +1126,7 @@ export type CtxAvaliacao = {
   esMadrugada?: boolean;
   emZonaRisco?: boolean;
   temPOIProximo?: boolean;
+  poiNaoVerificado?: boolean;
   jaParedoNoCicloAnterior?: boolean;
   vizinhosParados?: number;
   // Achado real 26/08 (grupo DESVIO DE ROTA, caso RBJ-2J67 "parada anômala
@@ -1161,7 +1176,9 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
       rumoMovimento: ctx.rumoMovimento ?? null,
       rumoBase: ctx.rumoBase ?? null,
       distBaseM: ctx.distBaseM ?? null,
-      temPOIProximo: ctx.temPOIProximo ?? false,
+      // Mantem a supressao anterior: sem POI verificado, saida_nao_autorizada
+      // parado nao dispara (nao tem piso de minutos como as paradas).
+      temPOIProximo: (ctx.temPOIProximo ?? false) || (ctx.poiNaoVerificado ?? false),
     }),
     detectarExcessoVelocidade(p),
     detectarParadaCliente({
@@ -1177,6 +1194,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           foraDaBase: ctx.foraDaBase,
           noCliente: ctx.noCliente,
           temPOIProximo: ctx.temPOIProximo,
+          poiNaoVerificado: ctx.poiNaoVerificado,
           entregasFeitas: ctx.entregasFeitas,
           entregasTotal: ctx.entregasTotal,
         }),
@@ -1190,6 +1208,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           esMadrugada: ctx.esMadrugada ?? false,
           emZonaRisco: ctx.emZonaRisco ?? false,
           temPOIProximo: ctx.temPOIProximo ?? false,
+          poiNaoVerificado: ctx.poiNaoVerificado,
           jaParedoNoCicloAnterior: ctx.jaParedoNoCicloAnterior ?? false,
           vizinhosParados: ctx.vizinhosParados ?? 0,
         })
@@ -1203,6 +1222,7 @@ export function montarCandidatosCore(p: PosicaoNormalizada, ctx: CtxAvaliacao): 
           noCliente: ctx.noCliente ?? false,
           dentroTapete: ctx.dentroTapete ?? null,
           temPOIProximo: ctx.temPOIProximo ?? false,
+          poiNaoVerificado: ctx.poiNaoVerificado,
           vizinhosParados: ctx.vizinhosParados ?? 0,
           riscoAreaAtual: ctx.riscoAreaAtual ?? 0,
         }),

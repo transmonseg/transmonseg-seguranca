@@ -222,6 +222,7 @@ export function avaliarParadasRomaneio(ctx: {
   estavEmMovimento: boolean;
   esMadrugada: boolean;
   temPOIProximo: boolean;
+  poiNaoVerificado?: boolean;
   jaParedoNoCicloAnterior: boolean;
   vizinhosParados: number;
   dentroTapete: boolean | null;
@@ -234,6 +235,7 @@ export function avaliarParadasRomaneio(ctx: {
       foraDaBase: ctx.foraDaBase,
       noCliente: ctx.noCliente,
       temPOIProximo: ctx.temPOIProximo,
+      poiNaoVerificado: ctx.poiNaoVerificado,
     }),
     detectarParadaAnomala({
       paradoMin: ctx.paradoMin,
@@ -246,6 +248,7 @@ export function avaliarParadasRomaneio(ctx: {
       // entra pelo riscoAreaAtual (parada_fora_tapete), não por este flag.
       emZonaRisco: false,
       temPOIProximo: ctx.temPOIProximo,
+      poiNaoVerificado: ctx.poiNaoVerificado,
       jaParedoNoCicloAnterior: ctx.jaParedoNoCicloAnterior,
       vizinhosParados: ctx.vizinhosParados,
     }),
@@ -256,6 +259,7 @@ export function avaliarParadasRomaneio(ctx: {
       noCliente: ctx.noCliente,
       dentroTapete: ctx.dentroTapete,
       temPOIProximo: ctx.temPOIProximo,
+      poiNaoVerificado: ctx.poiNaoVerificado,
       vizinhosParados: ctx.vizinhosParados,
       riscoAreaAtual: ctx.riscoAreaAtual,
     }),
@@ -1959,12 +1963,14 @@ export async function POST(request: Request) {
                 temPOI = await temPOIProximo(latAtual, lngAtual, pool);
               } catch {
                 overpassFalhou = true;
-                // Overpass fora do ar: assume POI presente (mesma decisão da
-                // Central, route.ts:2010-2016) -- prefere não inundar a
-                // operação com falso positivo em massa durante instabilidade.
-                temPOI = true;
+                // Overpass fora do ar: "não consegui checar" NÃO vira "tem POI"
+                // (auditoria 15/10, DM-03/DR-02): a parada passa com piso de
+                // 20 min e motivo "(POI não verificado)". O ciclo continua
+                // marcado como não confiável (overpassFalhou) pra não FECHAR
+                // alerta de parada por causa de um sinal que não foi medido.
+                temPOI = false;
                 if (!erros.some((e) => e.includes("Overpass"))) {
-                  erros.push("Aviso: Overpass indisponivel neste ciclo, POI assumido presente");
+                  erros.push("Aviso: Overpass indisponivel neste ciclo, parada avaliada com POI nao verificado");
                 }
               }
             }
@@ -2032,6 +2038,7 @@ export async function POST(request: Request) {
                 estavEmMovimento,
                 esMadrugada: horaSPAgora >= 0 && horaSPAgora < 5,
                 temPOIProximo: temPOI,
+                poiNaoVerificado: overpassFalhou,
                 jaParedoNoCicloAnterior:
                   anterior != null && anterior.velocidade === 0 && mesmoPonto,
                 vizinhosParados,

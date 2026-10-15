@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import type pg from "pg";
-import { temPOIProximo } from "./overpass";
+import { temPOIProximo, _resetarCircuitoOverpassParaTeste } from "./overpass";
 
 // Pool falso: cache sempre vazio (forca a consulta ao Overpass) e INSERT
 // no-op. `queries` guarda o SQL executado pra provar que uma falha de rede
@@ -21,8 +21,13 @@ function poolFalso(cacheRows: { tem_poi: boolean; atualizado_em: Date }[] = []) 
   return { pool, queries };
 }
 
+beforeEach(() => {
+  _resetarCircuitoOverpassParaTeste();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("temPOIProximo -- contrato de falha (achado I3 da revisao final de branch)", () => {
@@ -99,5 +104,47 @@ describe("temPOIProximo -- contrato de falha (achado I3 da revisao final de bran
     const { pool } = poolFalso([{ tem_poi: true, atualizado_em: new Date() }]);
     await expect(temPOIProximo(-22.9, -43.2, pool)).resolves.toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("circuito do Overpass (auditoria 15/10, DM-02): fora do ar nao trava o ciclo", () => {
+  it("3 falhas seguidas abrem o circuito: a 4a chamada nem toca na rede", async () => {
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("ETIMEDOUT"));
+    vi.stubGlobal("fetch", fetchSpy);
+    const { pool } = poolFalso();
+    for (let i = 0; i < 3; i++) await expect(temPOIProximo(-22.9, -43.2, pool)).rejects.toThrow();
+    await expect(temPOIProximo(-22.9, -43.2, pool)).rejects.toThrow(/circuito aberto/);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("depois da pausa de 5 min volta a tentar", async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("ETIMEDOUT"));
+    vi.stubGlobal("fetch", fetchSpy);
+    const { pool } = poolFalso();
+    for (let i = 0; i < 3; i++) await expect(temPOIProximo(-22.9, -43.2, pool)).rejects.toThrow();
+    vi.advanceTimersByTime(5 * 60_000 + 1);
+    await expect(temPOIProximo(-22.9, -43.2, pool)).rejects.toThrow(/ETIMEDOUT/);
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it("um sucesso zera a contagem de falhas", async () => {
+    const ruim = vi.fn().mockRejectedValue(new Error("ETIMEDOUT"));
+    const bom = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ elements: [{ tags: { total: "0" } }] }) });
+    const { pool } = poolFalso();
+    vi.stubGlobal("fetch", ruim);
+    for (let i = 0; i < 2; i++) await expect(temPOIProximo(-22.9, -43.2, pool)).rejects.toThrow();
+    vi.stubGlobal("fetch", bom);
+    await expect(temPOIProximo(-22.9, -43.2, pool)).resolves.toBe(false);
+    vi.stubGlobal("fetch", ruim);
+    for (let i = 0; i < 2; i++) await expect(temPOIProximo(-22.9, -43.2, pool)).rejects.toThrow(/ETIMEDOUT/);
+  });
+
+  it("cache fresco passa pelo circuito aberto", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("x")));
+    const { pool } = poolFalso();
+    for (let i = 0; i < 3; i++) await expect(temPOIProximo(-22.9, -43.2, pool)).rejects.toThrow();
+    const { pool: comCache } = poolFalso([{ tem_poi: true, atualizado_em: new Date() }]);
+    await expect(temPOIProximo(-22.9, -43.2, comCache)).resolves.toBe(true);
   });
 });

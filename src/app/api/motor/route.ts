@@ -2201,6 +2201,9 @@ export async function POST(request: Request) {
           let estavEmMovimento = false;
           let esMadrugada = false;
           let temPOI = false;
+          // Overpass fora do ar: nao deu pra checar. Antes virava temPOI=true e
+          // calava parada_anomala/parada_fora_tapete (auditoria 15/10, DM-03).
+          let poiNaoVerificado = false;
           const jaParedoNoCicloAnterior =
             anterior != null &&
             anterior.velocidade === 0 &&
@@ -2255,12 +2258,13 @@ export async function POST(request: Request) {
             try {
               temPOI = await temPOIProximo(pos.lat, pos.lng, pool);
             } catch {
-              // Overpass indisponivel: assumir POI presente (beneficio da duvida).
-              // Prefere nao disparar falso positivo a criar ruido em massa durante
-              // instabilidade da API (afeta todos os veiculos parados do ciclo).
-              temPOI = true;
+              // Overpass indisponivel: NAO vira "tem POI" (politica do usuario:
+              // aceitar falso positivo, nunca perder real). O detector exige
+              // piso de 20 min e marca o motivo como "POI nao verificado".
+              temPOI = false;
+              poiNaoVerificado = true;
               if (!erros.some((e) => e.includes("Overpass"))) {
-                erros.push("Aviso: Overpass indisponivel neste ciclo, POI assumido presente");
+                erros.push("Aviso: Overpass indisponivel neste ciclo, parada avaliada com POI nao verificado");
               }
             }
           }
@@ -2838,6 +2842,7 @@ export async function POST(request: Request) {
                   esMadrugada,
                   emZonaRisco: false,
                   temPOIProximo: temPOI,
+                  poiNaoVerificado,
                   vizinhosParados,
                   jaParedoNoCicloAnterior,
                   rumoBase,

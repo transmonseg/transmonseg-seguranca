@@ -1447,3 +1447,53 @@ describe("suprimidoPorCooldownTemporal -- predicado real do motor (desvio 15min,
     })).toBe(false);
   });
 });
+
+describe("POI nao verificado (auditoria 15/10, DM-03/DR-02): Overpass fora nao pode silenciar parada", () => {
+  const base = { emOperacao: true, foraDaBase: true, noCliente: false };
+
+  it("parada_anomala de 15 min com POI nao verificado espera 20 min", () => {
+    const ctx = { ...base, estavEmMovimento: true, esMadrugada: false, emZonaRisco: false, temPOIProximo: false, jaParedoNoCicloAnterior: true };
+    expect(detectarParadaAnomala({ ...ctx, paradoMin: 15, poiNaoVerificado: true })).toBeNull();
+    const a = detectarParadaAnomala({ ...ctx, paradoMin: 25, poiNaoVerificado: true });
+    expect(a?.tipo).toBe("parada_anomala");
+    expect(a?.motivo).toContain("(POI não verificado)");
+  });
+
+  it("com POI verificado nada muda (15 min dispara, sem sufixo)", () => {
+    const ctx = { ...base, estavEmMovimento: true, esMadrugada: false, emZonaRisco: false, temPOIProximo: false, jaParedoNoCicloAnterior: true };
+    const a = detectarParadaAnomala({ ...ctx, paradoMin: 15 });
+    expect(a?.tipo).toBe("parada_anomala");
+    expect(a?.motivo).not.toContain("POI não verificado");
+  });
+
+  it("POI confirmado presente continua suprimindo", () => {
+    const ctx = { ...base, estavEmMovimento: true, esMadrugada: false, emZonaRisco: false, temPOIProximo: true, jaParedoNoCicloAnterior: true };
+    expect(detectarParadaAnomala({ ...ctx, paradoMin: 40 })).toBeNull();
+  });
+
+  it("parada_fora_tapete com POI nao verificado exige 20 min", () => {
+    const ctx = { ...base, dentroTapete: false as const, temPOIProximo: false, riscoAreaAtual: 0 };
+    expect(detectarParadaForaTapete({ ...ctx, paradoMin: 10, poiNaoVerificado: true })).toBeNull();
+    const a = detectarParadaForaTapete({ ...ctx, paradoMin: 25, poiNaoVerificado: true });
+    expect(a?.tipo).toBe("parada_fora_tapete");
+    expect(a?.motivo).toContain("(POI não verificado)");
+    expect(detectarParadaForaTapete({ ...ctx, paradoMin: 10 })).not.toBeNull();
+  });
+
+  it("parada_longa com POI nao verificado dispara com sufixo", () => {
+    const a = detectarParadaLonga({ ...base, paradoMin: 100, poiNaoVerificado: true });
+    expect(a?.tipo).toBe("parada_longa");
+    expect(a?.motivo).toContain("(POI não verificado)");
+  });
+
+  it("saida_nao_autorizada parado continua suprimida com POI nao verificado (comportamento anterior)", () => {
+    const cands = montarCandidatosCore(
+      { fresco: true, ignicao: true, velocidade: 0 } as Parameters<typeof montarCandidatosCore>[0],
+      {
+        paradoMin: 0, emOperacao: true, foraDaBase: true, noCliente: false, temPendentes: false,
+        entregasTotal: 0, distBaseM: 8000, temPOIProximo: false, poiNaoVerificado: true,
+      } as Parameters<typeof montarCandidatosCore>[1],
+    );
+    expect(cands.find((c) => c.tipo === "saida_nao_autorizada")).toBeUndefined();
+  });
+});

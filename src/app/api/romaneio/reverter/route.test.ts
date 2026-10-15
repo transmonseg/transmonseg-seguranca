@@ -5,7 +5,13 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({ auth: { getUser: mockGetUser } }),
 }));
 
+const mockAcesso = vi.fn();
+vi.mock("@/lib/acesso-cliente", () => ({ acessoDoUsuario: () => mockAcesso() }));
+const mockIdsVeiculos = vi.fn();
+vi.mock("@/lib/acesso-guardas", () => ({ idsVeiculosDoCliente: (a: unknown) => mockIdsVeiculos(a) }));
+
 const mockEq = vi.fn();
+const mockIn = vi.fn();
 const mockSelect = vi.fn();
 const mockDelete = vi.fn();
 vi.mock("@/lib/supabase/admin", () => ({
@@ -29,7 +35,10 @@ describe("POST /api/romaneio/reverter", () => {
     // encadeamento delete().eq().eq().select() -- cada .eq devolve o mesmo
     // objeto pra permitir chamada em cadeia, so' o ultimo (.select) resolve.
     mockDelete.mockReturnValue({ eq: mockEq });
-    mockEq.mockImplementation(() => ({ eq: mockEq, select: mockSelect }));
+    mockEq.mockImplementation(() => ({ eq: mockEq, in: mockIn, select: mockSelect }));
+    mockIn.mockImplementation(() => ({ select: mockSelect }));
+    mockAcesso.mockResolvedValue({ tipo: "todos" });
+    mockIdsVeiculos.mockResolvedValue(null);
     mockSelect.mockResolvedValue({ data: [{ id: "1" }, { id: "2" }], error: null });
   });
 
@@ -80,6 +89,34 @@ describe("POST /api/romaneio/reverter", () => {
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao({}));
     expect(res.status).toBe(400);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  // ─── OP-10 (auditoria 15/10): conta de cliente so' desfaz a propria frota.
+
+  it("conta de um cliente: apaga so' os veiculos dela, em lotes de 50", async () => {
+    mockAcesso.mockResolvedValue({ tipo: "um", clienteId: "nutry" });
+    mockIdsVeiculos.mockResolvedValue(Array.from({ length: 120 }, (_, i) => `v${i}`));
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao({ romaneioData: "2026-10-15" }));
+    expect(res.status).toBe(200);
+    expect(mockIn).toHaveBeenCalledTimes(3);
+    expect(mockIn.mock.calls[0][1]).toHaveLength(50);
+    expect(mockIn.mock.calls[2][1]).toHaveLength(20);
+    expect((await res.json()).linhasRemovidas).toBe(6);
+  });
+
+  it("central: nao filtra por veiculo", async () => {
+    const { POST } = await import("./route");
+    await POST(criarRequisicao({ romaneioData: "2026-10-15" }));
+    expect(mockIn).not.toHaveBeenCalled();
+  });
+
+  it("sem operador cadastrado: 403 e nao apaga nada", async () => {
+    mockAcesso.mockResolvedValue({ tipo: "nenhum" });
+    const { POST } = await import("./route");
+    const res = await POST(criarRequisicao({ romaneioData: "2026-10-15" }));
+    expect(res.status).toBe(403);
     expect(mockDelete).not.toHaveBeenCalled();
   });
 });

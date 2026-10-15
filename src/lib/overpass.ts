@@ -60,6 +60,26 @@ const OVERPASS_URL = "https://maps.mail.ru/osm/tools/overpass/api/interpreter";
 const RAIO_M = 80;
 const CACHE_DIAS = 7;
 
+// Circuito (auditoria 15/10, DM-02/DR-02): com o mirror fora do ar cada
+// candidato a parada esperava ate' 6 s SEQUENCIAIS pelo fetch -- o ciclo do
+// motor foi de 30 s pra 95-118 s de dia. Depois de FALHAS_PARA_ABRIR falhas
+// seguidas o modulo para de bater na rede por PAUSA_CIRCUITO_MS e lanca na
+// hora (mesmo contrato: "nao consegui checar"). Cache fresco nao passa por aqui.
+const FALHAS_PARA_ABRIR = 3;
+const PAUSA_CIRCUITO_MS = 5 * 60_000;
+let falhasSeguidas = 0;
+let pausadoAte = 0;
+
+export function _resetarCircuitoOverpassParaTeste(): void {
+  falhasSeguidas = 0;
+  pausadoAte = 0;
+}
+
+function registrarFalhaOverpass(): void {
+  falhasSeguidas += 1;
+  if (falhasSeguidas >= FALHAS_PARA_ABRIR) pausadoAte = Date.now() + PAUSA_CIRCUITO_MS;
+}
+
 // Arredonda lat/lng a 3 casas decimais (~111m de resolucao) para maximizar cache hits.
 function arredondar(v: number): number {
   return Math.round(v * 1000) / 1000;
@@ -112,6 +132,9 @@ export async function temPOIProximo(
     // Os dois call sites atuais ja faziam exatamente isso (fail-open,
     // temPOI=true) pro caminho de erro de pool/DB -- nenhum precisou mudar,
     // so passaram a ser acionados pelo caso que importa.
+    if (Date.now() < pausadoAte) {
+      throw new Error("Overpass indisponivel (circuito aberto apos falhas seguidas)");
+    }
     let temPoi = false;
     let res: Response;
     try {
@@ -122,9 +145,11 @@ export async function temPOIProximo(
         signal: AbortSignal.timeout(6000),
       });
     } catch (err) {
+      registrarFalhaOverpass();
       throw new Error(`Overpass indisponivel (rede/timeout): ${String(err)}`);
     }
     if (!res.ok) {
+      registrarFalhaOverpass();
       // 429 (rate limit) e 504 (gateway timeout) sao os dois modos de falha
       // recorrentes do overpass-api.de publico -- ambos sao "nao consegui
       // checar", nunca "nao ha POI".
@@ -145,8 +170,11 @@ export async function temPOIProximo(
       const total = json.elements?.[0]?.tags?.total;
       temPoi = total != null ? Number(total) > 0 : (json.elements?.length ?? 0) > 0;
     } catch (err) {
+      registrarFalhaOverpass();
       throw new Error(`Overpass devolveu corpo invalido: ${String(err)}`);
     }
+    falhasSeguidas = 0;
+    pausadoAte = 0;
 
     // Gravar no cache
     await pgClient.query(
