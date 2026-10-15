@@ -7,6 +7,8 @@
 // Component) pra nao duplicar a query entre os dois lugares.
 import { createClient } from "@/lib/supabase/server";
 import { apurarQualidade } from "@/lib/qualidade-tratamento";
+import { acessoDoUsuario } from "@/lib/acesso-cliente";
+import { ehCentral } from "@/lib/acesso-guardas";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +16,8 @@ export async function GET(request: Request) {
   const auth = await createClient();
   const { data: { user } } = await auth.auth.getUser();
   if (!user) return Response.json({ erro: "nao autorizado" }, { status: 401 });
+  // OP-10: análise de tratamento por operador é da central, não de conta de cliente.
+  if (!ehCentral(await acessoDoUsuario())) return Response.json({ erro: "sem permissao" }, { status: 403 });
 
   const { searchParams } = new URL(request.url);
   const dias = Math.max(1, Math.min(90, parseInt(searchParams.get("dias") ?? "14", 10) || 14));

@@ -1,6 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ORIGENS_ROMANEIO, type OrigemRomaneio } from "@/lib/romaneio-origem";
+import { acessoDoUsuario } from "@/lib/acesso-cliente";
+import { idsVeiculosDoCliente } from "@/lib/acesso-guardas";
 
 // Achado real 31/07 (cliente Nutry Max): usuario quer poder desfazer um
 // romaneio processado (ex.: subiu o arquivo errado, ou quer reprocessar do
@@ -23,6 +25,11 @@ export async function POST(request: Request) {
   const { data: { user } } = await auth.auth.getUser();
   if (!user) return Response.json({ ok: false, erro: "nao autorizado" }, { status: 401 });
 
+  // OP-10 (auditoria 15/10): conta de um cliente só desfaz as linhas da PRÓPRIA
+  // frota; antes qualquer login apagava o romaneio do dia de todos os clientes.
+  const acesso = await acessoDoUsuario();
+  if (acesso.tipo === "nenhum") return Response.json({ ok: false, erro: "sem permissao" }, { status: 403 });
+
   const body = await request.json().catch(() => null);
   const romaneioData = typeof body?.romaneioData === "string" ? body.romaneioData : null;
   const modoTeste = body?.modoTeste === true;
@@ -38,17 +45,31 @@ export async function POST(request: Request) {
   const origem = temOrigem ? (origemBruta as OrigemRomaneio) : null;
 
   const admin = createAdminClient();
-  let consulta = admin
-    .from("romaneio_pontos")
-    .delete()
-    .eq("romaneio_data", romaneioData)
-    .eq("modo_teste", modoTeste);
-  if (origem) consulta = consulta.eq("origem", origem);
-  const { data, error } = await consulta.select("id");
+  const veiculosDoCliente = await idsVeiculosDoCliente(acesso);
+  const apagar = async (veiculoIds: string[] | null) => {
+    let consulta = admin
+      .from("romaneio_pontos")
+      .delete()
+      .eq("romaneio_data", romaneioData)
+      .eq("modo_teste", modoTeste);
+    if (origem) consulta = consulta.eq("origem", origem);
+    if (veiculoIds) consulta = consulta.in("veiculo_id", veiculoIds);
+    return consulta.select("id");
+  };
 
-  if (error) {
-    return Response.json({ ok: false, erro: `Erro ao reverter: ${error.message}` }, { status: 500 });
+  let removidas = 0;
+  if (veiculosDoCliente === null) {
+    const { data, error } = await apagar(null);
+    if (error) return Response.json({ ok: false, erro: `Erro ao reverter: ${error.message}` }, { status: 500 });
+    removidas = data?.length ?? 0;
+  } else {
+    // Lotes de 50 ids: a lista vai na query string do PostgREST.
+    for (let i = 0; i < veiculosDoCliente.length; i += 50) {
+      const { data, error } = await apagar(veiculosDoCliente.slice(i, i + 50));
+      if (error) return Response.json({ ok: false, erro: `Erro ao reverter: ${error.message}` }, { status: 500 });
+      removidas += data?.length ?? 0;
+    }
   }
 
-  return Response.json({ ok: true, linhasRemovidas: data?.length ?? 0 });
+  return Response.json({ ok: true, linhasRemovidas: removidas });
 }

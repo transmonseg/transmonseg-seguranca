@@ -2,6 +2,8 @@
 
 import pg from "pg";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { acessoDoUsuario, podeVerCv } from "@/lib/acesso-cliente";
+import { ehCentral } from "@/lib/acesso-guardas";
 
 // Portal humano da Unitrac (autenticado, com captcha no login) — diferente
 // da API aberta datalayer.portalunitrac.com usada pro resto do app.
@@ -45,6 +47,8 @@ async function lerSessaoGuardada(): Promise<string | null> {
 // Chamado pelo script de captura manual (login com captcha feito por humano)
 // pra guardar a sessao recem-obtida.
 export async function salvarSessaoUnitrac(cookiePhpSessId: string): Promise<void> {
+  // Server action exposta: só a central troca a sessão do portal (OP-09).
+  if (!ehCentral(await acessoDoUsuario())) throw new Error("sem_permissao");
   const pool = criarPool();
   try {
     await pool.query(
@@ -154,7 +158,7 @@ async function abrirFormularioSirene(
 // Liga a sirene do veiculo. "Desligar" ainda nao foi confirmado (mesmo
 // endpoint, provavelmente outro valor em valorsirene) — nao implementado
 // ainda pra nao adivinhar e mandar comando errado pra um veiculo real.
-export async function enviarSirene(
+async function enviarSirene(
   dados: DadosRastreador
 ): Promise<{ ok: boolean; erro?: string }> {
   const cookie = await lerSessaoGuardada();
@@ -206,6 +210,11 @@ export async function enviarComandoVeiculo(
   comando: "sirene" | "bloqueio"
 ): Promise<{ ok: boolean; erro?: string; portalUrl?: string }> {
   const portalUrl = `${PORTAL}/#veiculo/${cv}`;
+
+  // OP-09: conta de cliente só aciona o cv da própria frota; central, qualquer um.
+  if (!(await podeVerCv(await acessoDoUsuario(), cv))) {
+    return { ok: false, erro: "sem_permissao", portalUrl };
+  }
 
   const pool = criarPool();
   let veiculo: {

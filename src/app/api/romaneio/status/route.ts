@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { OrigemRomaneio } from "@/lib/romaneio-origem";
+import { acessoDoUsuario } from "@/lib/acesso-cliente";
 
 type LinhaStatus = {
   nf: string;
@@ -19,6 +20,11 @@ export async function GET(request: Request) {
   const { data: { user } } = await auth.auth.getUser();
   if (!user) return Response.json({ ok: false, erro: "nao autorizado" }, { status: 401 });
 
+  // OP-10: conta de um cliente só vê o status das linhas da própria frota
+  // (antes devolvia cliente_nome/endereco de todas as NFs do dia).
+  const acesso = await acessoDoUsuario();
+  if (acesso.tipo === "nenhum") return Response.json({ ok: false, erro: "sem permissao" }, { status: 403 });
+
   const { searchParams } = new URL(request.url);
   const data = searchParams.get("data");
   const modoTeste = searchParams.get("modoTeste") === "true";
@@ -29,12 +35,13 @@ export async function GET(request: Request) {
   // Achado real 12/08: sem o filtro de modo_teste, o status misturava
   // contagem de romaneio real e de teste do mesmo dia quando os dois
   // existiam -- mesma classe de bug do /api/romaneio/reverter.
-  const consultar = (colunas: string) =>
-    admin
-      .from("romaneio_pontos")
-      .select(colunas)
-      .eq("romaneio_data", data)
-      .eq("modo_teste", modoTeste);
+  const consultar = (colunas: string) => {
+    const base = acesso.tipo === "um"
+      ? admin.from("romaneio_pontos").select(`${colunas}, veiculos!inner(cliente_id)`)
+          .eq("veiculos.cliente_id", acesso.clienteId)
+      : admin.from("romaneio_pontos").select(colunas);
+    return base.eq("romaneio_data", data).eq("modo_teste", modoTeste);
+  };
 
   // `origem` so' existe a partir da migration 059. Se o codigo subir antes
   // dela ser aplicada, o PostgREST devolve erro de coluna inexistente --

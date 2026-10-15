@@ -8,6 +8,8 @@ import { IDADE_MINIMA_ACAO_MASSA_MIN } from "@/lib/detectores";
 import { invalidarCacheAlertas } from "@/app/api/alertas/route";
 import { invalidarCacheAlertasRomaneio } from "@/app/api/alertas-romaneio/route";
 import { invalidarCacheMapa } from "@/app/api/mapa/route";
+import { acessoDoUsuario } from "@/lib/acesso-cliente";
+import { idsAlertaPermitidos } from "@/lib/acesso-guardas";
 
 // Achado real 29/08 (grupo WhatsApp: "alerta limpo demora sumir, às vezes
 // volta"): as rotas de leitura têm cache manual em memória de 8s
@@ -48,9 +50,20 @@ async function operadorAtual(): Promise<string | null> {
   return user.id;
 }
 
-async function atualizar(id: string, patch: Record<string, unknown>, tabela: TabelaAlertas = "alertas"): Promise<ResultadoAcao> {
+// Auditoria 15/10 (OP-09): a ação só vale para alerta da frota da conta
+// (central = todos). Conta de cliente nunca mexe em alerta de outro cliente.
+async function autorizarAlertas(ids: string[], tabela: TabelaAlertas): Promise<{ opId: string | null; permitidos: string[] }> {
   const opId = await operadorAtual();
+  if (!opId) return { opId: null, permitidos: [] };
+  return { opId, permitidos: await idsAlertaPermitidos(await acessoDoUsuario(), tabela, ids) };
+}
+
+const SEM_PERMISSAO: ResultadoAcao = { erro: "Sem permissão para este alerta." };
+
+async function atualizar(id: string, patch: Record<string, unknown>, tabela: TabelaAlertas = "alertas"): Promise<ResultadoAcao> {
+  const { opId, permitidos } = await autorizarAlertas([id], tabela);
   if (!opId) return { erro: "Sessao expirada." };
+  if (permitidos.length === 0) return SEM_PERMISSAO;
   const admin = createAdminClient();
   const { error } = await admin
     .from(tabela)
@@ -77,6 +90,9 @@ function stripPesado(tabela: TabelaAlertas): Record<string, unknown> {
 
 // Operador tratou e encerrou (ligou, confirmou, resolveu).
 export async function resolverAlerta(id: string, tabela: TabelaAlertas = "alertas"): Promise<ResultadoAcao> {
+  // Autoriza ANTES de registrarCasosDesvioRevisao (que alimenta a calibração).
+  const { permitidos } = await autorizarAlertas([id], tabela);
+  if (permitidos.length === 0) return SEM_PERMISSAO;
   const admin = createAdminClient();
   // registrarCasosDesvioRevisao alimenta a calibração automática da Central
   // (recalibrar-desvio). O motor do romaneio ainda não tem calibração
@@ -116,6 +132,8 @@ async function marcarFalsoPositivoComMotivo(
   // a categoria, nunca o texto livre).
   detalhe?: string
 ): Promise<ResultadoAcao> {
+  const { permitidos } = await autorizarAlertas([id], tabela);
+  if (permitidos.length === 0) return SEM_PERMISSAO;
   const admin = createAdminClient();
   // Mesmo raciocínio de resolverAlerta acima: só alimenta calibração quando
   // a fonte é a Central de verdade.
@@ -147,8 +165,10 @@ export async function resolverVarios(
   ids: string[],
   tabela: TabelaAlertas = "alertas"
 ): Promise<ResultadoAcao & { resolvidos?: number }> {
-  const opId = await operadorAtual();
+  const auth = await autorizarAlertas(ids, tabela);
+  const opId = auth.opId;
   if (!opId) return { erro: "Sessao expirada." };
+  ids = auth.permitidos;
   if (ids.length === 0) return { ok: true, resolvidos: 0, ignoradosRecentes: 0 };
   const admin = createAdminClient();
   // Guard de idade minima (achado real 08/08, caso TTH-3C94): acao em
@@ -220,8 +240,10 @@ export async function limparVarios(
   ids: string[],
   tabela: TabelaAlertas = "alertas"
 ): Promise<ResultadoAcao & { limpos?: number }> {
-  const opId = await operadorAtual();
+  const auth = await autorizarAlertas(ids, tabela);
+  const opId = auth.opId;
   if (!opId) return { erro: "Sessao expirada." };
+  ids = auth.permitidos;
   if (ids.length === 0) return { ok: true, limpos: 0, ignoradosRecentes: 0 };
   const admin = createAdminClient();
   // Mesmo guard de idade minima de resolverVarios acima -- ver
