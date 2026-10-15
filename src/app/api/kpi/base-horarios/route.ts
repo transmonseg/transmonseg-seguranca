@@ -687,6 +687,18 @@ function minutoDoDiaBRT(iso: string): { dia: number; hora: number } {
   return { dia: Math.floor(t / 86_400_000), hora: new Date(t).getUTCHours() };
 }
 
+// KM-01 (auditoria 15/10): o KPI classificava como SEM RASTREADOR caminhao
+// parado com rastreador VIVO (11/10: 12 placas, 2.880 leituras cada, so' uma
+// ou outra >15 min). `teveApagaoDeSinalForte` nao serve pra isso (exige voltar
+// a transmitir >=500 m depois; rastreador morto o dia todo da' false). Aqui o
+// KPI recebe so' as contagens e decide: morto/congelado = maioria das leituras
+// atrasadas.
+export function contarLeiturasAtrasadas(posicoes: Posicao[]): { total: number; atrasadas: number } {
+  let atrasadas = 0;
+  for (const p of posicoes) if (p.atraso_min > LIMIAR_APAGAO_MIN) atrasadas++;
+  return { total: posicoes.length, atrasadas };
+}
+
 export function teveApagaoDeSinalForte(posicoes: Posicao[]): boolean {
   let i = 0;
   while (i < posicoes.length) {
@@ -1041,6 +1053,8 @@ export async function POST(request: Request) {
     paradas?: ParadaDerivada[];
     apagaoDeSinal?: boolean;
     apagaoDeSinalForte?: boolean;
+    leiturasTotal?: number;
+    leiturasAtrasadas?: number;
     gpsCongelado?: boolean;
   }[] = [];
   for (const placaBruta of placas) {
@@ -1085,6 +1099,7 @@ export async function POST(request: Request) {
     const apagaoDeSinal = incluirParadas ? teveApagaoDeSinal(posicoes) : undefined;
     const apagaoDeSinalForte = incluirParadas ? teveApagaoDeSinalForte(posicoes) : undefined;
     const gpsCongelado = incluirParadas ? teveGpsCongelado(posicoes) : undefined;
+    const leituras = incluirParadas ? contarLeiturasAtrasadas(posicoes) : undefined;
     resultados.push({
       placa: placaBruta,
       saidaBase,
@@ -1094,6 +1109,7 @@ export async function POST(request: Request) {
       ...(paradas ? { paradas } : {}),
       ...(apagaoDeSinal !== undefined ? { apagaoDeSinal } : {}),
       ...(apagaoDeSinalForte !== undefined ? { apagaoDeSinalForte } : {}),
+      ...(leituras ? { leiturasTotal: leituras.total, leiturasAtrasadas: leituras.atrasadas } : {}),
       ...(gpsCongelado !== undefined ? { gpsCongelado } : {}),
     });
   }

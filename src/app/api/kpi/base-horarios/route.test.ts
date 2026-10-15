@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { acharSaidaEChegadaBase, acharChegadaAposFimRota, ajustarJanelaPelasVisitas, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveApagaoDeSinalForte, teveGpsCongelado } from "./route";
+import { acharSaidaEChegadaBase, acharChegadaAposFimRota, ajustarJanelaPelasVisitas, calcularKmContinuo, filtrarJanelaRota, acharVisitasPorPonto, derivarParadas, teveApagaoDeSinal, teveApagaoDeSinalForte, teveGpsCongelado, contarLeiturasAtrasadas } from "./route";
 
 // ─── Mocks pro bloco de teste de integracao do POST (fimRotaPorPlaca, ver
 // describe abaixo). Mesmo precedente de estilo do mock chain encadeavel de
@@ -1391,3 +1391,16 @@ describe("POST /api/kpi/base-horarios -- fimRotaPorPlaca", () => {
     expect(resultados[0].chegadaBase).toBe("2026-09-21T19:34:00.000Z"); // fim invalido ignorado -- cai no default
   });
 });
+
+// KM-01 (auditoria 15/10, revisao): 'rastreador vivo' = quase todas as leituras
+// frescas. Rastreador morto o dia todo (TTL5J17) mantem o atraso subindo; o
+// vivo e parado (11/10, 2.880 leituras) so' tem uma ou outra leitura atrasada.
+describe('contarLeiturasAtrasadas', () => {
+  const p = (atraso_min: number) => ({ lat: -22.9, lng: -43.2, velocidade: 0, criado_em: '2026-10-11T12:00:00.000Z', atraso_min })
+  it('conta total e atrasadas (>15 min)', () => {
+    expect(contarLeiturasAtrasadas([p(1), p(2), p(16), p(120)])).toEqual({ total: 4, atrasadas: 2 })
+  })
+  it('sem leituras: zeros', () => {
+    expect(contarLeiturasAtrasadas([])).toEqual({ total: 0, atrasadas: 0 })
+  })
+})

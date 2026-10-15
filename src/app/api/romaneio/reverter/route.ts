@@ -71,5 +71,25 @@ export async function POST(request: Request) {
     }
   }
 
+  // Conta de cliente: linhas SEM veiculo (placa fora do cadastro) enviadas por
+  // ela tambem saem, senao "desfazer + reenviar" nao zera o dia (a chave unica
+  // ignora duplicata e a linha orfa nunca mais seria reatada) -- revisao 15/10.
+  if (veiculosDoCliente !== null) {
+    const nome = (user.user_metadata?.nome as string | undefined) ?? null;
+    const autores = [user.email, nome, user.email ? `${user.email} (pelo Ao vivo do KPI)` : null]
+      .filter((x): x is string => !!x);
+    if (autores.length > 0) {
+      let orfas = admin
+        .from("romaneio_pontos")
+        .delete()
+        .eq("romaneio_data", romaneioData)
+        .eq("modo_teste", modoTeste);
+      if (origem) orfas = orfas.eq("origem", origem);
+      const { data, error } = await orfas.is("veiculo_id", null).in("enviado_por", autores).select("id");
+      if (error) return Response.json({ ok: false, erro: `Erro ao reverter: ${error.message}` }, { status: 500 });
+      removidas += data?.length ?? 0;
+    }
+  }
+
   return Response.json({ ok: true, linhasRemovidas: removidas });
 }

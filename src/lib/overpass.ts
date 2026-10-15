@@ -6,8 +6,8 @@
 // sempre um VEREDITO ("tem POI" / "nao tem POI"). Quando a checagem nao pode
 // ser feita -- Overpass fora do ar, timeout, HTTP de erro, corpo invalido, ou
 // falha de pool/query no poi_cache -- a funcao LANCA. Quem chama decide o
-// fail-open (os dois motores assumem POI presente e marcam o ciclo como nao
-// confiavel). Nunca devolva `false` por falha: "nao consegui checar" virando
+// que fazer: desde 15/10 os dois motores tratam como "POI NAO VERIFICADO" (a
+// parada ainda alerta, com piso de 20 min) e marcam o ciclo como nao confiavel. Nunca devolva `false` por falha: "nao consegui checar" virando
 // "nao ha POI" libera os 3 detectores de parada pra frota inteira de uma vez.
 //
 // Tipos de amenity considerados "parada legitima" de caminhao:

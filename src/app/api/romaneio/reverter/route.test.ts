@@ -12,6 +12,7 @@ vi.mock("@/lib/acesso-guardas", () => ({ idsVeiculosDoCliente: (a: unknown) => m
 
 const mockEq = vi.fn();
 const mockIn = vi.fn();
+const mockIs = vi.fn();
 const mockSelect = vi.fn();
 const mockDelete = vi.fn();
 vi.mock("@/lib/supabase/admin", () => ({
@@ -35,8 +36,9 @@ describe("POST /api/romaneio/reverter", () => {
     // encadeamento delete().eq().eq().select() -- cada .eq devolve o mesmo
     // objeto pra permitir chamada em cadeia, so' o ultimo (.select) resolve.
     mockDelete.mockReturnValue({ eq: mockEq });
-    mockEq.mockImplementation(() => ({ eq: mockEq, in: mockIn, select: mockSelect }));
+    mockEq.mockImplementation(() => ({ eq: mockEq, in: mockIn, is: mockIs, select: mockSelect }));
     mockIn.mockImplementation(() => ({ select: mockSelect }));
+    mockIs.mockImplementation(() => ({ in: mockIn }));
     mockAcesso.mockResolvedValue({ tipo: "todos" });
     mockIdsVeiculos.mockResolvedValue(null);
     mockSelect.mockResolvedValue({ data: [{ id: "1" }, { id: "2" }], error: null });
@@ -100,10 +102,23 @@ describe("POST /api/romaneio/reverter", () => {
     const { POST } = await import("./route");
     const res = await POST(criarRequisicao({ romaneioData: "2026-10-15" }));
     expect(res.status).toBe(200);
-    expect(mockIn).toHaveBeenCalledTimes(3);
+    // 3 lotes de veiculos + 1 delete das orfas enviadas pela propria conta
+    expect(mockIn).toHaveBeenCalledTimes(4);
     expect(mockIn.mock.calls[0][1]).toHaveLength(50);
     expect(mockIn.mock.calls[2][1]).toHaveLength(20);
-    expect((await res.json()).linhasRemovidas).toBe(6);
+    expect(mockIn.mock.calls[3][0]).toBe("enviado_por");
+    expect((await res.json()).linhasRemovidas).toBe(8);
+  });
+
+  it("conta de um cliente: apaga tambem as linhas orfas (sem veiculo) enviadas por ela", async () => {
+    mockAcesso.mockResolvedValue({ tipo: "um", clienteId: "nutry" });
+    mockIdsVeiculos.mockResolvedValue(["v1"]);
+    const { POST } = await import("./route");
+    await POST(criarRequisicao({ romaneioData: "2026-10-15" }));
+    expect(mockIs).toHaveBeenCalledWith("veiculo_id", null);
+    const autores = mockIn.mock.calls.find((c) => c[0] === "enviado_por")?.[1] as string[];
+    expect(autores).toContain("op@x.com");
+    expect(autores).toContain("op@x.com (pelo Ao vivo do KPI)");
   });
 
   it("central: nao filtra por veiculo", async () => {

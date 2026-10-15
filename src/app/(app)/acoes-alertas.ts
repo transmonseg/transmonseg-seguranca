@@ -53,9 +53,18 @@ async function operadorAtual(): Promise<string | null> {
 // Auditoria 15/10 (OP-09): a ação só vale para alerta da frota da conta
 // (central = todos). Conta de cliente nunca mexe em alerta de outro cliente.
 async function autorizarAlertas(ids: string[], tabela: TabelaAlertas): Promise<{ opId: string | null; permitidos: string[] }> {
+  // Acesso ANTES de operadorAtual(): o upsert do espelho cria a linha com
+  // cliente_id nulo (= central); resolvido depois, uma conta sem registro
+  // (fail-closed "nenhum") virava central no primeiro clique (revisao 15/10).
+  const acesso = await acessoDoUsuario();
+  if (acesso.tipo === "nenhum") {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    return { opId: user ? user.id : null, permitidos: [] };
+  }
   const opId = await operadorAtual();
   if (!opId) return { opId: null, permitidos: [] };
-  return { opId, permitidos: await idsAlertaPermitidos(await acessoDoUsuario(), tabela, ids) };
+  return { opId, permitidos: await idsAlertaPermitidos(acesso, tabela, ids) };
 }
 
 const SEM_PERMISSAO: ResultadoAcao = { erro: "Sem permissão para este alerta." };

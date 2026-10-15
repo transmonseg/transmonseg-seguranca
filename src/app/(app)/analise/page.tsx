@@ -1,4 +1,7 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { acessoDoUsuario } from "@/lib/acesso-cliente";
+import { ehCentral } from "@/lib/acesso-guardas";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { apurarQualidade, type ResumoQualidade } from "@/lib/qualidade-tratamento";
 
@@ -133,6 +136,9 @@ export default async function AnalisePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  // OP-10 (revisao 15/10): a analise le alertas e operadores de TODOS os clientes
+  // com o admin client -- conta de cliente nao entra.
+  if (!ehCentral(await acessoDoUsuario())) redirect("/");
   const params = await searchParams;
   const dias        = Math.max(1, Math.min(90, parseInt((params.dias as string) ?? "30")));
   const tipoFiltro  = (params.tipo as string)   || null;

@@ -54,6 +54,11 @@ export async function GET(request: Request) {
     origemDisponivel = false;
     resposta = await consultar(COLUNAS_BASE);
   }
+  // Falha de consulta nao vira "romaneio vazio" (revisao 15/10): a tela dizia
+  // "sem romaneio" pra Erica quando o banco/embed falhava.
+  if (resposta.error) {
+    return Response.json({ ok: false, erro: "falha na consulta" }, { status: 500 });
+  }
 
   const linhas = (resposta.data ?? []) as unknown as LinhaStatus[];
   // semCoordenadaConfirmada (item 5 da blindagem de 27/08, ver migration
