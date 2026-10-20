@@ -402,6 +402,7 @@ export function acharBlocoDentroDoRaio(
   // pendente.
   let pendentes: Posicao[] = []
   for (const p of posicoes) {
+    if (!leituraConfiavelParaParada(p)) continue
     const naPosicao = haversineM(pt.lat, pt.lng, p.lat, p.lng) <= raioM && !estaMaisPertoDaBaseQueDoPonto(p, pt, basesCentro)
     if (!naPosicao) { fecharBloco(); pendentes = []; continue }
     if (!atual) {
@@ -557,6 +558,23 @@ const VELOCIDADE_RUIDO_ABERTURA_KMH = 15;
 // real continua), mas corta fusoes como a de 118 min do caso real.
 const LACUNA_MAX_FUSAO_MS = 30 * 60_000;
 
+// Auditoria 20/10 (GN-02, caso real RQV9B26 16/10): leitura com atraso
+// acima do limiar de apagao e' a ULTIMA posicao conhecida repetida pelo
+// coletor, nao o caminhao naquele instante -- 787 min de atraso viraram
+// "visita" de 00:00 a 07:14 e duas entregas falsas. Essas leituras nao
+// servem pra derivar parada nem visita (os detectores de apagao continuam
+// lendo tudo). Atraso de 2-15 min e' comum com o caminhao parado e a
+// ignicao desligada (~10% das leituras paradas, medido em 15/10) e continua
+// valendo. Medido em 13-16/10 (5.428 paradas): tira 9 paradas, nenhuma
+// sobreposta a parada da Unitrac.
+// Testado e DESCARTADO (mesma medicao): fechar parada por deslocamento ou
+// por velocidade >15 km/h. Removia ~130 paradas, ~70% delas confirmadas
+// pela Unitrac no mesmo horario/lugar (GPS urbano oscila 100-250 m com o
+// caminhao parado; picos de GPS no meio de parada longa).
+export function leituraConfiavelParaParada(p: { atraso_min?: number | null }): boolean {
+  return (p.atraso_min ?? 0) <= LIMIAR_APAGAO_MIN;
+}
+
 export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = []): ParadaDerivada[] {
   const paradas: ParadaDerivada[] = [];
   let atual: { inicio: string; fim: string; lats: number[]; lngs: number[] } | null = null;
@@ -585,6 +603,7 @@ export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = 
   };
 
   for (const p of posicoes) {
+    if (!leituraConfiavelParaParada(p)) continue;
     if (!atual) {
       if (p.velocidade <= VELOCIDADE_MAX_PARADO_KMH) {
         // Confirma parada de verdade -- puxa o inicio pra tras ate' onde o

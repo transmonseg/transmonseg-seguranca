@@ -1404,3 +1404,32 @@ describe('contarLeiturasAtrasadas', () => {
     expect(contarLeiturasAtrasadas([])).toEqual({ total: 0, atrasadas: 0 })
   })
 })
+
+// Auditoria 20/10 (GN-02): leitura congelada (ultima posicao repetida pelo
+// coletor com atraso alto) virava parada/visita. Caso real RQV9B26 16/10.
+describe("GN-02: leitura congelada nao vira parada nem visita", () => {
+  const t = (seg: number) => new Date(Date.UTC(2026, 9, 16, 3, 0, 0) + seg * 1000).toISOString();
+
+  it("mesma posicao com atraso de horas nao vira parada nem visita (RQV9B26 16/10)", () => {
+    const congelado = Array.from({ length: 30 }, (_, i) => ({
+      lat: -22.5937, lng: -43.1126, criado_em: t(i * 43), velocidade: 0, atraso_min: 787 + i,
+    }));
+    expect(derivarParadas(congelado, [])).toEqual([]);
+    const [v] = acharVisitasPorPonto(congelado, [{ id: "NF", lat: -22.5937, lng: -43.1126 }]);
+    expect(v.chegada).toBeNull();
+  });
+
+  it("parada real com atraso moderado (ignicao desligada, 3-12 min) continua valendo", () => {
+    const parada = Array.from({ length: 10 }, (_, i) => ({
+      lat: -22.5937, lng: -43.1126, criado_em: t(i * 60), velocidade: 0, atraso_min: 3 + i,
+    }));
+    expect(derivarParadas(parada, [])).toHaveLength(1);
+  });
+
+  it("parada urbana que oscila 100+ m no GPS com sensor a 6-9 km/h continua sendo parada (RQV6C22 14/10, confirmada pela Unitrac)", () => {
+    const d = [0, 146, 140, 120, 135, 110, 100, 128].map((m) => m / 111_320);
+    const vs = [4, 0, 0, 0, 9, 7, 6, 0];
+    const pos = d.map((dl, i) => ({ lat: -22.8 + dl, lng: -43.3, criado_em: t(i * 100), velocidade: vs[i], atraso_min: 0 }));
+    expect(derivarParadas(pos, [])).toHaveLength(1);
+  });
+});
