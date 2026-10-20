@@ -419,7 +419,7 @@ type Deps = {
   // estruturado resolveu 0/61 na cidade certa contra 57/61 do Photon.
   // Opcional (como geocodificarCnefeBairroDep): undefined pula o nivel,
   // preserva o comportamento antigo de quem nao passar.
-  geocodificarPhoton?: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
+  geocodificarPhoton?: (enderecoBruto: string) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto } | null>;
   geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
 };
 
@@ -539,8 +539,8 @@ export async function geocodificarEndereco(
     for (const variante of variantes) {
       const photon = await deps.geocodificarPhoton(variante);
       if (photon && perto(photon)) {
-        await deps.salvarCache(chave, { ...photon, fonte: "photon", validado: validadoCidade });
-        return { ...photon, fonte: "photon", validado: validadoCidade };
+        await deps.salvarCache(chave, { lat: photon.lat, lng: photon.lng, fonte: "photon", validado: validadoCidade });
+        return { lat: photon.lat, lng: photon.lng, fonte: "photon", validado: validadoCidade, precisao: photon.precisao ?? "rua" };
       }
     }
   }
@@ -586,20 +586,40 @@ export async function geocodificarGoogle(enderecoBruto: string): Promise<{ lat: 
 // de geocodificarEndereco (30km do ponto de cidade) pra barrar match
 // estrangeiro/errado -- exatamente como Google e Nominatim. Sem teste
 // automatizado (chamada de rede real), igual aos outros dois.
-export async function geocodificarPhoton(enderecoBruto: string): Promise<{ lat: number; lng: number } | null> {
+type FeaturePhoton = { geometry?: { coordinates?: [number, number] }; properties?: { street?: string; name?: string; housenumber?: string } };
+
+// GEO-09 (auditoria 20/10): o Photon devolve o que acha "mais parecido" --
+// "RUA TIETA" virava Rua Tietê, "ESTRADA MUNICIPAL BJ 23" virava Estrada
+// BJ-26 -- e entrava como confiavel. Aceita so' a feature cuja rua
+// (street, ou name pra via sem endereco) normalizada e' a rua pedida;
+// com o mesmo numero de casa e' exato, senao e' ponto da rua.
+export function escolherFeaturePhoton(features: FeaturePhoton[], consulta: string): { lat: number; lng: number; precisao: PrecisaoPonto } | null {
+  const rua = normalizarNomeRua(extrairRuaDoEndereco(consulta));
+  const numero = soDigitos(extrairNumeroDoEndereco(consulta));
+  for (const f of features) {
+    const nome = f.properties?.street ?? f.properties?.name;
+    if (!nome || normalizarNomeRua(nome) !== rua) continue;
+    const coords = f.geometry?.coordinates;
+    if (!coords || coords.length < 2) continue;
+    // Photon devolve [lng, lat] (padrao GeoJSON), ordem invertida do resto.
+    const [lng, lat] = coords;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const exato = numero != null && soDigitos(f.properties?.housenumber) === numero;
+    return { lat, lng, precisao: exato ? "exato" : "rua" };
+  }
+  return null;
+}
+
+export async function geocodificarPhoton(enderecoBruto: string): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto } | null> {
   try {
-    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(enderecoBruto)}&limit=1&lang=default`;
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(enderecoBruto)}&limit=5&lang=default`;
     const res = await fetch(url, {
       headers: { "User-Agent": "TransmonsegCentral/1.0" },
       signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { features?: { geometry?: { coordinates?: [number, number] } }[] };
-    const coords = data.features?.[0]?.geometry?.coordinates;
-    // Photon devolve [lng, lat] (padrao GeoJSON), ordem invertida do resto.
-    if (!coords || coords.length < 2) return null;
-    const [lng, lat] = coords;
-    return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+    const data = (await res.json()) as { features?: FeaturePhoton[] };
+    return escolherFeaturePhoton(data.features ?? [], enderecoBruto);
   } catch (err) {
     // Mesmo motivo do catch de geocodificarGoogle/Nominatim: degrada pro
     // proximo tier da cascata (Nominatim), com log pra nao sumir silencioso.

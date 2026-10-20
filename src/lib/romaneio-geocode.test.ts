@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarNominatim, escolherPontoReferencia } from "./romaneio-geocode";
+import { normalizarEndereco, geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarNominatim, escolherPontoReferencia, escolherFeaturePhoton } from "./romaneio-geocode";
 
 describe("normalizarEndereco", () => {
   it("maiuscula, sem espacos duplicados, sem espaco nas pontas", () => {
@@ -747,5 +747,18 @@ describe("geocodificarNominatim (achado real 27/08, caso BAIRRO:CENTRO:RIO DE JA
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("timeout")));
     const r = await geocodificarNominatim("Rua X, 1 - Bairro, Cidade");
     expect(r).toBeNull();
+  });
+});
+
+// GEO-09 (auditoria 20/10): o Photon devolvia outra rua ("RUA TIETA" -> Rua
+// Tiete; "ESTRADA MUNICIPAL BJ 23" -> Estrada BJ-26) e entrava como confiavel.
+describe("escolherFeaturePhoton (GEO-09)", () => {
+  const f = (street: string, housenumber?: string, lat = -22.4, lng = -42.9) => ({ geometry: { coordinates: [lng, lat] as [number, number] }, properties: { street, housenumber, name: street } });
+  it("rua de nome parecido e' rejeitada", () => {
+    expect(escolherFeaturePhoton([f("Rua Tietê")], "RUA TIETA, 315, Teresópolis, RJ, Brasil")).toBeNull();
+  });
+  it("rua certa sem numero: aceita com precisao rua; com numero igual: exato", () => {
+    expect(escolherFeaturePhoton([f("Rua Tietê"), f("Rua Tieta")], "RUA TIETA, 315, Teresópolis, RJ, Brasil")).toMatchObject({ precisao: "rua" });
+    expect(escolherFeaturePhoton([f("Rua Tieta", "315")], "RUA TIETA, 315, Teresópolis, RJ, Brasil")).toMatchObject({ precisao: "exato" });
   });
 });
