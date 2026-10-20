@@ -360,10 +360,10 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
     expect(r).toBeNull();
   });
 
-  it("bate por rua+numero exato: usa esse resultado, nao chega a buscar so por rua nem por similaridade", async () => {
-    const deps = mockDeps({ buscarPorRuaNumero: async () => [{ lat: 1, lng: 2 }] });
+  it("bate por rua+numero exato com o bairro do Censo: usa esse resultado, nao chega a buscar so por rua nem por similaridade", async () => {
+    const deps = mockDeps({ buscarPorRuaNumero: async () => [{ lat: 1, lng: 2, numero: "10", localidade: "BAIRRO" }] });
     const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
-    expect(r).toEqual({ lat: 1, lng: 2 });
+    expect(r).toMatchObject({ lat: 1, lng: 2 });
     expect(deps.buscarPorRua).not.toHaveBeenCalled();
     expect(deps.buscarPorSimilaridade).not.toHaveBeenCalled();
   });
@@ -371,7 +371,7 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
   it("rua+numero nao bate, cai pra so rua: nao chega a buscar por similaridade", async () => {
     const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
     const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, null, deps);
-    expect(r).toEqual({ lat: 3, lng: 4 });
+    expect(r).toMatchObject({ lat: 3, lng: 4 });
     expect(deps.buscarPorSimilaridade).not.toHaveBeenCalled();
   });
 
@@ -379,7 +379,7 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
     const pontoCidade = { lat: -22.9, lng: -43.2 };
     const deps = mockDeps({ buscarPorSimilaridade: async () => [{ lat: -22.901, lng: -43.201 }] });
     const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", pontoCidade, null, deps);
-    expect(r).toEqual({ lat: -22.901, lng: -43.201 });
+    expect(r).toMatchObject({ lat: -22.901, lng: -43.201 });
   });
 
   // Achado real 06/09 (KPI Nutry Max, NF 2358062): sem ponto de cidade
@@ -411,7 +411,7 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
   it("numero S/N: nao tenta buscar por rua+numero, vai direto pra so-rua", async () => {
     const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
     const r = await geocodificarCnefe("RUA X, S/N - BAIRRO, CIDADE - *", null, null, deps);
-    expect(r).toEqual({ lat: 3, lng: 4 });
+    expect(r).toMatchObject({ lat: 3, lng: 4 });
     expect(deps.buscarPorRuaNumero).not.toHaveBeenCalled();
   });
 
@@ -423,7 +423,7 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
     ];
     const deps = mockDeps({ buscarPorRua: async () => candidatos });
     const r = await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", pontoCidade, null, deps);
-    expect(r).toEqual(candidatos[1]);
+    expect(r).toMatchObject(candidatos[1]);
   });
 
   it("achado real 26/08: MULTIPLOS candidatos SEM ponto de cidade -- rejeitado, nao aceita cego o primeiro (mesma logica de geocodificarLocal)", async () => {
@@ -455,8 +455,9 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
   it("cai pra so-rua COM o codigo de municipio tambem (nao perde o filtro no fallback)", async () => {
     const deps = mockDeps({ buscarPorRua: async () => [{ lat: 3, lng: 4 }] });
     await geocodificarCnefe("RUA X, 10 - BAIRRO, CIDADE - *", null, "3301009", deps);
-    // 3o arg = numero alvo, pro produtor ordenar pelo numero no banco (migration 074)
-    expect(deps.buscarPorRua).toHaveBeenCalledWith(expect.any(String), "3301009", 10);
+    // 3o arg = numero alvo, pro produtor ordenar pelo numero no banco (migration 074);
+    // 4o = CEP do endereco (auditoria 20/10) -- aqui sem CEP.
+    expect(deps.buscarPorRua).toHaveBeenCalledWith(expect.any(String), "3301009", 10, null);
   });
 
   it("cai pra similaridade COM o codigo de municipio tambem", async () => {
@@ -478,7 +479,7 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
 
     it("rua+numero a ~8km do bairro: rejeitado com precisaoBairro=true (aceito sem a flag, comportamento antigo)", async () => {
       const semFlag = mockDeps({ buscarPorRuaNumero: async () => [outroTrechoDaRua] });
-      expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", semFlag)).toEqual(outroTrechoDaRua);
+      expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", semFlag)).toMatchObject(outroTrechoDaRua);
 
       const comFlag = mockDeps({ buscarPorRuaNumero: async () => [outroTrechoDaRua] });
       expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", comFlag, true)).toBeNull();
@@ -486,7 +487,7 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
 
     it("rua+numero perto do bairro: aceito normalmente com precisaoBairro=true", async () => {
       const deps = mockDeps({ buscarPorRuaNumero: async () => [mesmoBairro] });
-      expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", deps, true)).toEqual(mesmoBairro);
+      expect(await geocodificarCnefe("AV PARIS, 13 - BONSUCESSO, CIDADE - *", bonsucesso, "3304557", deps, true)).toMatchObject(mesmoBairro);
     });
 
     it("nivel so-rua tambem respeita o teto estreito", async () => {
@@ -516,7 +517,7 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
       const centroCidade = { lat: -22.90, lng: -43.20 }; // mais perto do numero 1000
       const deps = mockDeps({ buscarPorRua: async () => ruaLonga });
       const r = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
-      expect(r).toEqual({ lat: -23.02, lng: -43.45 });
+      expect(r).toMatchObject({ lat: -23.02, lng: -43.45 });
     });
 
     it("numeros diferentes da MESMA rua nao colapsam mais no mesmo ponto", async () => {
@@ -525,21 +526,21 @@ describe("geocodificarCnefe (IBGE, achado real 31/07 -- ver migration contabo/02
       const a = await geocodificarCnefe("AV LUCIO COSTA, 900 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
       const b = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
       expect(a).not.toEqual(b);
-      expect(a).toEqual({ lat: -23.00, lng: -43.30 });
+      expect(a).toMatchObject({ lat: -23.00, lng: -43.30 });
     });
 
     it("sem numero no endereco (S/N): mantem o comportamento antigo (mais proximo do centro da cidade)", async () => {
       const centroCidade = { lat: -22.90, lng: -43.20 };
       const deps = mockDeps({ buscarPorRua: async () => ruaLonga });
       const r = await geocodificarCnefe("AV LUCIO COSTA, S/N - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
-      expect(r).toEqual({ lat: -23.00, lng: -43.30 });
+      expect(r).toMatchObject({ lat: -23.00, lng: -43.30 });
     });
 
     it("candidatos sem numero utilizavel: cai no comportamento antigo, nao quebra", async () => {
       const centroCidade = { lat: -22.90, lng: -43.20 };
       const deps = mockDeps({ buscarPorRua: async () => [{ lat: -23.00, lng: -43.30 }, { lat: -23.02, lng: -43.45 }] });
       const r = await geocodificarCnefe("AV LUCIO COSTA, 16580 - BARRA, RIO DE JANEIRO - *", centroCidade, "3304557", deps);
-      expect(r).toEqual({ lat: -23.00, lng: -43.30 });
+      expect(r).toMatchObject({ lat: -23.00, lng: -43.30 });
     });
 
     it("o desempate por numero ainda respeita o teto de distancia do ponto de cidade (rua homonima em cidade errada)", async () => {

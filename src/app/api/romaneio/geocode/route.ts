@@ -41,6 +41,9 @@ import { validarTerritorio, type MotivoTerritorio } from "@/lib/territorio";
 import { montarDepsTerritorio } from "./territorio-deps";
 import { buscarSimilaridadeLimitada } from "@/lib/cnefe-similaridade-limitada";
 
+// Teto de pontos da rua lidos do CNEFE (avenida longa do Rio passa de mil).
+const LIMITE_PONTOS_RUA_CNEFE = 4000;
+
 // Achado real 03/09 (investigacao "geolocalizacao ruim" -- 2 tentativas
 // seguidas de geracao do KPI Nutry Max bateram "geocodificacao falhou
 // para 100% do lote"): sequencial (1 endereco por vez, throttle de
@@ -126,30 +129,34 @@ export async function POST(request: Request) {
     return data ?? [];
   };
   const buscarCnefePorRuaNumero = async (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => {
-    let query = admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).limit(50);
+    // cep/localidade: escolha por CEP/bairro do Censo (auditoria 20/10, cnefe-escolha.ts).
+    let query = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).order("id").limit(50);
     if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
     const { data } = await query;
     return data ?? [];
   };
   // `numero` vem junto pro desempate por numero mais proximo em via longa
   // (achado 05/09, ver escolherPorNumeroMaisProximo em romaneio-geocode.ts).
-  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null) => {
-    // Com numero: ordena PELO NUMERO no banco (migration 074) -- rua longa
-    // tem milhares de pontos e um LIMIT sem ordenacao pode nem trazer o
-    // numero certo. Sem numero (S/N): amostra da rua, como antes.
-    if (numeroAlvo !== null) {
-      const { data } = await admin.rpc("cnefe_buscar_por_rua_numero_proximo", {
-        nome: nomeNormalizado,
-        numero_alvo: numeroAlvo,
-        filtro_municipio_codigo: municipioCodigo,
-        limite: 5,
-      });
-      if (data && data.length > 0) return data;
+  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null, cep: string | null = null) => {
+    // Auditoria 20/10 (GEO-07): rua no municipio ordenada por id
+    // (deterministico), com cep/localidade -- antes era o top 5 por numero
+    // (sem CEP) ou uma amostra de 200 SEM ORDER BY (S/N virava sorteio, ex.
+    // RUA UM em Caxias: 200 de 1.123 pontos em 16 CEPs). Rua com mais pontos
+    // que o teto (Estr. dos Bandeirantes 11 mil): junta o trecho do CEP do
+    // endereco e os 5 numeros mais proximos (migration 074) pra nao perder o
+    // trecho certo.
+    type Linha = { lat: number; lng: number; numero?: string | null; cep?: string | null; localidade?: string | null };
+    let rua = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado);
+    if (municipioCodigo) rua = rua.eq("municipio_codigo", municipioCodigo);
+    const consultas: PromiseLike<{ data: unknown }>[] = [rua.order("id").limit(LIMITE_PONTOS_RUA_CNEFE)];
+    if (cep) {
+      let doCep = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado).eq("cep", cep);
+      if (municipioCodigo) doCep = doCep.eq("municipio_codigo", municipioCodigo);
+      consultas.push(doCep.order("id").limit(LIMITE_PONTOS_RUA_CNEFE));
     }
-    let query = admin.from("cnefe_enderecos").select("lat, lng, numero").eq("nome_normalizado", nomeNormalizado).limit(200);
-    if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
-    const { data } = await query;
-    return data ?? [];
+    if (numeroAlvo !== null) consultas.push(admin.rpc("cnefe_buscar_por_rua_numero_proximo", { nome: nomeNormalizado, numero_alvo: numeroAlvo, filtro_municipio_codigo: municipioCodigo, limite: 5 }));
+    const respostas = await Promise.all(consultas);
+    return respostas.flatMap((r) => (Array.isArray(r.data) ? (r.data as Linha[]) : []));
   };
   // Incidente 01/10: semaforo GLOBAL do processo (2 simultaneas, somando
   // todas as requisicoes/geracoes em andamento) + timeout por busca. Timeout
@@ -433,7 +440,7 @@ export async function POST(request: Request) {
         motivo = t.motivo;
       }
     }
-    resultados.push({ lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, validado, motivo });
+    resultados.push({ lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, validado, motivo, ...(geocode.precisao ? { precisao: geocode.precisao, raioM: geocode.raioM } : {}) });
   }
 
   return Response.json({ resultados, incompletos, buscasSimilaridade });

@@ -6,6 +6,7 @@
 
 import { extrairRuaDoEndereco, extrairNumeroDoEndereco, normalizarNomeRua, montarVariantesParaGeocode, extrairBairroDoEndereco } from "./romaneio-geocode-local";
 import { haversineM } from "./unitrac";
+import { escolherPontoCnefe, extrairCepDoEndereco, type CandidatoCnefe, type PrecisaoPonto } from "./cnefe-escolha";
 
 export function normalizarEndereco(enderecoBruto: string): string {
   return enderecoBruto.trim().toUpperCase().replace(/\s+/g, " ");
@@ -82,10 +83,12 @@ function soDigitos(n: string | null | undefined): number | null {
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
+const DIF_MAX_NUMERO_PROXIMO = 20;
+
 function escolherPorNumeroMaisProximo(
   candidatos: { lat: number; lng: number; numero?: string | null }[],
   numeroAlvo: number
-): { lat: number; lng: number } | null {
+): { lat: number; lng: number; dif: number } | null {
   let melhor: { lat: number; lng: number } | null = null;
   let menorDif = Infinity;
   for (const c of candidatos) {
@@ -94,7 +97,11 @@ function escolherPorNumeroMaisProximo(
     const dif = Math.abs(n - numeroAlvo);
     if (dif < menorDif) { menorDif = dif; melhor = { lat: c.lat, lng: c.lng }; }
   }
-  return melhor;
+  // Sem teto de diferenca de proposito (achado 05/09: em avenida longa o
+  // numero mais proximo, mesmo a centenas, e' muito melhor que o centro da
+  // cidade). A diferenca so' decide a PRECISAO declarada (auditoria 20/10,
+  // GEO-05): acima de DIF_MAX_NUMERO_PROXIMO nao e' o mesmo imovel.
+  return melhor ? { ...melhor, dif: menorDif } : null;
 }
 
 // Achado real 05/09: dos 380 pendentes do KPI Nutry Max de 03/09, 132
@@ -262,50 +269,79 @@ export async function geocodificarCnefe(
   pontoCidade: { lat: number; lng: number } | null,
   municipioCodigo: string | null,
   deps: {
-    buscarPorRuaNumero: (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
-    // `numeroAlvo` (3o arg) permite ao produtor ORDENAR pelo numero no banco
-    // -- rua longa tem milhares de pontos no CNEFE e um LIMIT sem ordenacao
-    // pode nem trazer o numero certo (ver migration 074). `numero` na
-    // resposta e' OPCIONAL: sem ele, o desempate por numero nao se aplica.
-    buscarPorRua: (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null) => Promise<{ lat: number; lng: number; numero?: string | null }[]>;
+    // Candidatos vem com `cep` e `localidade` do Censo (auditoria 20/10): sao
+    // eles que escolhem o ponto (ver cnefe-escolha.ts), nao a distancia a um
+    // centroide do Nominatim. Produtor sem esses campos continua funcionando
+    // (cai no caminho sem confirmacao, igual antes).
+    buscarPorRuaNumero: (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => Promise<CandidatoCnefe[]>;
+    // `numeroAlvo` (3o arg): produtor antigo ordenava pelo numero no banco
+    // (top 5); o novo devolve a rua inteira no municipio, ordenada por id.
+    buscarPorRua: (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null, cep?: string | null) => Promise<CandidatoCnefe[]>;
     buscarPorSimilaridade: (nomeNormalizado: string, municipioCodigo: string | null) => Promise<{ lat: number; lng: number }[]>;
   },
   // `precisaoBairro=true` quando `pontoCidade` na verdade veio do BAIRRO
   // (ver PontoReferencia/escolherPontoReferencia) -- referencia mais
-  // precisa, aperta o teto de aceite do candidato nos niveis EXATOS
-  // (rua+numero, so-rua). Similaridade ja usa seu proprio teto estreito
-  // (DISTANCIA_MAX_MATCH_SIMILARIDADE_M) independente disso -- e' sempre
-  // uma aposta de nome, nao precisa saber se a referencia e' de bairro.
+  // precisa, aperta o teto de aceite do candidato SEM confirmacao de
+  // CEP/bairro. Similaridade ja usa seu proprio teto estreito.
   precisaoBairro = false
-): Promise<{ lat: number; lng: number } | null> {
+): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto; raioM: number } | null> {
   const rua = extrairRuaDoEndereco(enderecoBruto);
   const nomeNormalizado = normalizarNomeRua(rua);
   const numero = extrairNumeroDoEndereco(enderecoBruto);
   const maxDist = precisaoBairro ? DISTANCIA_MAX_MATCH_BAIRRO_M : DISTANCIA_MAX_MATCH_LOCAL_M;
+  const temNumero = !!numero && !/^S\/?N$/i.test(numero);
+  const numeroAlvo = temNumero ? soDigitos(numero) : null;
+  const alvo = { numero: numeroAlvo, cep: extrairCepDoEndereco(enderecoBruto), bairro: extrairBairroDoEndereco(enderecoBruto) };
 
-  if (numero && !/^S\/?N$/i.test(numero)) {
-    const porRuaNumero = await deps.buscarPorRuaNumero(nomeNormalizado, numero, municipioCodigo);
-    const resultado = escolherCandidatoMaisProximo(porRuaNumero, pontoCidade, false, maxDist);
-    if (resultado) return resultado;
+  // Auditoria 20/10 (GEO-02/03/04/05/07): CEP -> localidade -> numero.
+  // Confirmado pelo CEP ou pelo bairro do Censo: aceita sem o teto de
+  // distancia da referencia (bairro grande como Campo Grande rejeitava o
+  // numero certo a 6,6 km do centroide e caia em outro numero).
+  const porRuaNumero = temNumero ? await deps.buscarPorRuaNumero(nomeNormalizado, numero!, municipioCodigo) : [];
+  const exatoConfirmado = escolherPontoCnefe(porRuaNumero, alvo);
+  if (exatoConfirmado?.confirmado && exatoConfirmado.precisao === "exato") {
+    return { lat: exatoConfirmado.lat, lng: exatoConfirmado.lng, precisao: "exato", raioM: exatoConfirmado.raioM };
   }
+  // Numero sem confirmacao (pode ser o mesmo numero numa rua homonima de
+  // outro bairro, 757 pares medidos) ou ausente: olha a rua inteira -- o
+  // trecho do CEP/bairro certo vence o homonimo.
+  const porRua = await deps.buscarPorRua(nomeNormalizado, municipioCodigo, numeroAlvo, alvo.cep);
+  const escolhido = escolherPontoCnefe(deduplicarCandidatos([...porRuaNumero, ...porRua]), alvo);
+  if (escolhido?.confirmado) return { lat: escolhido.lat, lng: escolhido.lng, precisao: escolhido.precisao, raioM: escolhido.raioM };
 
-  const numeroAlvo = soDigitos(numero);
-  const porRua = await deps.buscarPorRua(nomeNormalizado, municipioCodigo, numeroAlvo);
-  // Com numero do romaneio: desempata pelo numero mais proximo entre os
-  // pontos da rua (ver escolherPorNumeroMaisProximo). O ponto escolhido
-  // ainda passa pelo teto de distancia do ponto de cidade.
+  // Sem confirmacao (rua sem CEP/bairro batendo): comportamento anterior,
+  // com o teto da referencia, mas sem S/N do CNEFE como "numero mais
+  // proximo" e sem diferenca grande de numero.
+  if (temNumero) {
+    const exatos = porRuaNumero.filter((c) => soDigitos(c.numero ?? numero) === numeroAlvo);
+    const resultado = escolherCandidatoMaisProximo(exatos.length > 0 ? exatos : porRuaNumero, pontoCidade, false, maxDist);
+    if (resultado) return { ...resultado, precisao: "exato", raioM: 30 };
+  }
   if (numeroAlvo !== null) {
     const porNumero = escolherPorNumeroMaisProximo(porRua, numeroAlvo);
     if (porNumero) {
-      const validado = escolherCandidatoMaisProximo([porNumero], pontoCidade, false, maxDist);
-      if (validado) return validado;
+      const validado = escolherCandidatoMaisProximo([{ lat: porNumero.lat, lng: porNumero.lng }], pontoCidade, false, maxDist);
+      if (validado) return porNumero.dif <= DIF_MAX_NUMERO_PROXIMO
+        ? { ...validado, precisao: "interpolado", raioM: 50 }
+        : { ...validado, precisao: "rua", raioM: 1000 };
     }
   }
   const resultadoRua = escolherCandidatoMaisProximo(porRua, pontoCidade, false, maxDist);
-  if (resultadoRua) return resultadoRua;
+  if (resultadoRua) return { ...resultadoRua, precisao: "rua", raioM: escolhido?.raioM ?? 1000 };
 
   const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado, municipioCodigo);
-  return escolherCandidatoMaisProximo(porSimilaridade, pontoCidade, true, DISTANCIA_MAX_MATCH_SIMILARIDADE_M);
+  const similar = escolherCandidatoMaisProximo(porSimilaridade, pontoCidade, true, DISTANCIA_MAX_MATCH_SIMILARIDADE_M);
+  return similar ? { ...similar, precisao: "rua", raioM: 1000 } : null;
+}
+
+function deduplicarCandidatos(cands: CandidatoCnefe[]): CandidatoCnefe[] {
+  const vistos = new Set<string>();
+  return cands.filter((c) => {
+    const k = `${c.lat},${c.lng},${c.numero ?? ""}`;
+    if (vistos.has(k)) return false;
+    vistos.add(k);
+    return true;
+  });
 }
 
 // Achado real 08/09 (auditoria completa do KPI Nutry Max, pedido do
@@ -356,12 +392,15 @@ export async function geocodificarCnefePorBairro(
 // 11-12/09: e' exatamente por aqui que entram os erros grosseiros (22km,
 // 27km, 131km -- rua homonima de outro municipio), entao quem consome precisa
 // saber a diferenca. Ver migration 078 e avisarSemPontoCidade abaixo.
-export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_bairro"; validado: boolean } | null;
+// `precisao`/`raioM` (auditoria 20/10, GEO-01): so' o CNEFE informa por
+// enquanto. Serve pra frear conclusao NEGATIVA ("nao foi") sobre ponto
+// aproximado; `validado` continua como antes (nao derruba confirmacao).
+export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_bairro"; validado: boolean; precisao?: PrecisaoPonto; raioM?: number } | null;
 
 type Deps = {
   buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string; validado?: boolean } | null>;
   salvarCache: (chave: string, r: { lat: number; lng: number; fonte: string; validado: boolean }) => Promise<void>;
-  geocodificarCnefeDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
+  geocodificarCnefeDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto; raioM?: number } | null>;
   geocodificarLocalDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
   // Achado real 08/09 (auditoria KPI Nutry Max, 46 pendentes sem geocode --
   // rua nao existe em NENHUMA fonte, mas o BAIRRO existe no CNEFE com
@@ -439,8 +478,8 @@ export async function geocodificarEndereco(
   const cnefe = await deps.geocodificarCnefeDep(enderecoBruto, pontoCidade);
   if (cnefe) {
     avisarSemPontoCidade("cnefe", enderecoBruto, cnefe, pontoCidade);
-    await deps.salvarCache(chave, { ...cnefe, fonte: "cnefe", validado: validadoCidade });
-    return { ...cnefe, fonte: "cnefe", validado: validadoCidade };
+    await deps.salvarCache(chave, { lat: cnefe.lat, lng: cnefe.lng, fonte: "cnefe", validado: validadoCidade });
+    return { lat: cnefe.lat, lng: cnefe.lng, fonte: "cnefe", validado: validadoCidade, ...(cnefe.precisao ? { precisao: cnefe.precisao, raioM: cnefe.raioM } : {}) };
   }
 
   const local = await deps.geocodificarLocalDep(enderecoBruto, pontoCidade);

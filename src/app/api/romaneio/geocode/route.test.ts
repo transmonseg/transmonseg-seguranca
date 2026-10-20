@@ -111,7 +111,7 @@ describe("POST /api/romaneio/geocode -- busca por similaridade limitada (inciden
     estado.resposta = [PONTO];
     const res = await POST(req({ enderecos: enderecos("OK", 2) }));
     const corpo = await res.json();
-    expect(corpo.resultados).toEqual([
+    expect(corpo.resultados).toMatchObject([
       { ...PONTO, fonte: "cnefe", validado: true },
       { ...PONTO, fonte: "cnefe", validado: true },
     ]);

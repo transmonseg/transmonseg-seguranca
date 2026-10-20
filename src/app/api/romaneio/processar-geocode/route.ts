@@ -3,6 +3,9 @@ import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodifica
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
+// Teto de pontos da rua lidos do CNEFE (avenida longa do Rio passa de mil).
+const LIMITE_PONTOS_RUA_CNEFE = 4000;
+
 export const maxDuration = 60;
 
 // Achado real 27/07: dado real de um romaneio de 1587 enderecos mostrou
@@ -175,8 +178,10 @@ export async function POST(request: Request) {
     const { data } = await admin.from("romaneio_geocode_cache").select("lat, lng, fonte").eq("endereco_normalizado", chaveNormalizada).maybeSingle();
     return data ?? null;
   };
-  const salvarCache = async (chaveNormalizada: string, r: { lat: number; lng: number; fonte: string }) => {
-    await admin.from("romaneio_geocode_cache").upsert({ endereco_normalizado: chaveNormalizada, lat: r.lat, lng: r.lng, fonte: r.fonte, atualizado_em: new Date().toISOString() });
+  // Auditoria 20/10 (GEO-11): grava `validado` -- antes ficava sempre no
+  // default true (0 linhas false em 18.666), e a ponte do KPI le este cache.
+  const salvarCache = async (chaveNormalizada: string, r: { lat: number; lng: number; fonte: string; validado?: boolean }) => {
+    await admin.from("romaneio_geocode_cache").upsert({ endereco_normalizado: chaveNormalizada, lat: r.lat, lng: r.lng, fonte: r.fonte, ...(r.validado !== undefined ? { validado: r.validado } : {}), atualizado_em: new Date().toISOString() });
   };
 
   // Nominatim com throttle -- so aqui, na chamada real de rede, nao no
@@ -318,30 +323,34 @@ export async function POST(request: Request) {
   // Rio, ~270km de distancia) nao aparece nem como candidato quando o
   // municipio nao bate.
   const buscarCnefePorRuaNumero = async (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => {
-    let query = admin.from("cnefe_enderecos").select("lat, lng").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).limit(50);
+    // cep/localidade: escolha por CEP/bairro do Censo (auditoria 20/10, cnefe-escolha.ts).
+    let query = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).order("id").limit(50);
     if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
     const { data } = await query;
     return data ?? [];
   };
   // `numero` vem junto pro desempate por numero mais proximo em via longa
   // (achado 05/09, ver escolherPorNumeroMaisProximo em romaneio-geocode.ts).
-  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null) => {
-    // Com numero: ordena PELO NUMERO no banco (migration 074) -- rua longa
-    // tem milhares de pontos e um LIMIT sem ordenacao pode nem trazer o
-    // numero certo. Sem numero (S/N): amostra da rua, como antes.
-    if (numeroAlvo !== null) {
-      const { data } = await admin.rpc("cnefe_buscar_por_rua_numero_proximo", {
-        nome: nomeNormalizado,
-        numero_alvo: numeroAlvo,
-        filtro_municipio_codigo: municipioCodigo,
-        limite: 5,
-      });
-      if (data && data.length > 0) return data;
+  const buscarCnefePorRua = async (nomeNormalizado: string, municipioCodigo: string | null, numeroAlvo: number | null, cep: string | null = null) => {
+    // Auditoria 20/10 (GEO-07): rua no municipio ordenada por id
+    // (deterministico), com cep/localidade -- antes era o top 5 por numero
+    // (sem CEP) ou uma amostra de 200 SEM ORDER BY (S/N virava sorteio, ex.
+    // RUA UM em Caxias: 200 de 1.123 pontos em 16 CEPs). Rua com mais pontos
+    // que o teto (Estr. dos Bandeirantes 11 mil): junta o trecho do CEP do
+    // endereco e os 5 numeros mais proximos (migration 074) pra nao perder o
+    // trecho certo.
+    type Linha = { lat: number; lng: number; numero?: string | null; cep?: string | null; localidade?: string | null };
+    let rua = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado);
+    if (municipioCodigo) rua = rua.eq("municipio_codigo", municipioCodigo);
+    const consultas: PromiseLike<{ data: unknown }>[] = [rua.order("id").limit(LIMITE_PONTOS_RUA_CNEFE)];
+    if (cep) {
+      let doCep = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado).eq("cep", cep);
+      if (municipioCodigo) doCep = doCep.eq("municipio_codigo", municipioCodigo);
+      consultas.push(doCep.order("id").limit(LIMITE_PONTOS_RUA_CNEFE));
     }
-    let query = admin.from("cnefe_enderecos").select("lat, lng, numero").eq("nome_normalizado", nomeNormalizado).limit(200);
-    if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
-    const { data } = await query;
-    return data ?? [];
+    if (numeroAlvo !== null) consultas.push(admin.rpc("cnefe_buscar_por_rua_numero_proximo", { nome: nomeNormalizado, numero_alvo: numeroAlvo, filtro_municipio_codigo: municipioCodigo, limite: 5 }));
+    const respostas = await Promise.all(consultas);
+    return respostas.flatMap((r) => (Array.isArray(r.data) ? (r.data as Linha[]) : []));
   };
   // pg_trgm -- pega variacao tipo abreviacao ("FRANCISCO" vs "F.") que nem
   // o match exato da rua resolve. RPC (nao dá pra fazer ORDER BY
