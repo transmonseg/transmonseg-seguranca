@@ -127,6 +127,13 @@ export function escolherPontoCnefe(
       .filter((y) => y.dif <= DIF_MAX_VIZINHO)
       .sort((a, b) => a.dif - b.dif || a.x.lat - b.x.lat || a.x.lng - b.x.lng)[0];
     if (perto) return { lat: perto.x.lat, lng: perto.x.lng, precisao: "interpolado", raioM: 50, confirmado };
+    // Sem vizinho perto: o numero mais proximo DENTRO do trecho certo ainda
+    // localiza melhor que o centro do trecho em rua longa (achado 05/09;
+    // medido 20/10 contra o cadastro Unitrac). Precisao fica "rua".
+    const maisPerto = comNumero
+      .map((y) => ({ ...y, dif: Math.abs(y.n - alvo.numero!) }))
+      .sort((a, b) => a.dif - b.dif || a.x.lat - b.x.lat || a.x.lng - b.x.lng)[0];
+    if (maisPerto) return { lat: maisPerto.x.lat, lng: maisPerto.x.lng, precisao: "rua", raioM: pontoCentral(sub).raioM, confirmado };
   }
 
   const p = pontoCentral(sub);
