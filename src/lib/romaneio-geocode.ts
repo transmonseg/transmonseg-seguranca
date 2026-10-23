@@ -291,7 +291,7 @@ export async function geocodificarCnefe(
   const maxDist = precisaoBairro ? DISTANCIA_MAX_MATCH_BAIRRO_M : DISTANCIA_MAX_MATCH_LOCAL_M;
   const temNumero = !!numero && !/^S\/?N$/i.test(numero);
   const numeroAlvo = temNumero ? soDigitos(numero) : null;
-  const alvo = { numero: numeroAlvo, cep: extrairCepDoEndereco(enderecoBruto), bairro: extrairBairroDoEndereco(enderecoBruto) };
+  const alvo = { numero: numeroAlvo, cep: extrairCepDoEndereco(enderecoBruto), bairro: extrairBairroDoEndereco(enderecoBruto), tipo: rua.trim().split(/[\s.]+/)[0] ?? null };
 
   // Auditoria 20/10 (GEO-02/03/04/05/07): CEP -> localidade -> numero.
   // Confirmado pelo CEP ou pelo bairro do Censo: aceita sem o teto de

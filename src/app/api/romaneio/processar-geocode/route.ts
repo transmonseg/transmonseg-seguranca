@@ -324,7 +324,7 @@ export async function POST(request: Request) {
   // municipio nao bate.
   const buscarCnefePorRuaNumero = async (nomeNormalizado: string, numero: string, municipioCodigo: string | null) => {
     // cep/localidade: escolha por CEP/bairro do Censo (auditoria 20/10, cnefe-escolha.ts).
-    let query = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).order("id").limit(50);
+    let query = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade, tipo:logradouro_tipo").eq("nome_normalizado", nomeNormalizado).eq("numero", numero).order("id").limit(50);
     if (municipioCodigo) query = query.eq("municipio_codigo", municipioCodigo);
     const { data } = await query;
     return data ?? [];
@@ -339,12 +339,12 @@ export async function POST(request: Request) {
     // que o teto (Estr. dos Bandeirantes 11 mil): junta o trecho do CEP do
     // endereco e os 5 numeros mais proximos (migration 074) pra nao perder o
     // trecho certo.
-    type Linha = { lat: number; lng: number; numero?: string | null; cep?: string | null; localidade?: string | null };
-    let rua = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado);
+    type Linha = { lat: number; lng: number; numero?: string | null; cep?: string | null; localidade?: string | null; tipo?: string | null };
+    let rua = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade, tipo:logradouro_tipo").eq("nome_normalizado", nomeNormalizado);
     if (municipioCodigo) rua = rua.eq("municipio_codigo", municipioCodigo);
     const consultas: PromiseLike<{ data: unknown }>[] = [rua.order("id").limit(LIMITE_PONTOS_RUA_CNEFE)];
     if (cep) {
-      let doCep = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade").eq("nome_normalizado", nomeNormalizado).eq("cep", cep);
+      let doCep = admin.from("cnefe_enderecos").select("lat, lng, numero, cep, localidade, tipo:logradouro_tipo").eq("nome_normalizado", nomeNormalizado).eq("cep", cep);
       if (municipioCodigo) doCep = doCep.eq("municipio_codigo", municipioCodigo);
       consultas.push(doCep.order("id").limit(LIMITE_PONTOS_RUA_CNEFE));
     }

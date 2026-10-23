@@ -16,7 +16,7 @@
 // continua aplicando o teto de distancia ate' a referencia (rua homonima em
 // outro bairro).
 
-export type CandidatoCnefe = { lat: number; lng: number; numero?: string | null; cep?: string | null; localidade?: string | null };
+export type CandidatoCnefe = { lat: number; lng: number; numero?: string | null; cep?: string | null; localidade?: string | null; tipo?: string | null };
 export type PrecisaoPonto = "exato" | "interpolado" | "trecho" | "rua";
 export type PontoCnefe = { lat: number; lng: number; precisao: PrecisaoPonto; raioM: number; confirmado: boolean };
 
@@ -81,16 +81,43 @@ function pontoCentral(cands: CandidatoCnefe[]): { lat: number; lng: number; raio
   return { lat: melhor.lat, lng: melhor.lng, raioM };
 }
 
+// GEO-06 (auditoria 20/10): o nome normalizado descarta o tipo -- ENTRADA e
+// ESTRADA da Fazenda Inglesa viravam a mesma rua. Tipo canonico dos dois lados
+// (abreviacao do romaneio, "1A TRAVESSA DA RUA" do CNEFE).
+const TIPOS: [RegExp, string][] = [
+  [/^(R|RUA)$/, "RUA"], [/^(AV|AVN|AVENIDA)$/, "AVENIDA"], [/^(EST|ESTR|ESTRADA)$/, "ESTRADA"],
+  [/^(ROD|RODOVIA)$/, "RODOVIA"], [/^(TV|TRAV|TRAVESSA)$/, "TRAVESSA"], [/^(AL|ALAMEDA)$/, "ALAMEDA"],
+  [/^(PC|PCA|PRACA)$/, "PRACA"], [/^ENTRADA$/, "ENTRADA"], [/^(BC|BECO)$/, "BECO"], [/^(LG|LARGO)$/, "LARGO"],
+];
+export function tipoCanonico(tipo: string | null | undefined): string | null {
+  if (!tipo) return null;
+  const t = normalizarLocalidade(tipo);
+  if (/\bTRAVESSA\b/.test(t)) return "TRAVESSA";
+  for (const [re, canon] of TIPOS) if (re.test(t)) return canon;
+  return t || null;
+}
+
 export function escolherPontoCnefe(
   candidatos: CandidatoCnefe[],
-  alvo: { numero: number | null; cep: string | null; bairro: string | null },
+  alvo: { numero: number | null; cep: string | null; bairro: string | null; tipo?: string | null },
 ): PontoCnefe | null {
   if (candidatos.length === 0) return null;
   let sub: CandidatoCnefe[] = [];
   if (cepEspecifico(alvo.cep)) sub = candidatos.filter((x) => x.cep === alvo.cep);
   if (sub.length === 0) sub = candidatos.filter((x) => localidadeBate(x.localidade, alvo.bairro));
   const confirmado = sub.length > 0;
-  if (!confirmado) sub = candidatos;
+  if (!confirmado) {
+    sub = candidatos;
+    // O tipo so' desempata sem CEP/bairro confirmando: o IBGE grava a mesma via
+    // com outro tipo (RUA NATAL = PRACA NATAL; ESTRADA = ENTRADA DO GUANDU DO
+    // SENA) e, com o CEP batendo, filtrar pelo tipo jogava fora o ponto certo
+    // (medicao 21/10: 2 de 2.136 foram parar a 0,4 e 41 km).
+    const tipoAlvo = tipoCanonico(alvo.tipo);
+    if (tipoAlvo) {
+      const doTipo = sub.filter((x) => x.tipo != null && tipoCanonico(x.tipo) === tipoAlvo);
+      if (doTipo.length > 0) sub = [...doTipo, ...sub.filter((x) => x.tipo == null)];
+    }
+  }
 
   if (alvo.numero != null) {
     const exatos = sub.filter((x) => numeroCnefe(x.numero) === alvo.numero);
