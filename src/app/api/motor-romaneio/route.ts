@@ -54,6 +54,7 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { atrasoEfetivoMin, SQL_VEICULOS_SEM_ROMANEIO } from "@/lib/frescor-posicao";
 import {
   haversineM,
   agruparPontosPorPlaca,
@@ -802,18 +803,9 @@ async function sinalizarRomaneioAusente(ctx: {
       lat: number;
       lng: number;
     }>(
-      `SELECT v.id AS veiculo_id, v.cliente_id, pa.lat, pa.lng
-         FROM veiculos v
-         JOIN clientes c ON c.id = v.cliente_id
-         JOIN posicoes_atuais pa ON pa.veiculo_id = v.id
-         LEFT JOIN romaneio_pontos rp ON rp.veiculo_id = v.id AND rp.romaneio_data = $3::date
-        WHERE c.cod_user_unitrac = ANY($1::text[])
-          AND pa.atraso_min IS NOT NULL AND pa.atraso_min < $2
-          AND rp.id IS NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM bases b
-             WHERE b.cliente_id = v.cliente_id AND ST_Contains(b.geom::geometry, pa.geom::geometry)
-          )`,
+      // F1-15: frescor pelo atraso efetivo (updated_at) e so' cliente ativo
+      // -- carro congelado (fora da API) nao vira card eterno.
+      SQL_VEICULOS_SEM_ROMANEIO,
       [codigosUnitrac, LIMIAR_ATRASO_FRESCO_MIN, hoje]
     );
 
@@ -1608,7 +1600,11 @@ export async function POST(request: Request) {
         if (!posAtual || posAtual.lat == null || posAtual.lng == null) continue;
         const latAtual = posAtual.lat;
         const lngAtual = posAtual.lng;
-        const fresco = posAtual.atraso_min != null && posAtual.atraso_min < LIMIAR_ATRASO_FRESCO_MIN;
+        // F1-15: atraso efetivo = max(atraso_min, idade do updated_at). So' muda
+        // carro congelado (o motor parou de gravar), que ja era barrado pela
+        // idempotencia por datagps -- nenhum desvio de leitura nova se perde.
+        const atrasoEfetivo = atrasoEfetivoMin(posAtual.atraso_min, posAtual.updated_at, agora);
+        const fresco = atrasoEfetivo != null && atrasoEfetivo < LIMIAR_ATRASO_FRESCO_MIN;
 
         // Jammer (Task Fase 4 Incremento 1, revisão independente 27/08,
         // CRÍTICO 1) -- PRECISA rodar aqui, ANTES do gate de idempotência

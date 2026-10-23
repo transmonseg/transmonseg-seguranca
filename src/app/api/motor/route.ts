@@ -24,6 +24,7 @@ const RAIO_PRESENCA_PROPRIO_GEOCODE_M = 150;
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { SQL_VEICULOS_EM_FAVELA } from "@/lib/frescor-posicao";
 import { RAIO_ESCALA_M } from "@/lib/escala-geocode";
 import {
   agruparAlvosPorPlaca,
@@ -4732,7 +4733,7 @@ export async function POST(request: Request) {
     }
 
     // 7. Detector de favela — query batch eficiente via ST_Intersects + GIST
-    // Retorna apenas veiculos frescos (atraso_min <= 60) dentro de alguma favela.
+    // Retorna apenas veiculos frescos (atraso efetivo <= 60) de cliente ativo dentro de alguma favela.
     {
       const pgClient = await pool.connect();
       try {
@@ -4746,21 +4747,9 @@ export async function POST(request: Request) {
           nome_favela: string;
           geofence_geojson: GeoJSONGeom;
         }>(
-          `SELECT
-             p.veiculo_id,
-             v.cliente_id,
-             p.lat,
-             p.lng,
-             COALESCE(p.velocidade, 0) AS velocidade,
-             COALESCE(p.panico, false) AS panico,
-             g.nome AS nome_favela,
-             ST_AsGeoJSON(g.geom::geometry)::json AS geofence_geojson
-           FROM posicoes_atuais p
-           JOIN veiculos v ON v.id = p.veiculo_id
-           JOIN geofences g
-             ON g.tipo = 'favela'
-             AND ST_Intersects(g.geom, p.geom)
-           WHERE p.atraso_min <= 60`
+          // F1-15: so' cliente ativo e frescor pelo atraso efetivo (updated_at)
+          // -- ver src/lib/frescor-posicao.ts.
+          SQL_VEICULOS_EM_FAVELA
         );
 
         // Alertas de favela ATIVOS de uma vez (1 query pra todo mundo, nao 1

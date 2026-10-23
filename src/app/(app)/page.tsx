@@ -1,13 +1,11 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { acessoDoUsuario, filtrarPorAcesso } from "@/lib/acesso-cliente";
+import { acessoDoUsuario } from "@/lib/acesso-cliente";
+import { carregarCentralInicial } from "@/lib/central-inicial";
 import MonitorV2 from "./central-v2/MonitorV2";
 import { formatarReabertura } from "@/lib/desvio-episodio";
 
 export const dynamic = "force-dynamic";
 
-interface Cliente { id: string; nome: string; cod_user_unitrac: string; }
-interface Veiculo { id: string; cliente_id: string; placa: string; cv: string; }
-interface PosicaoAtual { veiculo_id: string; lat: number | null; lng: number | null; velocidade: number; ignicao: boolean; atraso_min: number; local: string | null; }
 interface Alerta { id: string; cliente_id: string; veiculo_id: string; nivel: "critico" | "atencao"; tipo: string; motivo: string | null; desde: string; status: string; score: number | null; lat: number | null; lng: number | null; contexto: { rota_concluida?: unknown; progresso_destino?: { delta_m: number }; placar_sombra?: { placar: number; componentes: Record<string, number | boolean | string> }; calibracao?: { segmento: string | null; taxa_falso_positivo: number } } | null; }
 
 function ordemSeveridade(tipo: string): number {
@@ -28,30 +26,15 @@ export default async function CentralPage({
 }) {
   const { cliente: clienteParam } = await searchParams;
   const supabase = createAdminClient();
-
-  const [{ data: clientesRaw }, { data: veiculosRaw }, { data: posicoesRaw }, { data: alertasRaw }] =
-    await Promise.all([
-      supabase.from("clientes").select("id, nome, cod_user_unitrac").eq("ativo", true).order("cod_user_unitrac"),
-      // So' a frota ativa (tela Veiculos, 05/10): placa tirada da frota sai da Central.
-      supabase.from("veiculos").select("id, cliente_id, placa, cv").eq("ativo", true),
-      supabase.from("posicoes_atuais").select("veiculo_id, lat, lng, velocidade, ignicao, atraso_min, local"),
-      supabase.from("alertas").select("id, cliente_id, veiculo_id, nivel, tipo, motivo, desde, status, score, lat, lng, contexto").eq("modo_teste", false).in("status", ["ativo", "reconhecido"]),
-    ]);
-
-  // Conta de um cliente só (ex.: login da Nutry Max) não vê as outras abas.
+  // F1-15 (AC-02): cliente resolvido ANTES; o banco devolve so' os alertas
+  // dele (antes: todos os clientes, 76 MB, filtrados aqui no Node).
   const acesso = await acessoDoUsuario();
-  const clientes: Cliente[] = filtrarPorAcesso(acesso, clientesRaw ?? []);
-  const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
-  const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
-  const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];
-
   const codParam = typeof clienteParam === "string" ? clienteParam : undefined;
-  const clienteAtivo: Cliente = (codParam && clientes.find(c => c.cod_user_unitrac === codParam)) || clientes[0];
-  if (!clienteAtivo) return null;
-
-  const veiculos = todosVeiculos.filter(v => v.cliente_id === clienteAtivo.id);
-  const veiculoIds = new Set(veiculos.map(v => v.id));
-  const posicaoPorVeiculo = new Map(todasPosicoes.filter(p => veiculoIds.has(p.veiculo_id)).map(p => [p.veiculo_id, p]));
+  const carga = await carregarCentralInicial(supabase, acesso, codParam);
+  if (!carga) return null;
+  const { clientes, clienteAtivo, veiculos } = carga;
+  const todosAlertas: Alerta[] = carga.alertas as Alerta[];
+  const posicaoPorVeiculo = new Map(carga.posicoes.map(p => [p.veiculo_id, p]));
   const veiculoById = new Map(veiculos.map(v => [v.id, v]));
 
   const enriquecer = (a: Alerta) => {
