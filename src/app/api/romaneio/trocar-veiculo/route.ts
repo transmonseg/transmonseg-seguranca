@@ -1,10 +1,13 @@
+import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { resolverPlacaNoCadastro } from "@/lib/romaneio";
+import { compactarPlaca, placasOrigemCompactas, executarTrocaVeiculo, type ResultadoTroca } from "@/lib/troca-veiculo";
 
 // Troca de carro do dia (06/10, "Confirmar troca" no Ao vivo do KPI): as
 // entregas do dia que estavam no carro da escala passam pro carro que rodou de
 // verdade -- desvio/rota no monitoramento acompanham o carro certo. So' via
 // ponte (x-motor-key), chamada pelo KPI depois da confirmacao da operacao.
-const norm = (p: string) => p.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 export async function POST(request: Request) {
   const chave = request.headers.get("x-motor-key");
@@ -26,16 +29,44 @@ export async function POST(request: Request) {
   }
   const admin = createAdminClient();
   const { data: veiculos, error: e1 } = await admin.from("veiculos").select("id, placa");
-  if (e1) return Response.json({ erro: e1.message }, { status: 500 });
-  const de = (veiculos ?? []).filter((v) => norm(v.placa) === norm(placaDe));
-  const para = (veiculos ?? []).find((v) => norm(v.placa) === norm(placaPara));
-  if (!para) return Response.json({ erro: `placa ${placaPara} fora da frota do monitoramento` }, { status: 404 });
-  const placasDe = [...new Set([...de.map((v) => v.placa), placaDe])];
-  let q = admin.from("romaneio_pontos")
-    .update({ veiculo_id: para.id, placa: para.placa })
-    .eq("romaneio_data", data).in("placa", placasDe);
-  if (nfs) q = q.in("nf", nfs);
-  const { data: trocados, error: e2 } = await q.select("id");
-  if (e2) return Response.json({ erro: e2.message }, { status: 500 });
-  return Response.json({ ok: true, pontos: trocados?.length ?? 0, para: para.placa });
+  if (e1) return Response.json({ ok: false, erro: e1.message }, { status: 500 });
+  const frota = (veiculos ?? []) as { id: string; placa: string }[];
+  const cadastroCompacto = new Set(frota.map((v) => compactarPlaca(v.placa)));
+  // Destino: exata ou unica variante O/0 do cadastro (nunca chuta).
+  const paraCompacta = resolverPlacaNoCadastro(compactarPlaca(placaPara), cadastroCompacto);
+  const para = paraCompacta ? frota.find((v) => compactarPlaca(v.placa) === paraCompacta) : undefined;
+  if (!para) return Response.json({ ok: false, erro: `placa ${placaPara} fora da frota do monitoramento` }, { status: 404 });
+  // F1-05: origem casada pela placa compacta (+ variantes O/0 que nao sao
+  // outro carro) direto no Postgres -- o .in("placa", ["RQO5E38"]) antigo nao
+  // casava "RQO-5E38" gravado pelo upload e respondia ok com 0 pontos.
+  const origens = placasOrigemCompactas(placaDe, cadastroCompacto, compactarPlaca(para.placa));
+  if (origens.length === 0) return Response.json({ ok: false, erro: "placa de origem igual a de destino" }, { status: 400 });
+  const veiculosOrigemCadastro = frota.filter((v) => origens.includes(compactarPlaca(v.placa))).map((v) => v.id);
+
+  const pool = new pg.Pool({ ...configPoolContabo(process.env.DATABASE_URL), max: 1 });
+  try {
+    const cliente = await pool.connect();
+    let r: ResultadoTroca;
+    try {
+      r = await executarTrocaVeiculo(cliente, { data, origens, nfs, para, veiculosOrigemCadastro });
+    } finally {
+      cliente.release();
+    }
+    if (r.movidos + r.jaNoDestino === 0) {
+      if (nfs) {
+        // Antes: ok:true pontos:0 e a tela achava que a troca tinha sido feita.
+        return Response.json({
+          ok: false,
+          pontos: 0,
+          erro: `as ${nfs.length} notas de ${placaDe} em ${data} nao foram encontradas no monitoramento -- nada foi trocado`,
+        }, { status: 404 });
+      }
+      return Response.json({ ok: true, pontos: 0, para: para.placa, aviso: `nenhuma entrega de ${placaDe} em ${data} no monitoramento` });
+    }
+    return Response.json({ ok: true, pontos: r.movidos, jaNoDestino: r.jaNoDestino, desviosFechados: r.desviosFechados, para: para.placa });
+  } catch (err) {
+    return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  } finally {
+    await pool.end().catch(() => {});
+  }
 }

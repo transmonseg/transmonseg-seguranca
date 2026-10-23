@@ -469,7 +469,9 @@ describe("POST /api/romaneio/upload -- placa O/0 contra o cadastro (DR-05)", () 
     mockExtrairDataRomaneio.mockReturnValue("2026-10-15");
   });
 
-  it("RQ0-9H37 do documento reata no veiculo RQO-9H37 do cadastro", async () => {
+  // F1-05: antes a linha ficava com o veiculo certo mas a placa do documento
+  // (RQ0-9H37: 47 pontos em 06-08/10), e a troca/consultas por placa erravam.
+  it("RQ0-9H37 do documento reata no veiculo RQO-9H37 do cadastro e grava a placa do cadastro", async () => {
     mockParseRomaneio.mockReturnValue([{ ...linhaRegexValida(), placaBruta: "RQ0-9H37" }]);
     mockSelect.mockResolvedValue({ data: [{ id: "veic-24343", placa: "RQO-9H37" }] });
     const { POST } = await import("./route");
@@ -477,7 +479,7 @@ describe("POST /api/romaneio/upload -- placa O/0 contra o cadastro (DR-05)", () 
     expect(res.status).toBe(200);
     const linhas = mockUpsert.mock.calls[0][0] as Array<{ veiculo_id: string | null; placa: string }>;
     expect(linhas[0].veiculo_id).toBe("veic-24343");
-    expect(linhas[0].placa).toBe("RQ0-9H37");
+    expect(linhas[0].placa).toBe("RQO-9H37");
     // a consulta incluiu a variante O/0
     expect(mockSelect.mock.calls[0][1]).toContain("RQO-9H37");
   });
@@ -487,7 +489,9 @@ describe("POST /api/romaneio/upload -- placa O/0 contra o cadastro (DR-05)", () 
     mockSelect.mockResolvedValue({ data: [{ id: "a", placa: "RO0-1A11" }, { id: "b", placa: "R0O-1A11" }] });
     const { POST } = await import("./route");
     await POST(criarRequisicao("romaneio.pdf"));
-    const linhas = mockUpsert.mock.calls[0][0] as Array<{ veiculo_id: string | null }>;
+    const linhas = mockUpsert.mock.calls[0][0] as Array<{ veiculo_id: string | null; placa: string }>;
     expect(linhas[0].veiculo_id).toBeNull();
+    // fora do cadastro: fica a placa do documento (a troca casa pela compacta)
+    expect(linhas[0].placa).toBe("R00-1A11");
   });
 });

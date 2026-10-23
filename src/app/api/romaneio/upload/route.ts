@@ -235,7 +235,11 @@ export async function POST(request: Request) {
     const veiculo = veiculoPorPlaca.get(placaNormalizada);
     return {
       veiculo_id: veiculo?.id ?? null,
-      placa: placaNormalizada,
+      // F1-05: achou o carro (inclusive pela variante O/0) => grava a placa
+      // do CADASTRO, nao a do documento (RQ0-9H37 ficava com 47 pontos em
+      // 06-08/10 sob uma placa que nao existe na frota). Fora do cadastro,
+      // fica a do documento -- a troca de veiculo casa pela placa compacta.
+      placa: veiculo?.placa ?? placaNormalizada,
       romaneio_data: romaneioData,
       nf: l.nf,
       cliente_codigo: l.clienteCodigo,
