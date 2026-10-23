@@ -761,4 +761,12 @@ describe("escolherFeaturePhoton (GEO-09)", () => {
     expect(escolherFeaturePhoton([f("Rua Tietê"), f("Rua Tieta")], "RUA TIETA, 315, Teresópolis, RJ, Brasil")).toMatchObject({ precisao: "rua" });
     expect(escolherFeaturePhoton([f("Rua Tieta", "315")], "RUA TIETA, 315, Teresópolis, RJ, Brasil")).toMatchObject({ precisao: "exato" });
   });
+  // Revisao final 23/10: bairro/lugar com o mesmo nome da rua (sem street)
+  // entrava como ponto da rua -- "RUA CAMPO GRANDE" em Itaguai virava o bairro.
+  it("lugar sem street com o mesmo nome (bairro Campo Grande) nao vale como a rua; a via (osm_key highway) vale", () => {
+    const bairro = { geometry: { coordinates: [-43.56, -22.9] as [number, number] }, properties: { name: "Campo Grande", osm_key: "place", osm_value: "suburb" } };
+    const via = { geometry: { coordinates: [-43.77, -22.85] as [number, number] }, properties: { name: "Rua Campo Grande", osm_key: "highway", osm_value: "residential" } };
+    expect(escolherFeaturePhoton([bairro], "RUA CAMPO GRANDE, 50, CENTRO, ITAGUAI, RJ, Brasil")).toBeNull();
+    expect(escolherFeaturePhoton([bairro, via], "RUA CAMPO GRANDE, 50, CENTRO, ITAGUAI, RJ, Brasil")).toMatchObject({ lat: -22.85, precisao: "rua" });
+  });
 });

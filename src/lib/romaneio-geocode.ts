@@ -586,7 +586,7 @@ export async function geocodificarGoogle(enderecoBruto: string): Promise<{ lat: 
 // de geocodificarEndereco (30km do ponto de cidade) pra barrar match
 // estrangeiro/errado -- exatamente como Google e Nominatim. Sem teste
 // automatizado (chamada de rede real), igual aos outros dois.
-type FeaturePhoton = { geometry?: { coordinates?: [number, number] }; properties?: { street?: string; name?: string; housenumber?: string } };
+type FeaturePhoton = { geometry?: { coordinates?: [number, number] }; properties?: { street?: string; name?: string; housenumber?: string; osm_key?: string } };
 
 // GEO-09 (auditoria 20/10): o Photon devolve o que acha "mais parecido" --
 // "RUA TIETA" virava Rua Tietê, "ESTRADA MUNICIPAL BJ 23" virava Estrada
@@ -597,7 +597,10 @@ export function escolherFeaturePhoton(features: FeaturePhoton[], consulta: strin
   const rua = normalizarNomeRua(extrairRuaDoEndereco(consulta));
   const numero = soDigitos(extrairNumeroDoEndereco(consulta));
   for (const f of features) {
-    const nome = f.properties?.street ?? f.properties?.name;
+    // Sem street, o name so' vale se a feature for a propria via (osm_key
+    // highway): bairro/lugar homonimo ("Campo Grande") nao e' a rua
+    // (revisao final 23/10).
+    const nome = f.properties?.street ?? (f.properties?.osm_key === "highway" ? f.properties?.name : undefined);
     if (!nome || normalizarNomeRua(nome) !== rua) continue;
     const coords = f.geometry?.coordinates;
     if (!coords || coords.length < 2) continue;
