@@ -3,7 +3,7 @@
 import { describe, it, expect } from "vitest";
 import {
   montarEnderecoRQ, lerLinhasRQ, planejarDiaRQ, ehPontoRQ, enviadoPorRQ, ehEnviadoPorRQ,
-  agruparPorColunas, ENVIADO_POR_RQ_ANTIGO, type PontoRQ,
+  agruparPorColunas, ENVIADO_POR_RQ_ANTIGO, motivoParaNaoSubstituirRQ, type PontoRQ,
 } from "./romaneio-rioquality";
 import {
   extrairCidadeDoEndereco, extrairNumeroDoEndereco, extrairBairroDoEndereco, expandirCidadeTruncada, municipioCodigoIbge,
@@ -151,6 +151,37 @@ describe("planejarDiaRQ (F2-04)", () => {
   it("sem substituir, o que nao veio fica (formato antigo do KPI)", () => {
     const p = planejarDiaRQ({ ...base, substituir: false, existentes: [ponto({ id: "a" })], linhas: [] });
     expect(p).toEqual({ inserir: [], atualizar: [], apagar: [] });
+  });
+});
+
+describe("motivoParaNaoSubstituirRQ (revisao Fase 2, F2-04-a)", () => {
+  // Envio vazio (planilha com cabecalho certo e celulas de placa vazias) ou
+  // encolhido (resposta anomala da Fusion sem rows num romaneio) apagava o
+  // dia da RQ inteiro, com a presenca, e a rota respondia ok.
+  const doDia = (n: number, dup = 0) => [
+    ...Array.from({ length: n }, (_, i) => ponto({ id: `e${i}`, nf: String(6080000 + i) })),
+    // "NF em 2 placas" (pre-089): a mesma NF em outra linha nao conta duas vezes
+    ...Array.from({ length: dup }, (_, i) => ponto({ id: `d${i}`, nf: String(6080000 + i), placa: "LUN-8C28" })),
+  ];
+  const linhas = (n: number) => lerLinhasRQ(Array.from({ length: n }, (_, i) => ({ placa: "LNH9C10", nf: String(5550000 + i), rua: "R" })));
+
+  it("envio sem linhas com o dia ja' preenchido: recusa", () => {
+    expect(motivoParaNaoSubstituirRQ(doDia(2), [])).toMatch(/sem linhas/);
+  });
+  it("envio com menos da metade das NFs do dia: recusa (2.824 linhas em 23/10)", () => {
+    expect(motivoParaNaoSubstituirRQ(doDia(100), linhas(49))).toMatch(/49 NF.*100 NF/);
+  });
+  it("metade ou mais: substitui (troca Fusion -> planilha com outras NFs)", () => {
+    expect(motivoParaNaoSubstituirRQ(doDia(100), linhas(50))).toBeNull();
+  });
+  it("NF em 2 placas nao infla o dia: 100 NFs em 180 linhas, envio de 60 substitui", () => {
+    expect(motivoParaNaoSubstituirRQ(doDia(100, 80), linhas(60))).toBeNull();
+  });
+  it("dia pequeno (menos de 20 NFs) so' recusa o envio vazio", () => {
+    expect(motivoParaNaoSubstituirRQ(doDia(3), linhas(1))).toBeNull();
+  });
+  it("dia vazio: nada a proteger", () => {
+    expect(motivoParaNaoSubstituirRQ([], [])).toBeNull();
   });
 });
 

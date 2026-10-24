@@ -246,6 +246,29 @@ export function planejarDiaRQ(p: {
   return plano;
 }
 
+/** Revisao Fase 2 (F2-04-a): o "substituir" apagava do dia toda linha da RQ
+ *  que nao veio, sem trava. Envio vazio (planilha com as placas em branco) ou
+ *  encolhido (resposta anomala da Fusion sem rows num romaneio) levava o dia
+ *  inteiro, com a presenca, e a rota respondia ok. Mesma ideia do
+ *  FRACAO_MINIMA_API de veiculos-ausentes.mjs: menos da metade das NFs que o
+ *  dia ja' tem nao apaga nada (o envio ainda acrescenta e corrige). Conta NFs
+ *  distintas: "NF em 2 placas" (antes da 089) nao infla o dia. Dia pequeno
+ *  (< 20 NFs) so' recusa o envio vazio. null = pode substituir. */
+export const FRACAO_MINIMA_SUBSTITUIR_RQ = 0.5;
+export const MIN_NFS_PARA_FRACAO_RQ = 20;
+export function motivoParaNaoSubstituirRQ(existentes: PontoRQ[], linhas: LinhaRQ[]): string | null {
+  const nfsDoDia = new Set(existentes.map((e) => e.nf)).size;
+  if (nfsDoDia === 0) return null;
+  if (linhas.length === 0) {
+    return `envio sem linhas: as ${nfsDoDia} NFs da RQ do dia nao foram apagadas`;
+  }
+  const nfsEnviadas = new Set(linhas.map((l) => l.nf)).size;
+  if (nfsDoDia >= MIN_NFS_PARA_FRACAO_RQ && nfsEnviadas < nfsDoDia * FRACAO_MINIMA_SUBSTITUIR_RQ) {
+    return `envio com ${nfsEnviadas} NFs, menos da metade das ${nfsDoDia} NFs da RQ ja' no dia: nada foi apagado (so' acrescentado/corrigido)`;
+  }
+  return null;
+}
+
 /** Agrupa objetos pelo conjunto de colunas (o upsert do PostgREST manda as
  *  mesmas colunas para todas as linhas do lote). */
 export function agruparPorColunas(objs: Record<string, unknown>[]): Record<string, unknown>[][] {

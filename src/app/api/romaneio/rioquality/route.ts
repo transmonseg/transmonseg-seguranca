@@ -22,7 +22,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizarPlaca } from "@/lib/romaneio";
 import {
-  COD_UNITRAC_RQ, agruparPorColunas, ehPontoRQ, enviadoPorRQ, lerLinhasRQ, planejarDiaRQ, type PontoRQ,
+  COD_UNITRAC_RQ, agruparPorColunas, ehPontoRQ, enviadoPorRQ, lerLinhasRQ, motivoParaNaoSubstituirRQ, planejarDiaRQ, type PontoRQ,
 } from "@/lib/romaneio-rioquality";
 
 export const runtime = "nodejs";
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
   if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data) || !brutas) {
     return Response.json({ ok: false, erro: "Payload inválido (data YYYY-MM-DD + linhas[])." }, { status: 400 });
   }
-  const substituir = body?.modo === "substituir";
+  const pediuSubstituir = body?.modo === "substituir";
   const linhas = lerLinhasRQ(brutas);
 
   const admin = createAdminClient();
@@ -104,9 +104,14 @@ export async function POST(request: Request) {
   } catch (err) {
     return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
+  // F2-04-a: envio vazio ou encolhido nao apaga o dia (vira "so' acrescenta").
+  const aviso = pediuSubstituir ? motivoParaNaoSubstituirRQ(existentes, linhas) : null;
+  if (aviso) console.error(`${new Date().toISOString()} [romaneio/rioquality] ${data}: substituir recusado -- ${aviso}`);
+  const substituir = pediuSubstituir && !aviso;
+  const recusa = aviso ? { substituicaoRecusada: true, aviso } : {};
   const plano = planejarDiaRQ({ data, existentes, linhas, substituir, veiculoPorPlaca, enviadoPor, comPedidoErp });
   if (body?.simular === true) {
-    return Response.json({ ok: true, simulado: true, romaneioData: data, existentes: existentes.length, inserir: plano.inserir.length, atualizar: plano.atualizar.length, apagar: plano.apagar.length, placasNaoEncontradas });
+    return Response.json({ ok: true, simulado: true, romaneioData: data, existentes: existentes.length, inserir: plano.inserir.length, atualizar: plano.atualizar.length, apagar: plano.apagar.length, placasNaoEncontradas, ...recusa });
   }
 
   // Ordem: apagar (duplicatas e o que saiu), atualizar, inserir -- uma NF que
@@ -139,6 +144,6 @@ export async function POST(request: Request) {
 
   return Response.json({
     ok: true, romaneioData: data, linhasInseridas, linhasAtualizadas, linhasApagadas,
-    linhasDoDia: existentes.length - linhasApagadas + linhasInseridas, placasNaoEncontradas,
+    linhasDoDia: existentes.length - linhasApagadas + linhasInseridas, placasNaoEncontradas, ...recusa,
   });
 }

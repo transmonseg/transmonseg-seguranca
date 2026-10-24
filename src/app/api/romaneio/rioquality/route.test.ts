@@ -169,6 +169,27 @@ describe("POST /api/romaneio/rioquality", () => {
     expect(db.upserts.find(u => u.onConflict === "id")).toBeDefined();
   });
 
+  it("F2-04-a: substituir com linhas vazias nao apaga o dia da RQ (nem a presenca) e devolve o aviso", async () => {
+    db.pontos = [
+      { ...pontoBase, id: "rq1", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "6081346", cliente_nome: "L", endereco_bruto: "E", enviado_por: "cron-fusion (pelo Ao vivo do KPI)", presenca_confirmada_em: "2026-10-23T12:00:00Z" },
+      { ...pontoBase, id: "rq2", placa: "LUN-8C28", veiculo_id: "v-lun", nf: "6081999", cliente_nome: "X", endereco_bruto: "Y", enviado_por: "cron-fusion (pelo Ao vivo do KPI)" },
+    ];
+    const r = await postJson({ data: "2026-10-23", modo: "substituir", linhas: [] }, CHAVE);
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ ok: true, linhasApagadas: 0, substituicaoRecusada: true });
+    expect(String(r.json.aviso)).toMatch(/sem linhas/);
+    expect(db.deletes).toEqual([]);
+    expect(db.pontos.map(p => p.id)).toEqual(["rq1", "rq2"]);
+  });
+
+  it("F2-04-a: substituir encolhido (1 de 25 NFs) acrescenta/corrige mas nao apaga o resto", async () => {
+    db.pontos = Array.from({ length: 25 }, (_, i) => ({ ...pontoBase, id: `rq${i}`, placa: "LNH-9C10", veiculo_id: "v-lnh", nf: String(6081000 + i), cliente_nome: "L", endereco_bruto: "E", enviado_por: "cron-fusion (pelo Ao vivo do KPI)" }));
+    const r = await postJson({ data: "2026-10-23", modo: "substituir", linhas: [{ placa: "LUN8C28", nf: "6081000", clienteNome: "L", enderecoBruto: "E" }] }, CHAVE);
+    expect(r.json).toMatchObject({ ok: true, linhasApagadas: 0, linhasAtualizadas: 1, substituicaoRecusada: true });
+    expect(db.pontos).toHaveLength(25);
+    expect(db.pontos.find(p => p.id === "rq0")).toMatchObject({ placa: "LUN-8C28" });
+  });
+
   it("com a coluna pedido_erp (migration 089), o pedido e' gravado", async () => {
     db.temPedidoErp = true;
     await postJson({ data: "2026-10-23", modo: "substituir", linhas: [{ placa: "LNH9C10", nf: "5557757", pedidoErp: "6081346", clienteNome: "L", rua: "R", cidade: "RIO DE JANEIRO", uf: "RJ" }] }, CHAVE);
