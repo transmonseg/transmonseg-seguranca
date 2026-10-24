@@ -33,9 +33,14 @@ export async function GET(request: Request) {
     );
     const sem = rows.filter((r) => !r.tem_romaneio).map((r) => r.placa).sort();
     return Response.json({ data, cod, emRota: rows.length, semRomaneio: sem.length, placasSemRomaneio: sem });
-  } catch {
+  } catch (e) {
     // Erro nao vira "frota parada": o KPI trata como desconhecido.
-    return Response.json({ erro: "falha na consulta" }, { status: 500 });
+    // Revisao F3-07 (R6): o motivo vai pro log e pra resposta (so' a ponte,
+    // com x-motor-key, le) -- antes o banner "frota nao conferida" saia sem
+    // ninguem saber se era timeout, SQL ou conexao.
+    const motivo = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+    console.error(`[romaneio/frota-em-rota] cod ${cod} dia ${data}: consulta falhou: ${motivo}`);
+    return Response.json({ erro: `falha na consulta: ${motivo}` }, { status: 500 });
   } finally {
     await pool.end().catch(() => {});
   }

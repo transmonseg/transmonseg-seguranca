@@ -69,15 +69,21 @@ export const SQL_FROTA_EM_ROTA = `SELECT v.id AS veiculo_id, v.cliente_id, c.cod
           )`;
 
 // $1 = cod_user_unitrac[], $2 = dia (SP). Ultimo romaneio recebido por
-// cliente (qualquer dia da ultima semana ate' hoje), para o "ultimo envio ha' X h".
-export const SQL_ULTIMO_ENVIO_ROMANEIO = `SELECT v.cliente_id, max(rp.criado_em) AS ultimo_envio
+// cliente (qualquer dia da ultima semana ate' hoje): o DIA do romaneio mais
+// recente e o ultimo envio desse dia. Revisao F3-07 (R7): antes era so'
+// max(criado_em) de qualquer dia -- o reenvio do dia anterior (fechamento das
+// 00:30 da RQ, upload atrasado) virava "ultimo envio ha' 6 h" as 07:00 sem
+// nada de hoje.
+export const SQL_ULTIMO_ENVIO_ROMANEIO = `SELECT DISTINCT ON (v.cliente_id) v.cliente_id,
+              rp.romaneio_data::text AS ultimo_dia, max(rp.criado_em) AS ultimo_envio
          FROM romaneio_pontos rp
          JOIN veiculos v ON v.id = rp.veiculo_id
          JOIN clientes c ON c.id = v.cliente_id
         WHERE c.cod_user_unitrac = ANY($1::text[])
           AND rp.modo_teste = false
           AND rp.romaneio_data BETWEEN $2::date - 7 AND $2::date
-        GROUP BY v.cliente_id`;
+        GROUP BY v.cliente_id, rp.romaneio_data
+        ORDER BY v.cliente_id, rp.romaneio_data DESC`;
 
 export type ContextoRomaneioAusente = {
   agregado: true;
@@ -86,6 +92,8 @@ export type ContextoRomaneioAusente = {
   veiculo_ids: string[];
   em_rota_agora: number;
   ultimo_envio: string | null;
+  /** Dia (SP) do romaneio mais recente do cliente (R7). */
+  ultimo_dia?: string | null;
   /** Ultima vez (renovada a cada RENOVAR_CARD_MIN) que havia carro em rota sem romaneio. */
   visto_em: string;
   auto_resolvido?: boolean;
@@ -134,19 +142,21 @@ export type PlanoRomaneioAusente = {
   resolver: { id: string; contexto: Record<string, unknown> }[];
 };
 
-export function textoUltimoEnvio(ultimoEnvio: string | null, agora: Date): string {
+export function textoUltimoEnvio(ultimoEnvio: string | null, agora: Date, ultimoDia?: string | null, hoje?: string): string {
   if (!ultimoEnvio) return "nenhum envio nos últimos 7 dias";
   const min = Math.max(0, Math.floor((agora.getTime() - new Date(ultimoEnvio).getTime()) / 60_000));
-  if (min < 60) return `último envio há ${min} min`;
-  return `último envio há ${Math.floor(min / 60)} h`;
+  const ha = min < 60 ? `${min} min` : `${Math.floor(min / 60)} h`;
+  if (ultimoDia && hoje && ultimoDia === hoje) return `romaneio de hoje enviado há ${ha}, sem estes carros`;
+  if (ultimoDia) return `último romaneio é de ${ultimoDia.slice(8, 10)}/${ultimoDia.slice(5, 7)} (enviado há ${ha})`;
+  return `último envio há ${ha}`;
 }
 
-export function motivoRomaneioAusente(p: { placas: string[]; emRotaAgora: number; ultimoEnvio: string | null; agora: Date }): string {
+export function motivoRomaneioAusente(p: { placas: string[]; emRotaAgora: number; ultimoEnvio: string | null; agora: Date; ultimoDia?: string | null; hoje?: string }): string {
   const placas = [...p.placas].sort();
   const n = placas.length;
   const agora = p.emRotaAgora < n ? ` (${p.emRotaAgora} agora)` : "";
   const lista = placas.slice(0, MAX_PLACAS_NO_MOTIVO).join(", ") + (n > MAX_PLACAS_NO_MOTIVO ? ` e mais ${n - MAX_PLACAS_NO_MOTIVO}` : "");
-  return `${n} ${n === 1 ? "carro" : "carros"} em rota sem romaneio${agora}, ${textoUltimoEnvio(p.ultimoEnvio, p.agora)}. Placas: ${lista}`;
+  return `${n} ${n === 1 ? "carro" : "carros"} em rota sem romaneio${agora}, ${textoUltimoEnvio(p.ultimoEnvio, p.agora, p.ultimoDia, p.hoje)}. Placas: ${lista}`;
 }
 
 const ABERTOS = new Set(["ativo", "reconhecido"]);
@@ -164,6 +174,8 @@ export function planejarRomaneioAusente(p: {
   emRota: VeiculoEmRota[];
   existentes: AlertaRomaneioAusente[];
   ultimoEnvio: Record<string, string | null | undefined>;
+  /** Dia do romaneio mais recente por cliente (SQL_ULTIMO_ENVIO_ROMANEIO.ultimo_dia). */
+  ultimoDia?: Record<string, string | null | undefined>;
   hoje: string;
   agora: Date;
 }): PlanoRomaneioAusente {
@@ -196,6 +208,7 @@ export function planejarRomaneioAusente(p: {
     const cards = cardsHoje.filter((a) => a.cliente_id === clienteId).sort((a, b) => b.desde.localeCompare(a.desde));
     const principal = cards[0];
     const ultimoEnvio = p.ultimoEnvio[clienteId] ?? null;
+    const ultimoDia = p.ultimoDia?.[clienteId] ?? null;
 
     if (agoraCliente.length === 0) {
       if (principal && ABERTOS.has(principal.status) && minutosDesde(principal.contexto?.visto_em, p.agora) >= CARENCIA_FECHAR_MIN) {
@@ -216,10 +229,11 @@ export function planejarRomaneioAusente(p: {
         veiculo_ids: ids,
         em_rota_agora: agoraCliente.length,
         ultimo_envio: ultimoEnvio,
+        ...(ultimoDia ? { ultimo_dia: ultimoDia } : {}),
         visto_em: agoraIso,
       };
       delete contexto.auto_resolvido;
-      const motivo = motivoRomaneioAusente({ placas: contexto.placas, emRotaAgora: agoraCliente.length, ultimoEnvio, agora: p.agora });
+      const motivo = motivoRomaneioAusente({ placas: contexto.placas, emRotaAgora: agoraCliente.length, ultimoEnvio, agora: p.agora, ultimoDia, hoje: p.hoje });
       return { contexto, motivo, rep };
     };
 
@@ -239,6 +253,7 @@ export function planejarRomaneioAusente(p: {
         || rep.veiculo_id !== principal.veiculo_id
         || contexto.veiculo_ids.join() !== listaDe(principal.contexto?.veiculo_ids).join()
         || contexto.ultimo_envio !== (principal.contexto?.ultimo_envio ?? null)
+        || (contexto.ultimo_dia ?? null) !== (principal.contexto?.ultimo_dia ?? null)
         || minutosDesde(principal.contexto?.visto_em, p.agora) >= RENOVAR_CARD_MIN;
       if (!mudou) continue;
       const patch: PatchRomaneioAusente = { motivo, contexto, veiculo_id: rep.veiculo_id, lat: rep.lat, lng: rep.lng };

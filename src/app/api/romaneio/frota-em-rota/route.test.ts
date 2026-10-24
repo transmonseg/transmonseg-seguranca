@@ -59,6 +59,13 @@ describe("GET /api/romaneio/frota-em-rota", () => {
 
   it("falha na consulta => 500 (o KPI trata como 'nao sei', nunca como frota parada)", async () => {
     estado.falhar = true;
-    expect((await GET(req("data=2026-10-21&cod=598"))).status).toBe(500);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const r = await GET(req("data=2026-10-21&cod=598"));
+    expect(r.status).toBe(500);
+    // Revisao F3-07 (R6): o motivo vai pro log do servidor e pra resposta
+    // (o KPI registra), nao some num catch vazio.
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/frota-em-rota.*598.*2026-10-21.*timeout/));
+    expect(await r.json()).toEqual({ erro: "falha na consulta: timeout" });
+    log.mockRestore();
   });
 });

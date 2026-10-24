@@ -827,10 +827,14 @@ export async function sinalizarRomaneioAusente(ctx: {
 
     const [{ rows: frota }, { rows: envios }] = await Promise.all([
       pool.query<VeiculoEmRotaComRomaneio>(SQL_FROTA_EM_ROTA, [codigosUnitrac, LIMIAR_ATRASO_FRESCO_MIN, hoje, DIST_MIN_BASE_ROMANEIO_AUSENTE_M]),
-      pool.query<{ cliente_id: string; ultimo_envio: Date | string | null }>(SQL_ULTIMO_ENVIO_ROMANEIO, [codigosUnitrac, hoje]),
+      pool.query<{ cliente_id: string; ultimo_dia: string | null; ultimo_envio: Date | string | null }>(SQL_ULTIMO_ENVIO_ROMANEIO, [codigosUnitrac, hoje]),
     ]);
     const ultimoEnvio: Record<string, string | null> = {};
-    for (const e of envios) ultimoEnvio[e.cliente_id] = e.ultimo_envio == null ? null : new Date(e.ultimo_envio).toISOString();
+    const ultimoDia: Record<string, string | null> = {};
+    for (const e of envios) {
+      ultimoEnvio[e.cliente_id] = e.ultimo_envio == null ? null : new Date(e.ultimo_envio).toISOString();
+      ultimoDia[e.cliente_id] = e.ultimo_dia ?? null;
+    }
 
     // Abertos de qualquer dia (pra fechar os antigos) + os de hoje em
     // qualquer status (1 card por cliente por dia, reabre o mesmo).
@@ -851,6 +855,7 @@ export async function sinalizarRomaneioAusente(ctx: {
       emRota: frota.filter((v) => !v.tem_romaneio),
       existentes: [...porId.values()],
       ultimoEnvio,
+      ultimoDia,
       hoje,
       agora,
     });

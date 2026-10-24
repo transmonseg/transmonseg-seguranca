@@ -64,7 +64,7 @@ beforeEach(() => {
 describe("sinalizarRomaneioAusente (F3-07)", () => {
   it("21/10 07:00 BRT: Nutry sem romaneio (3 carros) e RQ com Fusion fora (1) => 1 card por cliente; carro com romaneio fica fora", async () => {
     estado.frota = [carro("RQU-1B50", NUTRY), carro("OXE-7D03", NUTRY), carro("TTI-6E43", NUTRY), carro("KWM-9877", RQ), carro("LNH-8A80", RQ, true)];
-    estado.ultimo = [{ cliente_id: NUTRY, ultimo_envio: new Date("2026-10-20T14:10:00Z") }];
+    estado.ultimo = [{ cliente_id: NUTRY, ultimo_dia: "2026-10-20", ultimo_envio: new Date("2026-10-20T14:10:00Z") }];
     const erros = await ciclo(new Date("2026-10-21T10:00:00Z"), "2026-10-21");
     expect(erros).toEqual([]);
     const frota = estado.queries.find((q) => /tem_romaneio/.test(q.sql))!;
@@ -73,7 +73,7 @@ describe("sinalizarRomaneioAusente (F3-07)", () => {
     expect(estado.inserts).toHaveLength(2);
     const nutry = estado.inserts.find((i) => i.cliente_id === NUTRY)!;
     expect(nutry.tipo).toBe("romaneio_ausente");
-    expect(nutry.motivo).toBe("3 carros em rota sem romaneio, último envio há 19 h. Placas: OXE-7D03, RQU-1B50, TTI-6E43");
+    expect(nutry.motivo).toBe("3 carros em rota sem romaneio, último romaneio é de 20/10 (enviado há 19 h). Placas: OXE-7D03, RQU-1B50, TTI-6E43");
     const rq = estado.inserts.find((i) => i.cliente_id === RQ)!;
     expect(rq.motivo).toBe("1 carro em rota sem romaneio, nenhum envio nos últimos 7 dias. Placas: KWM-9877");
   });

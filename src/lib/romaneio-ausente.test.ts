@@ -72,6 +72,16 @@ describe("textoUltimoEnvio", () => {
   it("sem envio na semana", () => {
     expect(textoUltimoEnvio(null, AS_07H)).toBe("nenhum envio nos últimos 7 dias");
   });
+  it("revisao F3-07 (R7): o fechamento das 00:30 reenvia o dia anterior da RQ -- as 07:00 sem relatorio de hoje o card diz de que DIA e' o ultimo romaneio, nao 'ultimo envio ha' 6 h'", () => {
+    const AS_07H_24 = new Date("2026-10-24T10:00:00Z");
+    expect(textoUltimoEnvio("2026-10-24T03:30:00Z", AS_07H_24, "2026-10-23", "2026-10-24")).toBe("último romaneio é de 23/10 (enviado há 6 h)");
+    expect(textoUltimoEnvio("2026-10-24T08:05:00Z", AS_07H_24, "2026-10-24", "2026-10-24")).toBe("romaneio de hoje enviado há 1 h, sem estes carros");
+  });
+  it("R7: SQL devolve o dia do ultimo romaneio e o envio desse dia", () => {
+    expect(SQL_ULTIMO_ENVIO_ROMANEIO).toMatch(/DISTINCT ON \(v\.cliente_id\)/);
+    expect(SQL_ULTIMO_ENVIO_ROMANEIO).toContain("rp.romaneio_data::text AS ultimo_dia");
+    expect(SQL_ULTIMO_ENVIO_ROMANEIO).toMatch(/ORDER BY v\.cliente_id, rp\.romaneio_data DESC/);
+  });
 });
 
 describe("motivoRomaneioAusente", () => {
@@ -143,6 +153,19 @@ describe("planejarRomaneioAusente", () => {
     expect(p.atualizar[0].patch).toMatchObject({ status: "ativo", resolvido_em: null, veiculo_id: "v-TTI-6E43" });
     expect(p.atualizar[0].patch.contexto.placas).toEqual(["RQU-1B50", "TTI-6E43"]);
     expect(p.atualizar[0].patch.contexto.auto_resolvido).toBeUndefined();
+  });
+
+  it("R7: o dia do ultimo romaneio vai pro motivo e pro contexto", () => {
+    const p = planejarRomaneioAusente({ ...base, ultimoDia: { [NUTRY]: "2026-10-20" }, emRota: [carro("RQU-1B50")], existentes: [] });
+    expect(p.inserir[0].motivo).toBe("1 carro em rota sem romaneio, último romaneio é de 20/10 (enviado há 19 h). Placas: RQU-1B50");
+    expect(p.inserir[0].contexto.ultimo_dia).toBe("2026-10-20");
+  });
+
+  it("revisao F3-07 (R1): card de hoje que perdeu o contexto (contexto {}) e foi fechado pelo operador -- sem saber quem foi contado, carro rodando abre card novo (recall)", () => {
+    const semContexto = card({ status: "limpo", origem_acao: "limpar_massa", contexto: {} });
+    const p = planejarRomaneioAusente({ ...base, emRota: [carro("RQU-1B50")], existentes: [semContexto] });
+    expect(p.inserir).toHaveLength(1);
+    expect(p.resolver).toEqual([]);
   });
 
   it("operador fechou o card: nao reabre; carro NOVO sem romaneio abre o 2o card do dia (nunca some)", () => {
