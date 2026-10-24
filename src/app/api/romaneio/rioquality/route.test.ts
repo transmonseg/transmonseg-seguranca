@@ -99,6 +99,18 @@ describe("POST /api/romaneio/rioquality", () => {
     expect(r.status).toBe(401);
   });
 
+  it("F2-04-b: login do monitoramento sem x-motor-key (ex.: conta só da Nutry) nao apaga nem grava o dia da RQ", async () => {
+    // Caso da revisao: operador ericanutrymax (operadores.cliente_id = Nutry)
+    // com o cookie de sessao manda {linhas: [], modo: 'substituir'}.
+    mockGetUser.mockResolvedValue({ data: { user: { id: "u-erica", email: "ericanutrymax@x.com" } } });
+    db.pontos = [{ ...pontoBase, id: "rq", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "6081346", cliente_nome: "L", endereco_bruto: "E", enviado_por: "cron-fusion (pelo Ao vivo do KPI)", presenca_confirmada_em: "2026-10-23T12:00:00Z" }];
+    const r = await postJson({ data: "2026-10-23", modo: "substituir", linhas: [] });
+    expect(r.status).toBe(401);
+    expect(db.deletes).toEqual([]);
+    expect(db.upserts).toEqual([]);
+    expect(db.pontos).toHaveLength(1);
+  });
+
   it("400 se payload inválido (sem data ou linhas não-array)", async () => {
     const r = await postJson({ linhas: "x" }, CHAVE);
     expect(r.status).toBe(400);

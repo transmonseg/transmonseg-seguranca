@@ -15,7 +15,10 @@
 // - simular: devolve o plano sem gravar (teste a seco / backfill).
 // F2-02: campos estruturados (rua, numero, bairro, cidade, uf, cep) viram o
 // endereço no formato que o parser lê; enderecoBruto pronto continua aceito.
-import { createClient } from "@/lib/supabase/server";
+// F2-04-b (revisão Fase 2): só o KPI (x-motor-key) chama esta rota. Login do
+// monitoramento não entra -- uma conta de um cliente só (operadores.cliente_id)
+// apagaria o dia da RQ com {linhas: [], modo: "substituir"}. Nenhuma tela usa
+// a rota.
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizarPlaca } from "@/lib/romaneio";
 import {
@@ -72,9 +75,7 @@ async function pontosRQDoDia(admin: Admin, data: string, frota: Set<string>, com
 export async function POST(request: Request) {
   const chaveMotor = request.headers.get("x-motor-key");
   const viaKpi = !!chaveMotor && !!process.env.MOTOR_SECRET && chaveMotor === process.env.MOTOR_SECRET;
-  const auth = await createClient();
-  const user = viaKpi ? null : (await auth.auth.getUser()).data.user;
-  if (!viaKpi && !user) return Response.json({ ok: false, erro: "nao autorizado" }, { status: 401 });
+  if (!viaKpi) return Response.json({ ok: false, erro: "nao autorizado" }, { status: 401 });
 
   const body = (await request.json().catch(() => null)) as { data?: unknown; linhas?: unknown; modo?: unknown; simular?: unknown } | null;
   const data = str(body?.data);
@@ -93,7 +94,7 @@ export async function POST(request: Request) {
     : { data: [] as { id: string; placa: string }[] };
   const veiculoPorPlaca = new Map((veiculos ?? []).map((v) => [normalizarPlaca(v.placa as string), v.id as string]));
   const placasNaoEncontradas = placasUnicas.filter((p) => !veiculoPorPlaca.has(p));
-  const enviadoPor = enviadoPorRQ(request.headers.get("x-enviado-por") ?? user?.email ?? null);
+  const enviadoPor = enviadoPorRQ(request.headers.get("x-enviado-por"));
 
   let comPedidoErp: boolean;
   let existentes: PontoRQ[];
