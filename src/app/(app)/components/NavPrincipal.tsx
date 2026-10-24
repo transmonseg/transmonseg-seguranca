@@ -5,28 +5,16 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { rotaAtiva } from "@/lib/nav-rota";
 import { URL_KPI } from "@/lib/sistema-transmonseg";
+import { ABAS, ITENS_MENU } from "@/lib/nav-itens";
 
 // Pedido do usuario 23/08: "melhor so' colocar duas opcoes la em cima:
-// Central e Central Romaneio". As outras tres telas nao somem -- viram itens
-// da engrenagem ao lado. A Analise entra no menu (e nao no lixo) porque e' a
-// unica tela que ficaria inalcancavel: o painel de qualidade nao tem outro
-// caminho.
+// Central e Central Romaneio". As outras telas nao somem -- viram itens da
+// engrenagem ao lado. F3-12 (24/10): a Central Unitrac tambem foi para a
+// engrenagem; a aba e' so' a Central Romaneio. Itens em src/lib/nav-itens.ts.
 //
 // Client component de proposito: o AppLayout e' server (usa await
 // createClient()) e o menu precisa de estado/teclado/clique-fora. So' a
 // navegacao virou cliente, o resto do header continua no servidor.
-
-const ABAS = [
-  { href: "/", rotulo: "Central" },
-  { href: "/central-romaneio", rotulo: "Central Romaneio" },
-] as const;
-
-const ITENS_MENU = [
-  { href: "/romaneio", rotulo: "Configurar Romaneio" },
-  { href: "/escala", rotulo: "Escala" },
-  { href: "/veiculos", rotulo: "Veículos" },
-  { href: "/analise", rotulo: "Análise" },
-] as const;
 
 export default function NavPrincipal() {
   const pathname = usePathname() ?? "/";
