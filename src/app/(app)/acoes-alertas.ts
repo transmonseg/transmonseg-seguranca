@@ -10,6 +10,7 @@ import { invalidarCacheAlertasRomaneio } from "@/app/api/alertas-romaneio/route"
 import { invalidarCacheMapa } from "@/app/api/mapa/route";
 import { acessoDoUsuario } from "@/lib/acesso-cliente";
 import { idsAlertaPermitidos } from "@/lib/acesso-guardas";
+import { TIPO_ROMANEIO_AUSENTE } from "@/lib/romaneio-ausente";
 
 // Achado real 29/08 (grupo WhatsApp: "alerta limpo demora sumir, às vezes
 // volta"): as rotas de leitura têm cache manual em memória de 8s
@@ -69,16 +70,22 @@ async function autorizarAlertas(ids: string[], tabela: TabelaAlertas): Promise<{
 
 const SEM_PERMISSAO: ResultadoAcao = { erro: "Sem permissão para este alerta." };
 
-async function atualizar(id: string, patch: Record<string, unknown>, tabela: TabelaAlertas = "alertas"): Promise<ResultadoAcao> {
+// `fechar`: a acao encerra o alerta e aplica o strip de campos pesados por
+// parte (ver partesFechamento abaixo).
+async function atualizar(id: string, patch: Record<string, unknown>, tabela: TabelaAlertas = "alertas", fechar = false): Promise<ResultadoAcao> {
   const { opId, permitidos } = await autorizarAlertas([id], tabela);
   if (!opId) return { erro: "Sessao expirada." };
   if (permitidos.length === 0) return SEM_PERMISSAO;
   const admin = createAdminClient();
-  const { error } = await admin
-    .from(tabela)
-    .update({ ...patch, operador_id: opId })
-    .eq("id", id);
-  if (error) return { erro: "Não foi possível atualizar o alerta." };
+  for (const parte of fechar ? partesFechamento(tabela) : [{ strip: {} } as ParteFechamento]) {
+    let q = admin
+      .from(tabela)
+      .update({ ...patch, ...parte.strip, operador_id: opId })
+      .eq("id", id);
+    if (parte.tipo) q = q[parte.tipo.op]("tipo", parte.tipo.valor);
+    const { error } = await q;
+    if (error) return { erro: "Não foi possível atualizar o alerta." };
+  }
   revalidatePath(tabela === "alertas_romaneio" ? "/central-romaneio" : "/");
   invalidarCachesLeitura(tabela);
   return { ok: true };
@@ -93,8 +100,23 @@ export async function reconhecerAlerta(id: string, tabela: TabelaAlertas = "aler
 // alertas_romaneio (migration 055) não tem coluna `geom` (só alertas tem,
 // ver 001_schema_base.sql) -- por isso o strip é por tabela.
 const STRIP_PESADO_BASE = { lat: null, lng: null, contexto: {} };
-function stripPesado(tabela: TabelaAlertas): Record<string, unknown> {
-  return tabela === "alertas_romaneio" ? STRIP_PESADO_BASE : { ...STRIP_PESADO_BASE, geom: null };
+
+// Revisao F3-07 (R1): o card agregado romaneio_ausente (1 por cliente por dia,
+// @/lib/romaneio-ausente) guarda no contexto quem ja' foi contado no dia
+// (agregado, dia, placas, veiculo_ids) -- e' com isso que o motor reconhece o
+// card de hoje fechado pelo operador e so' abre o 2o card para carro novo.
+// Com contexto {} cada clique em Resolver/Falso/Resolver todos/Limpar fazia o
+// ciclo seguinte abrir outro card com a frota inteira. O contexto dele e'
+// pequeno (placas e ids); so' lat/lng saem. Os outros tipos seguem com o strip
+// de antes. Duas partes no mesmo update (filtro por tipo), sem select previo:
+// o guard de idade e o filtro de status continuam na propria escrita.
+type ParteFechamento = { strip: Record<string, unknown>; tipo?: { op: "eq" | "neq"; valor: string } };
+function partesFechamento(tabela: TabelaAlertas): ParteFechamento[] {
+  if (tabela === "alertas") return [{ strip: { ...STRIP_PESADO_BASE, geom: null } }];
+  return [
+    { strip: STRIP_PESADO_BASE, tipo: { op: "neq", valor: TIPO_ROMANEIO_AUSENTE } },
+    { strip: { lat: null, lng: null }, tipo: { op: "eq", valor: TIPO_ROMANEIO_AUSENTE } },
+  ];
 }
 
 // Operador tratou e encerrou (ligou, confirmou, resolveu).
@@ -115,8 +137,7 @@ export async function resolverAlerta(id: string, tabela: TabelaAlertas = "alerta
     status: "resolvido",
     resolvido_em: new Date().toISOString(),
     origem_acao: "resolver_individual",
-    ...stripPesado(tabela),
-  }, tabela);
+  }, tabela, true);
 }
 
 // Operador classificou como engano: encerra e SILENCIA o tipo por 2h no motor.
@@ -156,8 +177,7 @@ async function marcarFalsoPositivoComMotivo(
     origem_acao: "falso_individual",
     motivo_falso_positivo: motivo,
     motivo_falso_positivo_detalhe: detalheLimpo ? detalheLimpo : null,
-    ...stripPesado(tabela),
-  }, tabela);
+  }, tabela, true);
 }
 
 export async function marcarFalsoComCategoria(
@@ -218,21 +238,26 @@ export async function resolverVarios(
   // atomica: `elegiveis` acima e' so pra decidir o que tentar e alimentar
   // registrarCasosDesvioRevisao, quem realmente fechou vem de `.select("id")`
   // encadeado no proprio update.
-  const { data: atualizados, error } = await admin
-    .from(tabela)
-    .update({
-      status: "resolvido",
-      resolvido_em: new Date().toISOString(),
-      operador_id: opId,
-      origem_acao: "resolver_massa",
-      ...stripPesado(tabela),
-    })
-    .in("id", elegiveis)
-    .lte("desde", corte)
-    .in("status", ["ativo", "reconhecido"])
-    .select("id");
-  if (error) return { erro: "Não foi possível resolver os alertas." };
-  const resolvidos = atualizados?.length ?? 0;
+  let resolvidos = 0;
+  const resolvidoEm = new Date().toISOString();
+  for (const parte of partesFechamento(tabela)) {
+    let q = admin
+      .from(tabela)
+      .update({
+        status: "resolvido",
+        resolvido_em: resolvidoEm,
+        operador_id: opId,
+        origem_acao: "resolver_massa",
+        ...parte.strip,
+      })
+      .in("id", elegiveis)
+      .lte("desde", corte)
+      .in("status", ["ativo", "reconhecido"]);
+    if (parte.tipo) q = q[parte.tipo.op]("tipo", parte.tipo.valor);
+    const { data: atualizados, error } = await q.select("id");
+    if (error) return { erro: "Não foi possível resolver os alertas." };
+    resolvidos += atualizados?.length ?? 0;
+  }
   revalidatePath(tabela === "alertas_romaneio" ? "/central-romaneio" : "/");
   invalidarCachesLeitura(tabela);
   return { ok: true, resolvidos, ignoradosRecentes: ids.length - resolvidos };
@@ -263,21 +288,28 @@ export async function limparVarios(
   // (sem gap de tempo, sem risco de truncamento do select afetar a decisao),
   // e `.select("id")` encadeado devolve quem realmente foi afetado.
   const corte = new Date(Date.now() - IDADE_MINIMA_ACAO_MASSA_MIN * 60_000).toISOString();
-  const { data: atualizados, error } = await admin
-    .from(tabela)
-    .update({
-      status: "limpo",
-      resolvido_em: new Date().toISOString(),
-      operador_id: opId,
-      origem_acao: "limpar_massa",
-      ...stripPesado(tabela),
-    })
-    .in("id", ids)
-    .lte("desde", corte)
-    .in("status", ["ativo", "reconhecido"])
-    .select("id");
-  if (error) return { erro: "Não foi possível limpar os alertas." };
-  const limpos = atualizados?.length ?? 0;
+  // R1 (revisao F3-07): uma query atomica por parte do strip (ver
+  // partesFechamento); cada uma aplica o mesmo corte e o mesmo filtro.
+  let limpos = 0;
+  const resolvidoEm = new Date().toISOString();
+  for (const parte of partesFechamento(tabela)) {
+    let q = admin
+      .from(tabela)
+      .update({
+        status: "limpo",
+        resolvido_em: resolvidoEm,
+        operador_id: opId,
+        origem_acao: "limpar_massa",
+        ...parte.strip,
+      })
+      .in("id", ids)
+      .lte("desde", corte)
+      .in("status", ["ativo", "reconhecido"]);
+    if (parte.tipo) q = q[parte.tipo.op]("tipo", parte.tipo.valor);
+    const { data: atualizados, error } = await q.select("id");
+    if (error) return { erro: "Não foi possível limpar os alertas." };
+    limpos += atualizados?.length ?? 0;
+  }
   revalidatePath(tabela === "alertas_romaneio" ? "/central-romaneio" : "/");
   invalidarCachesLeitura(tabela);
   return { ok: true, limpos, ignoradosRecentes: ids.length - limpos };
