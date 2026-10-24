@@ -50,6 +50,9 @@ vi.mock("@/lib/romaneio-geocode", async () => {
 
 let chamadas: ChamadaFrom[] = [];
 let filaSelect: Record<string, Resultado[]> = {};
+// F2-04-c: resultado dos UPDATEs por tabela, na ordem (sem fila = data null,
+// o comportamento de antes).
+let filaUpdate: Record<string, Resultado[]> = {};
 
 function fabricarAdmin() {
   const contadorSelect: Record<string, number> = {};
@@ -73,6 +76,8 @@ function fabricarAdmin() {
           const i = contadorSelect[tabela] ?? 0;
           contadorSelect[tabela] = i + 1;
           resultado = filaSelect[tabela]?.[i] ?? { data: [], error: null };
+        } else if (ops[0]?.metodo === "update" && filaUpdate[tabela]?.length) {
+          resultado = filaUpdate[tabela].shift()!;
         }
         return Promise.resolve(resultado).then(resolve, reject);
       };
@@ -92,6 +97,7 @@ function updatesDe(tabela: string) {
     .map((c) => ({
       payload: c.ops[0].args[0] as Record<string, unknown>,
       id: (c.ops.find((o) => o.metodo === "eq" && o.args[0] === "id")?.args[1] as string) ?? null,
+      filtros: Object.fromEntries(c.ops.filter((o) => o.metodo === "eq").map((o) => [o.args[0] as string, o.args[1]])),
     }));
 }
 
@@ -109,6 +115,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   chamadas = [];
   filaSelect = {};
+  filaUpdate = {};
   process.env.MOTOR_SECRET = "segredo-teste";
   mockBuscarAlvos.mockResolvedValue([]);
 });
@@ -338,5 +345,70 @@ describe("POST /api/romaneio/processar-geocode -- regressao: linhas 'falhou' COM
     expect(body.resolvidoViaRetentativaTexto).toBe(0);
     const upd = updatesDe("romaneio_pontos").find((u) => u.id === "p8");
     expect(upd?.payload).toMatchObject({ geocode_tentativas: 6 });
+  });
+});
+
+// Revisao Fase 2 (F2-04-c): a reconciliacao do romaneio da RQ
+// (/api/romaneio/rioquality) reescreve endereco, coordenada e geocode_status
+// de linhas que este cron pode ter reivindicado ('processando'). O cron
+// gravava o resultado so' por id e pisava por cima. Caso real (F2-02, 23/10):
+// a linha da Fusion "AVENIDA SERGIPE, RESENDE - RJ" (sem bairro/numero, o
+// parser caia em Sergipe -11.00,-37.10); a reconciliacao troca para o
+// endereco estruturado com a coordenada do KPI e marca 'ok'; o cron, ja'
+// com a linha reivindicada, gravava Sergipe por cima.
+describe("POST /api/romaneio/processar-geocode -- gravacao condicionada ao que foi reivindicado (F2-04-c)", () => {
+  const ENDERECO_VELHO = "AVENIDA SERGIPE, RESENDE - RJ";
+  const linhaRQ = { id: "rq-sergipe", endereco_bruto: ENDERECO_VELHO, veiculo_id: null, placa: "LUI-1G55", nf: "6079976", cliente_codigo: "6079976", romaneio_data: "2026-10-23" };
+
+  it("so' grava se a linha ainda esta 'processando' com o MESMO endereco que o cron reivindicou", async () => {
+    filaSelect["romaneio_pontos"] = [{ data: [linhaRQ], error: null }];
+    filaUpdate["romaneio_pontos"] = [
+      { data: [linhaRQ], error: null }, // reivindicacao
+      { data: [{ id: "rq-sergipe" }], error: null }, // gravacao do resultado
+    ];
+    mockGeocodificarEndereco.mockResolvedValueOnce({ lat: -11.0045812, lng: -37.1030405, fonte: "nominatim" });
+
+    const { POST } = await import("./route");
+    const body = await (await POST(requisicao())).json();
+
+    const grav = updatesDe("romaneio_pontos").find((u) => u.id === "rq-sergipe" && "lat" in u.payload);
+    expect(grav?.payload).toEqual({ lat: -11.0045812, lng: -37.1030405, geocode_status: "ok" });
+    expect(grav?.filtros).toMatchObject({ id: "rq-sergipe", geocode_status: "processando", endereco_bruto: ENDERECO_VELHO });
+    expect(body.ok).toBe(1);
+    expect(body.descartadosLinhaMudou).toBe(0);
+  });
+
+  it("reconciliacao mexeu na linha no meio (0 linhas gravadas): nao conta como ok nem entra na correcao de pontos_aprendidos", async () => {
+    filaSelect["romaneio_pontos"] = [{ data: [{ ...linhaRQ, veiculo_id: "v-lui" }], error: null }];
+    filaUpdate["romaneio_pontos"] = [
+      { data: [{ ...linhaRQ, veiculo_id: "v-lui" }], error: null },
+      { data: [], error: null }, // a condicao nao bateu: a RQ ja' gravou a coordenada do KPI
+    ];
+    filaSelect["veiculos"] = [{ data: [{ id: "v-lui", cliente_id: "cli-rq" }], error: null }];
+    mockGeocodificarEndereco.mockResolvedValueOnce({ lat: -11.0045812, lng: -37.1030405, fonte: "nominatim" });
+
+    const { POST } = await import("./route");
+    const body = await (await POST(requisicao())).json();
+
+    expect(body.ok).toBe(0);
+    expect(body.descartadosLinhaMudou).toBe(1);
+    expect(mockBuscarAlvos).not.toHaveBeenCalled();
+  });
+
+  it("fallback das linhas 'falhou': grava so' se a linha continua 'falhou' com o mesmo endereco", async () => {
+    filaSelect["romaneio_pontos"] = [
+      { data: [], error: null },
+      { data: [{ id: "p-f", nf: "NF9", placa: "AAA1111", veiculo_id: "v-existente", geocode_tentativas: 0, endereco_bruto: "RUA TESTE, 4 - BAIRRO, CIDADE - *" }], error: null },
+    ];
+    filaSelect["veiculos"] = [{ data: [{ id: "v-existente", cv: "CV1", cliente_id: "c1" }], error: null }];
+    mockBuscarAlvos.mockResolvedValue([
+      { placa: "AAA1111", alvodocumento: "NF9", pontolatitude: -22.9, pontolongitude: -43.2, alvosituacaoservico: 0, pontocodigo: 1 },
+    ]);
+
+    const { POST } = await import("./route");
+    await POST(requisicao());
+
+    const upd = updatesDe("romaneio_pontos").find((u) => u.id === "p-f");
+    expect(upd?.filtros).toMatchObject({ geocode_status: "falhou", endereco_bruto: "RUA TESTE, 4 - BAIRRO, CIDADE - *" });
   });
 });

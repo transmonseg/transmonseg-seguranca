@@ -366,6 +366,8 @@ export async function POST(request: Request) {
   const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe"; romaneio_data: string }[] = [];
 
   let doCacheClienteCodigo = 0;
+  // F2-04-c: resultados descartados porque a linha mudou enquanto o cron a processava.
+  let descartadosLinhaMudou = 0;
 
   // Extraida do loop principal (achado real 01/09, ver uso no fallback
   // Unitrac mais abaixo): resolve ponto de referencia (bairro/cidade) e
@@ -447,6 +449,30 @@ export async function POST(request: Request) {
     }
 
     const geocodeStatus = geocode ? "ok" : "falhou";
+    // Revisao Fase 2 (F2-04-c): a reconciliacao do romaneio da RQ
+    // (/api/romaneio/rioquality) reescreve endereco/coordenada/status de
+    // linhas que este cron pode ter reivindicado. Gravar so' por id pisava
+    // por cima (coordenada do endereco VELHO sobre a do KPI). Agora so'
+    // grava se a linha continua 'processando' com o MESMO endereco que foi
+    // reivindicado; senao o resultado e' descartado (a linha ja' tem o dado
+    // novo ou voltou para 'pendente' com o endereco novo).
+    const { data: gravadas, error: erroUpdate } = await admin
+      .from("romaneio_pontos")
+      .update({ lat: geocode?.lat ?? null, lng: geocode?.lng ?? null, geocode_status: geocodeStatus })
+      .eq("id", linha.id)
+      .eq("geocode_status", "processando")
+      .eq("endereco_bruto", linha.endereco_bruto)
+      .select("id");
+
+    if (erroUpdate) {
+      console.warn(`Aviso: erro ao atualizar geocode_status do ponto ${linha.id}: ${erroUpdate.message}`);
+      continue;
+    }
+    if (!Array.isArray(gravadas) || gravadas.length === 0) {
+      descartadosLinhaMudou++;
+      console.warn(`Aviso: ponto ${linha.id} (placa=${linha.placa} nf=${linha.nf}) mudou durante o geocode (endereco/status reescrito pela reconciliacao) -- resultado descartado`);
+      continue;
+    }
     if (geocode) {
       ok++;
       // Hits de cache nao entram em geocodificadosOk: deveCorrigirComRomaneio
@@ -459,15 +485,6 @@ export async function POST(request: Request) {
       }
     } else {
       falhou++;
-    }
-
-    const { error: erroUpdate } = await admin
-      .from("romaneio_pontos")
-      .update({ lat: geocode?.lat ?? null, lng: geocode?.lng ?? null, geocode_status: geocodeStatus })
-      .eq("id", linha.id);
-
-    if (erroUpdate) {
-      console.warn(`Aviso: erro ao atualizar geocode_status do ponto ${linha.id}: ${erroUpdate.message}`);
     }
   }
 
@@ -563,7 +580,11 @@ export async function POST(request: Request) {
         geocode_ultima_tentativa_em: new Date().toISOString(),
         ...(esgotou ? { geocode_status: STATUS_SEM_COORDENADA } : {}),
       })
-      .eq("id", linha.id);
+      .eq("id", linha.id)
+      // F2-04-c: a reconciliacao da RQ pode ter reescrito a linha (novo endereco
+      // volta a 'pendente' com tentativas zeradas; coordenada do KPI vira 'ok').
+      .eq("geocode_status", "falhou")
+      .eq("endereco_bruto", linha.endereco_bruto);
     if (erroTentativa) {
       console.warn(`Aviso: erro ao contar tentativa de geocode do ponto ${linha.id}: ${erroTentativa.message}`);
     } else if (esgotou) {
@@ -622,7 +643,10 @@ export async function POST(request: Request) {
         const { error: erroTextoOrfao } = await admin
           .from("romaneio_pontos")
           .update({ lat: textoResolvidoOrfao.lat, lng: textoResolvidoOrfao.lng, geocode_status: "ok" })
-          .eq("id", linha.id);
+          .eq("id", linha.id)
+          // F2-04-c: a reconciliacao da RQ pode ter reescrito a linha.
+          .eq("geocode_status", "falhou")
+          .eq("endereco_bruto", linha.endereco_bruto);
         if (!erroTextoOrfao) {
           resolvidoViaRetentativaTexto++;
           continue;
@@ -657,7 +681,10 @@ export async function POST(request: Request) {
             const { error: erroFallback } = await admin
               .from("romaneio_pontos")
               .update({ lat: alvo.pontolatitude, lng: alvo.pontolongitude, geocode_status: "ok" })
-              .eq("id", linha.id);
+              .eq("id", linha.id)
+              // F2-04-c: a reconciliacao da RQ pode ter reescrito a linha.
+              .eq("geocode_status", "falhou")
+              .eq("endereco_bruto", linha.endereco_bruto);
             if (!erroFallback) {
               fallbackUnitrac++;
               // Aprende (13/10): a coordenada da entrega REAL (Unitrac) e' o
@@ -694,7 +721,10 @@ export async function POST(request: Request) {
             const { error: erroTexto } = await admin
               .from("romaneio_pontos")
               .update({ lat: textoResolvido.lat, lng: textoResolvido.lng, geocode_status: "ok" })
-              .eq("id", linha.id);
+              .eq("id", linha.id)
+              // F2-04-c: a reconciliacao da RQ pode ter reescrito a linha.
+              .eq("geocode_status", "falhou")
+              .eq("endereco_bruto", linha.endereco_bruto);
             if (!erroTexto) {
               resolvidoViaRetentativaTexto++;
               continue;
@@ -771,5 +801,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ processados: pendentes.length, ok, falhou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, resolvidoViaRetentativaTexto, limiteTentativasAtivo: tentativasDisponivel });
+  return Response.json({ processados: pendentes.length, ok, falhou, descartadosLinhaMudou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, resolvidoViaRetentativaTexto, limiteTentativasAtivo: tentativasDisponivel });
 }
