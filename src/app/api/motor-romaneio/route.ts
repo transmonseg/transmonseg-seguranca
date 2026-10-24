@@ -881,7 +881,7 @@ async function sinalizarRomaneioAusente(ctx: {
 // pula quem nao e' fresco. Alerta interno de atencao, 1 por veiculo por dia;
 // regra e replay em @/lib/rastreador-mudo. Nao mexe na regra do KPI
 // (conta como correto) nem em romaneio_ausente (F3-07).
-async function sinalizarRastreadorMudoComCarga(ctx: {
+export async function sinalizarRastreadorMudoComCarga(ctx: {
   pool: pg.Pool;
   admin: ReturnType<typeof createAdminClient>;
   hoje: string;
@@ -896,8 +896,8 @@ async function sinalizarRastreadorMudoComCarga(ctx: {
     // de hoje em qualquer status (pro "1 por veiculo por dia").
     const inicioDiaSP = new Date(`${hoje}T00:00:00-03:00`).toISOString();
     const [ativosResp, hojeResp] = await Promise.all([
-      admin.from("alertas_romaneio").select("id, veiculo_id, status, desde").eq("tipo", TIPO_RASTREADOR_MUDO).eq("status", "ativo"),
-      admin.from("alertas_romaneio").select("id, veiculo_id, status, desde").eq("tipo", TIPO_RASTREADOR_MUDO).gte("desde", inicioDiaSP),
+      admin.from("alertas_romaneio").select("id, veiculo_id, status, desde, contexto").eq("tipo", TIPO_RASTREADOR_MUDO).eq("status", "ativo"),
+      admin.from("alertas_romaneio").select("id, veiculo_id, status, desde, contexto").eq("tipo", TIPO_RASTREADOR_MUDO).gte("desde", inicioDiaSP),
     ]);
     if (ativosResp.error || hojeResp.error) {
       erros.push(`Aviso: falha ao checar ${TIPO_RASTREADOR_MUDO} existentes: ${(ativosResp.error ?? hojeResp.error)?.message}`);
@@ -934,9 +934,12 @@ async function sinalizarRastreadorMudoComCarga(ctx: {
     }
 
     for (const id of plano.resolver) {
+      // R-F3-09-02: merge, como resolverPelaMaquina -- nfs, ultima_comunicacao
+      // e atraso_min sao a evidencia do alerta (levantamento do D-32).
+      const contextoAnterior = porId.get(id)?.contexto ?? {};
       const { error: erroResolve } = await admin
         .from("alertas_romaneio")
-        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto: { auto_resolvido: true } })
+        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto: { ...contextoAnterior, auto_resolvido: true } })
         .eq("id", id);
       if (erroResolve) {
         erros.push(`Aviso: falha ao resolver ${TIPO_RASTREADOR_MUDO} ${id}: ${erroResolve.message}`);

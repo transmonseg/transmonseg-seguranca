@@ -103,6 +103,7 @@ export type AlertaRastreadorExistente = {
   veiculo_id: string;
   status: string;
   desde: string;
+  contexto?: Record<string, unknown> | null;
 };
 
 /**
