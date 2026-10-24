@@ -56,6 +56,15 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { atrasoEfetivoMin, SQL_VEICULOS_SEM_ROMANEIO } from "@/lib/frescor-posicao";
 import {
+  TIPO_RASTREADOR_MUDO,
+  SQL_CARGA_DO_DIA_COM_POSICAO,
+  planejarRastreadorMudo,
+  motivoRastreadorMudo,
+  ultimaComunicacaoEstimada,
+  type CargaComPosicao,
+  type AlertaRastreadorExistente,
+} from "@/lib/rastreador-mudo";
+import {
   haversineM,
   agruparPontosPorPlaca,
   suspenderPorChegada,
@@ -550,7 +559,9 @@ const TIPOS_SOMBRA = new Set(["panico", "jammer", "excesso"]);
 // processarJammerIndependente acima do POST). Local a este arquivo, não é
 // TIPOS_NAO_GERENCIADOS (@/lib/detectores, que é sobre NUNCA fechar
 // sozinho -- jammer fecha sozinho sim, só que por outro código).
-const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer"]);
+// F3-09: rastreador_mudo_com_carga tem ciclo de vida próprio em
+// sinalizarRastreadorMudoComCarga (1 por veículo por dia).
+const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer", TIPO_RASTREADOR_MUDO]);
 
 type EstadoAnterior = {
   afastando_streak: number;
@@ -865,6 +876,77 @@ async function sinalizarRomaneioAusente(ctx: {
   }
 }
 
+// F3-09 (ACH-09, MON-08): carro com NF no romaneio do dia e rastreador mudo
+// (LTZ-7I72, RJM-5B51, EEG-2F60) nao gerava alerta nenhum -- o loop abaixo
+// pula quem nao e' fresco. Alerta interno de atencao, 1 por veiculo por dia;
+// regra e replay em @/lib/rastreador-mudo. Nao mexe na regra do KPI
+// (conta como correto) nem em romaneio_ausente (F3-07).
+async function sinalizarRastreadorMudoComCarga(ctx: {
+  pool: pg.Pool;
+  admin: ReturnType<typeof createAdminClient>;
+  hoje: string;
+  agora: Date;
+  erros: string[];
+}): Promise<void> {
+  const { pool, admin, hoje, agora, erros } = ctx;
+  try {
+    const { rows: cargas } = await pool.query<CargaComPosicao>(SQL_CARGA_DO_DIA_COM_POSICAO, [hoje]);
+
+    // Duas leituras simples: os ativos (de qualquer dia, pra fechar) e os
+    // de hoje em qualquer status (pro "1 por veiculo por dia").
+    const inicioDiaSP = new Date(`${hoje}T00:00:00-03:00`).toISOString();
+    const [ativosResp, hojeResp] = await Promise.all([
+      admin.from("alertas_romaneio").select("id, veiculo_id, status, desde").eq("tipo", TIPO_RASTREADOR_MUDO).eq("status", "ativo"),
+      admin.from("alertas_romaneio").select("id, veiculo_id, status, desde").eq("tipo", TIPO_RASTREADOR_MUDO).gte("desde", inicioDiaSP),
+    ]);
+    if (ativosResp.error || hojeResp.error) {
+      erros.push(`Aviso: falha ao checar ${TIPO_RASTREADOR_MUDO} existentes: ${(ativosResp.error ?? hojeResp.error)?.message}`);
+      return;
+    }
+    const porId = new Map<string, AlertaRastreadorExistente>();
+    for (const a of [...(ativosResp.data ?? []), ...(hojeResp.data ?? [])] as AlertaRastreadorExistente[]) porId.set(a.id, a);
+
+    const plano = planejarRastreadorMudo({ cargas, existentes: [...porId.values()], hoje, agora });
+
+    for (const c of plano.inserir) {
+      const ultima = ultimaComunicacaoEstimada(c.atraso_min, c.updated_at);
+      const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
+        cliente_id: c.cliente_id,
+        veiculo_id: c.veiculo_id,
+        nivel: "atencao",
+        tipo: TIPO_RASTREADOR_MUDO,
+        motivo: motivoRastreadorMudo(c),
+        score: 20,
+        status: "ativo",
+        lat: c.lat,
+        lng: c.lng,
+        contexto: {
+          nfs: c.nfs,
+          nunca_transmitiu: !c.tem_posicao,
+          ultima_comunicacao: ultima ? ultima.toISOString() : null,
+          atraso_min: c.atraso_min,
+        },
+        desde: agora.toISOString(),
+      });
+      if (erroInsert) {
+        erros.push(`Aviso: falha ao inserir ${TIPO_RASTREADOR_MUDO} pro veiculo ${c.veiculo_id}: ${erroInsert.message}`);
+      }
+    }
+
+    for (const id of plano.resolver) {
+      const { error: erroResolve } = await admin
+        .from("alertas_romaneio")
+        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto: { auto_resolvido: true } })
+        .eq("id", id);
+      if (erroResolve) {
+        erros.push(`Aviso: falha ao resolver ${TIPO_RASTREADOR_MUDO} ${id}: ${erroResolve.message}`);
+      }
+    }
+  } catch (e) {
+    erros.push(`Aviso: sinalizacao de rastreador mudo desligada neste ciclo: ${String(e)}`);
+  }
+}
+
 export async function POST(request: Request) {
   // Marco de duração do ciclo -- tomado ANTES do lease, porque a espera de
   // conexão do pool também consome o orçamento de maxDuration.
@@ -990,6 +1072,7 @@ export async function POST(request: Request) {
     // Roda ANTES de qualquer early-return (inclusive o de romaneio vazio
     // logo abaixo) -- ver comentario de sinalizarRomaneioAusente.
     await sinalizarRomaneioAusente({ pool, admin, hoje, agora, erros });
+    await sinalizarRastreadorMudoComCarga({ pool, admin, hoje, agora, erros });
 
     // Só veículos com romaneio utilizável de hoje (ver task-2-brief.md, Step 3).
     // NÃO filtra por geocode_status/lat/lng aqui (removido na task-5, ver

@@ -79,6 +79,9 @@ const FONTES_ALERTA = {
   // mode (Task Fase 4 Incremento 1, 27/08 -- motor-romaneio/route.ts,
   // TIPOS_SOMBRA): esses 3 tipos existem em alertas_romaneio só pra
   // comparar contra a Central, nunca pra colorir o mapa desta tela.
+  // F3-09: rastreador_mudo_com_carga tambem nao colore -- e' aviso interno
+  // de equipamento (posicao congelada ha' dias), o cache do mapa e'
+  // compartilhado com a conta do cliente.
   romaneio: `
     left join lateral (
       select a.tipo
@@ -86,6 +89,7 @@ const FONTES_ALERTA = {
       where a.veiculo_id = v.id
         and a.status in ('ativo', 'reconhecido')
         and a.sombra = false
+        and a.tipo <> 'rastreador_mudo_com_carga'
       order by (a.nivel = 'critico') desc, a.tipo
       limit 1
     ) al on true`,
@@ -103,6 +107,7 @@ const FONTE_ROMANEIO_SEM_SOMBRA = `
       from alertas_romaneio a
       where a.veiculo_id = v.id
         and a.status in ('ativo', 'reconhecido')
+        and a.tipo <> 'rastreador_mudo_com_carga'
       order by (a.nivel = 'critico') desc, a.tipo
       limit 1
     ) al on true`;

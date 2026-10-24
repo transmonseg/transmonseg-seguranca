@@ -1,6 +1,7 @@
 import { acessoDoUsuario, podeVerCod } from "@/lib/acesso-cliente";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { semAlertasInternos } from "@/lib/rastreador-mudo";
 
 export const dynamic = "force-dynamic";
 
@@ -30,12 +31,18 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cod = searchParams.get("cliente");
   if (!cod) return Response.json({ alertas: [] });
-  if (!(await podeVerCod(await acessoDoUsuario(), cod))) return Response.json({ erro: "sem permissao" }, { status: 403 });
+  const acesso = await acessoDoUsuario();
+  if (!(await podeVerCod(acesso, cod))) return Response.json({ erro: "sem permissao" }, { status: 403 });
   const chaveCache = cod;
+  // F3-09: o cache e' por cliente e compartilhado entre central e conta do
+  // cliente -- o filtro de alerta interno (rastreador_mudo_com_carga) vai na
+  // SAIDA, nunca no que entra no cache.
+  const responder = (body: { alertas: unknown[] }) =>
+    Response.json({ ...body, alertas: semAlertasInternos(body.alertas as { tipo: string }[], acesso) });
 
   const cached = cachePorCliente.get(chaveCache);
   if (cached && cached.expiraEm > Date.now()) {
-    return Response.json(cached.body);
+    return responder(cached.body);
   }
 
   const supabase = createAdminClient();
@@ -164,5 +171,5 @@ export async function GET(request: Request) {
 
   const body = { alertas };
   cachePorCliente.set(chaveCache, { body, expiraEm: Date.now() + CACHE_MS });
-  return Response.json(body);
+  return responder(body);
 }
