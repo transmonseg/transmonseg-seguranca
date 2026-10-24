@@ -575,6 +575,50 @@ export function leituraConfiavelParaParada(p: { atraso_min?: number | null }): b
   return (p.atraso_min ?? 0) <= LIMIAR_APAGAO_MIN;
 }
 
+// F2-08 (KN-07, plano mestre 23/10): o coletor as vezes repete a ultima
+// posicao com atraso BAIXO (0-1), entao o filtro do GN-02 acima nao pega.
+// Caso real RQV9B26 22/10: das 08:39 as 09:19 BRT a mesma coordenada em
+// Penha, v=0 e atraso 0; as 09:20 o ponto pula 13,5 km em 36 s. Isso virava
+// parada em Penha (e a Unitrac gravou igual), horario e "corrigir cadastro".
+// Trecho de posicao identica que termina num salto impossivel nao serve pra
+// parada, visita nem trajeto (menorDistanciaM): o caminhao ja' estava na
+// estrada. A velocidade do salto usa o instante do GPS (criado_em - atraso):
+// parada real com a ignicao desligada tem o atraso subindo (RQV9B26 09:25-
+// 09:39, atraso 0 -> 7, e 2,2 km "em 37 s" que pelo GPS foram ~6 min) e fica.
+// Folga de 1 min no atraso anterior (o atraso e' inteiro, em minutos).
+// "Sem volta": se o carro reaparece perto do trecho em ate 4 leituras, o
+// salto e' glitch do ponto, nao congelamento do trecho.
+const SALTO_CONGELADO_MIN_M = 2_000;
+const VELOCIDADE_SALTO_IMPOSSIVEL_KMH = 150;
+const LEITURAS_SEM_VOLTA = 4;
+const LEITURAS_MIN_TRECHO_CONGELADO = 3;
+
+function instanteGpsMs(p: Posicao, folgaMin: number): number {
+  return Date.parse(p.criado_em) - ((p.atraso_min ?? 0) + folgaMin) * 60_000;
+}
+
+export function removerTrechoCongeladoComSalto(posicoes: Posicao[]): Posicao[] {
+  const descartar = new Set<number>();
+  for (let i = 1; i < posicoes.length; i++) {
+    const a = posicoes[i - 1];
+    const b = posicoes[i];
+    const distM = haversineM(a.lat, a.lng, b.lat, b.lng);
+    if (distM <= SALTO_CONGELADO_MIN_M) continue;
+    const horas = (instanteGpsMs(b, 0) - instanteGpsMs(a, 1)) / 3_600_000;
+    if (horas > 0 && distM / 1000 / horas <= VELOCIDADE_SALTO_IMPOSSIVEL_KMH) continue;
+    let volta = false;
+    for (let k = i + 1; k <= i + LEITURAS_SEM_VOLTA && k < posicoes.length; k++) {
+      if (haversineM(a.lat, a.lng, posicoes[k].lat, posicoes[k].lng) <= SALTO_CONGELADO_MIN_M) { volta = true; break; }
+    }
+    if (volta) continue;
+    let j = i - 1;
+    while (j > 0 && posicoes[j - 1].lat === a.lat && posicoes[j - 1].lng === a.lng) j--;
+    if (i - j < LEITURAS_MIN_TRECHO_CONGELADO) continue;
+    for (let k = j; k < i; k++) descartar.add(k);
+  }
+  return descartar.size === 0 ? posicoes : posicoes.filter((_, i) => !descartar.has(i));
+}
+
 export function derivarParadas(posicoes: Posicao[], basesCentro: BaseCentro[] = []): ParadaDerivada[] {
   const paradas: ParadaDerivada[] = [];
   let atual: { inicio: string; fim: string; lats: number[]; lngs: number[] } | null = null;
@@ -1096,6 +1140,9 @@ export async function POST(request: Request) {
       continue;
     }
     const posicoes = (posicoesRows ?? []) as Posicao[];
+    // F2-08: parada, visita e trajeto sem o trecho congelado que termina em
+    // salto impossivel; base, km e os detectores de apagao leem tudo.
+    const posicoesParada = removerTrechoCongeladoComSalto(posicoes);
     const { saidaBase: saidaBaseBruta, chegadaBase: chegadaBaseDefault } = acharSaidaEChegadaBase(posicoes, basesCentro);
     // Achado real 21/09 (RBG-5G18): com `fimRotaPorPlaca`, `chegadaBase` deixa
     // de ser a ultima entrada do dia e vira a 1a entrada apos a ultima
@@ -1105,16 +1152,16 @@ export async function POST(request: Request) {
     // Janela da rota acertada pelas entregas do dia (ver ajustarJanelaPelasVisitas).
     const ajustada = pontos
       ? ajustarJanelaPelasVisitas(posicoes, basesCentro, saidaBaseBruta, chegadaBaseDefault,
-          acharVisitasPorPonto(posicoes, pontos, basesCentro, saidaBaseBruta, null))
+          acharVisitasPorPonto(posicoesParada, pontos, basesCentro, saidaBaseBruta, null))
       : { saidaBase: saidaBaseBruta, chegadaBase: chegadaBaseDefault };
     const saidaBase = ajustada.saidaBase;
     const chegadaBase = fimRota ? acharChegadaAposFimRota(posicoes, basesCentro, fimRota) : ajustada.chegadaBase;
     const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
-    const visitas = pontos ? acharVisitasPorPonto(posicoes, pontos, basesCentro, saidaBase, chegadaBase) : undefined;
+    const visitas = pontos ? acharVisitasPorPonto(posicoesParada, pontos, basesCentro, saidaBase, chegadaBase) : undefined;
     // Paradas derivadas so' quando pedidas (`incluirParadas`) -- payload
     // cresce bastante e o consumidor normal (saida/chegada/km/visitas) nao
     // precisa. O KPI pede quando o dia caiu fora da janela de 48h da Unitrac.
-    const paradas = incluirParadas ? derivarParadas(posicoes, basesCentro) : undefined;
+    const paradas = incluirParadas ? derivarParadas(posicoesParada, basesCentro) : undefined;
     const apagaoDeSinal = incluirParadas ? teveApagaoDeSinal(posicoes) : undefined;
     const apagaoDeSinalForte = incluirParadas ? teveApagaoDeSinalForte(posicoes) : undefined;
     const gpsCongelado = incluirParadas ? teveGpsCongelado(posicoes) : undefined;

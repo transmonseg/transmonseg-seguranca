@@ -1433,3 +1433,33 @@ describe("GN-02: leitura congelada nao vira parada nem visita", () => {
     expect(derivarParadas(pos, [])).toHaveLength(1);
   });
 });
+
+// F2-08 (KN-07): o POST usa as posicoes sem o trecho congelado que termina em
+// salto impossivel pra paradas e visitas (caso real RQV9B26 22/10).
+describe("POST /api/kpi/base-horarios -- F2-08 trecho congelado com salto", () => {
+  const { readFileSync } = require("fs") as typeof import("fs");
+  const { join } = require("path") as typeof import("path");
+  const PENHA = { lat: -22.815896899530625, lng: -43.27780385194278 };
+  const posicoes = readFileSync(join(__dirname, "__fixtures__", "rqv9b26-2026-10-22-manha.csv"), "utf8").trim().split("\n").slice(1).map((l) => {
+    const [criado_em, lat, lng, velocidade, atraso_min] = l.split(",");
+    return { criado_em, lat: Number(lat), lng: Number(lng), velocidade: Number(velocidade), atraso_min: Number(atraso_min) };
+  });
+
+  beforeEach(() => {
+    process.env.MOTOR_SECRET = "segredo";
+    mockPostState.veiculosRows = [{ id: "v-rqv", placa: "RQV-9B26", cliente_id: "c1" }];
+    mockPostState.basesRows = [{ cliente_id: "c1", lat: PENHA.lat, lng: PENHA.lng }];
+    mockPostState.posicoesPorVeiculo = { "v-rqv": posicoes };
+  });
+
+  it("paradas sem Penha 08:39-09:19 e Churrasco do Ricardo com visita as 09:20 BRT", async () => {
+    const res = await POST(new Request("http://local/api/kpi/base-horarios", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-motor-key": "segredo" },
+      body: JSON.stringify({ placas: ["RQV9B26"], data: "2026-10-22", incluirParadas: true, pontosPorPlaca: { RQV9B26: [{ id: "2438539", lat: -22.703473, lng: -43.276858 }] } }),
+    }));
+    const { resultados: [r] } = await res.json();
+    expect(r.paradas.some((p: { chegada: string }) => p.chegada === "2026-10-22T11:39:38.462Z")).toBe(false);
+    expect(r.visitas[0].chegada).toBe("2026-10-22T12:20:15.032Z");
+  });
+});
