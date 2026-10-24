@@ -23,6 +23,10 @@ import {
 //     NAO importa (nao e' ordem de rota) mas e' preservada na resposta
 // Resposta: { grupos: [{ id, resultados: ResultadoParada[] }] } -- um
 // resultado por rua, na mesma ordem; lat/lng null quando sem candidato.
+// Revisao Fase 2 (F2-01-a): rua cuja busca por similaridade FALHOU (ex.:
+// statement timeout 57014) sai com `falhaBusca: true` e conta em
+// meta.falhasSimilaridade -- o resultado dela e' "nao sei", nao "sem
+// candidato", e o KPI trata como falha da ponte (cache do corredor, RQ-08).
 //
 // Protegida por x-motor-key + MOTOR_SECRET como as outras rotas de ponte.
 // Sem efeito colateral (nao escreve cache) -- o chamador decide o que fazer
@@ -160,6 +164,7 @@ async function processar(request: Request) {
     (n) => (!candidatosPorNome.has(n) || semExatoNaZona.has(n)) && n.length >= 6,
   );
   let viaSimilaridade = 0;
+  const falhouSimilaridade = new Set<string>();
   const buscarSimilar = async (nome: string) => {
     const { data: similares, error: erroSim } = await admin.rpc("cnefe_candidatos_por_similaridade", {
       nome,
@@ -167,6 +172,7 @@ async function processar(request: Request) {
     });
     if (erroSim) {
       registrarFalha("cnefe_candidatos_por_similaridade", erroSim, { tamanhoNome: nome.length });
+      falhouSimilaridade.add(nome);
       return;
     }
     if (!similares || similares.length === 0) return;
@@ -209,12 +215,17 @@ async function processar(request: Request) {
       doGrupo,
       zona,
     );
-    return { id: g.id, resultados };
+    return {
+      id: g.id,
+      resultados: falhouSimilaridade.size === 0
+        ? resultados
+        : resultados.map((r, k) => (falhouSimilaridade.has(g.nomes[k]) ? { ...r, falhaBusca: true as const } : r)),
+    };
   });
 
   return Response.json({
     grupos: saida,
-    meta: { nomesUnicos: nomesUnicos.size, viaSimilaridade, pendentesSimilaridade: pendentes.length, msExato, msSimilaridade },
+    meta: { nomesUnicos: nomesUnicos.size, viaSimilaridade, pendentesSimilaridade: pendentes.length, falhasSimilaridade: falhouSimilaridade.size, msExato, msSimilaridade },
   });
 }
 

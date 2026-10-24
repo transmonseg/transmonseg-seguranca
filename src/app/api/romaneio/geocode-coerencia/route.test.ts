@@ -206,4 +206,51 @@ describe("POST /api/romaneio/geocode-coerencia", () => {
     expect(String(erroSpy.mock.calls[0][0])).toMatch(/cnefe_candidatos_por_similaridade.*57014/);
     erroSpy.mockRestore();
   });
+
+  it("revisao F2-01-a: rua cuja similaridade falhou sai marcada (falhaBusca) e contada na meta, nao como sem_candidato de verdade", async () => {
+    // Corredor do KPI (zona null): RUA COM EXATO resolve; RUA RENATO MONTEIRO X
+    // so' teria similaridade, que estourou o statement_timeout (57014). Antes
+    // a resposta saia 200 com a rua "sem_candidato" e o KPI gravava [] no
+    // cache do corredor, sem contar em coerenciaFalhou.
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "cnefe_candidatos_por_rua") {
+        return { data: [{ nome: "COM EXATO", municipio_codigo: RIO, lat: -22.9, lng: -43.2, qtd: 10 }], error: null };
+      }
+      return { data: null, error: { message: "canceling statement due to statement timeout", code: "57014" } };
+    });
+    const res = await POST(req({ grupos: [{ id: "corredor-0", zona: null, ruas: ["RUA COM EXATO", "RUA RENATO MONTEIRO X"] }] }));
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    const [ok, falhou] = j.grupos[0].resultados;
+    expect(ok.falhaBusca).toBeUndefined();
+    expect(falhou.falhaBusca).toBe(true);
+    expect(j.meta.falhasSimilaridade).toBe(1);
+    erroSpy.mockRestore();
+  });
+
+  it("revisao F2-01-a: exato so' fora da zona + similaridade falhou tambem sai marcada (caso RAIMUNDO CORREIA)", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "cnefe_candidatos_por_rua") {
+        return { data: [{ nome: "RAIMUNDO CORREIA", municipio_codigo: CAXIAS, lat: -22.7, lng: -43.3, qtd: 5 }], error: null };
+      }
+      return { data: null, error: { message: "canceling statement due to statement timeout", code: "57014" } };
+    });
+    const res = await POST(req({ grupos: [{ id: "g", zona: "CAPITAL", ruas: ["RUA RAIMUNDO CORREIA"] }] }));
+    const j = await res.json();
+    expect(j.grupos[0].resultados[0].falhaBusca).toBe(true);
+    expect(j.meta.falhasSimilaridade).toBe(1);
+    erroSpy.mockRestore();
+  });
+
+  it("sem falha nenhuma, a meta diz 0 e nenhum resultado vem marcado", async () => {
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "cnefe_candidatos_por_rua") return { data: [], error: null };
+      return { data: [], error: null };
+    });
+    const j = await (await POST(req({ grupos: [{ id: "g", ruas: ["RUA RENATO MONTEIRO X"] }] }))).json();
+    expect(j.meta.falhasSimilaridade).toBe(0);
+    expect(j.grupos[0].resultados[0].falhaBusca).toBeUndefined();
+  });
 });
