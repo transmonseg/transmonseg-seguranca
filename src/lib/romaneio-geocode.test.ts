@@ -770,3 +770,118 @@ describe("escolherFeaturePhoton (GEO-09)", () => {
     expect(escolherFeaturePhoton([bairro, via], "RUA CAMPO GRANDE, 50, CENTRO, ITAGUAI, RJ, Brasil")).toMatchObject({ lat: -22.85, precisao: "rua" });
   });
 });
+
+// F2-14 / GEO-09 (pendencia da revisao Fases 3-4): o Photon devolve ate' 5
+// features e a escolha pegava a PRIMEIRA com o nome da rua -- rua homonima de
+// outra cidade (Photon ranqueia por relevancia, nao por distancia) era
+// devolvida, a trava `perto` (30 km) da cascata rejeitava, e o nivel Photon
+// inteiro falhava mesmo havendo a rua certa entre as 5. Com ponto de
+// referencia, escolhe pela distancia; sem referencia, segue como antes.
+describe("escolherFeaturePhoton por distancia (F2-14 GEO-09)", () => {
+  const f = (street: string, lat: number, lng: number, housenumber?: string) => ({ geometry: { coordinates: [lng, lat] as [number, number] }, properties: { street, housenumber, name: street } });
+  const ITAGUAI = { lat: -22.8522, lng: -43.7753 };
+  const saoJoseRio = f("Rua São José", -22.9035, -43.1755);
+  const saoJoseItaguai = f("Rua São José", -22.8600, -43.7790);
+  const CONSULTA = "RUA SAO JOSE, 100, CENTRO, ITAGUAI, RJ, Brasil";
+
+  it("homonima de outra cidade vem primeiro: com referencia, escolhe a feature mais perto", () => {
+    const r = escolherFeaturePhoton([saoJoseRio, saoJoseItaguai], CONSULTA, ITAGUAI);
+    expect(r).toMatchObject({ lat: -22.86, lng: -43.779, precisao: "rua" });
+  });
+
+  // A seco 24/10 (144 enderecos do cache photon): "a mais perto do centro do
+  // municipio" movia trechos da MESMA rua (ESTRADA DO PIAI, Guaratiba, 1,3 km)
+  // -- o centro do municipio nao diz qual trecho e' o certo. Dentro do teto
+  // fica a ordem do Photon.
+  it("duas dentro do teto: fica a ordem do Photon, nao a mais perto do centro do municipio", () => {
+    const trechoLonge = f("Rua São José", -22.9000, -43.8500);
+    const r = escolherFeaturePhoton([saoJoseRio, trechoLonge, saoJoseItaguai], CONSULTA, ITAGUAI);
+    expect(r).toMatchObject({ lat: -22.9, lng: -43.85 });
+  });
+
+  it("nenhuma dentro do teto: devolve a mais perto (a trava da cascata decide)", () => {
+    const niteroi = f("Rua São José", -22.8900, -43.1000);
+    const r = escolherFeaturePhoton([niteroi, saoJoseRio], CONSULTA, ITAGUAI);
+    expect(r).toMatchObject({ lat: -22.9035 });
+  });
+
+  it("numero igual na homonima LONGE (fora do teto) nao ganha da rua certa perto", () => {
+    const exatoRio = f("Rua São José", -22.9035, -43.1755, "100");
+    const r = escolherFeaturePhoton([exatoRio, saoJoseItaguai], CONSULTA, ITAGUAI);
+    expect(r).toMatchObject({ lat: -22.86, precisao: "rua" });
+  });
+
+  it("sem referencia: comportamento de antes (primeira feature com a rua pedida)", () => {
+    expect(escolherFeaturePhoton([saoJoseRio, saoJoseItaguai], CONSULTA)).toMatchObject({ lat: -22.9035 });
+  });
+
+  it("a cascata repassa o ponto de cidade ao Photon (para ele escolher pela distancia)", async () => {
+    const deps = {
+      buscarCache: vi.fn(async () => null),
+      salvarCache: vi.fn(async () => {}),
+      geocodificarCnefeDep: vi.fn(async () => null),
+      geocodificarLocalDep: vi.fn(async () => null),
+      geocodificarGoogle: vi.fn(async () => null),
+      geocodificarPhoton: vi.fn(async (_endereco: string, _pontoCidade?: { lat: number; lng: number } | null) => ({ lat: -22.86, lng: -43.779 })),
+      geocodificarNominatim: vi.fn(async () => null),
+    };
+    const r = await geocodificarEndereco("RUA SAO JOSE, 100 - CENTRO, ITAGUAI - RJ", ITAGUAI, deps);
+    expect(r).toMatchObject({ fonte: "photon", lat: -22.86 });
+    expect(deps.geocodificarPhoton.mock.calls[0][1]).toEqual(ITAGUAI);
+  });
+});
+
+// F2-14 / GEO-06 (pendencia da revisao Fases 3-4): o tipo do logradouro so'
+// desempatava dentro de escolherPontoCnefe, e o resultado SEM confirmacao de
+// CEP/bairro e' descartado por geocodificarCnefe -- os fallbacks (numero exato
+// mais perto da referencia, numero mais proximo, rua) nao olhavam o tipo. Caso
+// tipo Fazenda Inglesa sem CEP: ESTRADA pedida, ENTRADA com o mesmo numero.
+describe("geocodificarCnefe: tipo de logradouro nos fallbacks sem CEP (F2-14 GEO-06)", () => {
+  const PETROPOLIS = { lat: -22.505, lng: -43.178 };
+  const c = (lat: number, numero: string, tipo: string) => ({ lat, lng: -43.21, numero, cep: null, localidade: "FAZENDA INGLESA", tipo });
+  const ENTRADA_2046 = c(-22.4850, "2046", "ENTRADA");
+  const ESTRADA_2030 = c(-22.4900, "2030", "ESTRADA");
+  const ESTRADA_2050 = c(-22.4905, "2050", "ESTRADA");
+  const deps = () => ({
+    buscarPorRuaNumero: vi.fn(async () => [ENTRADA_2046]),
+    buscarPorRua: vi.fn(async () => [ENTRADA_2046, ESTRADA_2030, ESTRADA_2050]),
+    buscarPorSimilaridade: vi.fn(async () => []),
+  });
+
+  it("ESTRADA pedida sem CEP/bairro confirmando: nao aceita o 2046 da ENTRADA como exato; fica na ESTRADA", async () => {
+    const r = await geocodificarCnefe("ESTRADA FAZENDA INGLESA, 2046 - CENTRO, PETROPOLIS - *", PETROPOLIS, "3303906", deps());
+    expect(r).not.toBeNull();
+    expect(r!.lat).toBeCloseTo(-22.4905, 4);
+    expect(r!.precisao).not.toBe("exato");
+  });
+
+  it("ENTRADA pedida: o 2046 da ENTRADA continua valendo", async () => {
+    const r = await geocodificarCnefe("ENTRADA FAZENDA INGLESA, 2046 - CENTRO, PETROPOLIS - *", PETROPOLIS, "3303906", deps());
+    expect(r).toMatchObject({ lat: -22.485, precisao: "exato" });
+  });
+
+  // A seco 24/10 (3.496 enderecos com tipo misto no CNEFE, 7 dias): AVENIDA
+  // SIMAO DA MOTA, 42 (Mage, bairro MAGEMIRIM) -- o CNEFE tem o 42 na AVENIDA
+  // (Centro) e na RUA SIMAO DA MOTA; a parada real (ancora dwell) fica a 363 m
+  // do 42 da RUA e a 1,6 km do 42 da AVENIDA. So' o tipo desempatando nao
+  // basta para afirmar "exato": vira "rua" (nao sustenta NAO FOI).
+  it("mesmo numero existe em OUTRO tipo longe: o do tipo pedido nao sai como exato", async () => {
+    const AV_42 = { lat: -22.66303, lng: -43.03419, numero: "42", cep: "25900001", localidade: "CENTRO", tipo: "AVENIDA" };
+    const RUA_42 = { lat: -22.66248, lng: -43.05322, numero: "42", cep: "25905535", localidade: "PIEDADE", tipo: "RUA" };
+    const d = {
+      buscarPorRuaNumero: vi.fn(async () => [AV_42, RUA_42]),
+      buscarPorRua: vi.fn(async () => [AV_42, RUA_42]),
+      buscarPorSimilaridade: vi.fn(async () => []),
+    };
+    const r = await geocodificarCnefe("AVENIDA SIMAO DA MOTA, 42 - MAGEMIRIM, MAGE - LOJA 2 3 4 - 25901-028", { lat: -22.6527, lng: -43.0405 }, "3302502", d);
+    expect(r).not.toBeNull();
+    expect(r!.precisao).toBe("rua");
+    expect(r!.raioM).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("nenhum candidato do tipo pedido: segue com todos (nao perde o endereco)", async () => {
+    const d = { ...deps(), buscarPorRua: vi.fn(async () => [ENTRADA_2046]) };
+    const r = await geocodificarCnefe("ESTRADA FAZENDA INGLESA, 2046 - CENTRO, PETROPOLIS - *", PETROPOLIS, "3303906", d);
+    expect(r).toMatchObject({ lat: -22.485 });
+  });
+});

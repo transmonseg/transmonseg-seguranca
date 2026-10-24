@@ -97,6 +97,19 @@ export function tipoCanonico(tipo: string | null | undefined): string | null {
   return t || null;
 }
 
+// Filtra pelo tipo pedido quando ha' candidato desse tipo no `universo` (por
+// padrao a propria lista); candidato sem tipo nunca e' descartado. Sem tipo
+// pedido ou sem nenhum candidato do tipo, devolve a lista inteira (nao perde o
+// endereco). F2-14: os fallbacks de geocodificarCnefe passam a rua inteira
+// como universo, para o numero exato de OUTRO tipo nao ganhar da via pedida.
+export function filtrarPorTipo<T extends CandidatoCnefe>(cands: T[], tipo: string | null | undefined, universo: CandidatoCnefe[] = cands): T[] {
+  const tipoAlvo = tipoCanonico(tipo);
+  if (!tipoAlvo) return cands;
+  const doTipo = (x: CandidatoCnefe) => x.tipo != null && tipoCanonico(x.tipo) === tipoAlvo;
+  if (!universo.some(doTipo)) return cands;
+  return [...cands.filter(doTipo), ...cands.filter((x) => x.tipo == null)];
+}
+
 export function escolherPontoCnefe(
   candidatos: CandidatoCnefe[],
   alvo: { numero: number | null; cep: string | null; bairro: string | null; tipo?: string | null },
@@ -112,11 +125,7 @@ export function escolherPontoCnefe(
     // com outro tipo (RUA NATAL = PRACA NATAL; ESTRADA = ENTRADA DO GUANDU DO
     // SENA) e, com o CEP batendo, filtrar pelo tipo jogava fora o ponto certo
     // (medicao 21/10: 2 de 2.136 foram parar a 0,4 e 41 km).
-    const tipoAlvo = tipoCanonico(alvo.tipo);
-    if (tipoAlvo) {
-      const doTipo = sub.filter((x) => x.tipo != null && tipoCanonico(x.tipo) === tipoAlvo);
-      if (doTipo.length > 0) sub = [...doTipo, ...sub.filter((x) => x.tipo == null)];
-    }
+    sub = filtrarPorTipo(sub, alvo.tipo);
   }
 
   if (alvo.numero != null) {

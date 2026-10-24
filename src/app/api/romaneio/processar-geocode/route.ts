@@ -193,9 +193,9 @@ export async function POST(request: Request) {
 
   // Photon tambem com throttle (API publica do komoot, mesma cortesia do
   // Nominatim). Entrou 14/10 entre Google e Nominatim na cascata.
-  const geocodificarPhotonThrottled = async (enderecoBruto: string) => {
+  const geocodificarPhotonThrottled = async (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => {
     await esperar(ESPERA_ENTRE_CHAMADAS_MS);
-    return geocodificarPhoton(enderecoBruto);
+    return geocodificarPhoton(enderecoBruto, pontoCidade ?? null);
   };
 
   // Achado real 03/09 (grupo KPI AJUSTES, geocode de Nutry Max do dia,

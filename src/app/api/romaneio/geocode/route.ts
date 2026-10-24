@@ -119,9 +119,9 @@ export async function POST(request: Request) {
     return geocodificarNominatim(enderecoBruto);
   };
 
-  const geocodificarPhotonThrottled = async (enderecoBruto: string) => {
+  const geocodificarPhotonThrottled = async (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => {
     await esperar(ESPERA_ENTRE_CHAMADAS_MS);
-    return geocodificarPhoton(enderecoBruto);
+    return geocodificarPhoton(enderecoBruto, pontoCidade ?? null);
   };
 
   const buscarCandidatosPorNome = async (nomeNormalizado: string) => {

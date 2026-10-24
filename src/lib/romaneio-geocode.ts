@@ -6,13 +6,16 @@
 
 import { extrairRuaDoEndereco, extrairNumeroDoEndereco, normalizarNomeRua, montarVariantesParaGeocode, extrairBairroDoEndereco } from "./romaneio-geocode-local";
 import { haversineM } from "./unitrac";
-import { escolherPontoCnefe, extrairCepDoEndereco, type CandidatoCnefe, type PrecisaoPonto } from "./cnefe-escolha";
+import { escolherPontoCnefe, extrairCepDoEndereco, filtrarPorTipo, type CandidatoCnefe, type PrecisaoPonto } from "./cnefe-escolha";
 
 export function normalizarEndereco(enderecoBruto: string): string {
   return enderecoBruto.trim().toUpperCase().replace(/\s+/g, " ");
 }
 
 const DISTANCIA_MAX_MATCH_LOCAL_M = 30_000; // 30km -- nome bateu, mas e outra regiao
+// F2-14 (GEO-06): mesmo numero em via de outro tipo a mais que isso = o tipo
+// decidiu sozinho; mesmo teto de espalhamento do "exato" em cnefe-escolha.ts.
+const DIST_AMBIGUIDADE_TIPO_M = 150;
 
 // Achado real 06/09 (KPI Rio Quality, placa KWY8H35/RUA NELSON MANDELA,
 // BOTAFOGO): 30km e' folga demais pra candidato de SIMILARIDADE (nome so'
@@ -312,13 +315,28 @@ export async function geocodificarCnefe(
   // Sem confirmacao (rua sem CEP/bairro batendo): comportamento anterior,
   // com o teto da referencia, mas sem S/N do CNEFE como "numero mais
   // proximo" e sem diferenca grande de numero.
-  if (temNumero) {
-    const exatos = porRuaNumero.filter((c) => soDigitos(c.numero ?? numero) === numeroAlvo);
-    const resultado = escolherCandidatoMaisProximo(exatos.length > 0 ? exatos : porRuaNumero, pontoCidade, false, maxDist);
-    if (resultado) return { ...resultado, precisao: "exato", raioM: 30 };
+  // F2-14 (GEO-06): sem CEP/bairro, o tipo do logradouro vale tambem aqui --
+  // ESTRADA pedida nao aceita o mesmo numero da ENTRADA homonima se a ESTRADA
+  // existe na rua (universo = tudo que veio do CNEFE para esse nome).
+  const universoTipo = [...porRuaNumero, ...porRua];
+  const porRuaNumeroTipo = filtrarPorTipo(porRuaNumero, alvo.tipo, universoTipo);
+  const porRuaTipo = filtrarPorTipo(porRua, alvo.tipo, universoTipo);
+  if (temNumero && porRuaNumeroTipo.length > 0) {
+    const exatos = porRuaNumeroTipo.filter((c) => soDigitos(c.numero ?? numero) === numeroAlvo);
+    const resultado = escolherCandidatoMaisProximo(exatos.length > 0 ? exatos : porRuaNumeroTipo, pontoCidade, false, maxDist);
+    if (resultado) {
+      // A seco 24/10 (AVENIDA SIMAO DA MOTA, 42, Mage): o mesmo numero numa via
+      // de OUTRO tipo, longe, e o tipo foi o unico desempate -- o romaneio
+      // tambem erra o tipo, entao nao afirma "exato" (vira "rua", nao sustenta
+      // NAO FOI).
+      const outroTipoLonge = porRuaNumero.some((c) => !porRuaNumeroTipo.includes(c)
+        && soDigitos(c.numero ?? numero) === numeroAlvo
+        && haversineM(c.lat, c.lng, resultado.lat, resultado.lng) > DIST_AMBIGUIDADE_TIPO_M);
+      return outroTipoLonge ? { ...resultado, precisao: "rua", raioM: 1000 } : { ...resultado, precisao: "exato", raioM: 30 };
+    }
   }
   if (numeroAlvo !== null) {
-    const porNumero = escolherPorNumeroMaisProximo(porRua, numeroAlvo);
+    const porNumero = escolherPorNumeroMaisProximo(porRuaTipo, numeroAlvo);
     if (porNumero) {
       const validado = escolherCandidatoMaisProximo([{ lat: porNumero.lat, lng: porNumero.lng }], pontoCidade, false, maxDist);
       if (validado) return porNumero.dif <= DIF_MAX_NUMERO_PROXIMO
@@ -326,7 +344,7 @@ export async function geocodificarCnefe(
         : { ...validado, precisao: "rua", raioM: 1000 };
     }
   }
-  const resultadoRua = escolherCandidatoMaisProximo(porRua, pontoCidade, false, maxDist);
+  const resultadoRua = escolherCandidatoMaisProximo(porRuaTipo, pontoCidade, false, maxDist);
   if (resultadoRua) return { ...resultadoRua, precisao: "rua", raioM: escolhido?.raioM ?? 1000 };
 
   const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado, municipioCodigo);
@@ -419,7 +437,10 @@ type Deps = {
   // estruturado resolveu 0/61 na cidade certa contra 57/61 do Photon.
   // Opcional (como geocodificarCnefeBairroDep): undefined pula o nivel,
   // preserva o comportamento antigo de quem nao passar.
-  geocodificarPhoton?: (enderecoBruto: string) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto } | null>;
+  // F2-14 (GEO-09): recebe o ponto de cidade para escolher, entre as 5
+  // features, a mais perto (nao a primeira). Dep antigo de 1 argumento segue
+  // funcionando (ignora o segundo).
+  geocodificarPhoton?: (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto } | null>;
   geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
 };
 
@@ -537,7 +558,7 @@ export async function geocodificarEndereco(
   // fornecido; sem ele a cascata e' identica a de antes (Google -> Nominatim).
   if (deps.geocodificarPhoton) {
     for (const variante of variantes) {
-      const photon = await deps.geocodificarPhoton(variante);
+      const photon = await deps.geocodificarPhoton(variante, pontoCidade);
       if (photon && perto(photon)) {
         await deps.salvarCache(chave, { lat: photon.lat, lng: photon.lng, fonte: "photon", validado: validadoCidade });
         return { lat: photon.lat, lng: photon.lng, fonte: "photon", validado: validadoCidade, precisao: photon.precisao ?? "rua" };
@@ -593,9 +614,24 @@ type FeaturePhoton = { geometry?: { coordinates?: [number, number] }; properties
 // BJ-26 -- e entrava como confiavel. Aceita so' a feature cuja rua
 // (street, ou name pra via sem endereco) normalizada e' a rua pedida;
 // com o mesmo numero de casa e' exato, senao e' ponto da rua.
-export function escolherFeaturePhoton(features: FeaturePhoton[], consulta: string): { lat: number; lng: number; precisao: PrecisaoPonto } | null {
+//
+// F2-14 (GEO-09, pendencia da revisao Fases 3-4): com ponto de referencia, a
+// distancia decide entre as 5 -- nao vale mais a primeira que bate a rua se
+// ela estiver fora do teto de 30 km (homonima de outra cidade vinha antes, a
+// trava da cascata a rejeitava e o nivel inteiro falhava). Dentro do teto
+// fica a ordem do Photon (que usa bairro e numero da consulta): a distancia
+// ao centro do municipio nao diz qual trecho da MESMA rua e' o certo (a seco
+// 24/10: "mais perto do centro" movia ESTRADA DO PIAI 1,3 km). Nenhuma
+// dentro do teto: devolve a mais perto, e a trava da cascata decide. Sem
+// referencia, segue a primeira (comportamento anterior).
+export function escolherFeaturePhoton(
+  features: FeaturePhoton[],
+  consulta: string,
+  referencia: { lat: number; lng: number } | null = null,
+): { lat: number; lng: number; precisao: PrecisaoPonto } | null {
   const rua = normalizarNomeRua(extrairRuaDoEndereco(consulta));
   const numero = soDigitos(extrairNumeroDoEndereco(consulta));
+  const validas: { lat: number; lng: number; precisao: PrecisaoPonto }[] = [];
   for (const f of features) {
     // Sem street, o name so' vale se a feature for a propria via (osm_key
     // highway): bairro/lugar homonimo ("Campo Grande") nao e' a rua
@@ -608,12 +644,17 @@ export function escolherFeaturePhoton(features: FeaturePhoton[], consulta: strin
     const [lng, lat] = coords;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
     const exato = numero != null && soDigitos(f.properties?.housenumber) === numero;
-    return { lat, lng, precisao: exato ? "exato" : "rua" };
+    const escolha = { lat, lng, precisao: (exato ? "exato" : "rua") as PrecisaoPonto };
+    if (!referencia) return escolha;
+    validas.push(escolha);
   }
-  return null;
+  if (!referencia || validas.length === 0) return null;
+  const dist = (p: { lat: number; lng: number }) => haversineM(referencia.lat, referencia.lng, p.lat, p.lng);
+  const dentroDoTeto = validas.find((p) => dist(p) <= DISTANCIA_MAX_MATCH_LOCAL_M);
+  return dentroDoTeto ?? [...validas].sort((a, b) => dist(a) - dist(b))[0];
 }
 
-export async function geocodificarPhoton(enderecoBruto: string): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto } | null> {
+export async function geocodificarPhoton(enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null = null): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto } | null> {
   try {
     const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(enderecoBruto)}&limit=5&lang=default`;
     const res = await fetch(url, {
@@ -622,7 +663,7 @@ export async function geocodificarPhoton(enderecoBruto: string): Promise<{ lat: 
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { features?: FeaturePhoton[] };
-    return escolherFeaturePhoton(data.features ?? [], enderecoBruto);
+    return escolherFeaturePhoton(data.features ?? [], enderecoBruto, pontoCidade);
   } catch (err) {
     // Mesmo motivo do catch de geocodificarGoogle/Nominatim: degrada pro
     // proximo tier da cascata (Nominatim), com log pra nao sumir silencioso.
