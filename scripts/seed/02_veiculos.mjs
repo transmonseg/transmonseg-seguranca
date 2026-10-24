@@ -1,9 +1,11 @@
 // Seed: busca veículos do Unitrac para Nutry Max (4096) e Benassi (4586) e insere no banco.
+// F2-15: ativo que não veio na API é marcado (sumiu_da_api_em) e tem a posição envelhecida.
 // Idempotente: on conflict (cliente_id, cv) do nothing.
 // Uso: node --env-file=.env.local scripts/seed/02_veiculos.mjs
 
 import pg from "pg";
 import { sincronizarVeiculo } from "./veiculos-sync.mjs";
+import { tratarAusentesDaApi } from "./veiculos-ausentes.mjs";
 
 const conn = process.env.DATABASE_URL;
 if (!conn) { console.error("DATABASE_URL ausente no .env.local"); process.exit(1); }
@@ -64,6 +66,17 @@ try {
     }
 
     console.log(`  ${inseridos} novos veículos inseridos, ${atualizados} placas atualizadas para ${clienteNome} (${veiculos.length} total na API)`);
+
+    // F2-15 (MON-12): ativo que saiu da API fica marcado e com a posição
+    // envelhecida (antes ficava "fresco" para sempre: TTT-1E20 verde desde 13/10).
+    try {
+      const cvsApi = new Set(veiculos.map((v) => String(v.cv ?? "").trim()).filter(Boolean));
+      const r = await tratarAusentesDaApi(client, { clienteId, cvsApi });
+      if (r.suspeita) console.warn(`  AVISO ${clienteNome}: ${r.suspeita} -- nenhum veículo marcado como fora da API`);
+      else if (r.ausentes.length > 0) console.log(`  ${r.ausentes.length} ativo(s) fora da API: ${r.ausentes.join(", ")} (${r.envelhecidos} posição(ões) envelhecida(s)${r.marcado ? "" : "; migration 090 ainda não aplicada, sem marca"})`);
+    } catch (e) {
+      erros.push(`${clienteNome}: veículos fora da API não tratados: ${e.message}`);
+    }
   }
 
 } catch (e) {
