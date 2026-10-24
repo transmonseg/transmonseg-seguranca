@@ -228,6 +228,11 @@ vi.mock("pg", () => {
       // agora vira aviso em erros em vez de ser descartada calada).
       return { rows: [] };
     }
+    if (/AS tem_romaneio|max\(rp\.criado_em\)/i.test(sql)) {
+      // SQL_FROTA_EM_ROTA / SQL_ULTIMO_ENVIO_ROMANEIO (F3-07, romaneio_ausente
+      // agregado): outro formato de linha; este teste não cobre o card.
+      return { rows: [] };
+    }
     if (/from\s+romaneio_pontos/i.test(sql)) {
       return { rows: [mockState.linhaRomaneio] };
     }

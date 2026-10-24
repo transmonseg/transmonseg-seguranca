@@ -54,7 +54,16 @@
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
-import { atrasoEfetivoMin, SQL_VEICULOS_SEM_ROMANEIO } from "@/lib/frescor-posicao";
+import { atrasoEfetivoMin } from "@/lib/frescor-posicao";
+import {
+  DIST_MIN_BASE_ROMANEIO_AUSENTE_M,
+  SQL_FROTA_EM_ROTA,
+  SQL_ULTIMO_ENVIO_ROMANEIO,
+  TIPO_ROMANEIO_AUSENTE,
+  planejarRomaneioAusente,
+  type AlertaRomaneioAusente,
+  type VeiculoEmRotaComRomaneio,
+} from "@/lib/romaneio-ausente";
 import {
   TIPO_RASTREADOR_MUDO,
   SQL_CARGA_DO_DIA_COM_POSICAO,
@@ -95,7 +104,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS, CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
+import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS, CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, CLIENTES_COM_ROMANEIO_AUSENTE, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
@@ -797,7 +806,11 @@ const LIMIAR_AVISO_DURACAO_MS = 45_000;
 // romaneio vazio (linhasRomaneio.length===0) porque precisa detectar
 // exatamente esse caso -- dia sem NENHUM romaneio ainda e' o pior caso, nao
 // deve ficar mais escondido que o de "alguns veiculos faltando".
-async function sinalizarRomaneioAusente(ctx: {
+//
+// F3-07 (MON-04): virou 1 card agregado por cliente por dia (Nutry e RQ),
+// exigindo ignicao e mais de 5 km da base -- regra, recall e replay em
+// @/lib/romaneio-ausente.
+export async function sinalizarRomaneioAusente(ctx: {
   pool: pg.Pool;
   admin: ReturnType<typeof createAdminClient>;
   hoje: string;
@@ -806,71 +819,56 @@ async function sinalizarRomaneioAusente(ctx: {
 }): Promise<void> {
   const { pool, admin, hoje, agora, erros } = ctx;
   try {
-    const codigosUnitrac = [...CLIENTES_COM_MOTOR_ROMANEIO_PARALELO];
+    const codigosUnitrac = [...CLIENTES_COM_ROMANEIO_AUSENTE];
     if (codigosUnitrac.length === 0) return;
 
-    const { rows: semRomaneio } = await pool.query<{
-      veiculo_id: string;
-      cliente_id: string;
-      lat: number;
-      lng: number;
-    }>(
-      // F1-15: frescor pelo atraso efetivo (updated_at) e so' cliente ativo
-      // -- carro congelado (fora da API) nao vira card eterno.
-      SQL_VEICULOS_SEM_ROMANEIO,
-      [codigosUnitrac, LIMIAR_ATRASO_FRESCO_MIN, hoje]
-    );
+    const [{ rows: frota }, { rows: envios }] = await Promise.all([
+      pool.query<VeiculoEmRotaComRomaneio>(SQL_FROTA_EM_ROTA, [codigosUnitrac, LIMIAR_ATRASO_FRESCO_MIN, hoje, DIST_MIN_BASE_ROMANEIO_AUSENTE_M]),
+      pool.query<{ cliente_id: string; ultimo_envio: Date | string | null }>(SQL_ULTIMO_ENVIO_ROMANEIO, [codigosUnitrac, hoje]),
+    ]);
+    const ultimoEnvio: Record<string, string | null> = {};
+    for (const e of envios) ultimoEnvio[e.cliente_id] = e.ultimo_envio == null ? null : new Date(e.ultimo_envio).toISOString();
 
-    const veiculosAtivosSemRomaneio = new Set(semRomaneio.map((r) => r.veiculo_id));
-
-    // Uma query só pros já abertos (mesmo padrão de alertasAbertosPorVeiculo
-    // no resto do arquivo), não uma por veículo -- mais barato e mais fácil
-    // de mockar em teste. Reusada tanto pro dedup do insert quanto pro
-    // auto-resolve abaixo.
-    const { data: abertos, error: erroAbertos } = await admin
-      .from("alertas_romaneio")
-      .select("id, veiculo_id")
-      .eq("tipo", "romaneio_ausente")
-      .eq("status", "ativo");
-    if (erroAbertos) {
-      erros.push(`Aviso: falha ao checar romaneio_ausente existentes: ${erroAbertos.message}`);
+    // Abertos de qualquer dia (pra fechar os antigos) + os de hoje em
+    // qualquer status (1 card por cliente por dia, reabre o mesmo).
+    const inicioDiaSP = new Date(`${hoje}T00:00:00-03:00`).toISOString();
+    const colunas = "id, cliente_id, veiculo_id, status, desde, motivo, contexto, origem_acao";
+    const [abertosResp, hojeResp] = await Promise.all([
+      admin.from("alertas_romaneio").select(colunas).eq("tipo", TIPO_ROMANEIO_AUSENTE).in("status", ["ativo", "reconhecido"]),
+      admin.from("alertas_romaneio").select(colunas).eq("tipo", TIPO_ROMANEIO_AUSENTE).gte("desde", inicioDiaSP),
+    ]);
+    if (abertosResp.error || hojeResp.error) {
+      erros.push(`Aviso: falha ao checar romaneio_ausente existentes: ${(abertosResp.error ?? hojeResp.error)?.message}`);
       return;
     }
-    const veiculosComAlertaAberto = new Set((abertos ?? []).map((a) => a.veiculo_id as string));
+    const porId = new Map<string, AlertaRomaneioAusente>();
+    for (const a of [...(abertosResp.data ?? []), ...(hojeResp.data ?? [])] as AlertaRomaneioAusente[]) porId.set(a.id, a);
 
-    for (const r of semRomaneio) {
-      if (veiculosComAlertaAberto.has(r.veiculo_id)) continue;
-      const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
-        cliente_id: r.cliente_id,
-        veiculo_id: r.veiculo_id,
-        nivel: "atencao",
-        tipo: "romaneio_ausente",
-        motivo: "Veiculo em rota (GPS ativo, fora da base) sem romaneio de hoje carregado no sistema -- conferir manifesto/upload do dia",
-        score: 20,
-        status: "ativo",
-        lat: r.lat,
-        lng: r.lng,
-        contexto: {},
-        desde: agora.toISOString(),
-      });
-      if (erroInsert) {
-        erros.push(`Aviso: falha ao inserir romaneio_ausente pro veiculo ${r.veiculo_id}: ${erroInsert.message}`);
-      }
+    const plano = planejarRomaneioAusente({
+      emRota: frota.filter((v) => !v.tem_romaneio),
+      existentes: [...porId.values()],
+      ultimoEnvio,
+      hoje,
+      agora,
+    });
+
+    for (const novo of plano.inserir) {
+      const { error } = await admin.from("alertas_romaneio").insert(novo);
+      if (error) erros.push(`Aviso: falha ao inserir romaneio_ausente do cliente ${novo.cliente_id}: ${error.message}`);
     }
-
-    // Fecha sozinho quando o romaneio chega (ou o veiculo volta pra base/
-    // perde sinal) -- mesmo marcador auto_resolvido usado no resto do
-    // arquivo, nunca fica pendurado esperando acao manual pra um problema
-    // que se resolveu sozinho.
-    for (const a of abertos ?? []) {
-      if (veiculosAtivosSemRomaneio.has(a.veiculo_id as string)) continue;
-      const { error: erroResolve } = await admin
+    for (const { id, patch } of plano.atualizar) {
+      const { error } = await admin.from("alertas_romaneio").update(patch).eq("id", id);
+      if (error) erros.push(`Aviso: falha ao atualizar romaneio_ausente ${id}: ${error.message}`);
+    }
+    // Fecha sozinho (romaneio chegou, carros voltaram, virada do dia ou card
+    // antigo por carro) -- mesmo marcador auto_resolvido do resto do arquivo,
+    // com o contexto (placas contadas) preservado.
+    for (const { id, contexto } of plano.resolver) {
+      const { error } = await admin
         .from("alertas_romaneio")
-        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto: { auto_resolvido: true } })
-        .eq("id", a.id);
-      if (erroResolve) {
-        erros.push(`Aviso: falha ao resolver romaneio_ausente ${a.id}: ${erroResolve.message}`);
-      }
+        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto })
+        .eq("id", id);
+      if (error) erros.push(`Aviso: falha ao resolver romaneio_ausente ${id}: ${error.message}`);
     }
   } catch (e) {
     erros.push(`Aviso: sinalizacao de romaneio ausente desligada neste ciclo: ${String(e)}`);

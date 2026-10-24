@@ -31,6 +31,12 @@
 // (falso negativo, o erro caro aqui) e nunca dois (alerta duplicado).
 export const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096"]); // Nutry Max
 
+// F3-07 (MON-04): o aviso romaneio_ausente (1 card agregado por cliente por
+// dia, @/lib/romaneio-ausente) vale para todo cliente com romaneio, nao so'
+// para quem tem o motor paralelo de paradas: a RQ rodou com 21 carros no
+// domingo 19/10 sem romaneio e sem nenhum aviso. Nao mexe nos detectores.
+export const CLIENTES_COM_ROMANEIO_AUSENTE = new Set(["4096", "598"]); // Nutry Max, Rio Quality
+
 // 21/09 (pedido do usuario: "volte tudo que dava certo"): em 21-27/08, quando
 // o desvio/parada eram medidos como "muito melhores", a Central Unitrac rodava
 // os 3 detectores de parada pra FROTA INTEIRA da Nutry Max (75 e 66 paradas

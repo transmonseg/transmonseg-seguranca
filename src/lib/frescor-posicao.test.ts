@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { atrasoEfetivoMin, sqlAtrasoEfetivo, SQL_VEICULOS_EM_FAVELA, SQL_VEICULOS_SEM_ROMANEIO, veiculosFavelaDoCiclo } from "./frescor-posicao";
+import { atrasoEfetivoMin, sqlAtrasoEfetivo, SQL_VEICULOS_EM_FAVELA, veiculosFavelaDoCiclo } from "./frescor-posicao";
 
 // F1-15 (AC-01): posicoes_atuais.atraso_min e' o atraso que a Unitrac
 // informou NA ULTIMA LEITURA gravada. Quando o motor para de gravar o
@@ -54,13 +54,6 @@ describe("SQL_VEICULOS_EM_FAVELA (detector da Central)", () => {
   it("frescor pelo atraso efetivo (updated_at), nao so' pelo atraso_min gravado", () => {
     expect(SQL_VEICULOS_EM_FAVELA).toContain(`${sqlAtrasoEfetivo("p")} <= 60`);
     expect(SQL_VEICULOS_EM_FAVELA).not.toMatch(/WHERE p\.atraso_min <= 60/);
-  });
-});
-
-describe("SQL_VEICULOS_SEM_ROMANEIO (romaneio_ausente)", () => {
-  it("frescor pelo atraso efetivo e so' cliente ativo", () => {
-    expect(SQL_VEICULOS_SEM_ROMANEIO).toContain(`${sqlAtrasoEfetivo("pa")} < $2`);
-    expect(SQL_VEICULOS_SEM_ROMANEIO).toContain("c.ativo");
   });
 });
 
