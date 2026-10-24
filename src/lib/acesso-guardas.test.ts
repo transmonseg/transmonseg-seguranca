@@ -46,7 +46,8 @@ describe("acesso-guardas", () => {
   it("R-F3-09-01: conta de cliente não age sobre alerta interno (rastreador_mudo_com_carga) em alertas_romaneio", async () => {
     resultado.data = [{ id: "b" }];
     await idsAlertaPermitidos({ tipo: "um", clienteId: NUTRY }, "alertas_romaneio", ["a", "b"]);
-    expect(chamadas.filtros).toContainEqual(["not.tipo.in", "(rastreador_mudo_com_carga)"]);
+    // Revisao F3-07 (R2): romaneio_ausente agregado tambem e' interno.
+    expect(chamadas.filtros).toContainEqual(["not.tipo.in", "(rastreador_mudo_com_carga,romaneio_ausente)"]);
   });
   it("central continua agindo sobre alerta interno; tabela alertas não ganha o filtro", async () => {
     expect(await idsAlertaPermitidos({ tipo: "todos" }, "alertas_romaneio", ["a"])).toEqual(["a"]);

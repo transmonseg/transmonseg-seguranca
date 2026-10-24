@@ -4,6 +4,7 @@ import pg from "pg";
 import { buscarAlvos, agruparPontosPorPlaca, corrigirComPontoAprendido } from "@/lib/unitrac";
 import { createClient } from "@/lib/supabase/server";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
+import { sqlTiposInternosFora } from "@/lib/rastreador-mudo";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +82,8 @@ const FONTES_ALERTA = {
   // comparar contra a Central, nunca pra colorir o mapa desta tela.
   // F3-09: rastreador_mudo_com_carga tambem nao colore -- e' aviso interno
   // de equipamento (posicao congelada ha' dias), o cache do mapa e'
-  // compartilhado com a conta do cliente.
+  // compartilhado com a conta do cliente. Revisao F3-07 (R2): nem o
+  // romaneio_ausente agregado (TIPOS_ALERTA_INTERNOS, @/lib/rastreador-mudo).
   romaneio: `
     left join lateral (
       select a.tipo
@@ -89,7 +91,7 @@ const FONTES_ALERTA = {
       where a.veiculo_id = v.id
         and a.status in ('ativo', 'reconhecido')
         and a.sombra = false
-        and a.tipo <> 'rastreador_mudo_com_carga'
+        and ${sqlTiposInternosFora("a")}
       order by (a.nivel = 'critico') desc, a.tipo
       limit 1
     ) al on true`,
@@ -107,7 +109,7 @@ const FONTE_ROMANEIO_SEM_SOMBRA = `
       from alertas_romaneio a
       where a.veiculo_id = v.id
         and a.status in ('ativo', 'reconhecido')
-        and a.tipo <> 'rastreador_mudo_com_carga'
+        and ${sqlTiposInternosFora("a")}
       order by (a.nivel = 'critico') desc, a.tipo
       limit 1
     ) al on true`;

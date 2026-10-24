@@ -429,6 +429,24 @@ describe("POST /api/motor-romaneio -- shadow mode (Task Fase 4 Incremento 1)", (
     expect(mockState.inserts.filter((i) => i.tipo === "jammer")).toEqual([]);
   });
 
+  it("revisao F3-07 (R4): o card agregado romaneio_ausente preso ao carro que acabou de receber o romaneio NAO e' fechado pelo Step 9 desse carro (carencia de 30 min e' do ciclo proprio)", async () => {
+    // Ultimo carro sem romaneio da Nutry recebe o romaneio: o card (pino
+    // nele, veiculo_id do representativo) fica aberto na carencia de 30 min
+    // de @/lib/romaneio-ausente. No mesmo ciclo o loop por veiculo chega ao
+    // Step 9 desse carro; sem a exclusao, deveResolverAlertaGerenciado
+    // devolvia true para tipo desconhecido e resolverPelaMaquina fechava o
+    // card na hora -- e o card piscava.
+    mockState.alertasAbertosPreexistentes = [
+      { id: "card-romaneio-ausente", veiculo_id: VEICULO_ID, tipo: "romaneio_ausente", nivel: "atencao", contexto: { agregado: true, placas: ["TST1A23"] } },
+    ];
+    const { POST } = await import("./route");
+    const res = await POST(requisicaoDoCron());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.veiculosProcessados).toBe(1);
+    expect(mockState.updates.find((u) => u.id === "card-romaneio-ausente")).toBeUndefined();
+  });
+
   it("CRITICO 2 (revisao independente 27/08): probe de sombra falha (coluna ausente OU erro transiente) -- candidato de shadow mode NAO e' inserido de jeito nenhum (nem visivel, nem sombra)", async () => {
     mockState.probeSombraErro = true;
     // excesso (pos-continue) + jammer (independente, pre-continue) juntos,

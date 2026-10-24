@@ -571,7 +571,10 @@ const TIPOS_SOMBRA = new Set(["panico", "jammer", "excesso"]);
 // sozinho -- jammer fecha sozinho sim, só que por outro código).
 // F3-09: rastreador_mudo_com_carga tem ciclo de vida próprio em
 // sinalizarRastreadorMudoComCarga (1 por veículo por dia).
-const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer", TIPO_RASTREADOR_MUDO]);
+// Revisão F3-07 (R4): romaneio_ausente é 1 card por CLIENTE, preso a um carro
+// representativo; o Step 9 desse carro (que já tem romaneio) fechava o card na
+// hora e furava a carência de 30 min de sinalizarRomaneioAusente.
+const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer", TIPO_RASTREADOR_MUDO, TIPO_ROMANEIO_AUSENTE]);
 
 type EstadoAnterior = {
   afastando_streak: number;

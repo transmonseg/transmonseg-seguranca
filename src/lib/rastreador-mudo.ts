@@ -25,6 +25,7 @@
 import { atrasoEfetivoMin } from "@/lib/frescor-posicao";
 import { dataSP } from "@/lib/motor-romaneio-estado";
 import type { AcessoCliente } from "@/lib/acesso-cliente";
+import { TIPO_ROMANEIO_AUSENTE } from "@/lib/romaneio-ausente";
 
 export const TIPO_RASTREADOR_MUDO = "rastreador_mudo_com_carga";
 export const LIMIAR_RASTREADOR_MUDO_MIN = 24 * 60;
@@ -38,8 +39,19 @@ export const HORA_MIN_RASTREADOR_MUDO_SP = 10;
  */
 export const LIMIAR_POSICOES_PARADAS_MIN = 60;
 
-/** Tipos de alertas_romaneio que so' a central (operador Transmonseg) ve. */
-export const TIPOS_ALERTA_INTERNOS: ReadonlySet<string> = new Set([TIPO_RASTREADOR_MUDO]);
+/**
+ * Tipos de alertas_romaneio que so' a central (operador Transmonseg) ve.
+ * Revisao F3-07 (R2): romaneio_ausente agregado ("N carros em rota sem
+ * romaneio, ultimo envio ha' X h") e' falha de processo interno e fica preso
+ * a um carro representativo qualquer -- a conta do cliente nao ve nem age, e
+ * o card nao colore esse carro no mapa.
+ */
+export const TIPOS_ALERTA_INTERNOS: ReadonlySet<string> = new Set([TIPO_RASTREADOR_MUDO, TIPO_ROMANEIO_AUSENTE]);
+
+/** Predicado SQL (alertas_romaneio) que deixa os tipos internos de fora. */
+export function sqlTiposInternosFora(alias: string): string {
+  return `${alias}.tipo NOT IN (${[...TIPOS_ALERTA_INTERNOS].map((t) => `'${t}'`).join(", ")})`;
+}
 
 export type CargaComPosicao = {
   veiculo_id: string;

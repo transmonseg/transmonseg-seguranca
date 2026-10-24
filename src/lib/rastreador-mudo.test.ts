@@ -9,6 +9,7 @@ import {
   motivoRastreadorMudo,
   planejarRastreadorMudo,
   semAlertasInternos,
+  sqlTiposInternosFora,
   type CargaComPosicao,
 } from "./rastreador-mudo";
 
@@ -232,5 +233,12 @@ describe("semAlertasInternos (alerta e' interno: conta do cliente nao ve)", () =
   });
   it("login de um cliente (ex.: RQ) nao ve rastreador_mudo_com_carga", () => {
     expect(semAlertasInternos(lista, { tipo: "um", clienteId: "cli-rq" })).toEqual([{ tipo: "desvio" }]);
+  });
+  it("revisao F3-07 (R2): romaneio_ausente agregado tambem e' interno -- login da RQ nao ve '61 carros em rota sem romaneio'", () => {
+    expect(semAlertasInternos([{ tipo: "desvio" }, { tipo: "romaneio_ausente" }], { tipo: "um", clienteId: "cli-rq" })).toEqual([{ tipo: "desvio" }]);
+    expect(semAlertasInternos([{ tipo: "romaneio_ausente" }], { tipo: "todos" })).toEqual([{ tipo: "romaneio_ausente" }]);
+  });
+  it("mapa: filtro SQL dos internos (o card agregado nao colore o carro representativo)", () => {
+    expect(sqlTiposInternosFora("a")).toBe("a.tipo NOT IN ('rastreador_mudo_com_carga', 'romaneio_ausente')");
   });
 });
