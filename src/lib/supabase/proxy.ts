@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { fetchContabo } from "./fetch-contabo";
+import { destinoAposLogin } from "@/lib/destino-login";
 
 // Atualiza a sessão (refresh do token) e protege as rotas de página.
 // Roda no proxy.ts (Node runtime no Next 16). Tudo exige login, exceto /login.
@@ -53,10 +54,15 @@ export async function updateSession(request: NextRequest) {
     url.search = path === "/" ? "" : `?volta=${encodeURIComponent(path + request.nextUrl.search)}`;
     return NextResponse.redirect(url);
   }
-  // Já autenticado tentando ver o login → manda pra central.
+  // Já autenticado tentando ver o login → mesma regra do login: a tela pedida
+  // ou a Central Romaneio (R-F3-12-01: a Central Unitrac de 76 MB fica na engrenagem).
   if (user && ehLogin) {
+    // nextUrl.clone() (não request.url): atrás do Caddy o host da requisição
+    // é 127.0.0.1:3010.
+    const destino = new URL(destinoAposLogin(request.nextUrl.searchParams.get("volta")), "http://x");
     const url = request.nextUrl.clone();
-    url.pathname = "/";
+    url.pathname = destino.pathname;
+    url.search = destino.search;
     return NextResponse.redirect(url);
   }
 

@@ -113,8 +113,8 @@ describe("GET /api/acessos/entrar-central", () => {
     expect(await r.text()).toMatch(/nova@x\.com/);
   });
 
-  it("destino de fora do site vira a pagina inicial", async () => {
+  it("destino de fora do site vira a Central Romaneio (R-F3-12-01: nunca a Central Unitrac de 76 MB)", async () => {
     est.sessao = { email: "erica@x.com" };
-    expect(destino(await GET(req(`p=${passe("erica@x.com")}&para=${encodeURIComponent("/\t/evil.com")}`)))).toBe("/");
+    expect(destino(await GET(req(`p=${passe("erica@x.com")}&para=${encodeURIComponent("/\t/evil.com")}`)))).toBe("/central-romaneio");
   });
 });
