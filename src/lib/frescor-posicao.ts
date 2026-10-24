@@ -51,6 +51,20 @@ export const SQL_VEICULOS_EM_FAVELA = `SELECT
              AND ST_Intersects(g.geom, p.geom)
            WHERE ${sqlAtrasoEfetivo("p")} <= 60`;
 
+/**
+ * Revisao F1-15 (R3): so' entram no detector de favela os carros de cliente
+ * que o motor processou NESTE ciclo. O dedupe (alertas ativos) e' lido so'
+ * de clientesComSucesso; cliente ativo cuja busca na Unitrac falhou ficava
+ * fora dele e ganhava um alerta 'favela' novo a cada ciclo. Mesma regra do
+ * dedupe vale para o insert.
+ */
+export function veiculosFavelaDoCiclo<T extends { cliente_id: string }>(
+  linhas: T[],
+  clientesComSucesso: ReadonlySet<string>,
+): T[] {
+  return linhas.filter((l) => clientesComSucesso.has(l.cliente_id));
+}
+
 // romaneio_ausente (motor-romaneio/route.ts, sinalizarRomaneioAusente).
 // $1 = cod_user_unitrac[], $2 = limiar de frescor (min), $3 = dia (SP).
 export const SQL_VEICULOS_SEM_ROMANEIO = `SELECT v.id AS veiculo_id, v.cliente_id, pa.lat, pa.lng

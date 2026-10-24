@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { atrasoEfetivoMin, sqlAtrasoEfetivo, SQL_VEICULOS_EM_FAVELA, SQL_VEICULOS_SEM_ROMANEIO } from "./frescor-posicao";
+import { atrasoEfetivoMin, sqlAtrasoEfetivo, SQL_VEICULOS_EM_FAVELA, SQL_VEICULOS_SEM_ROMANEIO, veiculosFavelaDoCiclo } from "./frescor-posicao";
 
 // F1-15 (AC-01): posicoes_atuais.atraso_min e' o atraso que a Unitrac
 // informou NA ULTIMA LEITURA gravada. Quando o motor para de gravar o
@@ -61,5 +61,30 @@ describe("SQL_VEICULOS_SEM_ROMANEIO (romaneio_ausente)", () => {
   it("frescor pelo atraso efetivo e so' cliente ativo", () => {
     expect(SQL_VEICULOS_SEM_ROMANEIO).toContain(`${sqlAtrasoEfetivo("pa")} < $2`);
     expect(SQL_VEICULOS_SEM_ROMANEIO).toContain("c.ativo");
+  });
+});
+
+// Revisao F1-15 (R3): o dedupe de alerta de favela so' le alertas ativos de
+// clientesComSucesso. Cliente ATIVO cuja busca na Unitrac falhou no ciclo
+// (timeout da Nutry) continuava na SQL_VEICULOS_EM_FAVELA, ficava fora do
+// Map e ganhava um alerta 'favela' NOVO a cada 30 s (ate' 60 min).
+describe("veiculosFavelaDoCiclo", () => {
+  const NUTRY = "cli-nutry";
+  const RQ = "cli-rq";
+  const linhas = [
+    { veiculo_id: "v-nutry", cliente_id: NUTRY },
+    { veiculo_id: "v-rq", cliente_id: RQ },
+  ];
+
+  it("busca da Nutry deu timeout (clientesComSucesso = {RQ}): carro da Nutry em favela fica fora do ciclo", () => {
+    expect(veiculosFavelaDoCiclo(linhas, new Set([RQ])).map((v) => v.veiculo_id)).toEqual(["v-rq"]);
+  });
+
+  it("nenhum cliente com sucesso: nenhum carro em favela (nada de duplicar todos)", () => {
+    expect(veiculosFavelaDoCiclo(linhas, new Set())).toEqual([]);
+  });
+
+  it("todos com sucesso: nada muda", () => {
+    expect(veiculosFavelaDoCiclo(linhas, new Set([NUTRY, RQ]))).toEqual(linhas);
   });
 });

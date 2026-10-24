@@ -24,7 +24,7 @@ const RAIO_PRESENCA_PROPRIO_GEOCODE_M = 150;
 import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
-import { SQL_VEICULOS_EM_FAVELA } from "@/lib/frescor-posicao";
+import { SQL_VEICULOS_EM_FAVELA, veiculosFavelaDoCiclo } from "@/lib/frescor-posicao";
 import { RAIO_ESCALA_M } from "@/lib/escala-geocode";
 import {
   agruparAlvosPorPlaca,
@@ -4737,7 +4737,7 @@ export async function POST(request: Request) {
     {
       const pgClient = await pool.connect();
       try {
-        const { rows: veiculosEmFavela } = await pgClient.query<{
+        const { rows: veiculosEmFavelaTodos } = await pgClient.query<{
           veiculo_id: string;
           cliente_id: string;
           lat: number;
@@ -4751,6 +4751,10 @@ export async function POST(request: Request) {
           // -- ver src/lib/frescor-posicao.ts.
           SQL_VEICULOS_EM_FAVELA
         );
+        // Revisao F1-15 (R3): so' cliente processado neste ciclo -- o mesmo
+        // escopo do dedupe abaixo. Cliente cuja busca na Unitrac falhou
+        // ganhava alerta de favela duplicado a cada ciclo.
+        const veiculosEmFavela = veiculosFavelaDoCiclo(veiculosEmFavelaTodos, clientesComSucesso);
 
         // Alertas de favela ATIVOS de uma vez (1 query pra todo mundo, nao 1
         // maybeSingle() por veiculo em favela) — achado 07/07/2026 junto com
