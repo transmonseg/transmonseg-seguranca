@@ -363,7 +363,7 @@ export async function POST(request: Request) {
 
   let ok = 0;
   let falhou = 0;
-  const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe"; romaneio_data: string }[] = [];
+  const geocodificadosOk: { id: string; veiculo_id: string | null; placa: string; nf: string; lat: number; lng: number; fonte: "google" | "nominatim" | "local" | "cnefe" | "cnefe_similaridade"; romaneio_data: string }[] = [];
 
   let doCacheClienteCodigo = 0;
   // F2-04-c: resultados descartados porque a linha mudou enquanto o cron a processava.
@@ -480,7 +480,7 @@ export async function POST(request: Request) {
       // src/lib/unitrac.ts) -- um hit de cache e' reuso de um resultado
       // antigo, nao uma geocodificacao fresca, nao faz sentido competir
       // com a Unitrac de novo pra corrigir pontos_aprendidos.
-      if (linha.veiculo_id && !viaCacheClienteCodigo && (geocode.fonte === "google" || geocode.fonte === "nominatim" || geocode.fonte === "local" || geocode.fonte === "cnefe")) {
+      if (linha.veiculo_id && !viaCacheClienteCodigo && (geocode.fonte === "google" || geocode.fonte === "nominatim" || geocode.fonte === "local" || geocode.fonte === "cnefe" || geocode.fonte === "cnefe_similaridade")) {
         geocodificadosOk.push({ id: linha.id, veiculo_id: linha.veiculo_id, placa: linha.placa, nf: linha.nf, lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, romaneio_data: linha.romaneio_data });
       }
     } else {

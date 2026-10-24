@@ -78,7 +78,9 @@ function haversineM(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-const FONTES_GEOCODIFICADAS = new Set(["cnefe", "nominatim", "google", "local"]);
+// F4-11 (GEO-08): "cnefe_similaridade" e' o CNEFE por nome parecido (antes
+// gravado como "cnefe") -- continua geocodificacao, troca pelo dwell real.
+const FONTES_GEOCODIFICADAS = new Set(["cnefe", "cnefe_similaridade", "nominatim", "google", "local"]);
 
 // Extraida do loop original (ver Step 4) -- mesma logica de streak, so
 // que agora tambem acumula a posicao media real (lat/lng) da sequencia

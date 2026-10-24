@@ -287,7 +287,7 @@ export async function geocodificarCnefe(
   // precisa, aperta o teto de aceite do candidato SEM confirmacao de
   // CEP/bairro. Similaridade ja usa seu proprio teto estreito.
   precisaoBairro = false
-): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto; raioM: number } | null> {
+): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto; raioM: number; viaSimilaridade?: true } | null> {
   const rua = extrairRuaDoEndereco(enderecoBruto);
   const nomeNormalizado = normalizarNomeRua(rua);
   const numero = extrairNumeroDoEndereco(enderecoBruto);
@@ -349,7 +349,9 @@ export async function geocodificarCnefe(
 
   const porSimilaridade = await deps.buscarPorSimilaridade(nomeNormalizado, municipioCodigo);
   const similar = escolherCandidatoMaisProximo(porSimilaridade, pontoCidade, true, DISTANCIA_MAX_MATCH_SIMILARIDADE_M);
-  return similar ? { ...similar, precisao: "rua", raioM: 1000 } : null;
+  // F4-11 (GEO-08): marca a origem -- geocodificarEndereco grava
+  // fonte='cnefe_similaridade' (nome PARECIDO), nunca 'cnefe' (nome exato).
+  return similar ? { ...similar, precisao: "rua", raioM: 1000, viaSimilaridade: true } : null;
 }
 
 function deduplicarCandidatos(cands: CandidatoCnefe[]): CandidatoCnefe[] {
@@ -413,12 +415,16 @@ export async function geocodificarCnefePorBairro(
 // `precisao`/`raioM` (auditoria 20/10, GEO-01): so' o CNEFE informa por
 // enquanto. Serve pra frear conclusao NEGATIVA ("nao foi") sobre ponto
 // aproximado; `validado` continua como antes (nao derruba confirmacao).
-export type ResultadoGeocode = { lat: number; lng: number; fonte: "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_bairro"; validado: boolean; precisao?: PrecisaoPonto; raioM?: number } | null;
+// F4-11 (GEO-08): "cnefe_similaridade" = CNEFE por nome PARECIDO (pg_trgm),
+// separado de "cnefe" (nome exato da rua) para quem decide fonte protegida
+// (F4-03) e precedencia (F4-08) saber a diferenca.
+export type FonteGeocode = "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_similaridade" | "cnefe_bairro";
+export type ResultadoGeocode = { lat: number; lng: number; fonte: FonteGeocode; validado: boolean; precisao?: PrecisaoPonto; raioM?: number } | null;
 
 type Deps = {
   buscarCache: (chave: string) => Promise<{ lat: number; lng: number; fonte: string; validado?: boolean } | null>;
   salvarCache: (chave: string, r: { lat: number; lng: number; fonte: string; validado: boolean }) => Promise<void>;
-  geocodificarCnefeDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto; raioM?: number } | null>;
+  geocodificarCnefeDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto; raioM?: number; viaSimilaridade?: true } | null>;
   geocodificarLocalDep: (enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number } | null>;
   // Achado real 08/09 (auditoria KPI Nutry Max, 46 pendentes sem geocode --
   // rua nao existe em NENHUMA fonte, mas o BAIRRO existe no CNEFE com
@@ -487,7 +493,7 @@ export async function geocodificarEndereco(
   if (doCache) return {
     lat: doCache.lat,
     lng: doCache.lng,
-    fonte: doCache.fonte as "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_bairro",
+    fonte: doCache.fonte as FonteGeocode,
     validado: doCache.validado ?? true,
   };
 
@@ -499,8 +505,9 @@ export async function geocodificarEndereco(
   const cnefe = await deps.geocodificarCnefeDep(enderecoBruto, pontoCidade);
   if (cnefe) {
     avisarSemPontoCidade("cnefe", enderecoBruto, cnefe, pontoCidade);
-    await deps.salvarCache(chave, { lat: cnefe.lat, lng: cnefe.lng, fonte: "cnefe", validado: validadoCidade });
-    return { lat: cnefe.lat, lng: cnefe.lng, fonte: "cnefe", validado: validadoCidade, ...(cnefe.precisao ? { precisao: cnefe.precisao, raioM: cnefe.raioM } : {}) };
+    const fonteCnefe = cnefe.viaSimilaridade ? "cnefe_similaridade" : "cnefe";
+    await deps.salvarCache(chave, { lat: cnefe.lat, lng: cnefe.lng, fonte: fonteCnefe, validado: validadoCidade });
+    return { lat: cnefe.lat, lng: cnefe.lng, fonte: fonteCnefe, validado: validadoCidade, ...(cnefe.precisao ? { precisao: cnefe.precisao, raioM: cnefe.raioM } : {}) };
   }
 
   const local = await deps.geocodificarLocalDep(enderecoBruto, pontoCidade);

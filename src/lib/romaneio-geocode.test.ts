@@ -885,3 +885,82 @@ describe("geocodificarCnefe: tipo de logradouro nos fallbacks sem CEP (F2-14 GEO
     expect(r).toMatchObject({ lat: -22.485 });
   });
 });
+
+// F4-11 (GEO-08, plano mestre 23/10): a busca por similaridade (pg_trgm, nome
+// PARECIDO) gravava fonte='cnefe' com validado=true -- indistinguivel do CNEFE
+// por rua+numero. Caso real: "ESTRDA RIO PEQUENO, 656 - TAQUARA" (tipo com erro
+// de digitacao) nao bate por nome exato; a similaridade devolve a Estrada do Rio
+// Pequeno (cnefe_buscar_por_similaridade em producao, 24/10).
+describe("fonte cnefe_similaridade (F4-11 GEO-08)", () => {
+  const TAQUARA = { lat: -22.9205, lng: -43.3740 };
+  const SIMILARES = [
+    { lat: -22.915901, lng: -43.429531 },
+    { lat: -22.916123, lng: -43.430356 },
+    { lat: -22.915994, lng: -43.4295 },
+  ];
+  const END = "ESTRDA RIO PEQUENO, 656 - TAQUARA, RIO DE JANEIRO - HOSPITAL ESTADUAL SANTA MARIA";
+
+  it("geocodificarCnefe: o caminho da similaridade marca viaSimilaridade", async () => {
+    const r = await geocodificarCnefe(END, TAQUARA, "3304557", {
+      buscarPorRuaNumero: async () => [],
+      buscarPorRua: async () => [],
+      buscarPorSimilaridade: async () => SIMILARES,
+    });
+    expect(r).toMatchObject({ precisao: "rua", viaSimilaridade: true });
+  });
+
+  it("geocodificarCnefe: rua+numero exato nao marca viaSimilaridade", async () => {
+    const r = await geocodificarCnefe("RUA TIROL, 324 - FREGUESIA (JACAREPAGUÁ), RIO DE JANEIRO", { lat: -22.94, lng: -43.34 }, "3304557", {
+      buscarPorRuaNumero: async () => [{ lat: -22.941248, lng: -43.340245, numero: "324", cep: "22750009", localidade: "FREGUESIA", tipo: "RUA" }],
+      buscarPorRua: async () => [],
+      buscarPorSimilaridade: async () => [],
+    });
+    expect(r).toMatchObject({ precisao: "exato" });
+    expect(r).not.toHaveProperty("viaSimilaridade");
+  });
+
+  it("geocodificarEndereco: similaridade grava e devolve fonte cnefe_similaridade (validado continua pelo ponto de cidade)", async () => {
+    const salvarCache = vi.fn(async () => {});
+    const r = await geocodificarEndereco(END, TAQUARA, {
+      buscarCache: async () => null,
+      salvarCache,
+      geocodificarCnefeDep: (e, p) => geocodificarCnefe(e, p, "3304557", {
+        buscarPorRuaNumero: async () => [],
+        buscarPorRua: async () => [],
+        buscarPorSimilaridade: async () => SIMILARES,
+      }),
+      geocodificarLocalDep: async () => null,
+      geocodificarGoogle: async () => null,
+      geocodificarNominatim: async () => null,
+    });
+    expect(r).toMatchObject({ fonte: "cnefe_similaridade", validado: true, precisao: "rua" });
+    expect(r).not.toHaveProperty("viaSimilaridade");
+    expect(salvarCache).toHaveBeenCalledWith(normalizarEndereco(END), expect.objectContaining({ fonte: "cnefe_similaridade", validado: true }));
+  });
+
+  it("geocodificarEndereco: CNEFE por numero continua fonte cnefe", async () => {
+    const salvarCache = vi.fn(async () => {});
+    const r = await geocodificarEndereco("RUA TIROL, 324 - FREGUESIA (JACAREPAGUÁ), RIO DE JANEIRO", { lat: -22.94, lng: -43.34 }, {
+      buscarCache: async () => null,
+      salvarCache,
+      geocodificarCnefeDep: async () => ({ lat: -22.941248, lng: -43.340245, precisao: "exato", raioM: 30 }),
+      geocodificarLocalDep: async () => null,
+      geocodificarGoogle: async () => null,
+      geocodificarNominatim: async () => null,
+    });
+    expect(r).toMatchObject({ fonte: "cnefe", precisao: "exato" });
+    expect(salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ fonte: "cnefe" }));
+  });
+
+  it("cache com fonte cnefe_similaridade: devolve a fonte como esta' (nao vira cnefe)", async () => {
+    const r = await geocodificarEndereco(END, null, {
+      buscarCache: async () => ({ lat: -22.9159, lng: -43.4295, fonte: "cnefe_similaridade", validado: true }),
+      salvarCache: async () => {},
+      geocodificarCnefeDep: async () => null,
+      geocodificarLocalDep: async () => null,
+      geocodificarGoogle: async () => null,
+      geocodificarNominatim: async () => null,
+    });
+    expect(r).toMatchObject({ fonte: "cnefe_similaridade" });
+  });
+});

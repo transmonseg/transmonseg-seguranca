@@ -389,6 +389,15 @@ describe("deveCorrigirComRomaneio", () => {
     expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe")).toBe(true);
   });
 
+  // F4-11 (GEO-08): a similaridade do CNEFE ganhou fonte propria; a regra de
+  // correcao automatica de pontos_aprendidos nao muda (ela ja aceitava esse
+  // resultado quando ele saia como 'cnefe'). Politica por fonte fica no F4-08.
+  it("fonte=cnefe_similaridade segue a mesma regra de cnefe (comportamento de antes do GEO-08)", () => {
+    const romaneio = { lat: -22.9003, lng: -43.2 }; // ~33m
+    expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe_similaridade")).toBe(true);
+    expect(deveCorrigirComRomaneio(SP, romaneio, false, "cnefe_similaridade")).toBe(false);
+  });
+
   it("corrige com divergência grande, ainda dentro do teto de 20km (mesma ordem do pior caso legítimo documentado, 17km)", () => {
     const romaneio = { lat: -22.98, lng: -43.2 }; // ~8,9km
     expect(deveCorrigirComRomaneio(SP, romaneio, true, "cnefe")).toBe(true);

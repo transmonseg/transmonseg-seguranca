@@ -315,11 +315,13 @@ export function deveCorrigirComRomaneio(
   atual: { lat: number; lng: number },
   romaneio: { lat: number; lng: number },
   entregaConfirmada: boolean,
-  fonte: "google" | "nominatim" | "local" | "cnefe",
+  fonte: "google" | "nominatim" | "local" | "cnefe" | "cnefe_similaridade",
   opts?: { tetoM?: number }
 ): boolean {
   if (!entregaConfirmada) return false;
-  if (fonte !== "cnefe") return false;
+  // F4-11 (GEO-08): a similaridade do CNEFE ganhou fonte propria; aqui segue
+  // valendo como antes (saia como 'cnefe'). Politica por fonte: F4-08.
+  if (fonte !== "cnefe" && fonte !== "cnefe_similaridade") return false;
   const divergenciaM = haversineM(atual.lat, atual.lng, romaneio.lat, romaneio.lng);
   const teto = opts?.tetoM ?? CORRECAO_ROMANEIO_DIVERGENCIA_MAX_M;
   return divergenciaM > CORRECAO_ROMANEIO_DIVERGENCIA_MIN_M && divergenciaM <= teto;

@@ -118,6 +118,15 @@ describe("proximaEscritaCache", () => {
     expect(r).toEqual({ lat: REAL.lat, lng: REAL.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: false });
   });
 
+  // F4-11 (GEO-08): a similaridade do CNEFE passou a gravar a ancora com
+  // fonte 'cnefe_similaridade' -- continua sendo geocodificacao (troca pelo
+  // dwell real, n=1), nunca media com o dwell.
+  it("ancora com fonte cnefe_similaridade: corrige pra posicao real, n_observacoes=1 (igual a cnefe)", () => {
+    const existente = { lat: -22.9159, lng: -43.4295, fonte: "cnefe_similaridade", n_observacoes: 1 };
+    const r = proximaEscritaCache(existente, REAL);
+    expect(r).toEqual({ lat: REAL.lat, lng: REAL.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: false });
+  });
+
   it("ancora ja dwell_confirmado: faz media ponderada por n_observacoes, incrementa", () => {
     const existente = { lat: -22.90, lng: -43.20, fonte: "dwell_confirmado", n_observacoes: 2 };
     const r = proximaEscritaCache(existente, REAL);
