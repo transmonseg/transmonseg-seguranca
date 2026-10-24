@@ -36,8 +36,9 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, escolherPontoReferencia, normalizarEndereco } from "@/lib/romaneio-geocode";
-import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade, extrairRuaDoEndereco, normalizarNomeRua } from "@/lib/romaneio-geocode-local";
-import { validarTerritorio, type MotivoTerritorio } from "@/lib/territorio";
+import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade, extrairRuaDoEndereco, normalizarNomeRua, extrairNumeroDoEndereco } from "@/lib/romaneio-geocode-local";
+import { validarTerritorio, cepConfirmaPonto, type MotivoTerritorio } from "@/lib/territorio";
+import { extrairCepDoEndereco } from "@/lib/cnefe-escolha";
 import { montarDepsTerritorio } from "./territorio-deps";
 import { buscarSimilaridadeLimitada } from "@/lib/cnefe-similaridade-limitada";
 
@@ -430,10 +431,24 @@ export async function POST(request: Request) {
     let validado = geocode.validado;
     let motivo: MotivoTerritorio | undefined;
     if (validarTerritorioLigado) {
+      // F4-05 (GEO-14): ponto CNEFE exato com o numero e o CEP especifico do
+      // romaneio batendo (<= 300 m) nao reprova por bairro. Consulta so' quando
+      // o bairro ia reprovar (ver validarTerritorio).
+      const numeroRomaneio = extrairNumeroDoEndereco(enderecoBruto);
+      const cepRomaneio = extrairCepDoEndereco(enderecoBruto);
+      const ponto = { lat: geocode.lat, lng: geocode.lng };
+      const confirmacaoCep = geocode.fonte === "cnefe" && geocode.precisao === "exato" && numeroRomaneio && cepRomaneio
+        ? async () => cepConfirmaPonto(
+          ponto,
+          await buscarCnefePorRuaNumero(normalizarNomeRua(extrairRuaDoEndereco(enderecoBruto)), numeroRomaneio, municipioCodigo),
+          { numero: numeroRomaneio, cep: cepRomaneio },
+        )
+        : undefined;
       const t = await validarTerritorio(
-        { lat: geocode.lat, lng: geocode.lng },
+        ponto,
         { municipioCodigo, bairro },
         depsTerritorio,
+        confirmacaoCep,
       );
       if (!t.ok) {
         validado = false;

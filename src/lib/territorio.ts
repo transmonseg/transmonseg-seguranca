@@ -128,10 +128,58 @@ function normalizarBairro(s: string): string {
     .trim();
 }
 
+// F4-05 (GEO-14, plano mestre 23/10): o hull do bairro reprovava ponto EXATO
+// confirmado pelo CEP especifico -- "RUA JOSE GONCALVES REBOLLAS, 2411 -
+// BOCAININHA, BARRA MANSA - 27350-390" caiu no proprio 2411 do CNEFE, CEP
+// 27350390, que o Censo chama de SIDERLANDIA (1.330 m do hull de BOCAININHA).
+// O romaneio e o Censo dao nomes diferentes ao mesmo lugar. Regra: com o
+// numero da casa e o CEP especifico do romaneio batendo num endereco do CNEFE
+// a ate' 300 m do ponto, o bairro nao reprova (o municipio continua valendo).
+// So' numero exato: CEP de avenida inteira (HENRIQUE TERRA em Cabo Frio, CEP
+// 28911320 em 5 localidades) nao localiza ponto interpolado/trecho/rua, e S/N
+// nao tem numero pra bater. SAVIO COTA 595 (CEP 27281421 no romaneio, 27283527
+// no CNEFE) continua reprovado.
+export const RAIO_CEP_CONFIRMA_PONTO_M = 300;
+
+function cepEspecifico(cep: string | null | undefined): cep is string {
+  return !!cep && /^\d{8}$/.test(cep) && !cep.endsWith("000");
+}
+
+function numeroCasa(n: string | null | undefined): number | null {
+  const m = n ? String(n).match(/\d+/) : null;
+  if (!m) return null;
+  const v = Number(m[0]);
+  return v > 0 ? v : null;
+}
+
+function metrosEntre(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const rad = (x: number) => (x * Math.PI) / 180;
+  const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2
+    + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lng - a.lng) / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(h));
+}
+
+/** O ponto esta' a <= 300 m de um endereco do CNEFE com o MESMO numero da casa
+ *  e o MESMO CEP especifico do romaneio? (candidatos = CNEFE da rua+numero). */
+export function cepConfirmaPonto(
+  ponto: { lat: number; lng: number },
+  candidatos: { lat: number; lng: number; numero?: string | null; cep?: string | null }[],
+  alvo: { numero: string | null; cep: string | null },
+): boolean {
+  const cep = alvo.cep?.replace(/\D/g, "") ?? null;
+  const numero = numeroCasa(alvo.numero);
+  if (!cepEspecifico(cep) || numero == null) return false;
+  return candidatos.some((c) => c.cep === cep && numeroCasa(c.numero) === numero
+    && metrosEntre(ponto, c) <= RAIO_CEP_CONFIRMA_PONTO_M);
+}
+
 export async function validarTerritorio(
   ponto: { lat: number; lng: number },
   esperado: { municipioCodigo: string | null; bairro: string | null },
   deps: DepsTerritorio,
+  // F4-05: consultada so' quando o bairro ia reprovar. Erro = reprova como
+  // antes (nunca aprova no escuro). Sem ela (cache, outros chamadores): igual antes.
+  confirmacaoCep?: () => Promise<boolean>,
 ): Promise<ResultadoTerritorio> {
   if (esperado.municipioCodigo) {
     let real: string | null;
@@ -168,6 +216,13 @@ export async function validarTerritorio(
       return { ok: true };
     }
     if (distanciaM !== null && distanciaM > LIMIAR_DISTANCIA_BAIRRO_M) {
+      if (confirmacaoCep) {
+        try {
+          if (await confirmacaoCep()) return { ok: true };
+        } catch (err) {
+          console.error("[validarTerritorio] confirmacao pelo CEP falhou -- mantendo a reprovacao por bairro", err);
+        }
+      }
       return { ok: false, motivo: "bairro_divergente" };
     }
   }
