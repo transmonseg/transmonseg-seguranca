@@ -1,0 +1,23 @@
+# F4-02 (OPS-08 parte 2): rotacao do log do cron confirmar-presenca-romaneio
+# (15,9 MB em 24/10, so' crescia).
+#
+# Instalar (PENDENTE DONO, no servidor transmonseg-vps, como root):
+#   cp scripts/ops/logrotate.d/confirmar-presenca-romaneio /etc/logrotate.d/confirmar-presenca-romaneio
+#   chmod 644 /etc/logrotate.d/confirmar-presenca-romaneio
+#   logrotate -d /etc/logrotate.d/confirmar-presenca-romaneio   # simula, nao mexe em nada
+# Verificar no dia seguinte: ls -la /var/log/confirmar-presenca-romaneio.log*
+# Rollback: rm /etc/logrotate.d/confirmar-presenca-romaneio
+#
+# copytruncate porque o cron abre o arquivo com ">>" a cada 5 min (nao ha
+# processo para sinalizar). 14 dias comprimidos bastam para auditar o
+# "dia=" do log contra romaneio_data (F2-10) e a contagem de "Confirmado".
+/var/log/confirmar-presenca-romaneio.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    maxsize 20M
+}

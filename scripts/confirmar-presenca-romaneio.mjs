@@ -46,7 +46,7 @@ const DATABASE_URL =
 // relatorio Unitrac mostra parada na rua, fora do raio do cliente). Subido
 // pra 500m (RAIO_PRESENCA_MIN_M em motor/route.ts), decoupled do piso de
 // SUPRESSAO DE DESVIO (RAIO_CHEGADA_MIN_M em unitrac.ts, fica em 300m).
-const RAIO_PADRAO_M = 500;
+export const RAIO_PADRAO_M = 500;
 // Achado real 30/08 (auditoria dos 396 pendentes de 29/08, bucket 500m-2km):
 // 27% (40 de 150) sao o MESMO caminhao fazendo UMA parada real que serve
 // VARIOS clientes vizinhos (caso mais claro: TTM-2G02 entregando 4 pontos
@@ -64,13 +64,13 @@ const RAIO_PADRAO_M = 500;
 // do vizinho nao e o local real DESTE cliente -- so serve pra tirar do
 // pendente/mapa, nunca pra aprender geocode errado).
 const RAIO_VIZINHANCA_M = 800;
-const DWELL_MINIMO_SEGUNDOS = 120;
-const VELOCIDADE_MAX_PARADO_KMH = 5;
+export const DWELL_MINIMO_SEGUNDOS = 120;
+export const VELOCIDADE_MAX_PARADO_KMH = 5;
 // So processa romaneios dos ultimos N dias -- historico antigo ja teve
 // tempo de ser confirmado (ou nao vai ser, se o caminhao nunca passou la).
 const JANELA_DIAS = 3;
 
-function haversineM(lat1, lng1, lat2, lng2) {
+export function haversineM(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const p1 = (lat1 * Math.PI) / 180, p2 = (lat2 * Math.PI) / 180;
   const dp = ((lat2 - lat1) * Math.PI) / 180, dl = ((lng2 - lng1) * Math.PI) / 180;
@@ -80,7 +80,15 @@ function haversineM(lat1, lng1, lat2, lng2) {
 
 // F4-11 (GEO-08): "cnefe_similaridade" e' o CNEFE por nome parecido (antes
 // gravado como "cnefe") -- continua geocodificacao, troca pelo dwell real.
-const FONTES_GEOCODIFICADAS = new Set(["cnefe", "cnefe_similaridade", "nominatim", "google", "local"]);
+// F4-02 (GEO-29), achado 23/10: faltavam photon, photon_rua e
+// unitrac_aprendido (e cnefe_bairro, que a cascata tambem grava). A ancora
+// dessas fontes caia no ramo de MEDIA com o dwell e nascia "dwell n=2" no
+// mesmo dia (RQ: 2.824 de 3.590 ancoras n>=2; Nutry: 713 com n=2 e
+// primeira=ultima observacao) -- metade texto, metade parada real.
+export const FONTES_GEOCODIFICADAS = new Set([
+  "cnefe", "cnefe_similaridade", "cnefe_bairro", "nominatim", "google", "local",
+  "photon", "photon_rua", "unitrac_aprendido",
+]);
 
 // Extraida do loop original (ver Step 4) -- mesma logica de streak, so
 // que agora tambem acumula a posicao media real (lat/lng) da sequencia
@@ -157,18 +165,30 @@ export function normalizarEnderecoChave(enderecoBruto) {
 // ancora existente. Vale como cinto de seguranca do rechaveamento -- foi
 // exatamente esse ramo de media que produziu a coordenada envenenada da
 // NUTRIMED (~60km de qualquer endereco real, ver migration 069).
-const DIVERGENCIA_MAX_M = 2000;
+export const DIVERGENCIA_MAX_M = 2000;
 
 // Decide a proxima escrita em romaneio_cliente_codigo_geocode dado o
 // estado atual (null se a linha nao existe ainda) e a posicao real
 // confirmada por dwell. Ver design doc, secao "Decisao", item 3.
 // Retorna null quando a decisao e NAO escrever.
-export function proximaEscritaCache(existente, posicaoReal) {
+//
+// F4-02: `dia` e' o dia do romaneio (YYYY-MM-DD). n_observacoes passa a
+// contar DIAS com parada real: so' soma quando o dia e' posterior a
+// ultima_observacao (duas NFs do mesmo cliente no mesmo dia, ou a mesma NF
+// recontada, sao UMA observacao). Fonte que nao e' geocodificacao nem
+// dwell (manual, verificacao_manual, cadastro_unitrac... -- D-34: manual >
+// cadastro Unitrac com parada > dwell) nunca e' tocada pelo dwell, e fonte
+// desconhecida tambem nao (antes caia na media e virava "dwell n=2").
+export function proximaEscritaCache(existente, posicaoReal, dia) {
   if (existente === null) {
     return { lat: posicaoReal.lat, lng: posicaoReal.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: true };
   }
   if (FONTES_GEOCODIFICADAS.has(existente.fonte)) {
     return { lat: posicaoReal.lat, lng: posicaoReal.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: false };
+  }
+  if (existente.fonte !== "dwell_confirmado") return null;
+  if (dia && existente.ultima_observacao && String(existente.ultima_observacao).slice(0, 10) >= dia) {
+    return null;
   }
   // ja e dwell_confirmado -- media ponderada, mas so se for o mesmo lugar
   if (haversineM(existente.lat, existente.lng, posicaoReal.lat, posicaoReal.lng) > DIVERGENCIA_MAX_M) {
@@ -216,7 +236,32 @@ export const SQL_PENDENTES = `SELECT id, veiculo_id, nf, romaneio_data::text AS 
       WHERE presenca_confirmada_em IS NULL
         AND lat IS NOT NULL AND lng IS NOT NULL
         AND romaneio_data >= current_date - $1::int
-        AND romaneio_data <= current_date + 1`;
+        AND romaneio_data <= current_date + 1
+      ORDER BY romaneio_data, id`;
+
+// F4-02 (OPS-08 parte 2): a trilha filtrava `(criado_em AT TIME ZONE
+// 'America/Sao_Paulo')::date = $2` -- a expressao em cima da coluna nao usa a
+// faixa de tempo do indice (veiculo_id, criado_em): lia TODO o historico do
+// veiculo (medido 24/10: 224.628 linhas, 3,5 s, para devolver 2.840) e eram
+// ~600 ms por chamada, ~85 h de banco somadas. A faixa [00:00, 24:00) do dia
+// em BRT devolve exatamente as mesmas linhas (2.840 = 2.840) em ~14 ms.
+export const SQL_TRILHA = `SELECT lat, lng, velocidade, criado_em FROM posicoes_historico
+        WHERE veiculo_id = $1
+          AND criado_em >= ($2::date::timestamp AT TIME ZONE 'America/Sao_Paulo')
+          AND criado_em <  (($2::date + 1)::timestamp AT TIME ZONE 'America/Sao_Paulo')
+        ORDER BY criado_em ASC`;
+export function paramsTrilha(veiculoId, dia) {
+  return [veiculoId, dia];
+}
+
+// F4-02: na RQ o cliente_codigo e' a propria NF (21.118 de 21.118 linhas em
+// 24/10) -- cada ancora nasce e nunca e' reaproveitada (~2 mil/dia). Ate o
+// F4-09 trazer um codigo de cliente estavel, nao grava ancora quando o
+// codigo e' a NF. A presenca continua sendo confirmada normalmente.
+export function deveGravarAncora(p) {
+  if (p.cliente_codigo == null || String(p.cliente_codigo).trim() === "") return false;
+  return String(p.cliente_codigo).trim() !== String(p.nf ?? "").trim();
+}
 
 // F2-10: metodo da presenca ("dwell" = parada no proprio endereco;
 // "vizinhanca" = emprestada de outro ponto confirmado do mesmo romaneio).
@@ -235,6 +280,65 @@ export function sqlMarcarPresenca(id, metodo, temColunaMetodo) {
     sql: `UPDATE romaneio_pontos SET presenca_confirmada_em = now() WHERE id = $1 AND presenca_confirmada_em IS NULL`,
     params: [id],
   };
+}
+
+// F4-02 (GEO-29): confirma a presenca por dwell e, SO' se o UPDATE afetou a
+// linha, grava a ancora -- antes a ancora era gravada mesmo quando outra
+// execucao ja tinha confirmado o ponto (UPDATE com 0 linhas), e a mesma
+// observacao entrava de novo na media (47% dos NF-dias "Confirmado" mais de
+// uma vez no log). A ancora e' lida DENTRO da transacao, com FOR UPDATE.
+// `ancora` = { clienteId, clienteCodigo, enderecoChave, posicaoReal, dia }
+// ou null (sem codigo/endereco, ou RQ com codigo = NF).
+export async function confirmarDwell(client, { id, temColunaMetodo, ancora }) {
+  await client.query("BEGIN");
+  try {
+    const marcar = sqlMarcarPresenca(id, "dwell", temColunaMetodo);
+    const res = await client.query(marcar.sql, marcar.params);
+    if (res.rowCount !== 1) {
+      await client.query("ROLLBACK");
+      return { confirmado: false, proxima: null, existente: null };
+    }
+    let proxima = null;
+    let existente = null;
+    if (ancora) {
+      const { rows } = await client.query(
+        `SELECT lat, lng, fonte, n_observacoes, ultima_observacao::text AS ultima_observacao
+           FROM romaneio_cliente_codigo_geocode
+          WHERE cliente_id = $1 AND cliente_codigo = $2 AND endereco_chave = $3
+          FOR UPDATE`,
+        [ancora.clienteId, ancora.clienteCodigo, ancora.enderecoChave]
+      );
+      existente = rows[0] ?? null;
+      proxima = proximaEscritaCache(existente, ancora.posicaoReal, ancora.dia);
+      if (proxima) {
+        await client.query(
+          `INSERT INTO romaneio_cliente_codigo_geocode (cliente_id, cliente_codigo, endereco_chave, lat, lng, fonte, n_observacoes, primeira_observacao, ultima_observacao)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $8::date)
+           ON CONFLICT (cliente_id, cliente_codigo, endereco_chave) DO UPDATE SET
+             lat = EXCLUDED.lat, lng = EXCLUDED.lng, fonte = EXCLUDED.fonte,
+             n_observacoes = EXCLUDED.n_observacoes,
+             ultima_observacao = GREATEST(romaneio_cliente_codigo_geocode.ultima_observacao, EXCLUDED.ultima_observacao)`,
+          [ancora.clienteId, ancora.clienteCodigo, ancora.enderecoChave, proxima.lat, proxima.lng, proxima.fonte, proxima.n_observacoes, ancora.dia]
+        );
+      }
+    }
+    await client.query("COMMIT");
+    return { confirmado: true, proxima, existente };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  }
+}
+
+function sufixoDaAncora(ancora, existente, proxima) {
+  if (!ancora) return "";
+  if (proxima === null) {
+    if (existente && existente.fonte === "dwell_confirmado") return " [cache: dia ja contado ou divergencia >2km, nao gravado]";
+    return ` [cache: fonte ${existente?.fonte ?? "?"} protegida, nao gravado]`;
+  }
+  if (proxima.novaLinha) return " [cache: nova ancora]";
+  if (existente && existente.fonte === "dwell_confirmado") return ` [cache: media atualizada, n=${proxima.n_observacoes}]`;
+  return " [cache: corrigido de geocodificacao pra dwell real]";
 }
 
 const DRY_RUN = process.argv.includes("--dry-run");
@@ -273,13 +377,7 @@ async function main() {
   async function trilhaDoDia(veiculoId, dia) {
     const chave = `${veiculoId}:${dia}`;
     if (trilhaPorChave.has(chave)) return trilhaPorChave.get(chave);
-    const { rows } = await pool.query(
-      `SELECT lat, lng, velocidade, criado_em FROM posicoes_historico
-        WHERE veiculo_id = $1
-          AND (criado_em AT TIME ZONE 'America/Sao_Paulo')::date = $2::date
-        ORDER BY criado_em ASC`,
-      [veiculoId, dia]
-    );
+    const { rows } = await pool.query(SQL_TRILHA, paramsTrilha(veiculoId, dia));
     trilhaPorChave.set(chave, rows);
     return rows;
   }
@@ -338,8 +436,6 @@ async function main() {
     );
 
     if (dwellMaxS >= DWELL_MINIMO_SEGUNDOS && posicaoReal !== null) {
-      let sufixoCache = "";
-      let proxima = null;
       const clienteId = clienteIdPorVeiculo.get(p.veiculo_id);
       // Chave do cache inclui o endereco desde a migration 069 -- um mesmo
       // cliente_codigo pode entregar em N enderecos reais diferentes (caso
@@ -347,51 +443,34 @@ async function main() {
       // todos compartilhavam a MESMA linha, virando media entre lugares
       // distintos.
       const enderecoChave = normalizarEnderecoChave(p.endereco_bruto);
-      if (clienteId && p.cliente_codigo && enderecoChave) {
-        const { rows: cacheRows } = await pool.query(
-          `SELECT lat, lng, fonte, n_observacoes FROM romaneio_cliente_codigo_geocode WHERE cliente_id = $1 AND cliente_codigo = $2 AND endereco_chave = $3`,
-          [clienteId, p.cliente_codigo, enderecoChave]
-        );
-        const existente = cacheRows[0] ?? null;
-        proxima = proximaEscritaCache(existente, posicaoReal);
-        sufixoCache = proxima === null
-          ? " [cache: divergencia >2km da ancora, nao gravado]"
-          : proxima.novaLinha ? " [cache: nova ancora]" : existente && existente.fonte === "dwell_confirmado" ? ` [cache: media atualizada, n=${proxima.n_observacoes}]` : " [cache: corrigido de geocodificacao pra dwell real]";
-      }
+      const ancora = clienteId && enderecoChave && deveGravarAncora(p)
+        ? { clienteId, clienteCodigo: p.cliente_codigo, enderecoChave, posicaoReal, dia: diaISO }
+        : null;
 
-      // As 2 escritas (upsert do cache + update de presenca) precisam
-      // acontecer juntas, numa transacao -- se o processo morresse entre
-      // uma e outra (2 pool.query() separadas, sem transacao), o proximo
-      // ciclo reprocessaria este ponto (presenca_confirmada_em ainda NULL),
-      // recalcularia a MESMA posicaoReal, e chamaria proximaEscritaCache de
-      // novo -- so que agora existente.fonte ja seria "dwell_confirmado"
-      // (da escrita anterior que teve sucesso), caindo no ramo de media
-      // ponderada CONTRA SI MESMA (mesma trilha, mesmo dado), inflando
-      // n_observacoes por uma unica observacao fisica real. BEGIN/COMMIT
-      // garantem que ou as duas escritas acontecem juntas, ou nenhuma.
+      // Presenca + ancora numa transacao so' (ver confirmarDwell): ou as
+      // duas acontecem juntas, ou nenhuma -- e a ancora so' quando o UPDATE
+      // da presenca afetou a linha (F4-02).
+      let sufixoCache = "";
       if (!DRY_RUN) {
         const client = await pool.connect();
+        let r;
         try {
-          await client.query("BEGIN");
-          if (proxima) {
-            await client.query(
-              `INSERT INTO romaneio_cliente_codigo_geocode (cliente_id, cliente_codigo, endereco_chave, lat, lng, fonte, n_observacoes, primeira_observacao, ultima_observacao)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, current_date, current_date)
-               ON CONFLICT (cliente_id, cliente_codigo, endereco_chave) DO UPDATE SET
-                 lat = EXCLUDED.lat, lng = EXCLUDED.lng, fonte = EXCLUDED.fonte,
-                 n_observacoes = EXCLUDED.n_observacoes, ultima_observacao = current_date`,
-              [clienteId, p.cliente_codigo, enderecoChave, proxima.lat, proxima.lng, proxima.fonte, proxima.n_observacoes]
-            );
-          }
-          const marcar = sqlMarcarPresenca(p.id, "dwell", temColunaMetodo);
-          await client.query(marcar.sql, marcar.params);
-          await client.query("COMMIT");
-        } catch (err) {
-          await client.query("ROLLBACK");
-          throw err;
+          r = await confirmarDwell(client, { id: p.id, temColunaMetodo, ancora });
         } finally {
           client.release();
         }
+        if (!r.confirmado) {
+          console.log(`Ja confirmado por outra execucao: veiculo=${p.veiculo_id} nf=${p.nf} dia=${diaISO} (ancora nao gravada)`);
+          continue;
+        }
+        sufixoCache = sufixoDaAncora(ancora, r.existente, r.proxima);
+      } else if (ancora) {
+        const { rows: cacheRows } = await pool.query(
+          `SELECT lat, lng, fonte, n_observacoes, ultima_observacao::text AS ultima_observacao FROM romaneio_cliente_codigo_geocode WHERE cliente_id = $1 AND cliente_codigo = $2 AND endereco_chave = $3`,
+          [clienteId, p.cliente_codigo, enderecoChave]
+        );
+        const existente = cacheRows[0] ?? null;
+        sufixoCache = sufixoDaAncora(ancora, existente, proximaEscritaCache(existente, posicaoReal, diaISO));
       }
       confirmados++;
       registrarConfirmado(p.veiculo_id, diaISO, p.lat, p.lng);
@@ -418,7 +497,9 @@ async function main() {
     // corromperia o geocode aprendido dele (ver comentario da constante).
     if (!DRY_RUN) {
       const marcar = sqlMarcarPresenca(p.id, "vizinhanca", temColunaMetodo);
-      await pool.query(marcar.sql, marcar.params);
+      const res = await pool.query(marcar.sql, marcar.params);
+      // F4-02: outra execucao ja confirmou -- nao conta de novo no log.
+      if (res.rowCount !== 1) continue;
     }
     confirmadosVizinhanca++;
     registrarConfirmado(p.veiculo_id, diaISO, p.lat, p.lng);

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import pg from "pg";
-import { calcularStreakMaximoComPosicao, proximaEscritaCache, distanciaVizinhoConfirmadoMaisProximo, normalizarEnderecoChave, diaDoRomaneio, SQL_PENDENTES, sqlMarcarPresenca } from "./confirmar-presenca-romaneio.mjs";
+import { calcularStreakMaximoComPosicao, proximaEscritaCache, distanciaVizinhoConfirmadoMaisProximo, normalizarEnderecoChave, diaDoRomaneio, SQL_PENDENTES, sqlMarcarPresenca, SQL_TRILHA, paramsTrilha, deveGravarAncora, confirmarDwell } from "./confirmar-presenca-romaneio.mjs";
 
 describe("calcularStreakMaximoComPosicao", () => {
   const PONTO = { lat: -22.9, lng: -43.2 };
@@ -246,5 +246,144 @@ describe("sqlMarcarPresenca (F2-10: metodo da presenca)", () => {
 
   it("metodo desconhecido e' erro (nunca grava texto livre)", () => {
     expect(() => sqlMarcarPresenca("id-1", "chute", true)).toThrow();
+  });
+});
+
+// F4-02 (GEO-29): dwell do motor confiavel. Achado 23/10: FONTES_GEOCODIFICADAS
+// nao tinha photon, photon_rua nem unitrac_aprendido -- a ancora geocodificada
+// por essas fontes caia no ramo de MEDIA com o dwell e nascia dwell n=2 no
+// mesmo dia (RQ: 2.824 de 3.590 ancoras n>=2; Nutry: 713 com n=2 e
+// primeira=ultima observacao).
+describe("proximaEscritaCache (F4-02: fontes geocodificadas e dia novo)", () => {
+  // Caso real (Nutry, cliente 152619): ancora photon "CPO SALINAS, S/N -
+  // TERCEIRO, NOVA FRIBURGO"; parada real ~300 m dali.
+  const PHOTON_SALINAS = { lat: -22.3207663, lng: -42.6521455, fonte: "photon", n_observacoes: 1, ultima_observacao: "2026-10-20" };
+  const PARADA = { lat: -22.3234, lng: -42.6530 };
+
+  for (const fonte of ["photon", "photon_rua", "unitrac_aprendido", "cnefe_bairro"]) {
+    it(`ancora ${fonte}: troca pelo dwell real com n=1 (nunca media geocode+dwell como n=2)`, () => {
+      const r = proximaEscritaCache({ ...PHOTON_SALINAS, fonte }, PARADA, "2026-10-23");
+      expect(r).toEqual({ lat: PARADA.lat, lng: PARADA.lng, fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: false });
+    });
+  }
+
+  it("ancora de fonte protegida (manual) nunca e' sobrescrita pelo dwell (D-34: manual > dwell)", () => {
+    expect(proximaEscritaCache({ ...PHOTON_SALINAS, fonte: "manual" }, PARADA, "2026-10-23")).toBeNull();
+  });
+
+  it("fonte desconhecida nao entra na media (nao vira dwell n=2 por engano)", () => {
+    expect(proximaEscritaCache({ ...PHOTON_SALINAS, fonte: "fonte_nova_qualquer" }, PARADA, "2026-10-23")).toBeNull();
+  });
+
+  // Caso real (Nutry, cliente 165601, "RUA 10, 749 - NOVA CAMPINAS, DUQUE DE
+  // CAXIAS"): ancora dwell n=2 com primeira=ultima=2026-10-23 -- duas
+  // contagens no MESMO dia nao sao duas observacoes.
+  it("dwell ja observado no MESMO dia do romaneio: nao conta de novo (n fica)", () => {
+    const existente = { lat: -22.64605, lng: -43.248743, fonte: "dwell_confirmado", n_observacoes: 1, ultima_observacao: "2026-10-23" };
+    expect(proximaEscritaCache(existente, { lat: -22.6461, lng: -43.2488 }, "2026-10-23")).toBeNull();
+  });
+
+  it("romaneio de dia ANTERIOR ao ultimo observado (confirmacao atrasada): nao conta (so' dia novo soma)", () => {
+    const existente = { lat: -22.64605, lng: -43.248743, fonte: "dwell_confirmado", n_observacoes: 1, ultima_observacao: "2026-10-23" };
+    expect(proximaEscritaCache(existente, { lat: -22.6461, lng: -43.2488 }, "2026-10-22")).toBeNull();
+  });
+
+  it("dwell em dia NOVO: media e n+1", () => {
+    const existente = { lat: -22.64605, lng: -43.248743, fonte: "dwell_confirmado", n_observacoes: 1, ultima_observacao: "2026-10-22" };
+    const r = proximaEscritaCache(existente, { lat: -22.6461, lng: -43.2488 }, "2026-10-23");
+    expect(r.n_observacoes).toBe(2);
+    expect(r.fonte).toBe("dwell_confirmado");
+  });
+});
+
+describe("deveGravarAncora (F4-02: RQ com cliente_codigo = NF)", () => {
+  // Caso real RQ 22/10: NF 6077117, cliente_codigo 6077117, "RUA JOAO XAVIER,
+  // PETROPOLIS - RJ" -- ancora dwell n=2 nascida no mesmo dia e nunca
+  // reaproveitada (o codigo e' a propria NF). Ate o F4-09, nao grava.
+  it("cliente_codigo igual a NF: nao grava ancora", () => {
+    expect(deveGravarAncora({ nf: "6077117", cliente_codigo: "6077117" })).toBe(false);
+  });
+  it("Nutry (codigo do cliente de verdade): grava", () => {
+    expect(deveGravarAncora({ nf: "2442557", cliente_codigo: "165601" })).toBe(true);
+  });
+  it("sem codigo: nao grava", () => {
+    expect(deveGravarAncora({ nf: "2442557", cliente_codigo: null })).toBe(false);
+  });
+});
+
+describe("SQL_TRILHA (F4-02: faixa de criado_em, usa o indice veiculo+tempo)", () => {
+  it("filtra por faixa de criado_em no dia BRT, sem ::date em cima da coluna", () => {
+    expect(SQL_TRILHA).toMatch(/criado_em\s*>=/);
+    expect(SQL_TRILHA).toMatch(/criado_em\s*</);
+    expect(SQL_TRILHA).toMatch(/America\/Sao_Paulo/);
+    expect(SQL_TRILHA).not.toMatch(/\(criado_em AT TIME ZONE[^)]*\)::date/);
+  });
+  it("parametros: veiculo e dia do romaneio", () => {
+    expect(paramsTrilha("v-1", "2026-10-23")).toEqual(["v-1", "2026-10-23"]);
+  });
+});
+
+describe("SQL_PENDENTES (F4-02: ordem cronologica)", () => {
+  it("processa do romaneio mais antigo ao mais novo (dia novo soma, dia velho nao)", () => {
+    expect(SQL_PENDENTES).toMatch(/ORDER BY romaneio_data/i);
+  });
+});
+
+// Cliente pg falso: registra as consultas e responde o UPDATE com rowCount.
+function clienteFalso({ rowCountUpdate, existente = null }) {
+  const consultas = [];
+  return {
+    consultas,
+    async query(sql, params) {
+      consultas.push({ sql: sql.trim().split(/\s+/).slice(0, 2).join(" "), params });
+      if (/^UPDATE romaneio_pontos/.test(sql.trim())) return { rowCount: rowCountUpdate, rows: [] };
+      if (/^SELECT/.test(sql.trim())) return { rowCount: existente ? 1 : 0, rows: existente ? [existente] : [] };
+      return { rowCount: 0, rows: [] };
+    },
+  };
+}
+
+describe("confirmarDwell (F4-02: ancora so' quando o UPDATE confirmou de fato)", () => {
+  const ANCORA = { clienteId: "cfcb52f5", clienteCodigo: "165601", enderecoChave: "RUA 10, 749 - NOVA CAMPINAS, DUQUE DE CAXIAS - * - 25268-090", posicaoReal: { lat: -22.6461, lng: -43.2488 }, dia: "2026-10-23" };
+
+  it("UPDATE com 0 linhas (outra execucao ja confirmou): ROLLBACK e nenhuma ancora", async () => {
+    const c = clienteFalso({ rowCountUpdate: 0 });
+    const r = await confirmarDwell(c, { id: "p1", temColunaMetodo: true, ancora: ANCORA });
+    expect(r.confirmado).toBe(false);
+    expect(c.consultas.some((q) => q.sql.startsWith("INSERT"))).toBe(false);
+    expect(c.consultas.map((q) => q.sql)).toContain("ROLLBACK");
+    expect(c.consultas.map((q) => q.sql)).not.toContain("COMMIT");
+  });
+
+  it("UPDATE com 1 linha: grava a ancora com o dia do romaneio e faz COMMIT", async () => {
+    const c = clienteFalso({ rowCountUpdate: 1 });
+    const r = await confirmarDwell(c, { id: "p1", temColunaMetodo: true, ancora: ANCORA });
+    expect(r.confirmado).toBe(true);
+    expect(r.proxima).toMatchObject({ fonte: "dwell_confirmado", n_observacoes: 1, novaLinha: true });
+    const ins = c.consultas.find((q) => q.sql.startsWith("INSERT"));
+    expect(ins.params).toContain("2026-10-23");
+    expect(c.consultas.at(-1).sql).toBe("COMMIT");
+  });
+
+  it("o UPDATE de presenca vem ANTES de qualquer leitura/escrita da ancora", async () => {
+    const c = clienteFalso({ rowCountUpdate: 1 });
+    await confirmarDwell(c, { id: "p1", temColunaMetodo: true, ancora: ANCORA });
+    const seq = c.consultas.map((q) => q.sql);
+    expect(seq.indexOf("UPDATE romaneio_pontos")).toBeLessThan(seq.findIndex((s) => s.startsWith("SELECT")));
+  });
+
+  it("sem ancora (RQ): so' confirma a presenca", async () => {
+    const c = clienteFalso({ rowCountUpdate: 1 });
+    const r = await confirmarDwell(c, { id: "p1", temColunaMetodo: true, ancora: null });
+    expect(r.confirmado).toBe(true);
+    expect(c.consultas.some((q) => q.sql.startsWith("INSERT") || q.sql.startsWith("SELECT"))).toBe(false);
+  });
+
+  it("dwell no mesmo dia ja contado: confirma presenca, nao regrava ancora", async () => {
+    const c = clienteFalso({ rowCountUpdate: 1, existente: { lat: -22.64605, lng: -43.248743, fonte: "dwell_confirmado", n_observacoes: 2, ultima_observacao: "2026-10-23" } });
+    const r = await confirmarDwell(c, { id: "p1", temColunaMetodo: true, ancora: ANCORA });
+    expect(r.confirmado).toBe(true);
+    expect(r.proxima).toBeNull();
+    expect(c.consultas.some((q) => q.sql.startsWith("INSERT"))).toBe(false);
   });
 });
