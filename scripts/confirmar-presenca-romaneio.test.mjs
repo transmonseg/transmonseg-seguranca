@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { calcularStreakMaximoComPosicao, proximaEscritaCache, distanciaVizinhoConfirmadoMaisProximo, normalizarEnderecoChave } from "./confirmar-presenca-romaneio.mjs";
+import { describe, it, expect, afterEach } from "vitest";
+import pg from "pg";
+import { calcularStreakMaximoComPosicao, proximaEscritaCache, distanciaVizinhoConfirmadoMaisProximo, normalizarEnderecoChave, diaDoRomaneio, SQL_PENDENTES, sqlMarcarPresenca } from "./confirmar-presenca-romaneio.mjs";
 
 describe("calcularStreakMaximoComPosicao", () => {
   const PONTO = { lat: -22.9, lng: -43.2 };
@@ -177,5 +178,64 @@ describe("normalizarEnderecoChave", () => {
   it("endereco nulo/vazio vira string vazia (chamador nao grava cache nesse caso)", () => {
     expect(normalizarEnderecoChave(null)).toBe("");
     expect(normalizarEnderecoChave("   ")).toBe("");
+  });
+});
+
+// F2-10 (MON-07) -- achado 23/10: o servidor roda em Europe/Berlin (CEST) e o
+// node-pg transforma a coluna DATE em Date na MEIA-NOITE LOCAL; o
+// `toISOString().slice(0, 10)` devolvia o dia ANTERIOR (234 de 400 linhas do
+// log com dia=22 para romaneio de 23). A vizinhanca entao corroborava a NF
+// pendente de hoje com as confirmacoes de ONTEM do mesmo veiculo.
+// A correcao tem que valer em qualquer fuso (o crontab vai mudar de fuso, F0-06).
+describe("diaDoRomaneio (F2-10)", () => {
+  const parserDate = pg.types.getTypeParser(1082, "text");
+  const tzOriginal = process.env.TZ;
+  afterEach(() => {
+    if (tzOriginal === undefined) delete process.env.TZ; else process.env.TZ = tzOriginal;
+  });
+
+  for (const tz of ["Europe/Berlin", "America/Sao_Paulo", "UTC"]) {
+    it(`DATE lido pelo pg (Date local) da' o dia certo com TZ=${tz}`, () => {
+      process.env.TZ = tz;
+      const valorDoPg = parserDate("2026-10-23");
+      expect(diaDoRomaneio(valorDoPg)).toBe("2026-10-23");
+    });
+  }
+
+  it("caso real do log: em CEST o jeito antigo (toISOString) dava o dia anterior", () => {
+    process.env.TZ = "Europe/Berlin";
+    const valorDoPg = parserDate("2026-10-23");
+    expect(valorDoPg.toISOString().slice(0, 10)).toBe("2026-10-22");
+    expect(diaDoRomaneio(valorDoPg)).toBe("2026-10-23");
+  });
+
+  it("texto (romaneio_data::text) passa direto, independente do fuso", () => {
+    process.env.TZ = "Europe/Berlin";
+    expect(diaDoRomaneio("2026-10-23")).toBe("2026-10-23");
+    process.env.TZ = "America/Sao_Paulo";
+    expect(diaDoRomaneio("2026-10-23")).toBe("2026-10-23");
+  });
+
+  it("a consulta dos pendentes le romaneio_data como texto (nao vira Date no node-pg)", () => {
+    expect(SQL_PENDENTES).toMatch(/romaneio_data::text\s+AS\s+romaneio_data/i);
+  });
+});
+
+describe("sqlMarcarPresenca (F2-10: metodo da presenca)", () => {
+  it("com a coluna presenca_metodo: grava o metodo junto", () => {
+    const { sql, params } = sqlMarcarPresenca("id-1", "vizinhanca", true);
+    expect(sql).toMatch(/presenca_metodo\s*=\s*\$2/);
+    expect(sql).toMatch(/presenca_confirmada_em IS NULL/);
+    expect(params).toEqual(["id-1", "vizinhanca"]);
+  });
+
+  it("sem a coluna (migration ainda nao aplicada): mesmo UPDATE de hoje", () => {
+    const { sql, params } = sqlMarcarPresenca("id-1", "dwell", false);
+    expect(sql).not.toMatch(/presenca_metodo/);
+    expect(params).toEqual(["id-1"]);
+  });
+
+  it("metodo desconhecido e' erro (nunca grava texto livre)", () => {
+    expect(() => sqlMarcarPresenca("id-1", "chute", true)).toThrow();
   });
 });

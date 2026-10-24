@@ -194,20 +194,58 @@ export function distanciaVizinhoConfirmadoMaisProximo(pontosConfirmados, lat, ln
   return menor;
 }
 
+// F2-10 (MON-07), achado 23/10: o servidor roda em Europe/Berlin e o node-pg
+// converte DATE em Date na MEIA-NOITE LOCAL -- `toISOString().slice(0, 10)`
+// devolvia o dia ANTERIOR (234 de 400 linhas do log com dia=22 para romaneio
+// de 23), e a vizinhanca corroborava a NF pendente de HOJE com as confirmacoes
+// de ONTEM do mesmo veiculo. A consulta agora le romaneio_data como texto; se
+// mesmo assim chegar um Date (outro caminho), usa os componentes LOCAIS, que
+// sao exatamente os do DATE no banco em qualquer fuso.
+export function diaDoRomaneio(valor) {
+  if (typeof valor === "string") return valor.slice(0, 10);
+  const d = valor;
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+export const SQL_PENDENTES = `SELECT id, veiculo_id, nf, romaneio_data::text AS romaneio_data, lat, lng, cliente_codigo, endereco_bruto
+       FROM romaneio_pontos
+      WHERE presenca_confirmada_em IS NULL
+        AND lat IS NOT NULL AND lng IS NOT NULL
+        AND romaneio_data >= current_date - $1::int
+        AND romaneio_data <= current_date + 1`;
+
+// F2-10: metodo da presenca ("dwell" = parada no proprio endereco;
+// "vizinhanca" = emprestada de outro ponto confirmado do mesmo romaneio).
+// A coluna presenca_metodo vem da migration contabo/088; enquanto ela nao
+// existir, o UPDATE e' o mesmo de sempre (o metodo continua so' no log).
+const METODOS_PRESENCA = new Set(["dwell", "vizinhanca"]);
+export function sqlMarcarPresenca(id, metodo, temColunaMetodo) {
+  if (!METODOS_PRESENCA.has(metodo)) throw new Error(`metodo de presenca desconhecido: ${metodo}`);
+  if (temColunaMetodo) {
+    return {
+      sql: `UPDATE romaneio_pontos SET presenca_confirmada_em = now(), presenca_metodo = $2 WHERE id = $1 AND presenca_confirmada_em IS NULL`,
+      params: [id, metodo],
+    };
+  }
+  return {
+    sql: `UPDATE romaneio_pontos SET presenca_confirmada_em = now() WHERE id = $1 AND presenca_confirmada_em IS NULL`,
+    params: [id],
+  };
+}
+
 const DRY_RUN = process.argv.includes("--dry-run");
 
 async function main() {
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
-  const { rows: pendentes } = await pool.query(
-    `SELECT id, veiculo_id, nf, romaneio_data, lat, lng, cliente_codigo, endereco_bruto
-       FROM romaneio_pontos
-      WHERE presenca_confirmada_em IS NULL
-        AND lat IS NOT NULL AND lng IS NOT NULL
-        AND romaneio_data >= current_date - $1::int
-        AND romaneio_data <= current_date + 1`,
-    [JANELA_DIAS]
+  const { rows: pendentes } = await pool.query(SQL_PENDENTES, [JANELA_DIAS]);
+  const { rows: colunaMetodo } = await pool.query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'romaneio_pontos' AND column_name = 'presenca_metodo'`
   );
+  const temColunaMetodo = colunaMetodo.length > 0;
   console.log(`${pendentes.length} pontos de romaneio sem presenca confirmada, na janela de ${JANELA_DIAS} dias.`);
 
   // Busca cliente_id por veiculo_id em lote (uma query so), antes do loop
@@ -278,8 +316,8 @@ async function main() {
     processados++;
     if (processados % 500 === 0) console.log(`  ${processados}/${pendentes.length}... (${trilhaPorChave.size} trilhas em cache)`);
 
-    const diaISO = p.romaneio_data.toISOString().slice(0, 10);
-    const trilha = await trilhaDoDia(p.veiculo_id, p.romaneio_data);
+    const diaISO = diaDoRomaneio(p.romaneio_data);
+    const trilha = await trilhaDoDia(p.veiculo_id, diaISO);
     if (trilha.length === 0) {
       aindaPendentes.push(p);
       continue;
@@ -343,10 +381,8 @@ async function main() {
               [clienteId, p.cliente_codigo, enderecoChave, proxima.lat, proxima.lng, proxima.fonte, proxima.n_observacoes]
             );
           }
-          await client.query(
-            `UPDATE romaneio_pontos SET presenca_confirmada_em = now() WHERE id = $1 AND presenca_confirmada_em IS NULL`,
-            [p.id]
-          );
+          const marcar = sqlMarcarPresenca(p.id, "dwell", temColunaMetodo);
+          await client.query(marcar.sql, marcar.params);
           await client.query("COMMIT");
         } catch (err) {
           await client.query("ROLLBACK");
@@ -370,7 +406,7 @@ async function main() {
   // encostada no PROPRIO endereco, nao emprestada de vizinho).
   let confirmadosVizinhanca = 0;
   for (const p of aindaPendentes) {
-    const diaISO = p.romaneio_data.toISOString().slice(0, 10);
+    const diaISO = diaDoRomaneio(p.romaneio_data);
     const confirmadosMesmoRomaneio = await confirmadosDoDia(p.veiculo_id, diaISO);
     const dist = distanciaVizinhoConfirmadoMaisProximo(confirmadosMesmoRomaneio, p.lat, p.lng);
     if (dist === null || dist > RAIO_VIZINHANCA_M) continue;
@@ -379,10 +415,8 @@ async function main() {
     // a posicao emprestada e' de OUTRO cliente, gravar como ancora deste
     // corromperia o geocode aprendido dele (ver comentario da constante).
     if (!DRY_RUN) {
-      await pool.query(
-        `UPDATE romaneio_pontos SET presenca_confirmada_em = now() WHERE id = $1 AND presenca_confirmada_em IS NULL`,
-        [p.id]
-      );
+      const marcar = sqlMarcarPresenca(p.id, "vizinhanca", temColunaMetodo);
+      await pool.query(marcar.sql, marcar.params);
     }
     confirmadosVizinhanca++;
     registrarConfirmado(p.veiculo_id, diaISO, p.lat, p.lng);
