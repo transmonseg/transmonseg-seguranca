@@ -119,10 +119,22 @@ export function planejarRastreadorMudo(p: {
   existentes: AlertaRastreadorExistente[];
   hoje: string;
   agora: Date;
-}): { inserir: CargaComPosicao[]; resolver: string[] } {
-  const mudos = p.cargas.filter(
-    (c) => typeof c.veiculo_id === "string" && typeof c.nfs === "number" && c.nfs > 0 && rastreadorMudo(c, p.agora),
-  );
+}): { inserir: CargaComPosicao[]; resolver: string[]; linhasInvalidas: string[] } {
+  // R-F3-09-04: nfs vem do pg; count sem ::int (bigint) chega como string.
+  // Converte em vez de descartar, e linha ilegivel vira aviso (nunca calada).
+  const validas: CargaComPosicao[] = [];
+  const linhasInvalidas: string[] = [];
+  const invalidasIds = new Set<string>();
+  for (const c of p.cargas) {
+    const nfs = Number(c.nfs);
+    if (typeof c.veiculo_id === "string" && c.veiculo_id && Number.isFinite(nfs) && nfs > 0) {
+      validas.push({ ...c, nfs });
+    } else {
+      linhasInvalidas.push(String(c.placa ?? c.veiculo_id ?? "?"));
+      if (typeof c.veiculo_id === "string") invalidasIds.add(c.veiculo_id);
+    }
+  }
+  const mudos = validas.filter((c) => rastreadorMudo(c, p.agora));
   const mudosIds = new Set(mudos.map((c) => c.veiculo_id));
 
   const comAlertaHoje = new Set(
@@ -134,10 +146,15 @@ export function planejarRastreadorMudo(p: {
 
   const resolver = p.existentes
     .filter((a) => a.status === "ativo")
-    .filter((a) => dataSP(new Date(a.desde)) !== p.hoje || !mudosIds.has(a.veiculo_id))
+    .filter((a) => {
+      if (dataSP(new Date(a.desde)) !== p.hoje) return true;
+      // Linha ilegivel: sem dado, nao afirma que o rastreador voltou.
+      if (invalidasIds.has(a.veiculo_id)) return false;
+      return !mudosIds.has(a.veiculo_id);
+    })
     .map((a) => a.id);
 
-  return { inserir, resolver: [...new Set(resolver)] };
+  return { inserir, resolver: [...new Set(resolver)], linhasInvalidas };
 }
 
 /** Conta de cliente (acesso "um") nao ve alerta interno. */

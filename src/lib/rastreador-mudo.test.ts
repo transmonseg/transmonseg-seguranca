@@ -165,10 +165,25 @@ describe("planejarRastreadorMudo (1 por veiculo por dia)", () => {
     expect(plano.resolver).toEqual([]);
   });
 
-  it("linha sem nfs (dado incompleto) e' ignorada", () => {
+  it("linha sem nfs (dado incompleto) nao cria, mas e' contada como invalida (R-F3-09-04: nada calado)", () => {
     const quebrada = { ...ltz, nfs: undefined } as unknown as CargaComPosicao;
     const plano = planejarRastreadorMudo({ cargas: [quebrada], existentes: [], hoje: HOJE, agora: AGORA_23_10_11H });
     expect(plano.inserir).toEqual([]);
+    expect(plano.linhasInvalidas).toEqual(["LTZ-7I72"]);
+  });
+
+  it("R-F3-09-04: nfs como string (count sem ::int vira bigint -> '41' no node-pg) ainda cria, com nfs numerico", () => {
+    const comoString = { ...ltz, nfs: "41" } as unknown as CargaComPosicao;
+    const plano = planejarRastreadorMudo({ cargas: [comoString], existentes: [], hoje: HOJE, agora: AGORA_23_10_11H });
+    expect(plano.inserir.map((c) => [c.placa, c.nfs])).toEqual([["LTZ-7I72", 41]]);
+    expect(plano.linhasInvalidas).toEqual([]);
+  });
+
+  it("R-F3-09-04: linha invalida nao fecha o alerta de hoje daquele carro (sem dado, nao afirma que voltou)", () => {
+    const existentes = [{ id: "a1", veiculo_id: "v-ltz", status: "ativo", desde: "2026-10-23T13:10:00Z" }];
+    const quebrada = { ...ltz, nfs: "x" } as unknown as CargaComPosicao;
+    const plano = planejarRastreadorMudo({ cargas: [quebrada], existentes, hoje: HOJE, agora: AGORA_23_10_11H });
+    expect(plano.resolver).toEqual([]);
   });
 });
 

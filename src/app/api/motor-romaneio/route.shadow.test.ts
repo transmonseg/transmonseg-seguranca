@@ -222,6 +222,12 @@ vi.mock("pg", () => {
       // nesse segundo caso.
       return { rows: [{ token: "token-teste" }] };
     }
+    if (/AS nfs/i.test(sql)) {
+      // SQL_CARGA_DO_DIA_COM_POSICAO (F3-09): outro formato de linha; este
+      // teste não cobre rastreador mudo (R-F3-09-04: linha no formato errado
+      // agora vira aviso em erros em vez de ser descartada calada).
+      return { rows: [] };
+    }
     if (/from\s+romaneio_pontos/i.test(sql)) {
       return { rows: [mockState.linhaRomaneio] };
     }

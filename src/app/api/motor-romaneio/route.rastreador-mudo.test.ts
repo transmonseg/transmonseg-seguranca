@@ -70,3 +70,12 @@ describe("R-F3-09-02: fechar sozinho preserva a evidência do alerta", () => {
     expect(fechado?.patch.contexto).toEqual({ ...contexto22, auto_resolvido: true });
   });
 });
+
+describe("R-F3-09-04: linha de carga invalida vira aviso em erros", () => {
+  it("nfs ilegivel => nenhum alerta e aviso com a placa", async () => {
+    estado.cargas = [carga({ nfs: "x" as unknown as number })];
+    const erros = await ciclo(new Date("2026-10-23T14:00:00Z"), "2026-10-23");
+    expect(estado.inserts).toEqual([]);
+    expect(erros.join("\n")).toMatch(/rastreador_mudo_com_carga.*LTZ-7I72/);
+  });
+});

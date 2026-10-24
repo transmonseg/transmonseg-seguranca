@@ -907,6 +907,9 @@ export async function sinalizarRastreadorMudoComCarga(ctx: {
     for (const a of [...(ativosResp.data ?? []), ...(hojeResp.data ?? [])] as AlertaRastreadorExistente[]) porId.set(a.id, a);
 
     const plano = planejarRastreadorMudo({ cargas, existentes: [...porId.values()], hoje, agora });
+    if (plano.linhasInvalidas.length > 0) {
+      erros.push(`Aviso: ${TIPO_RASTREADOR_MUDO}: ${plano.linhasInvalidas.length} linha(s) de carga ilegivel(is) (nfs/veiculo), sem alerta: ${plano.linhasInvalidas.slice(0, 10).join(", ")}`);
+    }
 
     for (const c of plano.inserir) {
       const ultima = ultimaComunicacaoEstimada(c.atraso_min, c.updated_at);
