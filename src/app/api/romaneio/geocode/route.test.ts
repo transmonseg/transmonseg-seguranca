@@ -57,9 +57,11 @@ vi.mock("@/lib/romaneio-geocode", async (orig) => {
   const real = await orig<typeof import("@/lib/romaneio-geocode")>();
   return {
     ...real,
-    geocodificarEndereco: async (e: string, ponto: { lat: number; lng: number } | null, deps: { geocodificarCnefeDep: (e: string, p: unknown) => Promise<{ lat: number; lng: number } | null> }) => {
+    geocodificarEndereco: async (e: string, ponto: { lat: number; lng: number } | null, deps: { geocodificarCnefeDep: (e: string, p: unknown) => Promise<{ lat: number; lng: number } | null>; geocodificarCnefeBairroDep?: (e: string) => Promise<{ lat: number; lng: number } | null> }) => {
       const c = await deps.geocodificarCnefeDep(e, ponto);
-      return c ? { ...c, fonte: "cnefe", validado: ponto != null } : null;
+      if (c) return { ...c, fonte: "cnefe", validado: ponto != null };
+      const b = deps.geocodificarCnefeBairroDep ? await deps.geocodificarCnefeBairroDep(e) : null;
+      return b ? { ...b, fonte: "cnefe_bairro", validado: false } : null;
     },
   };
 });
@@ -74,6 +76,17 @@ vi.mock("@/lib/cnefe-similaridade-limitada", async (orig) => {
       if (!opcoes.pular && opcoes.rotulo && [...termosComTimeout].some((t) => opcoes.rotulo!.includes(t))) return { status: "timeout" };
       return real.buscarSimilaridadeLimitada(consulta, opcoes);
     }) as typeof real.buscarSimilaridadeLimitada,
+  };
+});
+
+// F4-01 (GEO-26): centroide do bairro. "BAIRROLENTO" simula o prazo estourado.
+const bairrosComTimeout = new Set<string>();
+vi.mock("@/lib/cnefe-bairro-centroide", async (orig) => {
+  const real = await orig<typeof import("@/lib/cnefe-bairro-centroide")>();
+  return {
+    ...real,
+    buscarCentroideBairro: async (_admin: unknown, bairro: string) =>
+      bairrosComTimeout.has(bairro) ? { status: "timeout" } : bairro === "BAIRROBOM" ? { status: "ok", data: { lat: -22.8, lng: -43.3, qtd: 500 } } : { status: "ok", data: null },
   };
 });
 
@@ -93,6 +106,7 @@ beforeEach(() => {
   process.env.MOTOR_SECRET = "segredo";
   Object.assign(estado, { ativas: 0, pico: 0, chamadas: 0, atrasoMs: 5, resposta: [] });
   termosComTimeout.clear();
+  bairrosComTimeout.clear();
 });
 
 describe("POST /api/romaneio/geocode -- busca por similaridade limitada (incidente 01/10)", () => {
@@ -133,5 +147,21 @@ describe("POST /api/romaneio/geocode -- busca por similaridade limitada (inciden
     expect(corpo.resultados).toEqual([null, null, null]);
     expect(corpo.incompletos).toEqual([0, 1, 2]);
     expect(corpo.buscasSimilaridade).toBe(0);
+  });
+});
+
+describe("POST /api/romaneio/geocode -- centroide do bairro com prazo (F4-01 GEO-26)", () => {
+  it("bairro estourou o prazo e nada mais achou: endereco volta em `incompletos` (KPI nao grava cache negativo)", async () => {
+    bairrosComTimeout.add("BAIRROLENTO");
+    const lista = ["RUA SEM CNEFE, 10 - BAIRROLENTO, RIO DE JANEIRO - *", "RUA SEM CNEFE, 11 - OUTRO, RIO DE JANEIRO - *"];
+    const corpo = await (await POST(req({ enderecos: lista }))).json();
+    expect(corpo.resultados).toEqual([null, null]);
+    expect(corpo.incompletos).toEqual([0]);
+  });
+
+  it("bairro achado pela tabela nova: resultado cnefe_bairro, nao validado", async () => {
+    const corpo = await (await POST(req({ enderecos: ["RUA SEM CNEFE, 10 - BAIRROBOM, RIO DE JANEIRO - *"] }))).json();
+    expect(corpo.resultados).toMatchObject([{ lat: -22.8, lng: -43.3, fonte: "cnefe_bairro", validado: false }]);
+    expect(corpo.incompletos).toEqual([]);
   });
 });

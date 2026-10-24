@@ -136,6 +136,8 @@ async function main() {
     // scripts/migrations/contabo/082_cnefe_bairros.sql (DROP+CREATE, seguro
     // re-rodar).
     console.log("IMPORTANTE: re-rode scripts/migrations/contabo/082_cnefe_bairros.sql agora -- ele e' um snapshot derivado deste dado e nao se atualiza sozinho.");
+    // F4-01 (GEO-26): cnefe_bairros_centroide (migration 091) tambem e' derivada.
+    console.log("IMPORTANTE: re-rode tambem scripts/migrations/contabo/091_cnefe_bairros_centroide.sql (centroide de bairro da ponte do KPI) -- mesma razao.");
   } finally {
     client.release();
     await pool.end();

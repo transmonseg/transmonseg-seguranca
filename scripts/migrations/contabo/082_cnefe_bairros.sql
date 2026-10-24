@@ -40,3 +40,6 @@ GROUP BY 1,2;
 
 CREATE INDEX cnefe_bairros_hull_idx ON cnefe_bairros USING GIST (hull);
 CREATE INDEX cnefe_bairros_nome_idx ON cnefe_bairros (localidade_norm);
+-- F4-01 (GEO-26, migration 091): distancia_ao_bairro filtra por municipio e
+-- localidade -- composto, recriado aqui porque esta migration faz DROP+CREATE.
+CREATE INDEX cnefe_bairros_municipio_nome_idx ON cnefe_bairros (municipio_codigo, localidade_norm);

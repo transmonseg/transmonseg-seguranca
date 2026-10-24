@@ -41,6 +41,7 @@ import { validarTerritorio, cepConfirmaPonto, type MotivoTerritorio } from "@/li
 import { extrairCepDoEndereco } from "@/lib/cnefe-escolha";
 import { montarDepsTerritorio } from "./territorio-deps";
 import { buscarSimilaridadeLimitada } from "@/lib/cnefe-similaridade-limitada";
+import { buscarCentroideBairro } from "@/lib/cnefe-bairro-centroide";
 
 // Teto de pontos da rua lidos do CNEFE (avenida longa do Rio passa de mil).
 const LIMITE_PONTOS_RUA_CNEFE = 4000;
@@ -180,20 +181,11 @@ export async function POST(request: Request) {
   };
   // Achado real 08/09 (ver geocodificarCnefePorBairro em romaneio-geocode.ts):
   // ultimo recurso antes de sair pra rede -- centroide dos pontos do CNEFE
-  // cujo campo `localidade` bate com o bairro do endereco (ILIKE, mesmo
-  // espirito impreciso do bairro/cidade que ja usamos pra ponto de
-  // referencia -- aqui vira a resposta final, nao so' referencia).
-  const buscarCnefePorLocalidade = async (bairro: string, municipioCodigo: string) => {
-    const { data } = await admin
-      .from("cnefe_enderecos")
-      .select("lat, lng")
-      .eq("municipio_codigo", municipioCodigo)
-      .ilike("localidade", `%${bairro}%`);
-    if (!data || data.length === 0) return null;
-    const lat = data.reduce((s, p) => s + p.lat, 0) / data.length;
-    const lng = data.reduce((s, p) => s + p.lng, 0) / data.length;
-    return { lat, lng, qtd: data.length };
-  };
+  // da localidade do bairro do endereco. F4-01 (GEO-26): por igualdade na
+  // tabela cnefe_bairros_centroide (migration 091), com prazo; sem a
+  // migration, a consulta antiga (ILIKE de 50 s), agora com prazo. Ver
+  // src/lib/cnefe-bairro-centroide.ts. A busca por endereco fica no loop
+  // (marca o endereco como incompleto quando o prazo estoura).
 
   // Achado real 06/09 (KPI Rio Quality, arquivo com cidade/bairro em quase
   // toda linha -- ate' entao so' a Nutry Max usava esta ponte): resolver o
@@ -383,6 +375,15 @@ export async function POST(request: Request) {
   for (const enderecoBruto of lista) {
     if (prazoEsgotado()) break;
     let similaridadeIncompleta = false;
+    let bairroIncompleto = false;
+    const buscarCnefePorLocalidade = async (bairroBusca: string, municipioBusca: string) => {
+      const r = await buscarCentroideBairro(admin, bairroBusca, municipioBusca);
+      if (r.status !== "ok") {
+        bairroIncompleto = true;
+        return null;
+      }
+      return r.data;
+    };
     const buscarCnefePorSimilaridade = async (nomeNormalizado: string, municipioCodigo: string | null) => {
       const r = await buscarCnefePorSimilaridadeLimitada(nomeNormalizado, municipioCodigo);
       if (r.status !== "ok") {
@@ -424,7 +425,7 @@ export async function POST(request: Request) {
     });
 
     if (!geocode) {
-      if (similaridadeIncompleta) incompletos.push(resultados.length);
+      if (similaridadeIncompleta || bairroIncompleto) incompletos.push(resultados.length);
       resultados.push(null);
       continue;
     }
