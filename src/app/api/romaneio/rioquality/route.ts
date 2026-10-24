@@ -23,7 +23,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizarPlaca } from "@/lib/romaneio";
 import {
-  agruparPorColunas, ehPontoRQ, enviadoPorRQ, lerLinhasRQ, motivoParaNaoSubstituirRQ, planejarDiaRQ, type PontoRQ,
+  agruparPorColunas, ehPontoRQ, enviadoPorRQ, lerLinhasRQ, motivoParaNaoSubstituirRQ, planejarDiaRQ, type LinhaRQ, type PlanoRQ, type PontoRQ,
 } from "@/lib/romaneio-rioquality";
 
 export const runtime = "nodejs";
@@ -35,6 +35,31 @@ const COLUNAS_PONTO = "id, placa, nf, veiculo_id, cliente_codigo, cliente_nome, 
 const LOTE = 500;
 const LOTE_IDS = 200;
 const PAGINA = 1000;
+const MAX_TENTATIVAS_23505 = 3;
+
+// Revisao Fase 2 (F2-04-d): apagar/atualizar/inserir vao em comandos
+// separados do PostgREST, sem transacao. Dois envios do mesmo dia ao mesmo
+// tempo (tick da Fusion + upload manual, ou dois ticks) liam o mesmo dia,
+// planejavam os mesmos inserts e o segundo batia no indice parcial da 089
+// (23505): o dia ficava pela metade (o que ja' tinha sido apagado nao voltava).
+// Escolha: fila em memoria por dia -- o monitoramento roda num processo so'
+// do pm2 (transmonseg-definitivo, fork_mode, conferido 24/10), entao a fila
+// serializa todo envio real. Funcao/advisory lock no banco esta' fora (regra:
+// nao criar funcoes). A rede para o que escapa da fila (outro processo, script
+// manual) e' a retentativa: 23505 rele o dia e reconcilia de novo (o plano e'
+// idempotente), ate' MAX_TENTATIVAS_23505 vezes.
+const filaPorDia = new Map<string, Promise<unknown>>();
+async function serializarPorDia<T>(chave: string, fn: () => Promise<T>): Promise<T> {
+  const anterior = filaPorDia.get(chave) ?? Promise.resolve();
+  const atual = anterior.catch(() => undefined).then(fn);
+  const cauda = atual.catch(() => undefined);
+  filaPorDia.set(chave, cauda);
+  try {
+    return await atual;
+  } finally {
+    if (filaPorDia.get(chave) === cauda) filaPorDia.delete(chave);
+  }
+}
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
@@ -95,56 +120,96 @@ export async function POST(request: Request) {
   const placasNaoEncontradas = placasUnicas.filter((p) => !veiculoPorPlaca.has(p));
   const enviadoPor = enviadoPorRQ(request.headers.get("x-enviado-por"));
 
-  let comPedidoErp: boolean;
-  let comPresencaMetodo: boolean;
-  let existentes: PontoRQ[];
-  try {
-    comPedidoErp = await temColunaPedidoErp(admin);
-    comPresencaMetodo = await temColunaPresencaMetodo(admin);
-    existentes = await pontosRQDoDia(admin, data, comPedidoErp);
-  } catch (err) {
-    return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });
-  }
-  // F2-04-a: envio vazio ou encolhido nao apaga o dia (vira "so' acrescenta").
-  const aviso = pediuSubstituir ? motivoParaNaoSubstituirRQ(existentes, linhas) : null;
-  if (aviso) console.error(`${new Date().toISOString()} [romaneio/rioquality] ${data}: substituir recusado -- ${aviso}`);
-  const substituir = pediuSubstituir && !aviso;
-  const recusa = aviso ? { substituicaoRecusada: true, aviso } : {};
-  const plano = planejarDiaRQ({ data, existentes, linhas, substituir, veiculoPorPlaca, enviadoPor, comPedidoErp, comPresencaMetodo });
-  if (body?.simular === true) {
-    return Response.json({ ok: true, simulado: true, romaneioData: data, existentes: existentes.length, inserir: plano.inserir.length, atualizar: plano.atualizar.length, apagar: plano.apagar.length, placasNaoEncontradas, ...recusa });
-  }
+  // F2-04-d: um envio por dia de cada vez neste processo (ver serializarPorDia).
+  return serializarPorDia(`rioquality:${data}`, () => reconciliarDia({
+    admin, data, linhas, pediuSubstituir, simular: body?.simular === true, veiculoPorPlaca, placasNaoEncontradas, enviadoPor,
+  }));
+}
 
-  // Ordem: apagar (duplicatas e o que saiu), atualizar, inserir -- uma NF que
-  // muda de numero (pedido -> NF real) nunca bate numa duplicata ainda viva.
-  const falhou = (etapa: string, msg: string) => Response.json({ ok: false, erro: `Erro ao ${etapa}: ${msg}` }, { status: 500 });
-  let linhasApagadas = 0;
+type ErroBanco = { code?: string; message: string };
+type Aplicacao = { erro: { etapa: string; e: ErroBanco } | null; apagadas: number; atualizadas: number; inseridas: number };
+
+/** Ordem: apagar (duplicatas e o que saiu), atualizar, inserir -- uma NF que
+ *  muda de numero (pedido -> NF real) nunca bate numa duplicata ainda viva.
+ *  Sem transacao (PostgREST): para no primeiro erro e devolve o que ja' fez. */
+async function aplicarPlano(admin: Admin, plano: PlanoRQ): Promise<Aplicacao> {
+  const r: Aplicacao = { erro: null, apagadas: 0, atualizadas: 0, inseridas: 0 };
   for (let i = 0; i < plano.apagar.length; i += LOTE_IDS) {
     const { data: ap, error } = await admin.from("romaneio_pontos").delete().in("id", plano.apagar.slice(i, i + LOTE_IDS)).select("id");
-    if (error) return falhou("apagar", error.message);
-    linhasApagadas += ap?.length ?? 0;
+    if (error) return { ...r, erro: { etapa: "apagar", e: error } };
+    r.apagadas += ap?.length ?? 0;
   }
-  let linhasAtualizadas = 0;
   for (const grupo of agruparPorColunas(plano.atualizar)) {
     for (let i = 0; i < grupo.length; i += LOTE) {
       const lote = grupo.slice(i, i + LOTE);
       const { error } = await admin.from("romaneio_pontos").upsert(lote, { onConflict: "id" });
-      if (error) return falhou("atualizar", error.message);
-      linhasAtualizadas += lote.length;
+      if (error) return { ...r, erro: { etapa: "atualizar", e: error } };
+      r.atualizadas += lote.length;
     }
   }
-  let linhasInseridas = 0;
   for (let i = 0; i < plano.inserir.length; i += LOTE) {
     const { data: ins, error } = await admin
       .from("romaneio_pontos")
       .upsert(plano.inserir.slice(i, i + LOTE), { onConflict: CHAVE_UNICA_ROMANEIO_PONTOS, ignoreDuplicates: true })
       .select("id");
-    if (error) return falhou("salvar", error.message);
-    linhasInseridas += ins?.length ?? 0;
+    if (error) return { ...r, erro: { etapa: "salvar", e: error } };
+    r.inseridas += ins?.length ?? 0;
+  }
+  return r;
+}
+
+async function reconciliarDia(p: {
+  admin: Admin; data: string; linhas: LinhaRQ[]; pediuSubstituir: boolean; simular: boolean;
+  veiculoPorPlaca: Map<string, string>; placasNaoEncontradas: string[]; enviadoPor: string;
+}): Promise<Response> {
+  const { admin, data, linhas, pediuSubstituir, veiculoPorPlaca, placasNaoEncontradas, enviadoPor } = p;
+  let comPedidoErp: boolean;
+  let comPresencaMetodo: boolean;
+  try {
+    comPedidoErp = await temColunaPedidoErp(admin);
+    comPresencaMetodo = await temColunaPresencaMetodo(admin);
+  } catch (err) {
+    return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 
-  return Response.json({
-    ok: true, romaneioData: data, linhasInseridas, linhasAtualizadas, linhasApagadas,
-    linhasDoDia: existentes.length - linhasApagadas + linhasInseridas, placasNaoEncontradas, ...recusa,
-  });
+  let linhasApagadas = 0;
+  let linhasAtualizadas = 0;
+  let linhasInseridas = 0;
+  for (let tentativa = 1; ; tentativa++) {
+    let existentes: PontoRQ[];
+    try {
+      existentes = await pontosRQDoDia(admin, data, comPedidoErp);
+    } catch (err) {
+      return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    }
+    // F2-04-a: envio vazio ou encolhido nao apaga o dia (vira "so' acrescenta").
+    const aviso = pediuSubstituir ? motivoParaNaoSubstituirRQ(existentes, linhas) : null;
+    if (aviso && tentativa === 1) console.error(`${new Date().toISOString()} [romaneio/rioquality] ${data}: substituir recusado -- ${aviso}`);
+    const substituir = pediuSubstituir && !aviso;
+    const recusa = aviso ? { substituicaoRecusada: true, aviso } : {};
+    const plano = planejarDiaRQ({ data, existentes, linhas, substituir, veiculoPorPlaca, enviadoPor, comPedidoErp, comPresencaMetodo });
+    if (p.simular) {
+      return Response.json({ ok: true, simulado: true, romaneioData: data, existentes: existentes.length, inserir: plano.inserir.length, atualizar: plano.atualizar.length, apagar: plano.apagar.length, placasNaoEncontradas, ...recusa });
+    }
+
+    const ap = await aplicarPlano(admin, plano);
+    linhasApagadas += ap.apagadas;
+    linhasAtualizadas += ap.atualizadas;
+    linhasInseridas += ap.inseridas;
+    if (ap.erro) {
+      // F2-04-d: 23505 = outro escritor gravou a mesma NF da RQ (indice parcial
+      // da 089) entre a leitura e a gravacao. O plano e' idempotente: rele o
+      // dia e reconcilia de novo (a linha dele vira "atualizar").
+      if (ap.erro.e.code === "23505" && tentativa < MAX_TENTATIVAS_23505) {
+        console.error(`${new Date().toISOString()} [romaneio/rioquality] ${data}: 23505 ao ${ap.erro.etapa} (tentativa ${tentativa}) -- relendo o dia`);
+        continue;
+      }
+      return Response.json({ ok: false, erro: `Erro ao ${ap.erro.etapa}: ${ap.erro.e.message}`, linhasInseridas, linhasAtualizadas, linhasApagadas }, { status: 500 });
+    }
+    return Response.json({
+      ok: true, romaneioData: data, linhasInseridas, linhasAtualizadas, linhasApagadas,
+      linhasDoDia: existentes.length - ap.apagadas + ap.inseridas, placasNaoEncontradas, ...recusa,
+      ...(tentativa > 1 ? { retentativas: tentativa - 1 } : {}),
+    });
+  }
 }

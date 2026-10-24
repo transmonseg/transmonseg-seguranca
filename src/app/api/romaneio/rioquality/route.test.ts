@@ -22,7 +22,18 @@ const db = {
   temPresencaMetodo: false,
   upserts: [] as { linhas: Linha[]; onConflict?: string; ignoreDuplicates?: boolean }[],
   deletes: [] as string[][],
+  /** F2-04-d: chamado antes de cada INSERT (simula outro escritor no meio). */
+  antesDoInsert: null as null | (() => void),
+  sempre23505: false,
 };
+
+// Indice parcial da 089: (romaneio_data, nf, origem, modo_teste) so' nas linhas da ponte da RQ.
+const ehMarcaRQ = (e: unknown) => typeof e === "string" && (e === "cron-fusion (pelo Ao vivo do KPI)" || e.endsWith("(Rio Quality pelo Ao vivo do KPI)"));
+const violaIndice089 = (l: Linha) => ehMarcaRQ(l.enviado_por) && db.pontos.some(p => ehMarcaRQ(p.enviado_por)
+  && p.romaneio_data === l.romaneio_data && p.nf === l.nf && p.origem === l.origem && p.modo_teste === l.modo_teste);
+const mesmaChave059 = (l: Linha) => db.pontos.some(p => p.romaneio_data === l.romaneio_data && p.placa === l.placa
+  && p.nf === l.nf && p.modo_teste === l.modo_teste && p.origem === l.origem);
+const ERRO_089 = { code: "23505", message: 'duplicate key value violates unique constraint "romaneio_pontos_rq_data_nf_key"' };
 
 function consulta(tabela: string) {
   const filtros: ((r: Linha) => boolean)[] = [];
@@ -40,11 +51,20 @@ function consulta(tabela: string) {
   q.delete = () => { op = "delete"; return q; };
   q.upsert = (linhas: Linha[], o?: { onConflict?: string; ignoreDuplicates?: boolean }) => {
     db.upserts.push({ linhas, onConflict: o?.onConflict, ignoreDuplicates: o?.ignoreDuplicates });
-    for (const l of linhas) {
-      if (o?.onConflict === "id") { const r = db.pontos.find(p => p.id === l.id); if (r) Object.assign(r, l); }
-      else db.pontos.push({ id: `novo-${db.pontos.length}`, criado_em: "2026-10-24T10:00:00Z", presenca_confirmada_em: null, ...l });
+    let erro: typeof ERRO_089 | null = null;
+    let gravadas = 0;
+    if (o?.onConflict !== "id") {
+      if (db.antesDoInsert) { const f = db.antesDoInsert; db.antesDoInsert = null; f(); }
+      const novas = linhas.filter(l => !(o?.ignoreDuplicates && mesmaChave059(l)));
+      // O comando inteiro falha (Postgres): nada do lote entra.
+      if (db.sempre23505 || novas.some(violaIndice089)) erro = ERRO_089;
+      else for (const l of novas) { db.pontos.push({ id: `novo-${db.pontos.length}-${l.nf}`, criado_em: "2026-10-24T10:00:00Z", presenca_confirmada_em: null, ...l }); gravadas++; }
+    } else {
+      for (const l of linhas) { const r = db.pontos.find(p => p.id === l.id); if (r) Object.assign(r, l); }
+      gravadas = linhas.length;
     }
-    return { select: async () => ({ data: linhas.map((_, i) => ({ id: `x${i}` })), error: null }), then: (ok: (r: unknown) => unknown) => Promise.resolve({ error: null }).then(ok) };
+    const res = () => (erro ? { data: null, error: erro } : { data: Array.from({ length: gravadas }, (_, i) => ({ id: `x${i}` })), error: null });
+    return { select: async () => res(), then: (ok: (r: unknown) => unknown) => Promise.resolve(res()).then(ok) };
   };
   q.maybeSingle = async () => ({ data: linhasDaTabela().filter(r => filtros.every(f => f(r)))[0] ?? null, error: null });
   q.then = (ok: (r: unknown) => unknown) => {
@@ -97,6 +117,8 @@ describe("POST /api/romaneio/rioquality", () => {
     db.temPresencaMetodo = false;
     db.upserts = [];
     db.deletes = [];
+    db.antesDoInsert = null;
+    db.sempre23505 = false;
   });
 
   it("401 sem x-motor-key", async () => {
@@ -157,7 +179,7 @@ describe("POST /api/romaneio/rioquality", () => {
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ ok: true, linhasInseridas: 1, linhasAtualizadas: 1, linhasApagadas: 2, linhasDoDia: 2 });
     const ids = db.pontos.map(p => p.id).sort();
-    expect(ids).toEqual(["novo-4", "nutry", "nutry-sem-veiculo", "outro-dia", "rq-fusion"]);
+    expect(ids).toEqual(["novo-4-5557758", "nutry", "nutry-sem-veiculo", "outro-dia", "rq-fusion"]);
     const atual = db.pontos.find(p => p.id === "rq-fusion")!;
     expect(atual).toMatchObject({
       nf: "5557757", endereco_bruto: "RUA IMBOASSU, - ALCANTARA, SAO GONCALO - RJ", lat: -22.82, lng: -43.0, geocode_status: "ok",
@@ -217,6 +239,46 @@ describe("POST /api/romaneio/rioquality", () => {
     expect(r.json).toMatchObject({ ok: true, linhasApagadas: 0, linhasAtualizadas: 1, substituicaoRecusada: true });
     expect(db.pontos).toHaveLength(25);
     expect(db.pontos.find(p => p.id === "rq0")).toMatchObject({ placa: "LUN-8C28" });
+  });
+
+  it("F2-04-d: dois envios simultaneos do mesmo dia (Fusion trocou a NF de carro entre os ticks) nao dao 23505 nem deixam o dia pela metade", async () => {
+    const tick = (placa: string) => postJson({ data: "2026-10-23", modo: "substituir", linhas: [
+      { placa, nf: "6072109", clienteNome: "ELIZABETH", enderecoBruto: "RUA DOUTOR SOUZA NUNES, VALENCA - RJ" },
+      { placa: "LUN8C28", nf: "6072110", clienteNome: "OUTRA", enderecoBruto: "RUA X, VALENCA - RJ" },
+    ] }, { ...CHAVE, "x-enviado-por": "cron-fusion" });
+    const [a, b] = await Promise.all([tick("LNH9C10"), tick("LUN8C28")]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(b.json).toMatchObject({ ok: true });
+    // Serializados pela fila do dia: o 2o nem chega a bater no 23505.
+    expect(a.json.retentativas).toBeUndefined();
+    expect(b.json.retentativas).toBeUndefined();
+    expect(db.upserts.filter(u => u.onConflict !== "id")).toHaveLength(1);
+    const doDia = db.pontos.filter(p => p.romaneio_data === "2026-10-23");
+    expect(doDia.map(p => p.nf).sort()).toEqual(["6072109", "6072110"]);
+    // O 2o envio (serializado) le o que o 1o gravou e so' troca o carro.
+    expect(doDia.find(p => p.nf === "6072109")).toMatchObject({ placa: "LUN-8C28", veiculo_id: "v-lun" });
+  });
+
+  it("F2-04-d: 23505 do indice da 089 no insert (outro escritor no meio) -> rele o dia e reconcilia de novo, sem erro e sem NF em 2 placas", async () => {
+    db.antesDoInsert = () => {
+      db.pontos.push({ ...pontoBase, id: "outro-escritor", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "6072109", cliente_nome: "ELIZABETH", endereco_bruto: "E", enviado_por: "cron-fusion (Rio Quality pelo Ao vivo do KPI)" });
+    };
+    const r = await postJson({ data: "2026-10-23", modo: "substituir", linhas: [
+      { placa: "LUN8C28", nf: "6072109", clienteNome: "ELIZABETH", enderecoBruto: "E" },
+    ] }, { ...CHAVE, "x-enviado-por": "cron-fusion" });
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ ok: true, retentativas: 1 });
+    expect(db.pontos).toHaveLength(1);
+    expect(db.pontos[0]).toMatchObject({ id: "outro-escritor", placa: "LUN-8C28", veiculo_id: "v-lun" });
+  });
+
+  it("F2-04-d: 23505 que persiste esgota as retentativas e responde erro (nao fica em laco)", async () => {
+    db.sempre23505 = true;
+    const r = await postJson({ data: "2026-10-23", linhas: [{ placa: "LUN8C28", nf: "6072109", clienteNome: "E", enderecoBruto: "E" }] }, CHAVE);
+    expect(r.status).toBe(500);
+    expect(String(r.json.erro)).toMatch(/duplicate key/);
+    expect(db.upserts.filter(u => u.onConflict !== "id")).toHaveLength(3);
   });
 
   it("com a coluna pedido_erp (migration 089), o pedido e' gravado", async () => {
