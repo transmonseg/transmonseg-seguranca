@@ -155,4 +155,55 @@ describe("POST /api/romaneio/geocode-coerencia", () => {
     expect(res.status).toBe(500);
     expect((await res.json()).erro).toMatch(/boom/);
   });
+
+  // F2-01 (c) -- 23/10: 89 "respondeu 500" no log do KPI e NADA no log do
+  // monitoramento (pm2 sem uma linha da rota). O Postgres mostrava 256
+  // statement timeouts (57014) em cnefe_candidatos_por_rua. A rota passa a
+  // registrar o 500 com hora, codigo, quantos nomes e quanto tempo levou.
+  it("500 da rpc de exatos fica registrado no log com hora, codigo, nomes e tempo", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    rpcMock.mockResolvedValue({
+      data: null,
+      error: { message: "canceling statement due to statement timeout", code: "57014", details: null, hint: null },
+    });
+    const res = await POST(req({ grupos: [{ id: "corredor-0", ruas: ["AVENIDA BRASIL", "RUA NESTOR"] }] }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.erro).toMatch(/statement timeout/);
+    expect(json.codigo).toBe("57014");
+    expect(erroSpy).toHaveBeenCalledTimes(1);
+    const linha = String(erroSpy.mock.calls[0][0]);
+    expect(linha).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
+    expect(linha).toContain("[geocode-coerencia]");
+    expect(linha).toContain("cnefe_candidatos_por_rua");
+    expect(linha).toContain("57014");
+    expect(linha).toContain("statement timeout");
+    expect(linha).toMatch(/nomes=2\b/);
+    expect(linha).toMatch(/ms=\d+/);
+    erroSpy.mockRestore();
+  });
+
+  it("excecao inesperada vira 500 em JSON e fica registrada (nao a pagina de erro crua do Next)", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    rpcMock.mockRejectedValue(new Error("fetch failed"));
+    const res = await POST(req({ grupos: [{ id: "g", ruas: ["RUA X"] }] }));
+    expect(res.status).toBe(500);
+    expect((await res.json()).erro).toMatch(/fetch failed/);
+    expect(erroSpy).toHaveBeenCalledTimes(1);
+    expect(String(erroSpy.mock.calls[0][0])).toMatch(/\[geocode-coerencia\].*fetch failed/);
+    erroSpy.mockRestore();
+  });
+
+  it("falha da rpc de similaridade nao derruba a resposta, mas fica registrada", async () => {
+    const erroSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "cnefe_candidatos_por_rua") return { data: [], error: null };
+      return { data: null, error: { message: "canceling statement due to statement timeout", code: "57014" } };
+    });
+    const res = await POST(req({ grupos: [{ id: "g", ruas: ["RUA RENATO MONTEIRO X"] }] }));
+    expect(res.status).toBe(200);
+    expect(erroSpy).toHaveBeenCalledTimes(1);
+    expect(String(erroSpy.mock.calls[0][0])).toMatch(/cnefe_candidatos_por_similaridade.*57014/);
+    erroSpy.mockRestore();
+  });
 });

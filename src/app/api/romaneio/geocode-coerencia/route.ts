@@ -40,7 +40,36 @@ type GrupoEntrada = { id: string; zona?: string | null; ruas: string[] };
 type LinhaExato = { nome: string; municipio_codigo: string; lat: number; lng: number; qtd: number };
 type LinhaSimilar = { nome_cnefe: string; similaridade: number; municipio_codigo: string; lat: number; lng: number; qtd: number };
 
+type ErroRpc = { message?: string; code?: string | null; details?: string | null; hint?: string | null };
+
+// F2-01 (c) -- achado 23/10: o KPI logava 63-89 "respondeu 500" por dia e o
+// monitoramento nao registrava NADA (pm2 limpo); a causa so' aparecia no log do
+// Postgres (statement timeout 57014 em cnefe_candidatos_por_rua). Toda falha da
+// rota agora sai numa linha so', com hora, funcao, codigo e tamanho do pedido.
+function registrarFalha(etapa: string, erro: ErroRpc | Error | unknown, extra: Record<string, number>) {
+  const e = (erro ?? {}) as ErroRpc;
+  const msg = erro instanceof Error ? erro.message : e.message ?? String(erro);
+  const partes = [
+    `${new Date().toISOString()} [geocode-coerencia] ${etapa} falhou:`,
+    msg,
+    e.code ? `codigo=${e.code}` : null,
+    e.details ? `detalhe=${e.details}` : null,
+    e.hint ? `dica=${e.hint}` : null,
+    ...Object.entries(extra).map(([k, v]) => `${k}=${v}`),
+  ];
+  console.error(partes.filter(Boolean).join(" "));
+}
+
 export async function POST(request: Request) {
+  try {
+    return await processar(request);
+  } catch (e) {
+    registrarFalha("excecao", e, {});
+    return Response.json({ erro: `excecao: ${e instanceof Error ? e.message : String(e)}` }, { status: 500 });
+  }
+}
+
+async function processar(request: Request) {
   const chave = request.headers.get("x-motor-key");
   if (!chave || chave !== process.env.MOTOR_SECRET) {
     return Response.json({ erro: "nao autorizado" }, { status: 401 });
@@ -91,7 +120,11 @@ export async function POST(request: Request) {
   const { data: exatos, error: erroExato } = await admin.rpc("cnefe_candidatos_por_rua", { nomes: [...nomesUnicos] });
   const msExato = Date.now() - t0;
   if (erroExato) {
-    return Response.json({ erro: `cnefe_candidatos_por_rua: ${erroExato.message}` }, { status: 500 });
+    registrarFalha("cnefe_candidatos_por_rua", erroExato, { grupos: grupos.length, nomes: nomesUnicos.size, ms: msExato });
+    return Response.json(
+      { erro: `cnefe_candidatos_por_rua: ${erroExato.message}`, codigo: erroExato.code ?? null, ms: msExato },
+      { status: 500 },
+    );
   }
   for (const l of (exatos ?? []) as LinhaExato[]) {
     const lista = candidatosPorNome.get(l.nome) ?? [];
@@ -132,7 +165,11 @@ export async function POST(request: Request) {
       nome,
       limite_clusters: LIMITE_CLUSTERS_SIMILARIDADE,
     });
-    if (erroSim || !similares || similares.length === 0) return;
+    if (erroSim) {
+      registrarFalha("cnefe_candidatos_por_similaridade", erroSim, { tamanhoNome: nome.length });
+      return;
+    }
+    if (!similares || similares.length === 0) return;
     const linhas = similares as LinhaSimilar[];
     // so' os aglomerados do nome CNEFE mais parecido (nao mistura ruas diferentes)
     const melhor = Math.max(...linhas.map((l) => Number(l.similaridade)));
