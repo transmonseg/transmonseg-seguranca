@@ -117,3 +117,20 @@ describe("tipo de logradouro (GEO-06)", () => {
     expect(r.precisao).toBe("exato");
   });
 });
+
+// F4-04 (GEO-28): numero exato sem CEP nem localidade do Censo confirmando
+// nunca sai "exato" puro.
+describe("escolherPontoCnefe: exato sem confirmacao (F4-04 GEO-28)", () => {
+  it("AVENIDA PERU 40 (CEP 27257525, ROMA): o unico 40 e' do CEP 27257600 -> exato_nao_confirmado, confirmado=false", () => {
+    const r = escolherPontoCnefe([
+      { lat: -22.601472, lng: -44.080476, numero: "40", cep: "27257600", localidade: "PARQUE DAS GARCAS", tipo: "AVENIDA" },
+    ], { numero: 40, cep: "27257525", bairro: "ROMA", tipo: "AVENIDA" })!;
+    expect(r).toMatchObject({ precisao: "exato_nao_confirmado", confirmado: false });
+  });
+  it("RUA TIROL 324, bairro FREGUESIA (JACAREPAGUÁ): localidade FREGUESIA confirma -> exato", () => {
+    const r = escolherPontoCnefe([
+      { lat: -22.941248, lng: -43.340245, numero: "324", cep: "22750009", localidade: "FREGUESIA", tipo: "RUA" },
+    ], { numero: 324, cep: null, bairro: "FREGUESIA (JACAREPAGUÁ)", tipo: "RUA" })!;
+    expect(r).toMatchObject({ precisao: "exato", confirmado: true });
+  });
+});

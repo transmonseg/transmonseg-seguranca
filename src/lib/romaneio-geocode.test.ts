@@ -855,9 +855,11 @@ describe("geocodificarCnefe: tipo de logradouro nos fallbacks sem CEP (F2-14 GEO
     expect(r!.precisao).not.toBe("exato");
   });
 
-  it("ENTRADA pedida: o 2046 da ENTRADA continua valendo", async () => {
+  // F4-04 (GEO-28): sem CEP e com o bairro CENTRO contra FAZENDA INGLESA do
+  // Censo, o ponto continua o 2046 da ENTRADA, mas sem confirmacao.
+  it("ENTRADA pedida: o 2046 da ENTRADA continua valendo (exato_nao_confirmado: sem CEP/bairro)", async () => {
     const r = await geocodificarCnefe("ENTRADA FAZENDA INGLESA, 2046 - CENTRO, PETROPOLIS - *", PETROPOLIS, "3303906", deps());
-    expect(r).toMatchObject({ lat: -22.485, precisao: "exato" });
+    expect(r).toMatchObject({ lat: -22.485, precisao: "exato_nao_confirmado" });
   });
 
   // A seco 24/10 (3.496 enderecos com tipo misto no CNEFE, 7 dias): AVENIDA
@@ -962,5 +964,85 @@ describe("fonte cnefe_similaridade (F4-11 GEO-08)", () => {
       geocodificarNominatim: async () => null,
     });
     expect(r).toMatchObject({ fonte: "cnefe_similaridade" });
+  });
+});
+
+// F4-04 (GEO-28, plano mestre 23/10): o mesmo numero numa rua de mesmo nome,
+// sem CEP nem bairro do Censo batendo, saia "exato" com raio de 30 m -- e
+// "exato" libera NAO FOI e bloqueia o credito de parada proxima no KPI.
+// Candidatos reais do CNEFE (consulta em producao, 24/10). Rebaixar para
+// "rua" daria ENTREGUE sem prova (regra 2): vira "exato_nao_confirmado".
+describe("exato sem confirmacao de CEP/bairro (F4-04 GEO-28)", () => {
+  const semSimilaridade = async () => [];
+
+  it("RUA MARIA SOARES SENDAS, 4200 - CENTRO (CEP 25575-825): o 4200 do CNEFE e' de VENDA VELHA, CEP 25581325 -> exato_nao_confirmado", async () => {
+    const P4200 = { lat: -22.798651, lng: -43.354889, numero: "4200", cep: "25581325", localidade: "VENDA VELHA", tipo: "RUA" };
+    const r = await geocodificarCnefe("RUA MARIA SOARES SENDAS, 4200 - CENTRO, SÃO JOÃO DE MERITI - LOTE B 1 - 25575-825", { lat: -22.8036, lng: -43.3725 }, "3305109", {
+      buscarPorRuaNumero: async () => [P4200],
+      buscarPorRua: async () => [
+        P4200,
+        { lat: -22.7979, lng: -43.3541, numero: "4100", cep: "25581325", localidade: "VENDA VELHA", tipo: "RUA" },
+        { lat: -22.7991, lng: -43.3561, numero: "4350", cep: "25581350", localidade: "VENDA VELHA", tipo: "RUA" },
+        { lat: -22.7969, lng: -43.3530, numero: "3900", cep: "25581325", localidade: "PARQUE BARRETO", tipo: "RUA" },
+      ],
+      buscarPorSimilaridade: semSimilaridade,
+    });
+    expect(r).toMatchObject({ lat: -22.798651, lng: -43.354889, precisao: "exato_nao_confirmado" });
+  });
+
+  it("AVENIDA PERU, 40 - ROMA, VOLTA REDONDA (CEP 27257-525): o 40 do CNEFE e' do PARQUE DAS GARCAS, CEP 27257600 -> exato_nao_confirmado", async () => {
+    const P40 = { lat: -22.601472, lng: -44.080476, numero: "40", cep: "27257600", localidade: "PARQUE DAS GARCAS", tipo: "AVENIDA" };
+    const r = await geocodificarCnefe("AVENIDA PERU, 40 - ROMA, VOLTA REDONDA - 27257-525", { lat: -22.5231, lng: -44.1042 }, "3306305", {
+      buscarPorRuaNumero: async () => [P40],
+      buscarPorRua: async () => [P40, { lat: -22.6021, lng: -44.0811, numero: "120", cep: "27257600", localidade: "PARQUE DAS GARCAS", tipo: "AVENIDA" }],
+      buscarPorSimilaridade: semSimilaridade,
+    });
+    expect(r).toMatchObject({ lat: -22.601472, precisao: "exato_nao_confirmado" });
+  });
+
+  it("AVENIDA CENTRAL, 141 - NOVO HORIZONTE, BARRA MANSA (CEP 27355-140): os dois 141 do CNEFE sao de COLONIA SANTO ANTONIO, CEP 27353140 -> exato_nao_confirmado", async () => {
+    const A = { lat: -22.540026, lng: -44.227072, numero: "141", cep: "27353140", localidade: "COLONIA SANTO ANTONIO", tipo: "AVENIDA" };
+    const B = { lat: -22.540064, lng: -44.227067, numero: "141", cep: "27353140", localidade: "COLONIA SANTO ANTONIO", tipo: "AVENIDA" };
+    const r = await geocodificarCnefe("AVENIDA CENTRAL, 141 - NOVO HORIZONTE, BARRA MANSA - 27355-140", { lat: -22.5446, lng: -44.1716 }, "3300407", {
+      buscarPorRuaNumero: async () => [A, B],
+      buscarPorRua: async () => [A, B],
+      buscarPorSimilaridade: semSimilaridade,
+    });
+    expect(r!.precisao).toBe("exato_nao_confirmado");
+    expect(r!.lat).toBeCloseTo(-22.54, 3);
+  });
+
+  it("RUA TIROL, 324 - FREGUESIA (JACAREPAGUÁ): localidade FREGUESIA do Censo confirma -> continua exato", async () => {
+    const r = await geocodificarCnefe("RUA TIROL, 324 - FREGUESIA (JACAREPAGUÁ), RIO DE JANEIRO", { lat: -22.94, lng: -43.34 }, "3304557", {
+      buscarPorRuaNumero: async () => [{ lat: -22.941248, lng: -43.340245, numero: "324", cep: "22750009", localidade: "FREGUESIA", tipo: "RUA" }],
+      buscarPorRua: async () => [],
+      buscarPorSimilaridade: semSimilaridade,
+    });
+    expect(r).toMatchObject({ lat: -22.941248, precisao: "exato", raioM: 30 });
+  });
+
+  it("CEP especifico do romaneio batendo com o do CNEFE (bairro com outro nome): continua exato", async () => {
+    const r = await geocodificarCnefe("RUA MARIA SOARES SENDAS, 4200 - CENTRO, SÃO JOÃO DE MERITI - 25581-325", { lat: -22.8036, lng: -43.3725 }, "3305109", {
+      buscarPorRuaNumero: async () => [{ lat: -22.798651, lng: -43.354889, numero: "4200", cep: "25581325", localidade: "VENDA VELHA", tipo: "RUA" }],
+      buscarPorRua: async () => [],
+      buscarPorSimilaridade: semSimilaridade,
+    });
+    expect(r).toMatchObject({ precisao: "exato" });
+  });
+
+  it("a ponte repassa a precisao nova (geocodificarEndereco): fonte cnefe, precisao exato_nao_confirmado", async () => {
+    const r = await geocodificarEndereco("AVENIDA PERU, 40 - ROMA, VOLTA REDONDA - 27257-525", { lat: -22.5231, lng: -44.1042 }, {
+      buscarCache: async () => null,
+      salvarCache: async () => {},
+      geocodificarCnefeDep: (e, p) => geocodificarCnefe(e, p, "3306305", {
+        buscarPorRuaNumero: async () => [{ lat: -22.601472, lng: -44.080476, numero: "40", cep: "27257600", localidade: "PARQUE DAS GARCAS", tipo: "AVENIDA" }],
+        buscarPorRua: async () => [],
+        buscarPorSimilaridade: semSimilaridade,
+      }),
+      geocodificarLocalDep: async () => null,
+      geocodificarGoogle: async () => null,
+      geocodificarNominatim: async () => null,
+    });
+    expect(r).toMatchObject({ fonte: "cnefe", precisao: "exato_nao_confirmado", raioM: 30 });
   });
 });

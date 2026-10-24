@@ -17,7 +17,11 @@
 // outro bairro).
 
 export type CandidatoCnefe = { lat: number; lng: number; numero?: string | null; cep?: string | null; localidade?: string | null; tipo?: string | null };
-export type PrecisaoPonto = "exato" | "interpolado" | "trecho" | "rua";
+// "exato_nao_confirmado" (F4-04, GEO-28): o numero existe nesta rua do CNEFE,
+// mas nem o CEP especifico nem a localidade do Censo batem com o endereco --
+// pode ser o mesmo numero numa rua de mesmo nome em outro bairro. Nao sustenta
+// NAO FOI e nao libera o credito de parada proxima (vai a REVISAR no KPI).
+export type PrecisaoPonto = "exato" | "exato_nao_confirmado" | "interpolado" | "trecho" | "rua";
 export type PontoCnefe = { lat: number; lng: number; precisao: PrecisaoPonto; raioM: number; confirmado: boolean };
 
 const DIF_MAX_VIZINHO = 20;
@@ -135,7 +139,8 @@ export function escolherPontoCnefe(
     const usar = exatosBairro.length > 0 ? exatosBairro : exatos;
     if (usar.length > 0) {
       const p = pontoCentral(usar);
-      if (p.raioM <= ESPALHAMENTO_MAX_EXATO_M) return { lat: p.lat, lng: p.lng, precisao: "exato", raioM: Math.max(30, p.raioM), confirmado: confirmado || exatosBairro.length > 0 };
+      const exatoConfirmado = confirmado || exatosBairro.length > 0;
+      if (p.raioM <= ESPALHAMENTO_MAX_EXATO_M) return { lat: p.lat, lng: p.lng, precisao: exatoConfirmado ? "exato" : "exato_nao_confirmado", raioM: Math.max(30, p.raioM), confirmado: exatoConfirmado };
       return { lat: p.lat, lng: p.lng, precisao: "rua", raioM: p.raioM, confirmado };
     }
     const comNumero = sub.map((x) => ({ x, n: numeroCnefe(x.numero) })).filter((y): y is { x: CandidatoCnefe; n: number } => y.n != null);

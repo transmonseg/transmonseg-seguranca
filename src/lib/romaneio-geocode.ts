@@ -332,7 +332,12 @@ export async function geocodificarCnefe(
       const outroTipoLonge = porRuaNumero.some((c) => !porRuaNumeroTipo.includes(c)
         && soDigitos(c.numero ?? numero) === numeroAlvo
         && haversineM(c.lat, c.lng, resultado.lat, resultado.lng) > DIST_AMBIGUIDADE_TIPO_M);
-      return outroTipoLonge ? { ...resultado, precisao: "rua", raioM: 1000 } : { ...resultado, precisao: "exato", raioM: 30 };
+      // F4-04 (GEO-28): aqui nem o CEP nem o bairro do Censo confirmaram (o
+      // caminho confirmado retorna antes) -- o mesmo numero pode ser de uma
+      // rua homonima em outro bairro (MARIA SOARES SENDAS 4200, AVENIDA PERU
+      // 40). "exato" puro liberava NAO FOI no KPI; "rua" daria ENTREGUE sem
+      // prova. Fica "exato_nao_confirmado".
+      return outroTipoLonge ? { ...resultado, precisao: "rua", raioM: 1000 } : { ...resultado, precisao: "exato_nao_confirmado", raioM: 30 };
     }
   }
   if (numeroAlvo !== null) {
