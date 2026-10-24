@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, normPlacaVariantes } from "./entrega-mapa";
+import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, normPlacaVariantes, COR_SITUACAO_ENTREGA, ROTULO_SITUACAO_ENTREGA, codUnitracDaFrota, clienteDaEntrega } from "./entrega-mapa";
 
 const p = (hhmm: string, lat: number, lng: number) => ({ lat, lng, em: `2026-10-05T${hhmm}:00-03:00` });
 
@@ -37,5 +37,44 @@ describe("entrega no mapa", () => {
     expect(v).toEqual(expect.arrayContaining(["RQO9H37", "RQO-9H37", "RQ09H37", "RQ0-9H37"]));
     expect(new Set(v).size).toBe(v.length);
     expect(normPlacaVariantes("TTK4D17")).toEqual(expect.arrayContaining(["TTK4D17", "TTK-4D17", "TTK4DI7", "TTK-4DI7"]));
+  });
+
+  // F1-10 (pendência): o KPI manda a situação "fora_da_conta" (cinza) desde
+  // 9b350f2; a tela de entrega pintava de cinza escuro "pendente" e sem rótulo.
+  it("situação fora_da_conta vinda do KPI: cinza #cbd5e1 e rótulo \"Fora da conta\"", () => {
+    expect(COR_SITUACAO_ENTREGA.fora_da_conta).toBe("#cbd5e1");
+    expect(ROTULO_SITUACAO_ENTREGA.fora_da_conta).toBe("Fora da conta");
+    // as que já existiam continuam iguais
+    expect(COR_SITUACAO_ENTREGA.entregue).toBe("#22c55e");
+    expect(ROTULO_SITUACAO_ENTREGA.nao_foi).toBe("Não foi");
+  });
+});
+
+// F2-11 (AC-11): "Ver no monitoramento" da Rio Quality. O KPI manda a frota
+// (nutrimax | rioquality); a placa só abre dentro dela, e a conta de um
+// cliente só (ericanutrymax = Nutry Max) nunca abre placa da RQ.
+describe("entrega no mapa: frota do KPI e conta do cliente", () => {
+  const NUTRY = "cfcb52f5-fd01-47c7-988c-d13a10f0d8fd";
+  const RQ = "16a32814-3402-4b2d-b974-aef0707d7a4e";
+  it("frota do KPI -> cod_user_unitrac", () => {
+    expect(codUnitracDaFrota("rioquality")).toBe("598");
+    expect(codUnitracDaFrota("nutrimax")).toBe("4096");
+    expect(codUnitracDaFrota("")).toBeNull();
+    expect(codUnitracDaFrota("benassi")).toBeNull();
+  });
+  it("ericanutrymax (conta só da Nutry) não abre placa da RQ", () => {
+    expect(clienteDaEntrega({ tipo: "um", clienteId: NUTRY }, RQ)).toEqual({ tipo: "nenhum", motivo: "outra_frota" });
+  });
+  it("conta só da Nutry na frota da Nutry (ou KPI antigo, sem frota): só a Nutry", () => {
+    expect(clienteDaEntrega({ tipo: "um", clienteId: NUTRY }, NUTRY)).toEqual({ tipo: "cliente", clienteId: NUTRY });
+    expect(clienteDaEntrega({ tipo: "um", clienteId: NUTRY }, null)).toEqual({ tipo: "cliente", clienteId: NUTRY });
+  });
+  it("central abre a RQ só na frota da RQ; sem frota (KPI antigo) continua sem filtro", () => {
+    expect(clienteDaEntrega({ tipo: "todos" }, RQ)).toEqual({ tipo: "cliente", clienteId: RQ });
+    expect(clienteDaEntrega({ tipo: "todos" }, null)).toEqual({ tipo: "todos" });
+  });
+  it("sem login/operador não abre nada", () => {
+    expect(clienteDaEntrega({ tipo: "nenhum" }, RQ)).toEqual({ tipo: "nenhum", motivo: "sem_acesso" });
+    expect(clienteDaEntrega({ tipo: "nenhum" }, null)).toEqual({ tipo: "nenhum", motivo: "sem_acesso" });
   });
 });

@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { acessoDoUsuario } from "@/lib/acesso-cliente";
-import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, type PontoRastro } from "@/lib/entrega-mapa";
+import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, codUnitracDaFrota, clienteDaEntrega, type PontoRastro } from "@/lib/entrega-mapa";
 import EntregaMapaWrapper from "./EntregaMapaWrapper";
 
 // "Entrega no mapa" (05/10): aberta pelo botão "Ver no monitoramento" de cada
@@ -34,10 +34,18 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   // RQ0-9H37): entre as grafias que existem, vale o rastreador que mais se
   // mexeu no dia (o outro fica parado no mesmo ponto).
   const acesso = await acessoDoUsuario();
+  // F2-11 (AC-11): o KPI manda a frota (nutrimax | rioquality); a placa só é
+  // procurada nela. Conta de um cliente só nunca abre outra frota (a conta
+  // da Nutry não abre placa da RQ). Sem frota (KPI antigo): regra de antes.
+  const codFrota = codUnitracDaFrota(txt(q.frota));
+  const { data: cliFrota } = codFrota
+    ? await admin.from("clientes").select("id").eq("cod_user_unitrac", codFrota).maybeSingle()
+    : { data: null };
+  const frotaInexistente = !!codFrota && !cliFrota;
+  const daEntrega = clienteDaEntrega(acesso, (cliFrota?.id as string | undefined) ?? null);
   let consultaVeiculos = admin.from("veiculos").select("id, placa, ativo").in("placa", normPlacaVariantes(placa));
-  // Conta de um cliente só: placa de outra frota não abre (vira "sem rastro").
-  if (acesso.tipo === "um") consultaVeiculos = consultaVeiculos.eq("cliente_id", acesso.clienteId);
-  const { data: candidatos } = acesso.tipo === "nenhum" ? { data: [] } : await consultaVeiculos;
+  if (daEntrega.tipo === "cliente") consultaVeiculos = consultaVeiculos.eq("cliente_id", daEntrega.clienteId);
+  const { data: candidatos } = daEntrega.tipo === "nenhum" || frotaInexistente ? { data: [] } : await consultaVeiculos;
   const { inicio, fim } = janelaDiaBR(data);
   async function posicoesDoDia(veiculoId: string): Promise<PontoRastro[]> {
     const out: PontoRastro[] = [];
@@ -75,7 +83,7 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
     <EntregaMapaWrapper
       info={{
         placa: veiculo?.placa ?? placa, data, ...cliente, chegada, saida, situacao, status,
-        semVeiculo: !veiculo, semRastro: !!veiculo && pontos.length === 0, rastroTravado, volta,
+        semVeiculo: !veiculo, outraFrota: daEntrega.tipo === "nenhum" && daEntrega.motivo === "outra_frota", semRastro: !!veiculo && pontos.length === 0, rastroTravado, volta,
         distParadaM: parada && alvo ? Math.round(distanciaM(parada, alvo)) : null,
         perto: perto ? { lat: perto.lat, lng: perto.lng, em: perto.em, distM: Math.round(perto.distM) } : null,
       }}

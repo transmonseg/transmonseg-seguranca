@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Marker, useJsApiLoader } from "@react-google-maps/api";
 import { DARK_STYLES } from "../central-v2/MapaLeafletV2";
+import { COR_SITUACAO_ENTREGA, ROTULO_SITUACAO_ENTREGA } from "@/lib/entrega-mapa";
 
 // "Entrega no mapa" (05/10): mesmo Google Maps da Central (estilo escuro,
 // satélite, rastro com setas), com a rota inteira da placa e a entrega da NF
@@ -14,7 +15,7 @@ export type PropsEntregaMapa = {
   info: {
     placa: string; data: string; nome: string; nf: string; endereco: string; lat: number | null; lng: number | null;
     chegada: string | null; saida: string | null; situacao: string; status: string;
-    semVeiculo: boolean; semRastro: boolean; rastroTravado: boolean; volta: string; distParadaM: number | null;
+    semVeiculo: boolean; outraFrota?: boolean; semRastro: boolean; rastroTravado: boolean; volta: string; distParadaM: number | null;
     perto: { lat: number; lng: number; em: string; distM: number } | null;
   };
   rastro: [number, number][];
@@ -33,8 +34,9 @@ function minutos(a: string | null, b: string | null): number | null {
   return hb * 60 + mb - (ha * 60 + ma);
 }
 
-const COR_SITUACAO: Record<string, string> = { entregue: "#22c55e", sem_rastreador: "#94a3b8", pendente: "#9ca3af", nao_confirmada: "#ef4444", nao_foi: "#ef4444", revisar: "#f59e0b" };
-const ROTULO_SITUACAO: Record<string, string> = { entregue: "Entregue", sem_rastreador: "Sem rastreador", pendente: "Pendente", nao_confirmada: "Não confirmada", nao_foi: "Não foi", revisar: "A revisar" };
+// F1-10: inclui "fora_da_conta" (cinza claro), a NF que não pesa na taxa.
+const COR_SITUACAO = COR_SITUACAO_ENTREGA;
+const ROTULO_SITUACAO = ROTULO_SITUACAO_ENTREGA;
 
 /** Bolinha numerada da entrega (SVG em data URL, sem asset externo). */
 function iconeEntrega(ordem: number, cor: string, destaque: boolean): google.maps.Icon {
@@ -140,7 +142,7 @@ export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }:
           {info.endereco && <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "var(--text-muted)" }}>{info.endereco}</p>}
 
           {info.semVeiculo ? (
-            <p className="mt-3 text-[13px]" style={{ color: "var(--text)" }}>Placa não encontrada na frota do monitoramento.</p>
+            <p className="mt-3 text-[13px]" style={{ color: "var(--text)" }}>{info.outraFrota ? "Esta placa é de outro cliente; esta conta não abre a frota dele." : "Placa não encontrada na frota do monitoramento."}</p>
           ) : parada ? (
             <>
               <div className="mt-3 grid grid-cols-3 gap-2">

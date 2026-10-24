@@ -2,6 +2,8 @@
 // cálculos puros sobre o rastro do dia de uma placa. Quem decide se a NF foi
 // entregue é o KPI; aqui só se mostra onde o caminhão estava.
 
+import type { AcessoCliente } from "./acesso-cliente";
+
 export type PontoRastro = { lat: number; lng: number; em: string };
 export type Coord = { lat: number; lng: number };
 
@@ -76,4 +78,42 @@ export function normPlacaVariantes(placa: string): string[] {
   }
   const todas = formas.flatMap(f => [f, f.length === 7 ? `${f.slice(0, 3)}-${f.slice(3)}` : f]);
   return [...new Set([n, `${n.slice(0, 3)}-${n.slice(3)}`, ...todas])];
+}
+
+/** Cor e rótulo de cada situação que o KPI manda (`SituacaoNf` do KPI).
+ *  F1-10: "fora_da_conta" (cinza claro), a NF que não pesa na taxa. Situação
+ *  desconhecida (KPI mais novo que esta tela) cai no cinza neutro da tela. */
+export const COR_SITUACAO_ENTREGA: Record<string, string> = {
+  entregue: "#22c55e", sem_rastreador: "#94a3b8", pendente: "#9ca3af", nao_confirmada: "#ef4444",
+  nao_foi: "#ef4444", revisar: "#f59e0b", fora_da_conta: "#cbd5e1",
+};
+export const ROTULO_SITUACAO_ENTREGA: Record<string, string> = {
+  entregue: "Entregue", sem_rastreador: "Sem rastreador", pendente: "Pendente", nao_confirmada: "Não confirmada",
+  nao_foi: "Não foi", revisar: "A revisar", fora_da_conta: "Fora da conta",
+};
+
+/** F2-11: frota que o KPI manda no link ("nutrimax" | "rioquality") ->
+ *  cod_user_unitrac do cliente no monitoramento. Outra coisa = sem frota. */
+export function codUnitracDaFrota(frota: string): string | null {
+  if (frota === "nutrimax") return "4096";
+  if (frota === "rioquality") return "598";
+  return null;
+}
+
+export type ClienteDaEntrega =
+  | { tipo: "todos" }
+  | { tipo: "cliente"; clienteId: string }
+  | { tipo: "nenhum"; motivo: "sem_acesso" | "outra_frota" };
+
+/** De qual cliente a placa pode ser aberta na tela de entrega.
+ *  - frota do KPI (clienteIdFrota) restringe a busca da placa a ela;
+ *  - conta de um cliente só nunca abre outra frota (ericanutrymax x RQ);
+ *  - sem frota (KPI antigo, durante o deploy): a regra de antes. */
+export function clienteDaEntrega(acesso: AcessoCliente, clienteIdFrota: string | null): ClienteDaEntrega {
+  if (acesso.tipo === "nenhum") return { tipo: "nenhum", motivo: "sem_acesso" };
+  if (acesso.tipo === "um") {
+    if (clienteIdFrota && clienteIdFrota !== acesso.clienteId) return { tipo: "nenhum", motivo: "outra_frota" };
+    return { tipo: "cliente", clienteId: acesso.clienteId };
+  }
+  return clienteIdFrota ? { tipo: "cliente", clienteId: clienteIdFrota } : { tipo: "todos" };
 }
