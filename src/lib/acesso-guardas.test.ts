@@ -10,6 +10,7 @@ vi.mock("@/lib/supabase/admin", () => ({
       const b: Record<string, unknown> = {};
       b.select = () => b;
       b.eq = (c: string, v: unknown) => { chamadas.filtros.push([c, v]); return b; };
+      b.not = (c: string, op: string, v: unknown) => { chamadas.filtros.push([`not.${c}.${op}`, v]); return b; };
       b.in = (c: string, v: unknown) => { chamadas.filtros.push([c, v]); return Promise.resolve(resultado); };
       // select().eq() sem .in() (veiculos do cliente) também resolve
       (b as { then?: unknown }).then = (res: (v: unknown) => unknown) => Promise.resolve(resultado).then(res);
@@ -41,6 +42,16 @@ describe("acesso-guardas", () => {
     expect(ok).toEqual(["b"]);
     expect(chamadas.tabela).toBe("alertas_romaneio");
     expect(chamadas.filtros[0]).toEqual(["cliente_id", NUTRY]);
+  });
+  it("R-F3-09-01: conta de cliente não age sobre alerta interno (rastreador_mudo_com_carga) em alertas_romaneio", async () => {
+    resultado.data = [{ id: "b" }];
+    await idsAlertaPermitidos({ tipo: "um", clienteId: NUTRY }, "alertas_romaneio", ["a", "b"]);
+    expect(chamadas.filtros).toContainEqual(["not.tipo.in", "(rastreador_mudo_com_carga)"]);
+  });
+  it("central continua agindo sobre alerta interno; tabela alertas não ganha o filtro", async () => {
+    expect(await idsAlertaPermitidos({ tipo: "todos" }, "alertas_romaneio", ["a"])).toEqual(["a"]);
+    await idsAlertaPermitidos({ tipo: "um", clienteId: NUTRY }, "alertas", ["a"]);
+    expect(chamadas.filtros.some(([c]) => c.startsWith("not."))).toBe(false);
   });
   it("central não tem filtro de veículos (null)", async () => {
     expect(await idsVeiculosDoCliente({ tipo: "todos" })).toBeNull();

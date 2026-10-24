@@ -3,6 +3,7 @@ import { acessoDoUsuario, filtrarPorAcesso } from "@/lib/acesso-cliente";
 import MonitorV2 from "../central-v2/MonitorV2";
 import GateRomaneio from "./GateRomaneio";
 import AvisoEscalaPao from "./AvisoEscalaPao";
+import { semAlertasInternos } from "@/lib/rastreador-mudo";
 
 // Espelha src/app/(app)/page.tsx (a Central), mas lê alertas_romaneio em vez
 // de alertas — pipeline de detecção paralelo alimentado pelo romaneio (spec
@@ -105,7 +106,10 @@ export default async function CentralRomaneioPage({
   const clientes: Cliente[] = filtrarPorAcesso(acesso, clientesRaw ?? []);
   const todosVeiculos: Veiculo[] = veiculosRaw ?? [];
   const todasPosicoes: PosicaoAtual[] = (posicoesRaw ?? []) as PosicaoAtual[];
-  const todosAlertas: Alerta[] = (alertasRaw ?? []) as Alerta[];
+  // R-F3-09-01: alerta interno (rastreador_mudo_com_carga, D-32) nunca vai
+  // no SSR da conta de cliente -- antes so' /api/alertas-romaneio filtrava e o
+  // card aparecia na primeira pintura (e ficava, se o poll falhasse).
+  const todosAlertas: Alerta[] = semAlertasInternos((alertasRaw ?? []) as Alerta[], acesso);
 
   const codParam = typeof clienteParam === "string" ? clienteParam : undefined;
   const clienteAtivo: Cliente = (codParam && clientes.find(c => c.cod_user_unitrac === codParam)) || clientes[0];
