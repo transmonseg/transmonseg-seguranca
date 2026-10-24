@@ -773,6 +773,39 @@ export function contarLeiturasAtrasadas(posicoes: Posicao[]): { total: number; a
   return { total: posicoes.length, atrasadas };
 }
 
+// F2-09 (KN-06, D-05, plano mestre 23/10): RQV9B26 tem 59-100% das leituras
+// atrasadas todo dia e o KPI afirmava NAO FOI / escala divergente. A contagem
+// de 24 h acima infla com o pernoite; e medido em 22/10, na janela 05-21 h
+// inteira, caminhao sadio que volta cedo e dorme na garagem (ignicao
+// desligada, atraso subindo) passava de 30% (RQU1B50 48%, TOS1H26 41%,
+// RBH9H53 31%). Por isso a contagem sai por faixa de 15 min da janela de
+// operacao, separando o que foi lido dentro de uma base: o KPI decide a falha
+// da placa fora da base e acha o apagao do coletor (frota toda atrasada na
+// mesma faixa, 20/10 07:55-09:30) olhando todas as placas juntas.
+const FAIXA_MIN = 15;
+const FAIXAS_OPERACAO = ((HORA_FIM_OPERACAO_BRT - HORA_INICIO_OPERACAO_BRT) * 60) / FAIXA_MIN;
+
+/** [total, atrasadas, total fora da base, atrasadas fora da base] por faixa de
+ *  15 min entre 05:00 e 20:59 BRT (indice 0 = 05:00). */
+export function contarLeiturasPorFaixa(posicoes: Posicao[], basesCentro: BaseCentro[]): number[][] {
+  const faixas = Array.from({ length: FAIXAS_OPERACAO }, () => [0, 0, 0, 0]);
+  for (const p of posicoes) {
+    const t = Date.parse(p.criado_em) - OFFSET_BRT_MS;
+    const minutoDoDia = Math.floor((((t % 86_400_000) + 86_400_000) % 86_400_000) / 60_000);
+    const i = Math.floor((minutoDoDia - HORA_INICIO_OPERACAO_BRT * 60) / FAIXA_MIN);
+    if (i < 0 || i >= FAIXAS_OPERACAO) continue;
+    const atrasada = p.atraso_min > LIMIAR_APAGAO_MIN;
+    const fora = !basesCentro.some((b) => haversineM(b.lat, b.lng, p.lat, p.lng) <= RAIO_BASE_M);
+    faixas[i][0]++;
+    if (atrasada) faixas[i][1]++;
+    if (fora) {
+      faixas[i][2]++;
+      if (atrasada) faixas[i][3]++;
+    }
+  }
+  return faixas;
+}
+
 export function teveApagaoDeSinalForte(posicoes: Posicao[]): boolean {
   let i = 0;
   while (i < posicoes.length) {
@@ -1168,6 +1201,7 @@ export async function POST(request: Request) {
     apagaoDeSinalForte?: boolean;
     leiturasTotal?: number;
     leiturasAtrasadas?: number;
+    leiturasPorFaixa?: number[][];
     gpsCongelado?: boolean;
   }[] = [];
   for (const placaBruta of placas) {
@@ -1210,6 +1244,8 @@ export async function POST(request: Request) {
     const apagaoDeSinalForte = incluirParadas ? teveApagaoDeSinalForte(posicoes) : undefined;
     const gpsCongelado = incluirParadas ? teveGpsCongelado(posicoes) : undefined;
     const leituras = incluirParadas ? contarLeiturasAtrasadas(posicoes) : undefined;
+    // F2-09: so' com `incluirParadas` (o KPI so' decide a falha nesse modo).
+    const leiturasPorFaixa = incluirParadas ? contarLeiturasPorFaixa(posicoes, basesCentro) : undefined;
     resultados.push({
       placa: placaBruta,
       saidaBase,
@@ -1222,6 +1258,7 @@ export async function POST(request: Request) {
       ...(apagaoDeSinal !== undefined ? { apagaoDeSinal } : {}),
       ...(apagaoDeSinalForte !== undefined ? { apagaoDeSinalForte } : {}),
       ...(leituras ? { leiturasTotal: leituras.total, leiturasAtrasadas: leituras.atrasadas } : {}),
+      ...(leiturasPorFaixa ? { leiturasPorFaixa } : {}),
       ...(gpsCongelado !== undefined ? { gpsCongelado } : {}),
     });
   }

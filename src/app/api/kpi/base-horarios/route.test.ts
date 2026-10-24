@@ -1461,6 +1461,9 @@ describe("POST /api/kpi/base-horarios -- F2-08 trecho congelado com salto", () =
     const { resultados: [r] } = await res.json();
     expect(r.paradas.some((p: { chegada: string }) => p.chegada === "2026-10-22T11:39:38.462Z")).toBe(false);
     expect(r.visitas[0].chegada).toBe("2026-10-22T12:20:15.032Z");
+    // F2-09: contagem por faixa de 15 min da janela 05-21 h (so' com incluirParadas).
+    expect(r.leiturasPorFaixa).toHaveLength(64);
+    expect(r.leiturasPorFaixa[0][3]).toBe(r.leiturasPorFaixa[0][0]);
   });
 
   it("F2-06: saida vazia com pernoite fora da cerca devolve saidaSemSinalAte (09:20 BRT)", async () => {
