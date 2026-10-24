@@ -40,6 +40,8 @@ const RAIO_BASE_M = 500;
 // Entrada na cerca so' e' volta se o carro fica la' dentro ao menos isso (ou
 // ainda esta' dentro na ultima leitura) -- ver acharSaidaEChegadaBase.
 const MIN_DENTRO_PRA_SER_VOLTA_MS = 20 * 60_000;
+// F2-06: cliente a ate' isso do centro de uma base nao define a janela da rota.
+const RAIO_PONTO_NA_BASE_M = 300;
 
 const MAX_PLACAS_POR_CHAMADA = 200;
 
@@ -111,15 +113,24 @@ export function acharSaidaEChegadaBase(
  *    depois da ultima entrega (ou null, ainda nao voltou);
  *  - saida vale a ULTIMA saida de base antes da 1a entrega (a saida pra rota,
  *    nao a do patio de madrugada).
- *  Sem visita direta, nada muda. */
+ *  Sem visita direta, nada muda.
+ *
+ *  F2-06 (KN-09, RQU8D91 22/10): `pontos` (opcional) -- visita a ponto a ate'
+ *  RAIO_PONTO_NA_BASE_M de uma base nao conta: o ORION (16 m do centro da base
+ *  de Penha) ganhava "visita" das 21:26 as 22:47 com o carro dormindo na
+ *  garagem, virava a ultima entrega e a chegada das 18:02 sumia. */
 export function ajustarJanelaPelasVisitas(
   posicoes: Posicao[],
   basesCentro: BaseCentro[],
   saidaBase: string | null,
   chegadaBase: string | null,
-  visitas: { chegada: string | null; saida: string | null; viaVizinhanca?: boolean; viaRaioAmpliado?: boolean }[],
+  visitas: { id?: string; chegada: string | null; saida: string | null; viaVizinhanca?: boolean; viaRaioAmpliado?: boolean }[],
+  pontos: { id: string; lat: number; lng: number }[] = [],
 ): { saidaBase: string | null; chegadaBase: string | null } {
-  const diretas = visitas.filter((v) => v.chegada && v.saida && !v.viaVizinhanca && !v.viaRaioAmpliado);
+  const naBase = new Set(pontos
+    .filter((pt) => basesCentro.some((b) => haversineM(b.lat, b.lng, pt.lat, pt.lng) <= RAIO_PONTO_NA_BASE_M))
+    .map((pt) => pt.id));
+  const diretas = visitas.filter((v) => v.chegada && v.saida && !v.viaVizinhanca && !v.viaRaioAmpliado && !(v.id && naBase.has(v.id)));
   if (diretas.length === 0 || basesCentro.length === 0) return { saidaBase, chegadaBase };
   const primeira = Math.min(...diretas.map((v) => Date.parse(v.chegada!)));
   const ultimaISO = diretas.map((v) => v.saida!).reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
@@ -983,6 +994,44 @@ export function acharVisitasPorPonto(
   }));
 }
 
+/** F2-06 (KN-09 c, RQV9B26 22/10): o carro pernoita fora da cerca (701-889 m
+ *  da base) com o rastreador dormindo; a 1a leitura que vale ja' esta' fora,
+ *  entao nao ha' transicao dentro->fora e a saida ficava vazia sem explicacao.
+ *  So' quando o dia COMECA com leitura atrasada (> LIMIAR_APAGAO_MIN) fora de
+ *  qualquer base: devolve o instante da 1a leitura fresca (ainda fora) -- "saida
+ *  estimada, sem sinal ate' hh:mm". Recebe as posicoes ja' sem o trecho
+ *  congelado com salto (F2-08). Carro visto dentro da base antes, rastreador
+ *  vivo desde o comeco do dia, ou sem leitura fresca: null. */
+export function acharSaidaSemSinalAte(posicoes: Posicao[], basesCentro: BaseCentro[]): string | null {
+  if (posicoes.length === 0 || basesCentro.length === 0) return null;
+  if (posicoes[0].atraso_min <= LIMIAR_APAGAO_MIN) return null;
+  for (const p of posicoes) {
+    if (basesCentro.some((b) => haversineM(b.lat, b.lng, p.lat, p.lng) <= RAIO_BASE_M)) return null;
+    if (p.atraso_min <= LIMIAR_APAGAO_MIN) return p.criado_em;
+  }
+  return null;
+}
+
+/** Saida/chegada da base de uma placa no dia (o que o POST devolve), com as
+ *  visitas acertando a janela (ajustarJanelaPelasVisitas) e o fim de rota
+ *  informado pelo KPI. `saidaSemSinalAte` so' quando a saida ficou vazia. */
+export function calcularJanelaBase(
+  posicoes: Posicao[],
+  basesCentro: BaseCentro[],
+  pontos?: PontoEntrega[],
+  fimRota?: string,
+): { saidaBase: string | null; chegadaBase: string | null; saidaSemSinalAte: string | null } {
+  const posicoesParada = removerTrechoCongeladoComSalto(posicoes);
+  const bruto = acharSaidaEChegadaBase(posicoes, basesCentro);
+  const ajustada = pontos
+    ? ajustarJanelaPelasVisitas(posicoes, basesCentro, bruto.saidaBase, bruto.chegadaBase,
+        acharVisitasPorPonto(posicoesParada, pontos, basesCentro, bruto.saidaBase, null), pontos)
+    : bruto;
+  const chegadaBase = fimRota ? acharChegadaAposFimRota(posicoes, basesCentro, fimRota) : ajustada.chegadaBase;
+  const saidaSemSinalAte = ajustada.saidaBase ? null : acharSaidaSemSinalAte(posicoesParada, basesCentro);
+  return { saidaBase: ajustada.saidaBase, chegadaBase, saidaSemSinalAte };
+}
+
 function normPlaca(p: string): string {
   return p.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
@@ -1112,6 +1161,7 @@ export async function POST(request: Request) {
     saidaBase: string | null;
     chegadaBase: string | null;
     kmPercorrido: number | null;
+    saidaSemSinalAte?: string;
     visitas?: VisitaPonto[];
     paradas?: ParadaDerivada[];
     apagaoDeSinal?: boolean;
@@ -1143,19 +1193,13 @@ export async function POST(request: Request) {
     // F2-08: parada, visita e trajeto sem o trecho congelado que termina em
     // salto impossivel; base, km e os detectores de apagao leem tudo.
     const posicoesParada = removerTrechoCongeladoComSalto(posicoes);
-    const { saidaBase: saidaBaseBruta, chegadaBase: chegadaBaseDefault } = acharSaidaEChegadaBase(posicoes, basesCentro);
     // Achado real 21/09 (RBG-5G18): com `fimRotaPorPlaca`, `chegadaBase` deixa
     // de ser a ultima entrada do dia e vira a 1a entrada apos a ultima
     // entrega real -- corta manobra/pernoite pos-rota de `kmPercorrido`.
     const fimRota = fimRotaPorPlaca.get(placaNorm);
     const pontos = pontosPorPlaca.get(placaNorm);
     // Janela da rota acertada pelas entregas do dia (ver ajustarJanelaPelasVisitas).
-    const ajustada = pontos
-      ? ajustarJanelaPelasVisitas(posicoes, basesCentro, saidaBaseBruta, chegadaBaseDefault,
-          acharVisitasPorPonto(posicoesParada, pontos, basesCentro, saidaBaseBruta, null))
-      : { saidaBase: saidaBaseBruta, chegadaBase: chegadaBaseDefault };
-    const saidaBase = ajustada.saidaBase;
-    const chegadaBase = fimRota ? acharChegadaAposFimRota(posicoes, basesCentro, fimRota) : ajustada.chegadaBase;
+    const { saidaBase, chegadaBase, saidaSemSinalAte } = calcularJanelaBase(posicoes, basesCentro, pontos, fimRota);
     const kmPercorrido = calcularKmContinuo(filtrarJanelaRota(posicoes, saidaBase, chegadaBase));
     const visitas = pontos ? acharVisitasPorPonto(posicoesParada, pontos, basesCentro, saidaBase, chegadaBase) : undefined;
     // Paradas derivadas so' quando pedidas (`incluirParadas`) -- payload
@@ -1171,6 +1215,8 @@ export async function POST(request: Request) {
       saidaBase,
       chegadaBase,
       kmPercorrido,
+      // F2-06: campo novo, so' quando existe (KPI antigo ignora).
+      ...(saidaSemSinalAte ? { saidaSemSinalAte } : {}),
       ...(visitas ? { visitas } : {}),
       ...(paradas ? { paradas } : {}),
       ...(apagaoDeSinal !== undefined ? { apagaoDeSinal } : {}),

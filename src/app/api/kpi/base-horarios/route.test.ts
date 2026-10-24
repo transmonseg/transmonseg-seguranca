@@ -1462,4 +1462,15 @@ describe("POST /api/kpi/base-horarios -- F2-08 trecho congelado com salto", () =
     expect(r.paradas.some((p: { chegada: string }) => p.chegada === "2026-10-22T11:39:38.462Z")).toBe(false);
     expect(r.visitas[0].chegada).toBe("2026-10-22T12:20:15.032Z");
   });
+
+  it("F2-06: saida vazia com pernoite fora da cerca devolve saidaSemSinalAte (09:20 BRT)", async () => {
+    const res = await POST(new Request("http://local/api/kpi/base-horarios", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-motor-key": "segredo" },
+      body: JSON.stringify({ placas: ["RQV9B26"], data: "2026-10-22" }),
+    }));
+    const { resultados: [r] } = await res.json();
+    expect(r.saidaBase).toBeNull();
+    expect(r.saidaSemSinalAte).toBe("2026-10-22T12:20:15.032Z");
+  });
 });
