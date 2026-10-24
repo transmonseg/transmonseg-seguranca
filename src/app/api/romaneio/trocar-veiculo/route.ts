@@ -58,11 +58,32 @@ export async function POST(request: Request) {
         return Response.json({
           ok: false,
           pontos: 0,
+          nfsNaoEncontradas: r.nfsNaoEncontradas,
           erro: `as ${nfs.length} notas de ${placaDe} em ${data} nao foram encontradas no monitoramento -- nada foi trocado`,
         }, { status: 404 });
       }
       return Response.json({ ok: true, pontos: 0, para: para.placa, aviso: `nenhuma entrega de ${placaDe} em ${data} no monitoramento` });
     }
+    if (nfs && r.nfsNaoEncontradas.length > 0) {
+      // Revisao F1-05 (R2): troca parcial nao passa calada. O que achou ja'
+      // mudou de carro (COMMIT feito, nao desfaz); a falta vira ok:false com
+      // a lista, que o KPI mostra em vermelho com este texto.
+      const pedidas = new Set(nfs).size;
+      const faltam = r.nfsNaoEncontradas;
+      const lista = faltam.slice(0, 10).join(", ") + (faltam.length > 10 ? ", ..." : "");
+      return Response.json({
+        ok: false,
+        parcial: true,
+        pontos: r.movidos,
+        jaNoDestino: r.jaNoDestino,
+        desviosFechados: r.desviosFechados,
+        nfsNaoEncontradas: faltam,
+        para: para.placa,
+        erro: `troca parcial: ${pedidas - faltam.length} de ${pedidas} notas estao em ${para.placa}; ${faltam.length} notas de ${placaDe} em ${data} nao estao no monitoramento (nem em ${placaDe} nem em ${para.placa}): ${lista}`,
+      }, { status: 409 });
+    }
+    // jaNoDestino > 0 com pontos 0 = troca refeita (o KPI regrava a troca):
+    // estado certo, nada de 404 (revisao F1-05 R1).
     return Response.json({ ok: true, pontos: r.movidos, jaNoDestino: r.jaNoDestino, desviosFechados: r.desviosFechados, para: para.placa });
   } catch (err) {
     return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });

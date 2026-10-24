@@ -40,16 +40,27 @@ export type ClienteSql = {
 export type ResultadoTroca = {
   /** Linhas que passaram para o carro de destino. */
   movidos: number;
-  /** NFs que ja estavam no carro de destino: a linha duplicada da origem saiu. */
+  /**
+   * Ja' estava no carro de destino: linhas da origem duplicadas no destino
+   * (sairam, DR-19) + NFs pedidas que so' existem no destino (troca refeita,
+   * revisao F1-05 R1).
+   */
   jaNoDestino: number;
   /** Desvios ativos do carro antigo, daquele dia, fechados pela troca. */
   desviosFechados: number;
+  /**
+   * NFs pedidas que nao estao nem na origem nem no destino (revisao F1-05
+   * R2: troca parcial nao pode passar calada). Sempre [] sem nfs.
+   */
+  nfsNaoEncontradas: string[];
 };
 
 /**
  * Executa a troca numa transacao so'. Sem nenhuma linha de origem, faz
- * ROLLBACK e devolve zeros (a rota transforma isso em ok:false quando havia
- * NFs). Qualquer erro faz ROLLBACK e sobe -- nunca deixa troca pela metade.
+ * ROLLBACK e devolve so' o que ja' estava no destino (a rota responde ok
+ * quando todas as NFs ja estao la' -- troca refeita -- e ok:false quando
+ * alguma NF nao esta em lugar nenhum). Qualquer erro faz ROLLBACK e sobe --
+ * nunca deixa troca pela metade.
  */
 export async function executarTrocaVeiculo(
   cliente: ClienteSql,
@@ -66,17 +77,40 @@ export async function executarTrocaVeiculo(
   await cliente.query("BEGIN");
   try {
     const { rows } = await cliente.query(
-      `SELECT id, veiculo_id FROM romaneio_pontos
+      `SELECT id, veiculo_id, nf FROM romaneio_pontos
         WHERE romaneio_data = $1::date
           AND regexp_replace(upper(placa), '[^A-Z0-9]', '', 'g') = ANY($2::text[])
           AND ($3::text[] IS NULL OR nf = ANY($3::text[]))
         FOR UPDATE`,
       [data, origens, nfs],
     );
-    const origem = rows as { id: string; veiculo_id: string | null }[];
+    const origem = rows as { id: string; veiculo_id: string | null; nf: string | null }[];
+
+    // NFs pedidas sem linha na origem: ja' no destino (troca refeita pelo
+    // KPI) ou em lugar nenhum (nunca chegaram, outra placa) -- essas voltam
+    // em nfsNaoEncontradas para a falta aparecer.
+    let nfsSoNoDestino = 0;
+    let nfsNaoEncontradas: string[] = [];
+    if (nfs) {
+      const naOrigem = new Set(origem.map((o) => o.nf));
+      const faltando = [...new Set(nfs)].filter((n) => !naOrigem.has(n));
+      if (faltando.length > 0) {
+        const { rows: noDestino } = await cliente.query(
+          `SELECT DISTINCT nf FROM romaneio_pontos
+            WHERE romaneio_data = $1::date
+              AND regexp_replace(upper(placa), '[^A-Z0-9]', '', 'g') = $2
+              AND nf = ANY($3::text[])`,
+          [data, compactarPlaca(para.placa), faltando],
+        );
+        const jaLa = new Set((noDestino as { nf: string }[]).map((r) => r.nf));
+        nfsSoNoDestino = jaLa.size;
+        nfsNaoEncontradas = faltando.filter((n) => !jaLa.has(n));
+      }
+    }
+
     if (origem.length === 0) {
       await cliente.query("ROLLBACK");
-      return { movidos: 0, jaNoDestino: 0, desviosFechados: 0 };
+      return { movidos: 0, jaNoDestino: nfsSoNoDestino, desviosFechados: 0, nfsNaoEncontradas };
     }
 
     // Colisao (DR-19): a unique (romaneio_data, placa, nf, modo_teste, origem)
@@ -136,7 +170,7 @@ export async function executarTrocaVeiculo(
     }
 
     await cliente.query("COMMIT");
-    return { movidos, jaNoDestino: removidasIds.size, desviosFechados };
+    return { movidos, jaNoDestino: removidasIds.size + nfsSoNoDestino, desviosFechados, nfsNaoEncontradas };
   } catch (err) {
     await cliente.query("ROLLBACK").catch(() => {});
     throw err;

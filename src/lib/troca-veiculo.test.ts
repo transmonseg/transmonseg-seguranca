@@ -64,7 +64,7 @@ describe("executarTrocaVeiculo", () => {
   const para = { id: "v-tos", placa: "TOS-5E38" };
 
   it("caso real 23/10 RQO5E38 -> TOS5E38: as 8 linhas mudam em transacao, casando pela placa compacta", async () => {
-    const origem = Array.from({ length: 8 }, (_, i) => ({ id: `p${i}`, veiculo_id: null }));
+    const origem = Array.from({ length: 8 }, (_, i) => ({ id: `p${i}`, veiculo_id: null, nf: i < 4 ? "1" : "2" }));
     const { cliente, chamadas } = clienteFalso({
       "FOR UPDATE": { rows: origem },
       "DELETE FROM romaneio_pontos": { rows: [] },
@@ -72,7 +72,7 @@ describe("executarTrocaVeiculo", () => {
       "UPDATE alertas_romaneio": { rows: [] },
     });
     const r = await executarTrocaVeiculo(cliente, { data: "2026-10-23", origens: ["RQO5E38", "RQ05E38"], nfs: ["1", "2"], para });
-    expect(r).toEqual({ movidos: 8, jaNoDestino: 0, desviosFechados: 0 });
+    expect(r).toEqual({ movidos: 8, jaNoDestino: 0, desviosFechados: 0, nfsNaoEncontradas: [] });
     expect(chamadas[0].sql).toBe("BEGIN");
     expect(chamadas.at(-1)!.sql).toBe("COMMIT");
     const sel = chamadas.find((c) => c.sql.includes("FOR UPDATE"))!;
@@ -85,7 +85,7 @@ describe("executarTrocaVeiculo", () => {
   it("0 linhas de origem com NFs: ROLLBACK e nada movido (a rota responde ok:false)", async () => {
     const { cliente, chamadas } = clienteFalso({ "FOR UPDATE": { rows: [] } });
     const r = await executarTrocaVeiculo(cliente, { data: "2026-10-23", origens: ["RQO5E38"], nfs: ["1"], para });
-    expect(r).toEqual({ movidos: 0, jaNoDestino: 0, desviosFechados: 0 });
+    expect(r).toEqual({ movidos: 0, jaNoDestino: 0, desviosFechados: 0, nfsNaoEncontradas: ["1"] });
     expect(chamadas.map((c) => c.sql)).toContain("ROLLBACK");
     expect(chamadas.map((c) => c.sql)).not.toContain("COMMIT");
     expect(chamadas.some((c) => c.sql.includes("UPDATE romaneio_pontos"))).toBe(false);
@@ -99,7 +99,7 @@ describe("executarTrocaVeiculo", () => {
       "UPDATE alertas_romaneio": { rows: [{ id: "al1" }] },
     });
     const r = await executarTrocaVeiculo(cliente, { data: "2026-10-21", origens: ["LLD4202"], nfs: null, para });
-    expect(r).toEqual({ movidos: 1, jaNoDestino: 1, desviosFechados: 1 });
+    expect(r).toEqual({ movidos: 1, jaNoDestino: 1, desviosFechados: 1, nfsNaoEncontradas: [] });
     const upd = chamadas.find((c) => c.sql.includes("UPDATE romaneio_pontos"))!;
     expect(upd.params[0]).toEqual(["b"]);
   });
@@ -137,5 +137,49 @@ describe("executarTrocaVeiculo", () => {
     await expect(executarTrocaVeiculo(cliente, { data: "2026-10-21", origens: ["X"], nfs: null, para })).rejects.toThrow("duplicate key");
     expect(chamadas.map((c) => c.sql)).toContain("ROLLBACK");
     expect(chamadas.map((c) => c.sql)).not.toContain("COMMIT");
+  });
+
+  // Revisao F1-05 (R1): o KPI regrava a troca (troca/route.ts "Idempotencia:
+  // limpa ... e regrava") e chama o MON de novo com as NFs do romaneio
+  // original. Na 2a chamada as NFs ja estao no destino: nada na origem.
+  it("troca refeita (as NFs ja estao todas no destino): ROLLBACK, conta jaNoDestino e nada falta", async () => {
+    const { cliente, chamadas } = clienteFalso({
+      "FOR UPDATE": { rows: [] },
+      "SELECT DISTINCT nf": { rows: [{ nf: "2410175" }, { nf: "2410176" }] },
+    });
+    const r = await executarTrocaVeiculo(cliente, { data: "2026-10-07", origens: ["RQV5F67"], nfs: ["2410175", "2410176"], para });
+    expect(r).toEqual({ movidos: 0, jaNoDestino: 2, desviosFechados: 0, nfsNaoEncontradas: [] });
+    const dest = chamadas.find((c) => c.sql.includes("SELECT DISTINCT nf"))!;
+    expect(dest.sql).toContain("regexp_replace(upper(placa), '[^A-Z0-9]', '', 'g') = $2");
+    expect(dest.params).toEqual(["2026-10-07", "TOS5E38", ["2410175", "2410176"]]);
+    expect(chamadas.map((c) => c.sql)).toContain("ROLLBACK");
+    expect(chamadas.map((c) => c.sql)).not.toContain("COMMIT");
+  });
+
+  // Revisao F1-05 (R2): das N NFs da carga so' parte casava e a troca
+  // respondia ok sem dizer quantas faltaram (falha silenciosa parcial).
+  it("troca parcial: devolve as NFs que nao estao nem na origem nem no destino", async () => {
+    const { cliente, chamadas } = clienteFalso({
+      "FOR UPDATE": { rows: [{ id: "a", veiculo_id: "v-old", nf: "1" }, { id: "b", veiculo_id: "v-old", nf: "1" }, { id: "c", veiculo_id: "v-old", nf: "2" }] },
+      "SELECT DISTINCT nf": { rows: [{ nf: "3" }] },
+      "UPDATE romaneio_pontos": { rows: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+    });
+    const r = await executarTrocaVeiculo(cliente, { data: "2026-10-23", origens: ["RQO5E38"], nfs: ["1", "2", "3", "4", "5", "4"], para });
+    expect(r.movidos).toBe(3);
+    expect(r.jaNoDestino).toBe(1);
+    expect(r.nfsNaoEncontradas).toEqual(["4", "5"]);
+    const dest = chamadas.find((c) => c.sql.includes("SELECT DISTINCT nf"))!;
+    expect(dest.params[2]).toEqual(["3", "4", "5"]);
+    expect(chamadas.at(-1)!.sql).toBe("COMMIT");
+  });
+
+  it("sem nfs (placa inteira): nunca consulta o destino e nada falta", async () => {
+    const { cliente, chamadas } = clienteFalso({
+      "FOR UPDATE": { rows: [{ id: "a", veiculo_id: null, nf: "1" }] },
+      "UPDATE romaneio_pontos": { rows: [{ id: "a" }] },
+    });
+    const r = await executarTrocaVeiculo(cliente, { data: "2026-10-21", origens: ["X"], nfs: null, para });
+    expect(r.nfsNaoEncontradas).toEqual([]);
+    expect(chamadas.some((c) => c.sql.includes("SELECT DISTINCT nf"))).toBe(false);
   });
 });
