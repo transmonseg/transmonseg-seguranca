@@ -49,6 +49,13 @@ async function temColunaPedidoErp(admin: Admin): Promise<boolean> {
   return !error;
 }
 
+/** F2-10-a: presenca_metodo vem da migration 088 (PENDENTE). Com ela, NF que
+ *  muda de carro zera o metodo junto com a presenca. */
+async function temColunaPresencaMetodo(admin: Admin): Promise<boolean> {
+  const { error } = await admin.from("romaneio_pontos").select("id, presenca_metodo").limit(1);
+  return !error;
+}
+
 async function pontosRQDoDia(admin: Admin, data: string, comPedidoErp: boolean): Promise<PontoRQ[]> {
   const cols = comPedidoErp ? `${COLUNAS_PONTO}, pedido_erp` : COLUNAS_PONTO;
   const todos: PontoRQ[] = [];
@@ -89,9 +96,11 @@ export async function POST(request: Request) {
   const enviadoPor = enviadoPorRQ(request.headers.get("x-enviado-por"));
 
   let comPedidoErp: boolean;
+  let comPresencaMetodo: boolean;
   let existentes: PontoRQ[];
   try {
     comPedidoErp = await temColunaPedidoErp(admin);
+    comPresencaMetodo = await temColunaPresencaMetodo(admin);
     existentes = await pontosRQDoDia(admin, data, comPedidoErp);
   } catch (err) {
     return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });
@@ -101,7 +110,7 @@ export async function POST(request: Request) {
   if (aviso) console.error(`${new Date().toISOString()} [romaneio/rioquality] ${data}: substituir recusado -- ${aviso}`);
   const substituir = pediuSubstituir && !aviso;
   const recusa = aviso ? { substituicaoRecusada: true, aviso } : {};
-  const plano = planejarDiaRQ({ data, existentes, linhas, substituir, veiculoPorPlaca, enviadoPor, comPedidoErp });
+  const plano = planejarDiaRQ({ data, existentes, linhas, substituir, veiculoPorPlaca, enviadoPor, comPedidoErp, comPresencaMetodo });
   if (body?.simular === true) {
     return Response.json({ ok: true, simulado: true, romaneioData: data, existentes: existentes.length, inserir: plano.inserir.length, atualizar: plano.atualizar.length, apagar: plano.apagar.length, placasNaoEncontradas, ...recusa });
   }

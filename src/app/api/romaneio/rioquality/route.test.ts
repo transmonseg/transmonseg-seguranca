@@ -19,6 +19,7 @@ const db = {
   veiculos: [] as Linha[],
   pontos: [] as Linha[],
   temPedidoErp: false,
+  temPresencaMetodo: false,
   upserts: [] as { linhas: Linha[]; onConflict?: string; ignoreDuplicates?: boolean }[],
   deletes: [] as string[][],
 };
@@ -49,6 +50,9 @@ function consulta(tabela: string) {
   q.then = (ok: (r: unknown) => unknown) => {
     if (tabela === "romaneio_pontos" && cols.includes("pedido_erp") && !db.temPedidoErp) {
       return Promise.resolve({ data: null, error: { code: "42703", message: "column romaneio_pontos.pedido_erp does not exist" } }).then(ok);
+    }
+    if (tabela === "romaneio_pontos" && cols.includes("presenca_metodo") && !db.temPresencaMetodo) {
+      return Promise.resolve({ data: null, error: { code: "42703", message: "column romaneio_pontos.presenca_metodo does not exist" } }).then(ok);
     }
     let rs = linhasDaTabela().filter(r => filtros.every(f => f(r)));
     if (op === "delete") {
@@ -90,6 +94,7 @@ describe("POST /api/romaneio/rioquality", () => {
     ];
     db.pontos = [];
     db.temPedidoErp = false;
+    db.temPresencaMetodo = false;
     db.upserts = [];
     db.deletes = [];
   });
@@ -183,6 +188,14 @@ describe("POST /api/romaneio/rioquality", () => {
     expect(db.pontos).toHaveLength(1);
     expect(db.pontos[0]).toMatchObject({ placa: "LUN-8C28", veiculo_id: "v-lun", presenca_confirmada_em: null });
     expect(db.upserts.find(u => u.onConflict === "id")).toBeDefined();
+  });
+
+  it("F2-10-a: com a coluna presenca_metodo (088), NF que muda de carro zera a presenca e o metodo juntos", async () => {
+    db.temPresencaMetodo = true;
+    db.pontos = [{ ...pontoBase, id: "a", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "6072109", cliente_nome: "L", endereco_bruto: "E", enviado_por: "cron-fusion (pelo Ao vivo do KPI)", presenca_confirmada_em: "2026-10-20T13:00:00Z", presenca_metodo: "vizinhanca" }];
+    const r = await postJson({ data: "2026-10-23", linhas: [{ placa: "LUN8C28", nf: "6072109", clienteNome: "L", enderecoBruto: "E" }] }, { ...CHAVE, "x-enviado-por": "cron-fusion" });
+    expect(r.status).toBe(200);
+    expect(db.pontos[0]).toMatchObject({ placa: "LUN-8C28", presenca_confirmada_em: null, presenca_metodo: null });
   });
 
   it("F2-04-a: substituir com linhas vazias nao apaga o dia da RQ (nem a presenca) e devolve o aviso", async () => {

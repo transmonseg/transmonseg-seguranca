@@ -154,8 +154,8 @@ function escolherQueFica(cands: PontoRQ[], placa: string): PontoRQ {
  *  - Cada linha recebida casa com as linhas existentes da mesma NF, ou do
  *    mesmo pedido ERP (a Fusion grava o pedido como NF; a planilha manual
  *    traz a NF real e o pedido). Fica uma; as outras (NF em 2 placas) saem.
- *  - Carro diferente: troca placa/veiculo e zera a presenca. Mesmo carro: a
- *    presenca fica.
+ *  - Carro diferente: troca placa/veiculo e zera a presenca (e o
+ *    presenca_metodo da 088, F2-10-a). Mesmo carro: a presenca fica.
  *  - Coordenada do KPI: grava e marca geocode ok. Sem ela, endereco mudou =>
  *    volta para a fila de geocode (o ponto velho era do endereco velho).
  *  - substituir: o que a RQ tinha no dia e nao veio sai. Sem substituir, so'
@@ -174,6 +174,8 @@ export function planejarDiaRQ(p: {
   veiculoPorPlaca: Map<string, string>
   enviadoPor: string
   comPedidoErp: boolean
+  /** Coluna presenca_metodo (migration 088) existe: zera junto com a presenca. */
+  comPresencaMetodo?: boolean
 }): PlanoRQ {
   const porNf = new Map<string, PontoRQ[]>();
   const porPedido = new Map<string, PontoRQ[]>();
@@ -280,7 +282,9 @@ export function planejarDiaRQ(p: {
       endereco_bruto: l.enderecoBruto,
       enviado_por: p.enviadoPor,
       ...(p.comPedidoErp ? { pedido_erp: l.pedidoErp } : {}),
-      ...(trocouCarro ? { presenca_confirmada_em: null } : {}),
+      // F2-10-a (revisao Fase 2): o metodo (dwell/vizinhanca) era da presenca
+      // do carro antigo; zera junto, senao fica metodo sem presenca.
+      ...(trocouCarro ? { presenca_confirmada_em: null, ...(p.comPresencaMetodo ? { presenca_metodo: null } : {}) } : {}),
       ...(coordNova
         ? { lat: l.lat, lng: l.lng, geocode_status: "ok" }
         : enderecoMudou && l.lat == null

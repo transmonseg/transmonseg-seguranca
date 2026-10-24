@@ -117,6 +117,29 @@ describe("planejarDiaRQ (F2-04)", () => {
     expect(p.atualizar[0]).not.toHaveProperty("lat"); // mesmo endereco: o ponto fica
   });
 
+  it("F2-10-a: NF muda de carro (20/10 NF 6072109 LNH-9C10 -> LUN-8C28) zera presenca_confirmada_em E presenca_metodo juntos (com a 088)", () => {
+    const p = planejarDiaRQ({ ...base, substituir: false, comPresencaMetodo: true,
+      existentes: [ponto({ id: "a", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "6072109", presenca_confirmada_em: "2026-10-20T13:00:00Z" })],
+      linhas: lerLinhasRQ([{ placa: "LUN8C28", nf: "6072109", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" }]),
+    });
+    expect(p.atualizar).toEqual([expect.objectContaining({ id: "a", placa: "LUN-8C28", presenca_confirmada_em: null, presenca_metodo: null })]);
+  });
+
+  it("F2-10-a: sem a coluna presenca_metodo (088 nao aplicada) nao manda a coluna; mesmo carro nao mexe em nenhuma das duas", () => {
+    const sem = planejarDiaRQ({ ...base, substituir: false, comPresencaMetodo: false,
+      existentes: [ponto({ id: "a", placa: "LNH-9C10", veiculo_id: "v-lnh", presenca_confirmada_em: "2026-10-20T13:00:00Z" })],
+      linhas: lerLinhasRQ([{ placa: "LUN8C28", nf: "6079976", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" }]),
+    });
+    expect(sem.atualizar[0]).toMatchObject({ presenca_confirmada_em: null });
+    expect(sem.atualizar[0]).not.toHaveProperty("presenca_metodo");
+    const mesmo = planejarDiaRQ({ ...base, substituir: false, comPresencaMetodo: true,
+      existentes: [ponto({ id: "a", presenca_confirmada_em: "2026-10-20T13:00:00Z" })],
+      linhas: lerLinhasRQ([{ placa: "LUI1G55", nf: "6079976", clienteCodigo: "6079976", clienteNome: "OUTRO NOME", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" }]),
+    });
+    expect(mesmo.atualizar[0]).not.toHaveProperty("presenca_confirmada_em");
+    expect(mesmo.atualizar[0]).not.toHaveProperty("presenca_metodo");
+  });
+
   it("upload manual de 23/10 substitui a versao da Fusion: casa pelo pedido, NF real, mesmo carro mantem presenca, coordenada do KPI", () => {
     const p = planejarDiaRQ({ ...base, substituir: true,
       existentes: [
