@@ -148,6 +148,70 @@ describe("planejarDiaRQ (F2-04)", () => {
     expect(p.atualizar).toEqual([expect.objectContaining({ id: "manual", nf: "6079976", pedido_erp: "6079976" })]);
   });
 
+  // Revisao Fase 2 (F2-REV-01): com o pedido ERP em toda linha (KPI depois do
+  // F2-04/D-21b), a 1a linha de um pedido repetido juntava como candidatas
+  // TODAS as linhas do mesmo pedido: a presenca ia para a NF errada e as
+  // linhas eram apagadas e reinseridas a cada tick.
+  it("F2-REV-01, Fusion com o pedido repetido no dia (P e P-2): cada linha fica com a sua, presenca no lugar, plano vazio", () => {
+    const p = planejarDiaRQ({ ...base, comPedidoErp: true, substituir: true,
+      existentes: [
+        ponto({ id: "A", nf: "6079976", pedido_erp: "6079976", criado_em: "2026-10-23T08:01:00Z" }),
+        ponto({ id: "C", nf: "6079976-2", pedido_erp: "6079976", presenca_confirmada_em: "2026-10-23T14:00:00Z", criado_em: "2026-10-23T08:01:00Z" }),
+      ],
+      linhas: lerLinhasRQ([
+        { placa: "LUI1G55", nf: "6079976", pedidoErp: "6079976", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" },
+        { placa: "LUI1G55", nf: "6079976", pedidoErp: "6079976", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" },
+      ]),
+    });
+    expect(p).toEqual({ inserir: [], atualizar: [], apagar: [] });
+  });
+
+  it("F2-REV-01, planilha manual com o pedido partido em 2 NFs (N1, N2): a presenca de N2 nao passa para N1", () => {
+    const p = planejarDiaRQ({ ...base, comPedidoErp: true, substituir: true,
+      existentes: [
+        ponto({ id: "A", nf: "5558902", pedido_erp: "6079976", enviado_por: "erica@x.com (Rio Quality pelo Ao vivo do KPI)" }),
+        ponto({ id: "C", nf: "5558903", pedido_erp: "6079976", presenca_confirmada_em: "2026-10-23T14:00:00Z", enviado_por: "erica@x.com (Rio Quality pelo Ao vivo do KPI)" }),
+      ],
+      linhas: lerLinhasRQ([
+        { placa: "LUI1G55", nf: "5558902", pedidoErp: "6079976", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" },
+        { placa: "LUI1G55", nf: "5558903", pedidoErp: "6079976", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" },
+      ]),
+    });
+    expect(p.apagar).toEqual([]);
+    expect(p.inserir).toEqual([]);
+    // enviado_por igual nao entra no "mudou": nada a atualizar
+    expect(p.atualizar).toEqual([]);
+  });
+
+  it("F2-REV-01, volta da manual (N1, N2 do pedido P) para a Fusion (P, P-2): uma NF por linha, nada apagado nem inserido", () => {
+    const p = planejarDiaRQ({ ...base, comPedidoErp: true, substituir: true,
+      existentes: [
+        ponto({ id: "A", nf: "5558902", pedido_erp: "6079976", presenca_confirmada_em: "2026-10-23T14:00:00Z", enviado_por: "erica@x.com (Rio Quality pelo Ao vivo do KPI)" }),
+        ponto({ id: "C", nf: "5558903", pedido_erp: "6079976", enviado_por: "erica@x.com (Rio Quality pelo Ao vivo do KPI)" }),
+      ],
+      linhas: lerLinhasRQ([
+        { placa: "LUI1G55", nf: "6079976", pedidoErp: "6079976", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" },
+        { placa: "LUI1G55", nf: "6079976", pedidoErp: "6079976", clienteCodigo: "6079976", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" },
+      ]),
+    });
+    expect(p.apagar).toEqual([]);
+    expect(p.inserir).toEqual([]);
+    expect(p.atualizar.map(a => [a.id, a.nf]).sort()).toEqual([["A", "6079976"], ["C", "6079976-2"]]);
+  });
+
+  it("F2-REV-01, pedido unico na Fusion em 2 placas (antes da 089) e a planilha manual com a NF real: continua 1 linha so'", () => {
+    const p = planejarDiaRQ({ ...base, substituir: true,
+      existentes: [
+        ponto({ id: "a", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "6072109", presenca_confirmada_em: "2026-10-20T13:00:00Z" }),
+        ponto({ id: "b", placa: "LUN-8C28", veiculo_id: "v-lun", nf: "6072109" }),
+      ],
+      linhas: lerLinhasRQ([{ placa: "LUN8C28", nf: "5557757", pedidoErp: "6072109", clienteCodigo: "6072109", clienteNome: "ELIZABETH DE ABREU LEITE ALMEIDA", enderecoBruto: "AVENIDA SERGIPE, RESENDE - RJ" }]),
+    });
+    expect(p.apagar).toEqual(["a"]);
+    expect(p.inserir).toEqual([]);
+    expect(p.atualizar).toEqual([expect.objectContaining({ id: "b", nf: "5557757" })]);
+  });
+
   it("sem substituir, o que nao veio fica (formato antigo do KPI)", () => {
     const p = planejarDiaRQ({ ...base, substituir: false, existentes: [ponto({ id: "a" })], linhas: [] });
     expect(p).toEqual({ inserir: [], atualizar: [], apagar: [] });

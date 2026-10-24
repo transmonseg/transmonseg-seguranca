@@ -154,7 +154,13 @@ function escolherQueFica(cands: PontoRQ[], placa: string): PontoRQ {
  *  - Coordenada do KPI: grava e marca geocode ok. Sem ela, endereco mudou =>
  *    volta para a fila de geocode (o ponto velho era do endereco velho).
  *  - substituir: o que a RQ tinha no dia e nao veio sai. Sem substituir, so'
- *    as duplicatas da mesma NF saem. */
+ *    as duplicatas da mesma NF saem.
+ *  - Revisao Fase 2 (F2-REV-01): a NF exata casa primeiro, para TODAS as
+ *    linhas; o pedido so' entra para a linha que nao achou a propria NF, e so'
+ *    com o que sobrou. Pedido repetido entre as linhas recebidas (Fusion P e
+ *    P-2; planilha com o pedido partido em N1 e N2) leva uma NF existente por
+ *    linha. Antes a 1a linha juntava todas as do pedido: a presenca ia para a
+ *    NF errada e as outras eram apagadas e reinseridas a cada envio. */
 export function planejarDiaRQ(p: {
   data: string
   existentes: PontoRQ[]
@@ -179,11 +185,49 @@ export function planejarDiaRQ(p: {
   const usados = new Set<string>();
   const plano: PlanoRQ = { inserir: [], atualizar: [], apagar: [] };
 
-  for (const l of p.linhas) {
-    const cands = new Map<string, PontoRQ>();
-    for (const e of [...(porNf.get(l.nf) ?? []), ...(l.pedidoErp ? [...(porNf.get(l.pedidoErp) ?? []), ...(porPedido.get(l.pedidoErp) ?? [])] : [])]) {
-      if (!usados.has(e.id)) cands.set(e.id, e);
+  // 1) NF exata, para todas as linhas (NF em 2 placas: todas da NF entram).
+  const candsDa: PontoRQ[][] = p.linhas.map((l) => {
+    const c = (porNf.get(l.nf) ?? []).filter((e) => !usados.has(e.id));
+    for (const e of c) usados.add(e.id);
+    return c;
+  });
+  // 2) Pedido, so' para quem nao achou a NF e so' com o que sobrou do passo 1.
+  const semNfPorPedido = new Map<string, number[]>();
+  p.linhas.forEach((l, i) => {
+    if (candsDa[i].length === 0 && l.pedidoErp) {
+      const v = semNfPorPedido.get(l.pedidoErp) ?? [];
+      v.push(i);
+      semNfPorPedido.set(l.pedidoErp, v);
     }
+  });
+  for (const [pedido, idx] of semNfPorPedido) {
+    // Agrupadas pela NF existente (a mesma NF em 2 placas e' uma NF so').
+    const grupos = new Map<string, PontoRQ[]>();
+    for (const e of [...(porNf.get(pedido) ?? []), ...(porPedido.get(pedido) ?? [])]) {
+      if (usados.has(e.id)) continue;
+      const g = grupos.get(e.nf) ?? [];
+      if (!g.some((x) => x.id === e.id)) g.push(e);
+      grupos.set(e.nf, g);
+    }
+    if (idx.length === 1) {
+      // Pedido unico entre as linhas sem NF: junta tudo (fica 1, regra de antes).
+      const c = [...grupos.values()].flat();
+      for (const e of c) usados.add(e.id);
+      candsDa[idx[0]] = c;
+      continue;
+    }
+    for (const i of idx) {
+      if (grupos.size === 0) break;
+      const melhor = escolherQueFica([...grupos.values()].flat(), p.linhas[i].placa);
+      const c = grupos.get(melhor.nf)!;
+      grupos.delete(melhor.nf);
+      for (const e of c) usados.add(e.id);
+      candsDa[i] = c;
+    }
+  }
+
+  for (const [i, l] of p.linhas.entries()) {
+    const cands = new Map<string, PontoRQ>(candsDa[i].map((e) => [e.id, e]));
     const veiculoId = p.veiculoPorPlaca.get(l.placa) ?? null;
     if (cands.size === 0) {
       plano.inserir.push({
@@ -208,7 +252,6 @@ export function planejarDiaRQ(p: {
     }
     const fica = escolherQueFica([...cands.values()], l.placa);
     for (const c of cands.values()) {
-      usados.add(c.id);
       if (c.id !== fica.id) plano.apagar.push(c.id);
     }
     const trocouCarro = compactarPlaca(fica.placa) !== compactarPlaca(l.placa);
