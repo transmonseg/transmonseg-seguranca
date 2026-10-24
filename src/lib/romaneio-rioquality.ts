@@ -14,8 +14,8 @@
 //   Fusion do dia. A NF e' a chave (nunca a placa): NF reatribuida pela Fusion
 //   a outro carro troca a placa da linha (e so' entao zera a presenca), em vez
 //   de ficar em 2 placas. O pedido ERP liga a NF real da planilha ao pedido da
-//   Fusion (D-21b). So' pontos da RQ sao tocados (frota da RQ ou enviado por
-//   esta ponte), nunca pela origem.
+//   Fusion (D-21b). So' pontos gravados por esta ponte (marca no enviado_por)
+//   sao tocados, nunca pela origem nem pela frota (F2-REV-09).
 import { normalizarPlaca } from "./romaneio";
 
 /** cod_user_unitrac da Rio Quality (clientes). */
@@ -119,10 +119,15 @@ export type PontoRQ = {
   criado_em: string
 };
 
-/** Linha de romaneio_pontos que pertence a RQ: carro da frota da RQ ou
- *  gravada por esta ponte. Nunca decide pela origem (a Nutry tambem e' "romaneio"). */
-export function ehPontoRQ(p: { veiculo_id: string | null; enviado_por: string | null }, veiculosRQ: Set<string>): boolean {
-  return (p.veiculo_id != null && veiculosRQ.has(p.veiculo_id)) || ehEnviadoPorRQ(p.enviado_por);
+/** Linha de romaneio_pontos que pertence a RQ: gravada por esta ponte (marca
+ *  do enviado_por, a mesma do indice parcial da 089). Nunca decide pela origem
+ *  (a Nutry tambem e' "romaneio").
+ *  Revisao Fase 2 (F2-REV-09): o carro da frota da RQ deixou de bastar -- um
+ *  ponto da Nutry com a placa caindo num veiculo da RQ era apagado pelo
+ *  "substituir" a cada tick da Fusion. Conferido em producao (24/10, so'
+ *  SELECT): 0 linhas da frota da RQ sem a marca da ponte (21.383 com a marca). */
+export function ehPontoRQ(p: { veiculo_id: string | null; enviado_por: string | null }): boolean {
+  return ehEnviadoPorRQ(p.enviado_por);
 }
 
 export type PlanoRQ = {

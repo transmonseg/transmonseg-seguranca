@@ -160,6 +160,22 @@ describe("POST /api/romaneio/rioquality", () => {
     });
   });
 
+  it("F2-REV-09: substituir nao apaga ponto da Nutry cuja placa caiu num veiculo da frota da RQ", async () => {
+    // A Nutry subiu a placa LNH-9C10 (frota da RQ) pelo Ao vivo do KPI. A cada
+    // tick da Fusion o substituir apagava essa linha (veiculo_id na frota RQ).
+    db.pontos = [
+      { ...pontoBase, id: "rq", placa: "LUN-8C28", veiculo_id: "v-lun", nf: "6081346", cliente_nome: "L", endereco_bruto: "E", enviado_por: "cron-fusion (pelo Ao vivo do KPI)" },
+      { ...pontoBase, id: "nutry-na-frota-rq", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "2432618", cliente_nome: "CHURRASCO", endereco_bruto: "N", enviado_por: "ericanutrymax (pelo Ao vivo do KPI)", presenca_confirmada_em: "2026-10-23T12:00:00Z" },
+    ];
+    const r = await postJson({ data: "2026-10-23", modo: "substituir", linhas: [
+      { placa: "LUN8C28", nf: "6081346", clienteNome: "L", enderecoBruto: "E" },
+    ] }, { ...CHAVE, "x-enviado-por": "cron-fusion" });
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ ok: true, linhasApagadas: 0 });
+    expect(db.pontos.map(p => p.id).sort()).toEqual(["nutry-na-frota-rq", "rq"]);
+    expect(db.pontos.find(p => p.id === "nutry-na-frota-rq")).toMatchObject({ presenca_confirmada_em: "2026-10-23T12:00:00Z" });
+  });
+
   it("NF reatribuida a outro carro (MON-10): 1 linha por NF, placa trocada e presenca zerada", async () => {
     db.pontos = [{ ...pontoBase, id: "a", placa: "LNH-9C10", veiculo_id: "v-lnh", nf: "6063481", cliente_nome: "L", endereco_bruto: "E", enviado_por: "cron-fusion (pelo Ao vivo do KPI)", presenca_confirmada_em: "2026-10-20T09:00:00Z" }];
     const r = await postJson({ data: "2026-10-23", linhas: [{ placa: "LUN8C28", nf: "6063481", clienteNome: "L", enderecoBruto: "E" }] }, { ...CHAVE, "x-enviado-por": "cron-fusion" });

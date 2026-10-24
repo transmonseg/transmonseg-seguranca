@@ -67,12 +67,20 @@ describe("enviado_por da RQ", () => {
     expect(ehEnviadoPorRQ(null)).toBe(false);
   });
 
-  it("ponto da RQ = frota da RQ ou enviado por esta ponte; Nutry sem veiculo nunca", () => {
-    const frota = new Set(["v-rq"]);
-    expect(ehPontoRQ({ veiculo_id: "v-rq", enviado_por: "Elloisy.Salles" }, frota)).toBe(true);
-    expect(ehPontoRQ({ veiculo_id: null, enviado_por: ENVIADO_POR_RQ_ANTIGO }, frota)).toBe(true);
-    expect(ehPontoRQ({ veiculo_id: null, enviado_por: "transmonseg.25@gmail.com (pelo Ao vivo do KPI)" }, frota)).toBe(false);
-    expect(ehPontoRQ({ veiculo_id: "v-nutry", enviado_por: "reparo-automatico (pelo Ao vivo do KPI)" }, frota)).toBe(false);
+  it("ponto da RQ = gravado por esta ponte (enviado_por); Nutry sem veiculo nunca", () => {
+    expect(ehPontoRQ({ veiculo_id: null, enviado_por: ENVIADO_POR_RQ_ANTIGO })).toBe(true);
+    expect(ehPontoRQ({ veiculo_id: "v-rq", enviado_por: enviadoPorRQ("erica@x.com") })).toBe(true);
+    expect(ehPontoRQ({ veiculo_id: null, enviado_por: "transmonseg.25@gmail.com (pelo Ao vivo do KPI)" })).toBe(false);
+    expect(ehPontoRQ({ veiculo_id: "v-nutry", enviado_por: "reparo-automatico (pelo Ao vivo do KPI)" })).toBe(false);
+  });
+
+  it("F2-REV-09: ponto da Nutry cuja placa cai num veiculo da frota da RQ NAO e' da RQ (o substituir nao pode apaga-lo)", () => {
+    // Antes: veiculo_id na frota da RQ bastava. Em producao (24/10, so' SELECT)
+    // nenhuma linha da frota da RQ deixou de ter a marca da ponte (0 de 21.383),
+    // entao a marca do enviado_por e' a origem confiavel.
+    expect(ehPontoRQ({ veiculo_id: "v-lnh", enviado_por: "ericanutrymax (pelo Ao vivo do KPI)" })).toBe(false);
+    expect(ehPontoRQ({ veiculo_id: "v-lnh", enviado_por: "Elloisy.Salles" })).toBe(false);
+    expect(ehPontoRQ({ veiculo_id: "v-lnh", enviado_por: null })).toBe(false);
   });
 });
 

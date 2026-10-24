@@ -9,8 +9,9 @@
 //
 // F2-04 (plano mestre 23/10): reconciliação pela NF (src/lib/romaneio-rioquality.ts).
 // - modo "substituir": o dia da RQ fica igual ao que veio (o upload manual
-//   troca a versão da Fusion). Só linhas da RQ (frota da RQ ou gravadas por
-//   esta ponte) são tocadas, nunca pela origem.
+//   troca a versão da Fusion). Só linhas gravadas por esta ponte (marca no
+//   enviado_por) são tocadas, nunca pela origem nem pela frota (F2-REV-09:
+//   ponto da Nutry com placa de veículo da RQ era apagado a cada tick).
 // - sem modo (KPI antigo): só acrescenta e corrige NF reatribuída a outro carro.
 // - simular: devolve o plano sem gravar (teste a seco / backfill).
 // F2-02: campos estruturados (rua, numero, bairro, cidade, uf, cep) viram o
@@ -22,7 +23,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizarPlaca } from "@/lib/romaneio";
 import {
-  COD_UNITRAC_RQ, agruparPorColunas, ehPontoRQ, enviadoPorRQ, lerLinhasRQ, motivoParaNaoSubstituirRQ, planejarDiaRQ, type PontoRQ,
+  agruparPorColunas, ehPontoRQ, enviadoPorRQ, lerLinhasRQ, motivoParaNaoSubstituirRQ, planejarDiaRQ, type PontoRQ,
 } from "@/lib/romaneio-rioquality";
 
 export const runtime = "nodejs";
@@ -48,16 +49,7 @@ async function temColunaPedidoErp(admin: Admin): Promise<boolean> {
   return !error;
 }
 
-async function veiculosDaFrotaRQ(admin: Admin): Promise<Set<string>> {
-  const { data: cli, error } = await admin.from("clientes").select("id").eq("cod_user_unitrac", COD_UNITRAC_RQ).maybeSingle();
-  if (error) throw new Error(`cliente RQ: ${error.message}`);
-  if (!cli) return new Set();
-  const { data: vs, error: e2 } = await admin.from("veiculos").select("id").eq("cliente_id", cli.id as string);
-  if (e2) throw new Error(`frota RQ: ${e2.message}`);
-  return new Set((vs ?? []).map((v) => v.id as string));
-}
-
-async function pontosRQDoDia(admin: Admin, data: string, frota: Set<string>, comPedidoErp: boolean): Promise<PontoRQ[]> {
+async function pontosRQDoDia(admin: Admin, data: string, comPedidoErp: boolean): Promise<PontoRQ[]> {
   const cols = comPedidoErp ? `${COLUNAS_PONTO}, pedido_erp` : COLUNAS_PONTO;
   const todos: PontoRQ[] = [];
   for (let i = 0; ; i += PAGINA) {
@@ -69,7 +61,7 @@ async function pontosRQDoDia(admin: Admin, data: string, frota: Set<string>, com
     todos.push(...pagina);
     if (pagina.length < PAGINA) break;
   }
-  return todos.filter((p) => ehPontoRQ(p, frota));
+  return todos.filter((p) => ehPontoRQ(p));
 }
 
 export async function POST(request: Request) {
@@ -100,7 +92,7 @@ export async function POST(request: Request) {
   let existentes: PontoRQ[];
   try {
     comPedidoErp = await temColunaPedidoErp(admin);
-    existentes = await pontosRQDoDia(admin, data, await veiculosDaFrotaRQ(admin), comPedidoErp);
+    existentes = await pontosRQDoDia(admin, data, comPedidoErp);
   } catch (err) {
     return Response.json({ ok: false, erro: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
