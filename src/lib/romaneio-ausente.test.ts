@@ -168,13 +168,52 @@ describe("planejarRomaneioAusente", () => {
     expect(p.resolver).toEqual([]);
   });
 
-  it("operador fechou o card: nao reabre; carro NOVO sem romaneio abre o 2o card do dia (nunca some)", () => {
-    const tratado = card({ status: "resolvido", origem_acao: "resolver_individual", contexto: { agregado: true, dia: HOJE, placas: ["RQU-1B50"], veiculo_ids: ["v-RQU-1B50"] } });
+  it("operador fechou o card ha' menos de 60 min: nao reabre; carro NOVO sem romaneio abre o 2o card do dia (nunca some)", () => {
+    const tratado = card({ status: "resolvido", origem_acao: "resolver_individual", resolvido_em: "2026-10-21T09:20:00Z", contexto: { agregado: true, dia: HOJE, placas: ["RQU-1B50"], veiculo_ids: ["v-RQU-1B50"] } });
     const mesmo = planejarRomaneioAusente({ ...base, emRota: [carro("RQU-1B50")], existentes: [tratado] });
     expect(mesmo).toEqual({ inserir: [], atualizar: [], resolver: [] });
     const novo = planejarRomaneioAusente({ ...base, emRota: [carro("RQU-1B50"), carro("TTI-6E43")], existentes: [tratado] });
     expect(novo.inserir).toHaveLength(1);
     expect(novo.inserir[0].contexto.placas).toEqual(["RQU-1B50", "TTI-6E43"]);
+  });
+
+  it("R1 F3-07 (dono): fechado pelo operador ha' 60 min e carro ja' contado segue em rota sem romaneio => REABRE o mesmo card, sem origem_acao", () => {
+    const tratado = card({ status: "falso_positivo", origem_acao: "falso_individual", resolvido_em: "2026-10-21T09:00:00Z", contexto: { agregado: true, dia: HOJE, placas: ["OXE-7D03", "RQU-1B50"], veiculo_ids: ["v-OXE-7D03", "v-RQU-1B50"] } });
+    const p = planejarRomaneioAusente({ ...base, emRota: [carro("RQU-1B50")], existentes: [tratado] });
+    expect(p.inserir).toEqual([]);
+    expect(p.atualizar).toHaveLength(1);
+    expect(p.atualizar[0].patch).toMatchObject({ status: "ativo", resolvido_em: null, origem_acao: null });
+    expect(p.atualizar[0].patch.motivo).toBe("2 carros em rota sem romaneio (1 agora), último envio há 19 h. Placas: OXE-7D03, RQU-1B50");
+    expect(p.atualizar[0].patch.contexto).toMatchObject({ reaberto_apos_operador: 1, ultimo_fechamento_operador: { origem_acao: "falso_individual", status: "falso_positivo", em: "2026-10-21T09:00:00Z" } });
+    // 59 min: ainda nao
+    const cedo = card({ ...tratado, resolvido_em: "2026-10-21T09:01:00Z" });
+    expect(planejarRomaneioAusente({ ...base, emRota: [carro("RQU-1B50")], existentes: [cedo] })).toEqual({ inserir: [], atualizar: [], resolver: [] });
+  });
+
+  it("R1 F3-07: fechado pelo operador sem resolvido_em (hora do fechamento desconhecida) e carro contado rodando => reabre (recall)", () => {
+    const tratado = card({ status: "limpo", origem_acao: "limpar_massa", contexto: { agregado: true, dia: HOJE, placas: ["RQU-1B50"], veiculo_ids: ["v-RQU-1B50"] } });
+    const p = planejarRomaneioAusente({ ...base, emRota: [carro("RQU-1B50")], existentes: [tratado] });
+    expect(p.atualizar[0]?.patch).toMatchObject({ status: "ativo", origem_acao: null });
+  });
+
+  it("R1 F3-07: no maximo 2 cards por cliente por dia -- com 2 cards fechados pelo operador, carro NOVO reabre o mais recente em vez de abrir o 3o", () => {
+    const c1 = card({ id: "c1", status: "limpo", origem_acao: "limpar_massa", desde: "2026-10-21T08:40:00Z", resolvido_em: "2026-10-21T09:10:00Z", contexto: { agregado: true, dia: HOJE, placas: ["RQU-1B50"], veiculo_ids: ["v-RQU-1B50"] } });
+    const c2 = card({ id: "c2", status: "resolvido", origem_acao: "resolver_individual", desde: "2026-10-21T09:20:00Z", resolvido_em: "2026-10-21T09:50:00Z", contexto: { agregado: true, dia: HOJE, placas: ["OXE-7D03"], veiculo_ids: ["v-OXE-7D03"] } });
+    const p = planejarRomaneioAusente({ ...base, emRota: [carro("TTI-6E43")], existentes: [c1, c2] });
+    expect(p.inserir).toEqual([]);
+    expect(p.atualizar).toHaveLength(1);
+    expect(p.atualizar[0].id).toBe("c2");
+    expect(p.atualizar[0].patch).toMatchObject({ status: "ativo", origem_acao: null });
+    expect(p.atualizar[0].patch.contexto.placas).toEqual(["OXE-7D03", "TTI-6E43"]);
+  });
+
+  it("R1 F3-07: carro contado no 1o card (fechado) rodando 60 min depois do fechamento do 2o => reabre o 2o (o mais recente)", () => {
+    const c1 = card({ id: "c1", status: "limpo", origem_acao: "limpar_massa", desde: "2026-10-21T08:40:00Z", resolvido_em: "2026-10-21T08:50:00Z", contexto: { agregado: true, dia: HOJE, placas: ["RQU-1B50"], veiculo_ids: ["v-RQU-1B50"] } });
+    const c2 = card({ id: "c2", status: "resolvido", origem_acao: "resolver_individual", desde: "2026-10-21T08:55:00Z", resolvido_em: "2026-10-21T08:58:00Z", contexto: { agregado: true, dia: HOJE, placas: ["OXE-7D03"], veiculo_ids: ["v-OXE-7D03"] } });
+    const p = planejarRomaneioAusente({ ...base, emRota: [carro("RQU-1B50")], existentes: [c1, c2] });
+    expect(p.inserir).toEqual([]);
+    expect(p.atualizar.map((u) => u.id)).toEqual(["c2"]);
+    expect(p.atualizar[0].patch.contexto.placas).toEqual(["OXE-7D03", "RQU-1B50"]);
   });
 
   it("card reconhecido segue reconhecido ao atualizar a contagem", () => {

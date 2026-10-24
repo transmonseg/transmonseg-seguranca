@@ -15,8 +15,13 @@
 // contagem do card e' a UNIAO do dia -- todo carro que entrou em algum ciclo
 // fica contado, mesmo depois que o romaneio dele chega. O card fecha sozinho
 // quando nenhum carro esta' em rota sem romaneio e REABRE (o mesmo card) se
-// outro sair; card fechado pelo operador nao reabre, mas carro novo abre o 2o
-// card do dia. Replay 20-22/10: scripts/replay-romaneio-ausente-agregado.sql.
+// outro sair. Card fechado pelo operador (Resolver, Falso positivo, Resolver
+// todos, Limpar): carro novo abre o 2o card do dia; e, decisao do dono (R1
+// F3-07, recall), se 60 min depois do fechamento algum carro JA' contado
+// segue em rota sem romaneio, o MESMO card reabre com o texto atualizado.
+// No maximo 2 cards por cliente por dia: com 2, carro novo reabre o mais
+// recente em vez de abrir o 3o. Replay 20-22/10:
+// scripts/replay-romaneio-ausente-agregado.sql.
 
 import { sqlAtrasoEfetivo } from "@/lib/frescor-posicao";
 import { dataSP } from "@/lib/motor-romaneio-estado";
@@ -35,6 +40,14 @@ const MAX_PLACAS_NO_MOTIVO = 60;
 export const CARENCIA_FECHAR_MIN = 30;
 /** O card so' e' regravado quando a uniao cresce ou a cada 10 min (visto_em, contagem "agora", "ha' X h"). */
 export const RENOVAR_CARD_MIN = 10;
+/**
+ * R1 F3-07 (decisao do dono): card fechado pelo operador reabre se, passados
+ * 60 min do fechamento (resolvido_em), algum carro ja' contado no dia segue
+ * em rota sem romaneio (mesmo criterio do SQL_FROTA_EM_ROTA).
+ */
+export const REABRIR_APOS_OPERADOR_MIN = 60;
+/** Teto de cards por cliente por dia: a partir dele carro novo reabre o mais recente. */
+export const MAX_CARDS_POR_DIA = 2;
 
 export type VeiculoEmRota = {
   veiculo_id: string;
@@ -96,6 +109,10 @@ export type ContextoRomaneioAusente = {
   ultimo_dia?: string | null;
   /** Ultima vez (renovada a cada RENOVAR_CARD_MIN) que havia carro em rota sem romaneio. */
   visto_em: string;
+  /** Quantas vezes o card reabriu depois de fechado pelo operador (R1 F3-07). */
+  reaberto_apos_operador?: number;
+  /** Ultimo fechamento do operador desfeito pela reabertura (auditoria). */
+  ultimo_fechamento_operador?: { origem_acao: string | null; status: string; em: string | null };
   auto_resolvido?: boolean;
   substituido_por_agregado?: boolean;
   [k: string]: unknown;
@@ -110,6 +127,8 @@ export type AlertaRomaneioAusente = {
   motivo: string;
   contexto: Record<string, unknown> | null;
   origem_acao: string | null;
+  /** Hora do fechamento (operador ou motor); conta os 60 min da reabertura. */
+  resolvido_em?: string | null;
 };
 
 export type NovoAlertaRomaneioAusente = {
@@ -134,6 +153,8 @@ export type PatchRomaneioAusente = {
   lng: number | null;
   status?: "ativo";
   resolvido_em?: null;
+  /** Reabertura de card fechado pelo operador: volta a ser do motor. */
+  origem_acao?: null;
 };
 
 export type PlanoRomaneioAusente = {
@@ -262,10 +283,25 @@ export function planejarRomaneioAusente(p: {
       continue;
     }
 
-    // Operador tratou o card de hoje: so' carro que nao estava em nenhum card
-    // do dia abre outro (nunca esconde carro novo rodando sem romaneio).
+    // Operador tratou o card de hoje. Carro que nao estava em nenhum card do
+    // dia abre outro (nunca esconde carro novo rodando sem romaneio); com
+    // MAX_CARDS_POR_DIA cards ja' no dia, reabre o mais recente. Carro ja'
+    // contado que segue em rota sem romaneio REABRE o mesmo card depois de
+    // REABRIR_APOS_OPERADOR_MIN do fechamento (R1 F3-07, recall).
     const jaContados = new Set(cards.flatMap((a) => [...listaDe(a.contexto?.veiculo_ids), ...listaDe(a.contexto?.placas)]));
-    if (agoraCliente.some((v) => !jaContados.has(v.veiculo_id) && !jaContados.has(v.placa))) {
+    const contado = (v: VeiculoEmRota) => jaContados.has(v.veiculo_id) || jaContados.has(v.placa);
+    const temNovo = agoraCliente.some((v) => !contado(v));
+    const contadoSegue = agoraCliente.some(contado)
+      && minutosDesde(principal.resolvido_em, p.agora) >= REABRIR_APOS_OPERADOR_MIN;
+    if (contadoSegue || (temNovo && cards.length >= MAX_CARDS_POR_DIA)) {
+      const { contexto, motivo, rep } = montar(principal);
+      contexto.reaberto_apos_operador = (typeof principal.contexto?.reaberto_apos_operador === "number" ? principal.contexto.reaberto_apos_operador : 0) + 1;
+      contexto.ultimo_fechamento_operador = { origem_acao: principal.origem_acao, status: principal.status, em: principal.resolvido_em ?? null };
+      plano.atualizar.push({
+        id: principal.id,
+        patch: { motivo, contexto, veiculo_id: rep.veiculo_id, lat: rep.lat, lng: rep.lng, status: "ativo", resolvido_em: null, origem_acao: null },
+      });
+    } else if (temNovo) {
       const { contexto, motivo, rep } = montar(undefined);
       plano.inserir.push(novo(clienteId, rep, motivo, contexto, agoraIso));
     }

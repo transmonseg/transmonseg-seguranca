@@ -839,7 +839,7 @@ export async function sinalizarRomaneioAusente(ctx: {
     // Abertos de qualquer dia (pra fechar os antigos) + os de hoje em
     // qualquer status (1 card por cliente por dia, reabre o mesmo).
     const inicioDiaSP = new Date(`${hoje}T00:00:00-03:00`).toISOString();
-    const colunas = "id, cliente_id, veiculo_id, status, desde, motivo, contexto, origem_acao";
+    const colunas = "id, cliente_id, veiculo_id, status, desde, motivo, contexto, origem_acao, resolvido_em";
     const [abertosResp, hojeResp] = await Promise.all([
       admin.from("alertas_romaneio").select(colunas).eq("tipo", TIPO_ROMANEIO_AUSENTE).in("status", ["ativo", "reconhecido"]),
       admin.from("alertas_romaneio").select(colunas).eq("tipo", TIPO_ROMANEIO_AUSENTE).gte("desde", inicioDiaSP),

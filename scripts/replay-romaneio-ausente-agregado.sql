@@ -10,6 +10,9 @@
 -- voltou a ter carro em rota sem romaneio. "episodios" = quantos cards sairiam
 -- se cada volta abrisse um card novo; "reaberturas_com_carencia" = quantas
 -- vezes o card (o mesmo) aparece de novo com a carencia de 30 min para fechar.
+-- O replay nao simula acao do operador: a reabertura do card fechado pelo
+-- operador (R1 F3-07: carro ja' contado ainda em rota sem romaneio 60 min
+-- depois do fechamento reabre o MESMO card) nao muda as contagens abaixo.
 -- Conferencia de recall: todo carro que andou (>= 30 km/h) sem romaneio no
 -- dia tem de estar na contagem do card; os que ficam fora saem na 2a consulta.
 -- Aproximacoes: romaneio "presente" a partir do primeiro criado_em do veiculo

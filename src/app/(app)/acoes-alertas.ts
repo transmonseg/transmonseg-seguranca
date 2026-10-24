@@ -104,7 +104,9 @@ const STRIP_PESADO_BASE = { lat: null, lng: null, contexto: {} };
 // Revisao F3-07 (R1): o card agregado romaneio_ausente (1 por cliente por dia,
 // @/lib/romaneio-ausente) guarda no contexto quem ja' foi contado no dia
 // (agregado, dia, placas, veiculo_ids) -- e' com isso que o motor reconhece o
-// card de hoje fechado pelo operador e so' abre o 2o card para carro novo.
+// card de hoje fechado pelo operador: carro novo abre o 2o card e carro ja'
+// contado que segue em rota sem romaneio 60 min depois do fechamento
+// (resolvido_em) reabre o mesmo card (decisao do dono, R1 F3-07).
 // Com contexto {} cada clique em Resolver/Falso/Resolver todos/Limpar fazia o
 // ciclo seguinte abrir outro card com a frota inteira. O contexto dele e'
 // pequeno (placas e ids); so' lat/lng saem. Os outros tipos seguem com o strip

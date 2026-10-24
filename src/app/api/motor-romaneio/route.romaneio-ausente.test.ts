@@ -21,14 +21,17 @@ function admin() {
   return {
     from: () => {
       const filtros: [string, string, unknown][] = [];
+      let colunas: string[] | null = null;
       const b: Record<string, unknown> = {};
-      b.select = () => b;
+      // Devolve so' as colunas pedidas no select (como o PostgREST).
+      b.select = (cols?: string) => { colunas = cols ? cols.split(",").map((c) => c.trim()) : null; return b; };
       b.eq = (c: string, v: unknown) => { filtros.push(["eq", c, v]); return b; };
       b.in = (c: string, v: unknown[]) => { filtros.push(["in", c, v]); return b; };
       b.gte = (c: string, v: unknown) => { filtros.push(["gte", c, v]); return b; };
       (b as { then?: unknown }).then = (res: (v: unknown) => unknown) => {
         const data = estado.alertas.filter((a) => filtros.every(([op, c, v]) =>
-          op === "eq" ? a[c] === v : op === "in" ? (v as unknown[]).includes(a[c]) : String(a[c]) >= String(v)));
+          op === "eq" ? a[c] === v : op === "in" ? (v as unknown[]).includes(a[c]) : String(a[c]) >= String(v)))
+          .map((a) => (colunas ? Object.fromEntries(colunas.filter((c) => c in a).map((c) => [c, a[c]])) : a));
         return Promise.resolve({ data, error: null }).then(res);
       };
       b.insert = (row: Linha) => { estado.inserts.push(row); return Promise.resolve({ error: null }); };
@@ -97,6 +100,23 @@ describe("sinalizarRomaneioAusente (F3-07)", () => {
     }];
     await ciclo(new Date("2026-10-21T15:00:00Z"), "2026-10-21");
     expect(estado.updates[0]).toMatchObject({ id: "c1", patch: { status: "resolvido", resolvido_em: "2026-10-21T15:00:00.000Z" } });
+  });
+
+  it("R1 F3-07: card Limpo pelo operador as 06:10 e 1 carro contado ainda em rota sem romaneio as 07:15 => o ciclo reabre o mesmo card (le resolvido_em do banco)", async () => {
+    estado.frota = [carro("RQU-1B50", NUTRY)];
+    const limpo = {
+      id: "c1", cliente_id: NUTRY, veiculo_id: "v-RQU-1B50", status: "limpo", tipo: "romaneio_ausente", desde: "2026-10-21T08:40:00Z",
+      motivo: "x", origem_acao: "limpar_massa", contexto: { agregado: true, dia: "2026-10-21", placas: ["RQU-1B50"], veiculo_ids: ["v-RQU-1B50"] },
+    };
+    // 06:40: 30 min depois do Limpar, nada
+    estado.alertas = [{ ...limpo, resolvido_em: "2026-10-21T09:10:00.000Z" }];
+    await ciclo(new Date("2026-10-21T09:40:00Z"), "2026-10-21");
+    expect(estado.updates).toEqual([]);
+    expect(estado.inserts).toEqual([]);
+    await ciclo(new Date("2026-10-21T10:15:00Z"), "2026-10-21");
+    expect(estado.inserts).toEqual([]);
+    expect(estado.updates).toHaveLength(1);
+    expect(estado.updates[0]).toMatchObject({ id: "c1", patch: { status: "ativo", resolvido_em: null, origem_acao: null } });
   });
 
   it("falha na consulta da frota vira aviso em erros e nao fecha nenhum card", async () => {

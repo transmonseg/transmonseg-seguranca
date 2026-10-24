@@ -3,8 +3,8 @@
 // romaneio_ausente guarda no contexto quem ja' foi contado no dia (agregado,
 // dia, placas, veiculo_ids): sem isso o motor nao reconhecia o card de hoje e
 // abria outro no ciclo seguinte com todos os carros -- 1 card novo a cada
-// clique, e a regra "fechado pelo operador nao reabre, so' carro novo abre o
-// 2o" nunca rodava. Aqui a acao real grava num banco em memoria e o ciclo
+// clique, e a regra do card fechado pelo operador (carro novo abre o 2o;
+// carro contado ainda rodando 60 min depois reabre o mesmo) nunca rodava. Aqui a acao real grava num banco em memoria e o ciclo
 // seguinte do motor (planejarRomaneioAusente) le a linha como ela ficou.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { planejarRomaneioAusente, type AlertaRomaneioAusente, type VeiculoEmRota } from "@/lib/romaneio-ausente";
@@ -67,13 +67,13 @@ function cardNutry(): Linha {
   };
 }
 
-function cicloSeguinte(emRota: VeiculoEmRota[]) {
+function cicloSeguinte(emRota: VeiculoEmRota[], agora = new Date(AS_0610.getTime() + 60_000)) {
   return planejarRomaneioAusente({
     emRota,
     existentes: tabela.linhas.filter((l) => l.tipo === "romaneio_ausente") as unknown as AlertaRomaneioAusente[],
     ultimoEnvio: { [NUTRY]: "2026-10-20T14:10:00Z" },
     hoje: HOJE,
-    agora: new Date(AS_0610.getTime() + 60_000),
+    agora,
   });
 }
 
@@ -129,5 +129,30 @@ describe("acoes do operador no card agregado romaneio_ausente (revisao F3-07, R1
     const r = await limparVarios(["c1"], "alertas_romaneio");
     expect(r).toMatchObject({ ok: true, limpos: 0, ignoradosRecentes: 1 });
     expect(tabela.linhas[0].status).toBe("ativo");
+  });
+
+  // Decisao do dono (R1 F3-07, recall): fechar o card nao pode esconder pelo
+  // resto do dia carro que segue rodando sem romaneio. 60 min depois do
+  // fechamento, se algum carro ja' contado continua em rota sem romaneio, o
+  // MESMO card reabre com o texto atualizado.
+  it("Limpar as 06:10 no card da Nutry com 50 placas; as 07:15 ainda 30 delas rodando sem romaneio => o mesmo card reabre", async () => {
+    await limparVarios(["c1"], "alertas_romaneio");
+    const rodando = PLACAS.slice(0, 30).map(carro);
+    // 06:40: so' 30 min depois do Limpar -- ainda nao reabre.
+    expect(cicloSeguinte(rodando, new Date("2026-10-21T09:40:00Z"))).toEqual({ inserir: [], atualizar: [], resolver: [] });
+
+    const p = cicloSeguinte(rodando, new Date("2026-10-21T10:15:00Z")); // 07:15 BRT
+    expect(p.inserir).toEqual([]);
+    expect(p.resolver).toEqual([]);
+    expect(p.atualizar).toHaveLength(1);
+    expect(p.atualizar[0].id).toBe("c1");
+    expect(p.atualizar[0].patch).toMatchObject({ status: "ativo", resolvido_em: null, origem_acao: null });
+    expect(p.atualizar[0].patch.motivo).toMatch(/^50 carros em rota sem romaneio \(30 agora\), /);
+    expect(p.atualizar[0].patch.contexto).toMatchObject({ placas: PLACAS, em_rota_agora: 30, reaberto_apos_operador: 1 });
+  });
+
+  it("Limpar as 06:10; as 07:15 todos os 50 ja' com romaneio (nenhum em rota sem) => nao reabre", async () => {
+    await limparVarios(["c1"], "alertas_romaneio");
+    expect(cicloSeguinte([], new Date("2026-10-21T10:15:00Z"))).toEqual({ inserir: [], atualizar: [], resolver: [] });
   });
 });
