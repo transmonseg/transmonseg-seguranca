@@ -187,6 +187,44 @@ describe("planejarRastreadorMudo (1 por veiculo por dia)", () => {
   });
 });
 
+describe("R-F3-09-03: posicoes do cliente paradas nao viram 'rastreador mudo'", () => {
+  // Busca da RQ na Unitrac falhando das 09h de 22/10 ate as 10h de 23/10: a
+  // Central para de regravar posicoes_atuais da RQ (em 24/10 as 118 linhas
+  // da RQ tinham updated_at de 0,5 min -- a Central regrava toda linha a
+  // cada ciclo, inclusive a de rastreador mudo como LTZ-7I72).
+  const AS_10H_23_10 = new Date("2026-10-23T13:00:00Z");
+  const congelada = "2026-10-22T12:00:00Z";
+  const rqParada = [
+    carga({ veiculo_id: "v-kwq", placa: "KWQ-6252", atraso_min: 0, updated_at: congelada }),
+    carga({ veiculo_id: "v-oxe", placa: "OXE-7D03", atraso_min: 3, updated_at: congelada }),
+    carga({ veiculo_id: "v-ltz", placa: "LTZ-7I72", atraso_min: 28050, updated_at: congelada }),
+    carga({ veiculo_id: "v-eeg", placa: "EEG-2F60", nfs: 35, tem_posicao: false, lat: null, lng: null, atraso_min: null, updated_at: null }),
+  ];
+  const nutryViva = [
+    carga({ veiculo_id: "v-rqu", cliente_id: "cli-nutry", placa: "RQU-1B50", atraso_min: 0, updated_at: "2026-10-23T12:59:30Z" }),
+    carga({ veiculo_id: "v-lld", cliente_id: "cli-nutry", placa: "LLD-4202", atraso_min: 29000, updated_at: "2026-10-23T12:59:30Z" }),
+  ];
+
+  it("nenhum carro da RQ com linha atualizada na ultima hora => nao cria para a RQ e aponta o cliente", () => {
+    const plano = planejarRastreadorMudo({ cargas: [...rqParada, ...nutryViva], existentes: [], hoje: HOJE, agora: AS_10H_23_10 });
+    expect(plano.inserir.map((c) => c.placa)).toEqual(["LLD-4202"]);
+    expect(plano.clientesParados).toEqual(["cli-rq"]);
+  });
+
+  it("com a Central regravando (updated_at fresco), LTZ-7I72 e EEG-2F60 continuam saindo", () => {
+    const viva = rqParada.map((c) => (c.tem_posicao ? { ...c, updated_at: "2026-10-23T12:59:30Z" } : c));
+    const plano = planejarRastreadorMudo({ cargas: viva, existentes: [], hoje: HOJE, agora: AS_10H_23_10 });
+    expect(plano.inserir.map((c) => c.placa).sort()).toEqual(["EEG-2F60", "LTZ-7I72"]);
+    expect(plano.clientesParados).toEqual([]);
+  });
+
+  it("cliente parado nao fecha alerta de hoje (carro continua sem dado novo)", () => {
+    const existentes = [{ id: "a1", veiculo_id: "v-ltz", status: "ativo", desde: "2026-10-23T13:10:00Z" }];
+    const plano = planejarRastreadorMudo({ cargas: rqParada, existentes, hoje: HOJE, agora: new Date("2026-10-23T14:00:00Z") });
+    expect(plano.resolver).toEqual([]);
+  });
+});
+
 describe("semAlertasInternos (alerta e' interno: conta do cliente nao ve)", () => {
   const lista = [{ tipo: "desvio" }, { tipo: TIPO_RASTREADOR_MUDO }];
   it("central (todos) ve tudo", () => {

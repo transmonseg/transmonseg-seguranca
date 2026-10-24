@@ -79,3 +79,15 @@ describe("R-F3-09-04: linha de carga invalida vira aviso em erros", () => {
     expect(erros.join("\n")).toMatch(/rastreador_mudo_com_carga.*LTZ-7I72/);
   });
 });
+
+describe("R-F3-09-03: posicoes paradas viram aviso de sistema, nao alerta de equipamento", () => {
+  it("RQ sem linha atualizada ha 25 h => nenhum alerta e aviso com o nome do cliente", async () => {
+    estado.cargas = [
+      carga({ placa: "KWQ-6252", veiculo_id: "v-kwq", atraso_min: 0, updated_at: "2026-10-22T12:00:00Z", cliente_nome: "Rio Quality" } as Partial<CargaComPosicao>),
+      carga({ updated_at: "2026-10-22T12:00:00Z", cliente_nome: "Rio Quality" } as Partial<CargaComPosicao>),
+    ];
+    const erros = await ciclo(new Date("2026-10-23T13:00:00Z"), "2026-10-23");
+    expect(estado.inserts).toEqual([]);
+    expect(erros.join("\n")).toMatch(/posi[cç][oõ]es.*Rio Quality.*paradas/i);
+  });
+});

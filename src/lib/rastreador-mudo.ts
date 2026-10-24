@@ -29,6 +29,14 @@ import type { AcessoCliente } from "@/lib/acesso-cliente";
 export const TIPO_RASTREADOR_MUDO = "rastreador_mudo_com_carga";
 export const LIMIAR_RASTREADOR_MUDO_MIN = 24 * 60;
 export const HORA_MIN_RASTREADOR_MUDO_SP = 10;
+/**
+ * R-F3-09-03: a Central regrava TODA linha de posicoes_atuais a cada ciclo,
+ * inclusive a de rastreador mudo (em 24/10 as 118 linhas da RQ tinham
+ * updated_at de 0,5 min). Cliente sem nenhuma linha de carro com carga
+ * regravada nesta janela = busca/gravacao parada (Unitrac falhando, disco
+ * cheio de 20/09), nao equipamento: nao cria e avisa em erros.
+ */
+export const LIMIAR_POSICOES_PARADAS_MIN = 60;
 
 /** Tipos de alertas_romaneio que so' a central (operador Transmonseg) ve. */
 export const TIPOS_ALERTA_INTERNOS: ReadonlySet<string> = new Set([TIPO_RASTREADOR_MUDO]);
@@ -43,11 +51,12 @@ export type CargaComPosicao = {
   lng: number | null;
   atraso_min: number | null;
   updated_at: string | Date | null;
+  cliente_nome?: string | null;
 };
 
 // $1 = dia (SP). Uma linha por veiculo com NF no romaneio do dia, com a
 // posicao atual quando existe (LEFT JOIN: EEG-2F60 nunca teve linha).
-export const SQL_CARGA_DO_DIA_COM_POSICAO = `SELECT v.id AS veiculo_id, v.cliente_id, v.placa,
+export const SQL_CARGA_DO_DIA_COM_POSICAO = `SELECT v.id AS veiculo_id, v.cliente_id, c.nome AS cliente_nome, v.placa,
               rp.nfs, (pa.veiculo_id IS NOT NULL) AS tem_posicao,
               pa.lat, pa.lng, pa.atraso_min, pa.updated_at
          FROM (SELECT veiculo_id, count(*)::int AS nfs
@@ -92,6 +101,12 @@ export function motivoRastreadorMudo(c: CargaComPosicao): string {
   return `Rastreador sem comunicar${desde}, com ${nfs} -- conferir o equipamento (no KPI conta como correto, sem rastreador)`;
 }
 
+function idadeMin(updatedAt: string | Date | null, agora: Date): number {
+  if (updatedAt == null) return Infinity;
+  const t = (updatedAt instanceof Date ? updatedAt : new Date(updatedAt)).getTime();
+  return Number.isFinite(t) ? (agora.getTime() - t) / 60_000 : Infinity;
+}
+
 function horaSP(d: Date): number {
   return Number(
     new Intl.DateTimeFormat("en-GB", { timeZone: "America/Sao_Paulo", hour: "2-digit", hourCycle: "h23" }).format(d),
@@ -119,7 +134,7 @@ export function planejarRastreadorMudo(p: {
   existentes: AlertaRastreadorExistente[];
   hoje: string;
   agora: Date;
-}): { inserir: CargaComPosicao[]; resolver: string[]; linhasInvalidas: string[] } {
+}): { inserir: CargaComPosicao[]; resolver: string[]; linhasInvalidas: string[]; clientesParados: string[] } {
   // R-F3-09-04: nfs vem do pg; count sem ::int (bigint) chega como string.
   // Converte em vez de descartar, e linha ilegivel vira aviso (nunca calada).
   const validas: CargaComPosicao[] = [];
@@ -141,8 +156,18 @@ export function planejarRastreadorMudo(p: {
     p.existentes.filter((a) => dataSP(new Date(a.desde)) === p.hoje).map((a) => a.veiculo_id),
   );
 
+  // R-F3-09-03: cliente cujas linhas de carro com carga nao foram regravadas
+  // na ultima hora = posicoes paradas (falha do sistema), nao rastreador mudo.
+  const clientesVivos = new Set(
+    validas
+      .filter((c) => c.tem_posicao && idadeMin(c.updated_at, p.agora) < LIMIAR_POSICOES_PARADAS_MIN)
+      .map((c) => c.cliente_id),
+  );
+
   const podeCriar = horaSP(p.agora) >= HORA_MIN_RASTREADOR_MUDO_SP;
-  const inserir = podeCriar ? mudos.filter((c) => !comAlertaHoje.has(c.veiculo_id)) : [];
+  const candidatos = podeCriar ? mudos.filter((c) => !comAlertaHoje.has(c.veiculo_id)) : [];
+  const inserir = candidatos.filter((c) => clientesVivos.has(c.cliente_id));
+  const clientesParados = [...new Set(candidatos.filter((c) => !clientesVivos.has(c.cliente_id)).map((c) => c.cliente_id))];
 
   const resolver = p.existentes
     .filter((a) => a.status === "ativo")
@@ -154,7 +179,7 @@ export function planejarRastreadorMudo(p: {
     })
     .map((a) => a.id);
 
-  return { inserir, resolver: [...new Set(resolver)], linhasInvalidas };
+  return { inserir, resolver: [...new Set(resolver)], linhasInvalidas, clientesParados };
 }
 
 /** Conta de cliente (acesso "um") nao ve alerta interno. */

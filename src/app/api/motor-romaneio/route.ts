@@ -59,6 +59,7 @@ import {
   TIPO_RASTREADOR_MUDO,
   SQL_CARGA_DO_DIA_COM_POSICAO,
   planejarRastreadorMudo,
+  LIMIAR_POSICOES_PARADAS_MIN,
   motivoRastreadorMudo,
   ultimaComunicacaoEstimada,
   type CargaComPosicao,
@@ -907,6 +908,10 @@ export async function sinalizarRastreadorMudoComCarga(ctx: {
     for (const a of [...(ativosResp.data ?? []), ...(hojeResp.data ?? [])] as AlertaRastreadorExistente[]) porId.set(a.id, a);
 
     const plano = planejarRastreadorMudo({ cargas, existentes: [...porId.values()], hoje, agora });
+    for (const clienteId of plano.clientesParados) {
+      const nome = cargas.find((c) => c.cliente_id === clienteId)?.cliente_nome ?? clienteId;
+      erros.push(`Aviso: posicoes do cliente ${nome} paradas (nenhum carro com carga atualizado em ${LIMIAR_POSICOES_PARADAS_MIN} min) -- ${TIPO_RASTREADOR_MUDO} nao criado neste ciclo`);
+    }
     if (plano.linhasInvalidas.length > 0) {
       erros.push(`Aviso: ${TIPO_RASTREADOR_MUDO}: ${plano.linhasInvalidas.length} linha(s) de carga ilegivel(is) (nfs/veiculo), sem alerta: ${plano.linhasInvalidas.slice(0, 10).join(", ")}`);
     }
