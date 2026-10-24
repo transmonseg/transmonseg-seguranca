@@ -17,6 +17,8 @@ export type PropsEntregaMapa = {
     chegada: string | null; saida: string | null; situacao: string; status: string;
     semVeiculo: boolean; outraFrota?: boolean; semRastro: boolean; rastroTravado: boolean; volta: string; distParadaM: number | null;
     perto: { lat: number; lng: number; em: string; distM: number } | null;
+    /** F4-07 (GEO-24): selo de precisão do ponto e raio do círculo de incerteza. */
+    selo?: { rotulo: string; raioM: number | null } | null;
   };
   rastro: [number, number][];
   rota: PontoRota[];
@@ -70,6 +72,8 @@ export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }:
   const [satelite, setSatelite] = useState(true);
   const [modo, setModo] = useState<"entrega" | "dia">("entrega");
   const linhas = useRef<google.maps.Polyline[]>([]);
+  const raioAlvo = info.selo?.raioM ?? null;
+  const alvoLat = alvo?.lat ?? null, alvoLng = alvo?.lng ?? null;
   const tempo = minutos(info.chegada, info.saida);
 
   const foco = useMemo<Coord[]>(() => [alvo, parada, info.perto, !parada && !info.perto ? atual : null].filter((p): p is Coord => !!p), [alvo, parada, info.perto, atual]);
@@ -103,6 +107,14 @@ export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }:
     linhas.current = [fora, dentro];
     return () => { fora.setMap(null); dentro.setMap(null); };
   }, [map, rastro]);
+
+  // F4-07 (GEO-24): círculo de incerteza do ponto do cliente (raio da precisão
+  // da cascata; sem precisão conhecida, sem círculo). Imperativo, como o rastro.
+  useEffect(() => {
+    if (!map || alvoLat == null || alvoLng == null || raioAlvo == null) return;
+    const c = new google.maps.Circle({ map, center: { lat: alvoLat, lng: alvoLng }, radius: raioAlvo, strokeColor: "#ffffff", strokeOpacity: 0.85, strokeWeight: 1.5, fillColor: "#ffffff", fillOpacity: 0.08, clickable: false, zIndex: 3 });
+    return () => c.setMap(null);
+  }, [map, alvoLat, alvoLng, raioAlvo]);
 
   const outrasNoMapa = rota.filter(p => p.lat != null && p.lng != null && p.nf !== info.nf);
   const daNf = rota.find(p => p.nf === info.nf);
@@ -140,6 +152,12 @@ export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }:
           </div>
           <h1 className="text-[17px] font-semibold leading-snug" style={{ color: "var(--text)" }}>{daNf ? `${daNf.ordem}. ` : ""}{info.nome || "Entrega"}</h1>
           {info.endereco && <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "var(--text-muted)" }}>{info.endereco}</p>}
+          {alvo && info.selo && (
+            <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ border: "1px solid var(--border)", color: "var(--text-muted)" }} title="Precisão do ponto do cliente">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="2.5" fill="currentColor" /></svg>
+              {info.selo.rotulo}{info.selo.raioM != null ? ` · ±${metros(info.selo.raioM)}` : ""}
+            </p>
+          )}
 
           {info.semVeiculo ? (
             <p className="mt-3 text-[13px]" style={{ color: "var(--text)" }}>{info.outraFrota ? "Esta placa é de outro cliente; esta conta não abre a frota dele." : "Placa não encontrada na frota do monitoramento."}</p>

@@ -78,3 +78,22 @@ describe("entrega no mapa: frota do KPI e conta do cliente", () => {
     expect(clienteDaEntrega({ tipo: "nenhum" }, null)).toEqual({ tipo: "nenhum", motivo: "sem_acesso" });
   });
 });
+
+// F4-07 (GEO-24): o KPI manda o selo de precisão (prec) e o raio do círculo de
+// incerteza (raio) do ponto do cliente. Raio fora de 1 m-5 km ou selo
+// desconhecido são ignorados (nunca desenha um círculo inventado).
+describe("selo e círculo de incerteza do ponto (F4-07)", () => {
+  it("selo conhecido com raio", async () => {
+    const { seloDoPonto } = await import("./entrega-mapa");
+    expect(seloDoPonto("interpolado", "50")).toEqual({ rotulo: "Entre números da rua", raioM: 50 });
+    expect(seloDoPonto("rua", "1000")).toEqual({ rotulo: "Só a rua", raioM: 1000 });
+    expect(seloDoPonto("manual", "")).toEqual({ rotulo: "Ponto corrigido à mão", raioM: null });
+  });
+  it("sem selo, selo desconhecido ou raio absurdo", async () => {
+    const { seloDoPonto } = await import("./entrega-mapa");
+    expect(seloDoPonto("", "50")).toBeNull();
+    expect(seloDoPonto("chute", "50")).toBeNull();
+    expect(seloDoPonto("exato", "999999")).toEqual({ rotulo: "Número exato", raioM: null });
+    expect(seloDoPonto("exato", "abc")).toEqual({ rotulo: "Número exato", raioM: null });
+  });
+});

@@ -117,3 +117,25 @@ export function clienteDaEntrega(acesso: AcessoCliente, clienteIdFrota: string |
   }
   return clienteIdFrota ? { tipo: "cliente", clienteId: clienteIdFrota } : { tipo: "todos" };
 }
+
+/** F4-07 (GEO-24): selo de precisão do ponto do cliente que o KPI manda no
+ *  link (`prec`, ver KPI selo-ponto.ts) e o raio do círculo de incerteza
+ *  (`raio`, só quando a cascata informou a precisão). Selo desconhecido = sem
+ *  selo; raio fora de 1 m-5 km = sem círculo. */
+const ROTULO_SELO_PONTO: Record<string, string> = {
+  manual: "Ponto corrigido à mão",
+  cadastro: "Cadastro da Unitrac",
+  exato: "Número exato",
+  exato_nao_confirmado: "Número sem CEP/bairro confirmando",
+  interpolado: "Entre números da rua",
+  trecho: "Trecho da rua",
+  rua: "Só a rua",
+  bairro: "Centro do bairro",
+  aproximado: "Ponto aproximado",
+};
+export function seloDoPonto(prec: string, raio: string): { rotulo: string; raioM: number | null } | null {
+  const rotulo = ROTULO_SELO_PONTO[prec];
+  if (!rotulo) return null;
+  const r = raio.trim() === "" ? NaN : Number(raio);
+  return { rotulo, raioM: Number.isFinite(r) && r >= 1 && r <= 5000 ? Math.round(r) : null };
+}

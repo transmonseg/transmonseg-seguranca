@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { acessoDoUsuario } from "@/lib/acesso-cliente";
-import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, codUnitracDaFrota, clienteDaEntrega, type PontoRastro } from "@/lib/entrega-mapa";
+import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, codUnitracDaFrota, clienteDaEntrega, seloDoPonto, type PontoRastro } from "@/lib/entrega-mapa";
 import EntregaMapaWrapper from "./EntregaMapaWrapper";
 
 // "Entrega no mapa" (05/10): aberta pelo botão "Ver no monitoramento" de cada
@@ -21,6 +21,8 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   const cliente = { nome: txt(q.cliente), nf: txt(q.nf), endereco: txt(q.endereco), lat: num(q.lat), lng: num(q.lng) };
   const chegada = txt(q.chegada) || null, saida = txt(q.saida) || null;
   const situacao = txt(q.situacao), status = txt(q.status), volta = txt(q.volta);
+  // F4-07 (GEO-24): selo de precisão e círculo de incerteza do ponto (vêm do KPI).
+  const selo = seloDoPonto(txt(q.prec), txt(q.raio));
   const paradaKpi = num(q.plat) != null && num(q.plng) != null ? { lat: num(q.plat)!, lng: num(q.plng)! } : null;
   // Rota inteira da placa (vem do KPI): "ordem|nf|situação|lat|lng|cliente;..."
   const rota = txt(q.pts).split(";").filter(Boolean).slice(0, 80).map(item => {
@@ -86,6 +88,7 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
         semVeiculo: !veiculo, outraFrota: daEntrega.tipo === "nenhum" && daEntrega.motivo === "outra_frota", semRastro: !!veiculo && pontos.length === 0, rastroTravado, volta,
         distParadaM: parada && alvo ? Math.round(distanciaM(parada, alvo)) : null,
         perto: perto ? { lat: perto.lat, lng: perto.lng, em: perto.em, distM: Math.round(perto.distM) } : null,
+        selo,
       }}
       rastro={rastroTravado ? [] : afinarRastro(pontos, 2500).map(p => [p.lat, p.lng] as [number, number])}
       rota={rota}
