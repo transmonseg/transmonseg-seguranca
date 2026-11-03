@@ -25,6 +25,7 @@ import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { SQL_VEICULOS_EM_FAVELA, veiculosFavelaDoCiclo } from "@/lib/frescor-posicao";
+import { SQL_GUARDA_ORDEM_DATAGPS } from "@/lib/posicoes-upsert";
 import { RAIO_ESCALA_M } from "@/lib/escala-geocode";
 import {
   agruparAlvosPorPlaca,
@@ -36,6 +37,9 @@ import {
   pontoRomaneioMaisProximoParaConfirmarPresenca,
   pontoPendenteMaisProximoParaConfirmarPresenca,
   normalizar,
+  leituraAproveitavel,
+  coordenadaValida,
+  extrairPosicoes,
   centroideGeo,
   distanciaAoSegmentoM,
   suspenderPorChegada,
@@ -414,8 +418,9 @@ async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
     if (!res.ok) {
       throw new Error(`buscarPosicoes HTTP ${res.status}`);
     }
-    const data = (await res.json()) as { Posicoes: unknown[] };
-    return data.Posicoes;
+    // RAS-05 (03/11): HTTP 200 sem `Posicoes` vira erro DESTE cliente (cai
+    // no "buscarPosicoes falhou" e pula so' ele), nao TypeError do ciclo todo.
+    return extrairPosicoes(await res.json());
   } finally {
     clearTimeout(timer);
   }
@@ -1100,6 +1105,7 @@ export async function POST(request: Request) {
 
     // 4. Buscar posicoes de TODOS os CVs de uma vez por cliente
     let totalProcessados = 0;
+    let leiturasDescartadas = 0;
     let totalFrescos = 0;
     let totalAlertasAtivos = 0;
 
@@ -1510,7 +1516,7 @@ export async function POST(request: Request) {
       for (const raw of posicoesRaw) {
         try {
           const p = normalizar(raw as Record<string, unknown>);
-          if (p.fresco && p.lat != null && p.lng != null) {
+          if (p.fresco && coordenadaValida(p.lat, p.lng)) {
             posicoesFrescasComVelocidade.push({ lat: p.lat, lng: p.lng, velocidade: p.velocidade });
             for (const c of vizinhanca3x3(p.lat, p.lng)) celulasCandidatasTapete.add(c);
             chavesCandidatasGeocode.add(chaveGeocode(p.lat, p.lng));
@@ -1702,8 +1708,16 @@ export async function POST(request: Request) {
       }));
       for (const { raw } of posicoesComVeiculoId) {
         try {
-          const pos = normalizar(raw as Record<string, unknown>);
+          const lida = normalizar(raw as Record<string, unknown>);
           totalProcessados++;
+          // RAS-05 (03/11): atraso desconhecido, 0,0, NaN ou fora do Brasil
+          // nao entra em posicoes_atuais nem no historico (DM-19). O carro
+          // fica com a ultima leitura boa e o atraso efetivo cresce no mapa.
+          if (!leituraAproveitavel(lida)) {
+            leiturasDescartadas++;
+            continue;
+          }
+          const pos = lida;
 
           const entrada = mapaCv.get(pos.cv);
           if (!entrada) continue;
@@ -4283,7 +4297,8 @@ export async function POST(request: Request) {
              no_raio_desde       = EXCLUDED.no_raio_desde,
              no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos,
              perto_sem_marcacao_codigo = EXCLUDED.perto_sem_marcacao_codigo,
-             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos`,
+             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos
+           WHERE ${SQL_GUARDA_ORDEM_DATAGPS}`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -4992,8 +5007,12 @@ export async function POST(request: Request) {
       });
     } catch { /* nao critico: fallback de poll lento cobre */ }
 
+    if (leiturasDescartadas > 0) {
+      console.warn(`[motor] ${leiturasDescartadas} leitura(s) da Unitrac descartada(s): atraso desconhecido ou coordenada invalida (0,0 / fora do Brasil)`);
+    }
     return Response.json({
       processados: totalProcessados,
+      leiturasDescartadas,
       frescos: totalFrescos,
       alertas_ativos: totalAlertasAtivos,
       geocodes_novos: contadorGeocodesNovos.valor,
