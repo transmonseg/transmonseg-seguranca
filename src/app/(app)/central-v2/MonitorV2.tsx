@@ -94,6 +94,7 @@ const NOME_TIPO: Record<string, string> = {
   baseline_veiculo: "Anomalia de velocidade",
   romaneio_ausente: "Sem romaneio hoje",
   rastreador_mudo_com_carga: "Rastreador mudo com carga",
+  sem_sinal_em_rota: "Sem sinal em rota",
 };
 function nomeT(tipo: string) { return NOME_TIPO[tipo] ?? tipo; }
 

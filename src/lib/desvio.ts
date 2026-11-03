@@ -628,3 +628,35 @@ export function montarAlertaDesvio(
   }
   return null;
 }
+
+// ─── Central Romaneio: base e rota concluída (auditoria 03/11) ─────────────
+// DSV-03 (parte "base"): a base Penha, no meio da região metropolitana,
+// entrava como destino a 50 km e escondia todo desvio que se aproximasse
+// dela (cenário C2 do lab: 0 disparo com a base, 19 sem). Decisão do dono
+// (plano 03/11): enquanto houver NF pendente no raio, a base NÃO conta como
+// destino no "afastando de todos". A escala do pão continua sempre.
+// O chamador passa só os pendentes já dentro do raio de relevância (50 km):
+// pendente só a 300 km (rota longa) não tira a base, senão o carro ficaria
+// sem destino nenhum e sem avaliação.
+export function destinosParaDesvio<T extends { lat: number; lng: number }>(p: {
+  pendentes: T[];
+  bases: T[];
+  escala: T[];
+}): T[] {
+  return [...p.pendentes, ...p.escala, ...(p.pendentes.length === 0 ? p.bases : [])];
+}
+
+// DSV-04: com 0 pendente no raio o texto "Afastando de todos os clientes
+// pendentes" era falso e o card saía crítico. Mesma regra da Central Unitrac
+// (DESVIO_SEM_DESTINOS_REBAIXA_PARA_ATENCAO): rebaixa, nunca suprime.
+export const MOTIVO_ROTA_CONCLUIDA = "Rota concluída: sem cliente pendente a 50 km";
+
+export function nivelDesvio(pendentesNoRaio: number): "critico" | "atencao" {
+  return pendentesNoRaio > 0 ? "critico" : "atencao";
+}
+
+export function ajustarAlertaDesvioRomaneio(alerta: Alerta | null, pendentesNoRaio: number): Alerta | null {
+  if (!alerta || alerta.tipo !== "desvio") return alerta;
+  if (nivelDesvio(pendentesNoRaio) === "critico") return alerta;
+  return { ...alerta, nivel: "atencao", motivo: MOTIVO_ROTA_CONCLUIDA, origemDesvio: "sem_destinos" };
+}

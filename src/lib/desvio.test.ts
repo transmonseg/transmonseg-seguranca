@@ -507,3 +507,65 @@ describe("ehSaidaDeBaseSemDestinoAvaliavel", () => {
     expect(ehSaidaDeBaseSemDestinoAvaliavel({ ...casoReclamado, distBaseM: Number.NaN })).toBe(false);
   });
 });
+
+// ─── DSV-04 + DSV-03 parte "base" (auditoria 03/11) ─────────────────────────
+import { destinosParaDesvio, nivelDesvio, ajustarAlertaDesvioRomaneio, MOTIVO_ROTA_CONCLUIDA } from "./desvio";
+import { haversineM as hav } from "./unitrac";
+
+describe("destinosParaDesvio (base so' conta sem pendente)", () => {
+  const p = { lat: -22.9, lng: -43.5 };
+  const b = { lat: -22.8159, lng: -43.2778 };
+  const e = { lat: -22.95, lng: -43.4 };
+  it("com pendente: base fica de fora, escala fica", () => {
+    expect(destinosParaDesvio({ pendentes: [p], bases: [b], escala: [e] })).toEqual([p, e]);
+  });
+  it("sem pendente: base entra", () => {
+    expect(destinosParaDesvio({ pendentes: [], bases: [b], escala: [] })).toEqual([b]);
+  });
+});
+
+describe("cenario C2 do lab: carro sai da rota rumo a Penha com entrega pendente", () => {
+  type P = { lat: number; lng: number };
+  const BASE_PENHA: P = { lat: -22.8159, lng: -43.2778 };
+  const linha = (a: P, z: P, n: number) => Array.from({ length: n + 1 }, (_, i) => ({ lat: a.lat + (z.lat - a.lat) * i / n, lng: a.lng + (z.lng - a.lng) * i / n }));
+  function disparos(destinosDe: (cur: P) => P[], traj: P[]) {
+    let streak = 0; let n = 0;
+    for (let i = 1; i < traj.length; i++) {
+      const cur = traj[i], ant = traj[i - 1];
+      const ds = destinosDe(cur).filter((d) => hav(cur.lat, cur.lng, d.lat, d.lng) <= 50_000);
+      if (ds.length === 0) { streak = 0; continue; }
+      const r = avaliarAfastandoDeTudo(ds.map((d) => hav(cur.lat, cur.lng, d.lat, d.lng)), ds.map((d) => hav(ant.lat, ant.lng, d.lat, d.lng)), streak);
+      streak = r.streak; if (r.disparou) n++;
+    }
+    return n;
+  }
+  const pend = Array.from({ length: 6 }, (_, i) => ({ lat: -22.90 + i * 0.005, lng: -43.56 }));
+  const traj = linha({ lat: -22.870, lng: -43.460 }, { lat: -22.840, lng: -43.380 }, 20);
+  it("antes (base sempre na lista) nao disparava; agora dispara", () => {
+    expect(disparos(() => [...pend, BASE_PENHA], traj)).toBe(0);
+    expect(disparos(() => destinosParaDesvio({ pendentes: pend, bases: [BASE_PENHA], escala: [] }), traj)).toBeGreaterThan(0);
+  });
+});
+
+describe("nivelDesvio / ajustarAlertaDesvioRomaneio (rota concluida vira atencao, nunca some)", () => {
+  const alertaA = montarAlertaDesvio({ disparou: true, streak: 2 }, { disparou: false, streak: 0, celula: "x", nVisitas: 9 })!;
+  it("nivel por pendentes no raio", () => {
+    expect(nivelDesvio(0)).toBe("atencao");
+    expect(nivelDesvio(3)).toBe("critico");
+  });
+  it("0 pendente: atencao, motivo verdadeiro, origem sem_destinos, alerta continua existindo", () => {
+    const a = ajustarAlertaDesvioRomaneio(alertaA, 0);
+    expect(a).not.toBeNull();
+    expect(a!.nivel).toBe("atencao");
+    expect(a!.motivo).toBe(MOTIVO_ROTA_CONCLUIDA);
+    expect(MOTIVO_ROTA_CONCLUIDA).toBe("Rota concluída: sem cliente pendente a 50 km");
+    expect(a!.origemDesvio).toBe("sem_destinos");
+    expect(a!.tipo).toBe("desvio");
+  });
+  it("com pendente: continua critico, motivo de sempre", () => {
+    expect(ajustarAlertaDesvioRomaneio(alertaA, 2)).toEqual(alertaA);
+  });
+  it("sem alerta: sem alerta", () => {
+    expect(ajustarAlertaDesvioRomaneio(null, 0)).toBeNull();
+  });
+});

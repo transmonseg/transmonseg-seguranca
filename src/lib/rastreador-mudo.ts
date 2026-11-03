@@ -76,6 +76,7 @@ export const SQL_CARGA_DO_DIA_COM_POSICAO = `SELECT v.id AS veiculo_id, v.client
                 WHERE romaneio_data = $1::date
                   AND modo_teste = false
                   AND veiculo_id IS NOT NULL
+                  AND removida_em IS NULL
                 GROUP BY veiculo_id) rp
          JOIN veiculos v ON v.id = rp.veiculo_id AND v.ativo
          JOIN clientes c ON c.id = v.cliente_id AND c.ativo
@@ -198,4 +199,127 @@ export function planejarRastreadorMudo(p: {
 export function semAlertasInternos<T extends { tipo: string }>(lista: T[], acesso: AcessoCliente): T[] {
   if (acesso.tipo === "todos") return lista;
   return lista.filter((a) => !TIPOS_ALERTA_INTERNOS.has(a.tipo));
+}
+
+// ─── DSV-05 (auditoria 03/11): "sem sinal em rota" de 60 min a 24 h ─────────
+// Com atraso >= 60 min o desvio nao e' avaliado e o streak zera; o jammer sai
+// em sombra e o rastreador mudo so' comeca em 24 h. Em 30/10, 12 de 179 carros
+// com romaneio ficaram 1 h a 24 h sem sinal entre 06 e 18 h sem card nenhum
+// (falha silenciosa: o motor sem dado e sem dizer que esta sem dado).
+// Card de atencao, 1 por carro por episodio, so' com carga do dia e carro fora
+// da base. Fecha quando o sinal volta, com "voltou a X km de onde sumiu".
+// NAO vai pro WhatsApp: e' so' a tela da Central Romaneio.
+export const TIPO_SEM_SINAL_EM_ROTA = "sem_sinal_em_rota";
+export const LIMIAR_SEM_SINAL_MIN = 60;
+// Cliente sem nenhuma linha de carro com carga regravada nesta janela =
+// gravacao parada (falha do sistema), nao carro sem sinal.
+const LIMIAR_CLIENTE_VIVO_MIN = 10;
+
+export function planejarSemSinal(p: { atrasoMin: number | null; temCargaHoje: boolean; naBase: boolean }): "abrir" | "nada" {
+  if (!p.temCargaHoje || p.naBase || p.atrasoMin == null || !Number.isFinite(p.atrasoMin)) return "nada";
+  return p.atrasoMin >= LIMIAR_SEM_SINAL_MIN && p.atrasoMin < LIMIAR_RASTREADOR_MUDO_MIN ? "abrir" : "nada";
+}
+
+export type CargaSemSinal = CargaComPosicao & { na_base: boolean | null };
+
+// $1 = dia (SP). Igual a SQL_CARGA_DO_DIA_COM_POSICAO + se a ultima posicao
+// esta dentro do poligono de alguma base do cliente.
+export const SQL_CARGA_DO_DIA_SEM_SINAL = `SELECT v.id AS veiculo_id, v.cliente_id, c.nome AS cliente_nome, v.placa,
+              rp.nfs, (pa.veiculo_id IS NOT NULL) AS tem_posicao,
+              pa.lat, pa.lng, pa.atraso_min, pa.updated_at,
+              EXISTS (SELECT 1 FROM bases b
+                       WHERE b.cliente_id = v.cliente_id AND pa.lat IS NOT NULL AND pa.lng IS NOT NULL
+                         AND ST_Contains(b.geom::geometry, ST_SetSRID(ST_MakePoint(pa.lng, pa.lat), 4326))) AS na_base
+         FROM (SELECT veiculo_id, count(*)::int AS nfs
+                 FROM romaneio_pontos
+                WHERE romaneio_data = $1::date
+                  AND modo_teste = false
+                  AND veiculo_id IS NOT NULL
+                  AND removida_em IS NULL
+                GROUP BY veiculo_id) rp
+         JOIN veiculos v ON v.id = rp.veiculo_id AND v.ativo
+         JOIN clientes c ON c.id = v.cliente_id AND c.ativo
+         JOIN posicoes_atuais pa ON pa.veiculo_id = v.id`;
+
+export type AlertaSemSinalExistente = {
+  id: string;
+  veiculo_id: string;
+  status: string;
+  desde: string;
+  lat: number | null;
+  lng: number | null;
+  contexto?: Record<string, unknown> | null;
+};
+
+function distKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371;
+  const toRad = (g: number) => (g * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+export function textoVoltouSinal(km: number): string {
+  return `voltou a ${km.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km de onde sumiu`;
+}
+
+export function motivoSemSinal(c: CargaSemSinal): string {
+  const ultima = ultimaComunicacaoEstimada(c.atraso_min, c.updated_at);
+  const hora = ultima
+    ? new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" }).format(ultima)
+    : null;
+  return `Sem sinal há ${c.atraso_min} min com ${c.nfs} NFs no romaneio de hoje, fora da base${hora ? ` (último sinal às ${hora})` : ""}`;
+}
+
+/**
+ * Usa o atraso informado pela Unitrac (atraso_min), nao o atraso efetivo: se a
+ * Central parar de gravar, o atraso efetivo de TODA a frota cresce junto e
+ * viraria um card por carro. Esse caso e' do watchdog.
+ */
+export function planejarCardsSemSinal(p: {
+  cargas: CargaSemSinal[];
+  existentes: AlertaSemSinalExistente[];
+  hoje: string;
+  agora: Date;
+}): { inserir: CargaSemSinal[]; resolver: { id: string; contexto: Record<string, unknown> }[] } {
+  const validas = p.cargas.filter((c) => typeof c.veiculo_id === "string" && Number(c.nfs) > 0 && c.tem_posicao);
+  const clientesVivos = new Set(
+    validas.filter((c) => idadeMin(c.updated_at, p.agora) < LIMIAR_CLIENTE_VIVO_MIN).map((c) => c.cliente_id),
+  );
+  const abertos = p.existentes.filter((a) => a.status === "ativo" || a.status === "reconhecido");
+  const abertoPorVeiculo = new Map(abertos.filter((a) => dataSP(new Date(a.desde)) === p.hoje).map((a) => [a.veiculo_id, a]));
+  const inserir: CargaSemSinal[] = [];
+  const resolver: { id: string; contexto: Record<string, unknown> }[] = [];
+
+  for (const a of abertos) {
+    if (dataSP(new Date(a.desde)) !== p.hoje) resolver.push({ id: a.id, contexto: { ...(a.contexto ?? {}), auto_resolvido: true, auto_expirado: true } });
+  }
+  for (const c of validas) {
+    const aberto = abertoPorVeiculo.get(c.veiculo_id);
+    const atraso = c.atraso_min == null ? null : Number(c.atraso_min);
+    if (aberto) {
+      if (atraso != null && atraso < LIMIAR_SEM_SINAL_MIN && idadeMin(c.updated_at, p.agora) < LIMIAR_SEM_SINAL_MIN) {
+        const km = aberto.lat != null && aberto.lng != null && c.lat != null && c.lng != null
+          ? distKm(aberto.lat, aberto.lng, c.lat, c.lng)
+          : null;
+        resolver.push({
+          id: aberto.id,
+          contexto: {
+            ...(aberto.contexto ?? {}),
+            auto_resolvido: true,
+            voltou_em: p.agora.toISOString(),
+            voltou_lat: c.lat,
+            voltou_lng: c.lng,
+            voltou_km: km == null ? null : Math.round(km * 10) / 10,
+            voltou: km == null ? "sinal voltou" : textoVoltouSinal(km),
+          },
+        });
+      }
+      continue;
+    }
+    if (!clientesVivos.has(c.cliente_id)) continue;
+    if (planejarSemSinal({ atrasoMin: atraso, temCargaHoje: true, naBase: c.na_base === true }) === "abrir") inserir.push(c);
+  }
+  return { inserir, resolver };
 }

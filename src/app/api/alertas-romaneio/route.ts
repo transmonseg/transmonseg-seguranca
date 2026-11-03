@@ -1,3 +1,4 @@
+import { formatarReabertura } from "@/lib/desvio-episodio";
 import { acessoDoUsuario, podeVerCod } from "@/lib/acesso-cliente";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -165,6 +166,8 @@ export async function GET(request: Request) {
         progressoDestinoM: a.contexto?.progresso_destino?.delta_m ?? null,
         placarSombra: a.contexto?.placar_sombra ?? null,
         calibracao: a.contexto?.calibracao ?? null,
+        // DSV-01: "Reaberto — Nº episódio" quando um desvio novo reabriu o card.
+        reabertura: formatarReabertura(a.contexto),
       };
     }
   );

@@ -1497,3 +1497,24 @@ describe("POI nao verificado (auditoria 15/10, DM-03/DR-02): Overpass fora nao p
     expect(cands.find((c) => c.tipo === "saida_nao_autorizada")).toBeUndefined();
   });
 });
+
+// DSV-07 (auditoria 03/11): sabado com romaneio (Nutry 24 e 31/10) teve 0
+// parada na Central Romaneio porque o horario era so' seg-sex.
+describe("emHorarioOperacao com romaneio do dia (DSV-07)", () => {
+  const sabado10h = new Date("2026-10-31T13:00:00Z"); // sab 10:00 BRT
+  const domingo10h = new Date("2026-11-01T13:00:00Z"); // dom 10:00 BRT
+  const sabado22h = new Date("2026-11-01T01:00:00Z"); // sab 22:00 BRT
+  it("sabado com romaneio do dia: em operacao", () => {
+    expect(emHorarioOperacao(sabado10h, { temRomaneioHoje: true })).toBe(true);
+  });
+  it("domingo sem romaneio: fora", () => {
+    expect(emHorarioOperacao(domingo10h, { temRomaneioHoje: false })).toBe(false);
+    expect(emHorarioOperacao(domingo10h)).toBe(false);
+  });
+  it("com romaneio, a janela de 06 a 20 h continua valendo", () => {
+    expect(emHorarioOperacao(sabado22h, { temRomaneioHoje: true })).toBe(false);
+  });
+  it("sem a opcao (Central Unitrac): seg-sex como antes", () => {
+    expect(emHorarioOperacao(sabado10h)).toBe(false);
+  });
+});

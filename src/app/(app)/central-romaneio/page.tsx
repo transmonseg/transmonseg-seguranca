@@ -1,3 +1,4 @@
+import { formatarReabertura } from "@/lib/desvio-episodio";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { acessoDoUsuario, filtrarPorAcesso } from "@/lib/acesso-cliente";
 import MonitorV2 from "../central-v2/MonitorV2";
@@ -135,6 +136,7 @@ export default async function CentralRomaneioPage({
       progressoDestinoM: (a.contexto as { progresso_destino?: { delta_m: number } } | null)?.progresso_destino?.delta_m ?? null,
       placarSombra: (a.contexto as { placar_sombra?: { placar: number; componentes: Record<string, number | boolean | string> } } | null)?.placar_sombra ?? null,
       calibracao: (a.contexto as { calibracao?: { segmento: string | null; taxa_falso_positivo: number } } | null)?.calibracao ?? null,
+      reabertura: formatarReabertura(a.contexto),
       contexto: undefined,
     };
   };

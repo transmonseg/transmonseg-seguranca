@@ -4,6 +4,7 @@ import {
   deveReabrirDesvio,
   montarContextoReabertura,
   formatarReabertura,
+  decidirEpisodio,
   type EntradaReaberturaDesvio,
 } from "./desvio-episodio";
 
@@ -121,5 +122,42 @@ describe("formatarReabertura", () => {
     expect(formatarReabertura({ episodios: 1 })).toBeNull();
     expect(formatarReabertura({})).toBeNull();
     expect(formatarReabertura(null)).toBeNull();
+  });
+});
+
+// DSV-01 (auditoria 03/11): a Central Romaneio deixava 1 alerta de desvio por
+// veiculo por dia; episodio novo (>= 10 min sem disparo) agora reabre o card.
+describe("decidirEpisodio (Central Romaneio)", () => {
+  const agora = "2026-10-30T17:00:00.000Z";
+  const min = (m: number) => new Date(Date.parse(agora) - m * 60_000).toISOString();
+
+  it("sem alerta aberto: novo_alerta", () => {
+    expect(decidirEpisodio(null, agora)).toBe("novo_alerta");
+  });
+  it("ultimo disparo ha 15 min: novo_episodio", () => {
+    expect(decidirEpisodio({ desde: min(120), ultimoDisparoEm: min(15) }, agora)).toBe("novo_episodio");
+  });
+  it("ultimo disparo ha 5 min: mesmo_episodio", () => {
+    expect(decidirEpisodio({ desde: min(120), ultimoDisparoEm: min(5) }, agora)).toBe("mesmo_episodio");
+  });
+  it("exatamente 10 min: novo_episodio (limite fechado)", () => {
+    expect(decidirEpisodio({ desde: min(120), ultimoDisparoEm: min(10) }, agora)).toBe("novo_episodio");
+  });
+  it("sem registro de disparo: usa o desde do alerta", () => {
+    expect(decidirEpisodio({ desde: min(30), ultimoDisparoEm: null }, agora)).toBe("novo_episodio");
+    expect(decidirEpisodio({ desde: min(3), ultimoDisparoEm: null }, agora)).toBe("mesmo_episodio");
+  });
+  it("limite configuravel", () => {
+    expect(decidirEpisodio({ desde: min(120), ultimoDisparoEm: min(15) }, agora, 20)).toBe("mesmo_episodio");
+  });
+  it("datas invalidas nao reabrem (mantem o comportamento antigo)", () => {
+    expect(decidirEpisodio({ desde: "lixo", ultimoDisparoEm: null }, agora)).toBe("mesmo_episodio");
+  });
+});
+
+describe("formatarReabertura com a lista de episodios da Central Romaneio", () => {
+  it("lista com 2+ episodios vira rotulo; 1 episodio nao", () => {
+    expect(formatarReabertura({ episodios: [{}, {}] })).toBe("Reaberto — 2º episódio");
+    expect(formatarReabertura({ episodios: [{}] })).toBeNull();
   });
 });

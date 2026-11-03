@@ -85,7 +85,32 @@ export function montarContextoReabertura(
 // Rotulo curto pra UI (null = alerta nunca reaberto).
 export function formatarReabertura(contexto: unknown): string | null {
   if (!contexto || typeof contexto !== "object") return null;
-  const n = (contexto as Record<string, unknown>).episodios;
+  const bruto = (contexto as Record<string, unknown>).episodios;
+  // Central Unitrac grava o contador; a Central Romaneio grava a lista
+  // (contexto.episodios[] com desde/lat/lng/motivo de cada episodio).
+  const n = Array.isArray(bruto) ? bruto.length : bruto;
   if (typeof n !== "number" || n < 2) return null;
   return `Reaberto — ${n}º episódio`;
+}
+
+// ─── Central Romaneio (DSV-01, auditoria 03/11) ───────────────────────────
+// O motor-romaneio deduplicava por tipo e nunca mexia no alerta aberto: o 1o
+// desvio do dia escondia todos os seguintes (replay de 30/10: 65% dos
+// episodios da Nutry e 76% dos da RQ). Mesma regra da Central Unitrac acima:
+// episodio novo = >= 10 min sem disparo do mesmo veiculo. O "ultimo disparo"
+// vem de alertas_romaneio_disparos (migration 092); sem registro nenhum, conta
+// o `desde` do proprio alerta (o disparo que o abriu).
+export type DecisaoEpisodio = "novo_alerta" | "novo_episodio" | "mesmo_episodio";
+
+export function decidirEpisodio(
+  alertaAberto: { desde: string; ultimoDisparoEm: string | null } | null,
+  agoraISO: string,
+  minutosSemDisparo: number = EPISODIO_DESVIO_GAP_MIN
+): DecisaoEpisodio {
+  if (!alertaAberto) return "novo_alerta";
+  const ref = Date.parse(alertaAberto.ultimoDisparoEm ?? alertaAberto.desde);
+  const agora = Date.parse(agoraISO);
+  // Data ilegivel: nao reabre (comportamento anterior, nunca reabre a cada ciclo).
+  if (!Number.isFinite(ref) || !Number.isFinite(agora)) return "mesmo_episodio";
+  return agora - ref >= minutosSemDisparo * 60_000 ? "novo_episodio" : "mesmo_episodio";
 }

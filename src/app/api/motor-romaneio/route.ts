@@ -52,6 +52,7 @@
 // (linha do lease + expiração/retenção de alertas_romaneio).
 
 import pg from "pg";
+import { randomUUID } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { atrasoEfetivoMin } from "@/lib/frescor-posicao";
@@ -73,6 +74,12 @@ import {
   ultimaComunicacaoEstimada,
   type CargaComPosicao,
   type AlertaRastreadorExistente,
+  TIPO_SEM_SINAL_EM_ROTA,
+  SQL_CARGA_DO_DIA_SEM_SINAL,
+  planejarCardsSemSinal,
+  motivoSemSinal,
+  type CargaSemSinal,
+  type AlertaSemSinalExistente,
 } from "@/lib/rastreador-mudo";
 import {
   haversineM,
@@ -104,12 +111,12 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS, CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, CLIENTES_COM_ROMANEIO_AUSENTE, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
+import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS, CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, DESVIO_EPISODIO_NOVO_REABRE_ALERTA, CLIENTES_COM_ROMANEIO_AUSENTE, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, RETORNO_BASE_JANELA_S, type LeituraRetornoBase } from "@/lib/desvio";
+import { ajustarAlertaDesvioRomaneio, destinosParaDesvio, avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, RETORNO_BASE_JANELA_S, type LeituraRetornoBase } from "@/lib/desvio";
 import {
   GATE_SAIDA_BASE_ATIVO,
   PERIODO_CICLO_MOTOR_S,
@@ -128,6 +135,7 @@ import {
   type ClasseViaria,
 } from "@/lib/classe-viaria-confirmacao";
 import { celulaDe, vizinhanca3x3 } from "@/lib/celulas";
+import { decidirEpisodio, type DecisaoEpisodio } from "@/lib/desvio-episodio";
 import { dataSP, datagpsPlausivelComoMarco, estadoEhDeOutroDiaSP } from "@/lib/motor-romaneio-estado";
 import { corrigirPosicoesComMatch, type ResultadoMatch } from "@/lib/osrm-match";
 
@@ -457,6 +465,124 @@ export function deveAvaliarSinalA(ctx: {
   );
 }
 
+// ─── DSV-01 + DSV-02 (auditoria 03/11): episódio de desvio e trilha ────────
+// Até 03/11 o Step 9 deduplicava por tipo e, com alerta aberto, só subia o
+// nível: o 1º desvio do dia congelava o card (local, hora e motivo do 1º
+// episódio) e todo episódio seguinte ficava invisível até a expiração das
+// 01:30 (replay de 30/10: 113 de 175 episódios da Nutry, 227 de 298 da RQ).
+// Agora, com >= 10 min sem disparo do mesmo veículo (decidirEpisodio,
+// @/lib/desvio-episodio), o card é REABERTO: sobe `desde`, troca lat/lng/
+// motivo e anexa o episódio em contexto.episodios[]. Nada é fechado nem
+// silenciado (recall > precisão). Todo disparo de desvio vira 1 linha em
+// alertas_romaneio_disparos (migration 092), que também é a fonte do
+// "último disparo". Sem a tabela (trilhaOk=false) o comportamento é o antigo.
+export type AlertaDesvioAberto = {
+  id: string;
+  nivel: "critico" | "atencao";
+  desde: string;
+  lat: number | null;
+  lng: number | null;
+  motivo: string | null;
+  contexto: Record<string, unknown> | null;
+};
+
+type CandidatoDesvio = { nivel: "critico" | "atencao"; motivo: string; score: number; origemDesvio?: string };
+
+function episodiosDoContexto(a: AlertaDesvioAberto): Record<string, unknown>[] {
+  const bruto = a.contexto?.episodios;
+  if (Array.isArray(bruto)) return bruto as Record<string, unknown>[];
+  // Card gravado antes desta mudança: o 1º episódio é o próprio card.
+  return [{ desde: a.desde, lat: a.lat, lng: a.lng, motivo: a.motivo }];
+}
+
+export function planejarDisparoDesvio(p: {
+  alertaAberto: AlertaDesvioAberto | null;
+  ultimoDisparoEm: string | null;
+  trilhaOk: boolean;
+  candidato: CandidatoDesvio;
+  contextoCiclo: Record<string, unknown>;
+  agoraISO: string;
+  lat: number;
+  lng: number;
+}): { decisao: DecisaoEpisodio; contextoInsert: Record<string, unknown> | null; patch: Record<string, unknown> | null } {
+  const { alertaAberto, candidato, agoraISO, lat, lng } = p;
+  const episodio = { desde: agoraISO, lat, lng, motivo: candidato.motivo };
+  if (!alertaAberto) {
+    return { decisao: "novo_alerta", contextoInsert: { ...p.contextoCiclo, episodios: [episodio] }, patch: null };
+  }
+  const decisao: DecisaoEpisodio = p.trilhaOk
+    ? decidirEpisodio({ desde: alertaAberto.desde, ultimoDisparoEm: p.ultimoDisparoEm }, agoraISO)
+    : "mesmo_episodio";
+  const escala = alertaAberto.nivel !== "critico" && candidato.nivel === "critico";
+  const rebaixaria = alertaAberto.nivel === "critico" && candidato.nivel !== "critico";
+  const anteriores = episodiosDoContexto(alertaAberto);
+  if (decisao === "novo_episodio") {
+    return {
+      decisao,
+      contextoInsert: null,
+      patch: {
+        desde: agoraISO,
+        lat,
+        lng,
+        motivo: candidato.motivo,
+        status: "ativo",
+        // Nunca rebaixa: episódio novo mais fraco sobre card crítico reabre
+        // o card e mantém o vermelho (e o score dele).
+        ...(rebaixaria ? {} : { nivel: candidato.nivel, score: candidato.score }),
+        contexto: {
+          ...(alertaAberto.contexto ?? {}),
+          ...p.contextoCiclo,
+          episodios: [...anteriores, episodio],
+          desde_primeiro_episodio: (anteriores[0]?.desde as string | undefined) ?? alertaAberto.desde,
+          reaberto_em: agoraISO,
+        },
+      },
+    };
+  }
+  if (escala) {
+    // Escalação de sempre; o contexto é mesclado (antes era sobrescrito e
+    // perderia a lista de episódios).
+    return {
+      decisao,
+      contextoInsert: null,
+      patch: {
+        nivel: candidato.nivel,
+        motivo: candidato.motivo,
+        score: candidato.score,
+        contexto: { ...(alertaAberto.contexto ?? {}), ...p.contextoCiclo, episodios: anteriores },
+      },
+    };
+  }
+  return { decisao, contextoInsert: null, patch: null };
+}
+
+export function montarLinhaDisparoDesvio(p: {
+  alertaId: string | null;
+  veiculoId: string;
+  clienteId: string;
+  lat: number;
+  lng: number;
+  decisao: DecisaoEpisodio | "silenciado" | "cooldown" | "erro_insert";
+  streak: number;
+  candidato: CandidatoDesvio;
+}): Record<string, unknown> {
+  return {
+    alerta_id: p.alertaId,
+    veiculo_id: p.veiculoId,
+    cliente_id: p.clienteId,
+    tipo: "desvio",
+    lat: p.lat,
+    lng: p.lng,
+    contexto: {
+      decisao: p.decisao,
+      streak: p.streak,
+      nivel: p.candidato.nivel,
+      origem_desvio: p.candidato.origemDesvio ?? null,
+      motivo: p.candidato.motivo,
+    },
+  };
+}
+
 // Trava de execução única deste ciclo -- MESMO mecanismo da Central
 // (motor/route.ts:497-528): lease com expiração por UPDATE atômico em
 // motor_lease. Motivo medido na Central (comentário dela em 247-264): sem
@@ -574,7 +700,9 @@ const TIPOS_SOMBRA = new Set(["panico", "jammer", "excesso"]);
 // Revisão F3-07 (R4): romaneio_ausente é 1 card por CLIENTE, preso a um carro
 // representativo; o Step 9 desse carro (que já tem romaneio) fechava o card na
 // hora e furava a carência de 30 min de sinalizarRomaneioAusente.
-const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer", TIPO_RASTREADOR_MUDO, TIPO_ROMANEIO_AUSENTE]);
+// DSV-05 (03/11): sem_sinal_em_rota também -- fecha só quando o sinal volta
+// (sinalizarSemSinalEmRota), nunca pelo Step 9.
+const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer", TIPO_RASTREADOR_MUDO, TIPO_ROMANEIO_AUSENTE, TIPO_SEM_SINAL_EM_ROTA]);
 
 type EstadoAnterior = {
   afastando_streak: number;
@@ -594,6 +722,12 @@ type AlertaAtivoRow = {
   // apagaria origem_desvio, que é o insumo da comparação entre os dois
   // pipelines.
   contexto: Record<string, unknown> | null;
+  // DSV-01: o episódio novo de desvio reabre o card e guarda o episódio
+  // anterior -- precisa do desde/lat/lng/motivo atuais do card.
+  desde?: string;
+  lat?: number | null;
+  lng?: number | null;
+  motivo?: string | null;
 };
 
 // Fecha alertas_romaneio POR AÇÃO DA MÁQUINA, marcando contexto.auto_resolvido.
@@ -964,6 +1098,63 @@ export async function sinalizarRastreadorMudoComCarga(ctx: {
   }
 }
 
+// DSV-05 (auditoria 03/11): carro com carga do dia, fora da base, sem sinal
+// de 60 min a 24 h não gerava nada visível -- o loop abaixo pula quem não é
+// fresco. Card de atenção, 1 por carro por episódio, fecha quando o sinal
+// volta ("voltou a X km de onde sumiu"). Só a tela da Central Romaneio: não
+// entra em nenhum envio de WhatsApp. Regra em @/lib/rastreador-mudo.
+export async function sinalizarSemSinalEmRota(ctx: {
+  pool: pg.Pool;
+  admin: ReturnType<typeof createAdminClient>;
+  hoje: string;
+  agora: Date;
+  erros: string[];
+}): Promise<void> {
+  const { pool, admin, hoje, agora, erros } = ctx;
+  try {
+    const { rows: cargas } = await pool.query<CargaSemSinal>(SQL_CARGA_DO_DIA_SEM_SINAL, [hoje]);
+    const { data, error } = await admin
+      .from("alertas_romaneio")
+      .select("id, veiculo_id, status, desde, lat, lng, contexto")
+      .eq("tipo", TIPO_SEM_SINAL_EM_ROTA)
+      .in("status", ["ativo", "reconhecido"]);
+    if (error) {
+      erros.push(`Aviso: falha ao checar ${TIPO_SEM_SINAL_EM_ROTA} existentes: ${error.message}`);
+      return;
+    }
+    const plano = planejarCardsSemSinal({ cargas, existentes: (data ?? []) as AlertaSemSinalExistente[], hoje, agora });
+    for (const c of plano.inserir) {
+      const { error: e } = await admin.from("alertas_romaneio").insert({
+        cliente_id: c.cliente_id,
+        veiculo_id: c.veiculo_id,
+        nivel: "atencao",
+        tipo: TIPO_SEM_SINAL_EM_ROTA,
+        motivo: motivoSemSinal(c),
+        score: 20,
+        status: "ativo",
+        lat: c.lat,
+        lng: c.lng,
+        contexto: {
+          nfs: Number(c.nfs),
+          atraso_min: c.atraso_min,
+          ultima_comunicacao: ultimaComunicacaoEstimada(c.atraso_min, c.updated_at)?.toISOString() ?? null,
+        },
+        desde: agora.toISOString(),
+      });
+      if (e) erros.push(`Aviso: falha ao inserir ${TIPO_SEM_SINAL_EM_ROTA} pro veiculo ${c.veiculo_id}: ${e.message}`);
+    }
+    for (const { id, contexto } of plano.resolver) {
+      const { error: e } = await admin
+        .from("alertas_romaneio")
+        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto })
+        .eq("id", id);
+      if (e) erros.push(`Aviso: falha ao resolver ${TIPO_SEM_SINAL_EM_ROTA} ${id}: ${e.message}`);
+    }
+  } catch (e) {
+    erros.push(`Aviso: ${TIPO_SEM_SINAL_EM_ROTA} desligado neste ciclo: ${String(e)}`);
+  }
+}
+
 export async function POST(request: Request) {
   // Marco de duração do ciclo -- tomado ANTES do lease, porque a espera de
   // conexão do pool também consome o orçamento de maxDuration.
@@ -1083,6 +1274,43 @@ export async function POST(request: Request) {
   // mesmo padrão de contadorCorrecoesMatch em route.ts:548.
   const contadorCorrecoesMatch = { valor: 0 };
 
+  // DSV-02: trilha de disparos (alertas_romaneio_disparos, migration 092).
+  // Falha (tabela ainda não criada, banco lento) desliga a trilha no resto do
+  // ciclo, com 1 aviso -- e sem trilha o episódio novo não reabre o card
+  // (comportamento anterior), nunca o contrário.
+  let trilhaOk = true;
+  function avisarTrilha(e: unknown) {
+    if (trilhaOk) erros.push(`Aviso: trilha alertas_romaneio_disparos indisponivel neste ciclo (migration 092?): ${String(e)}`);
+    trilhaOk = false;
+  }
+  async function ultimoDisparoDesvio(veiculoId: string): Promise<string | null> {
+    if (!trilhaOk) return null;
+    try {
+      const { rows } = await pool.query<{ t: Date | string | null }>(
+        `SELECT max(criado_em) AS t FROM alertas_romaneio_disparos
+          WHERE veiculo_id = $1 AND tipo = 'desvio' AND criado_em >= now() - interval '1 day'`,
+        [veiculoId]
+      );
+      const t = rows[0]?.t;
+      return t == null ? null : new Date(t).toISOString();
+    } catch (e) {
+      avisarTrilha(e);
+      return null;
+    }
+  }
+  async function registrarDisparo(linha: Record<string, unknown>): Promise<void> {
+    if (!trilhaOk) return;
+    try {
+      await pool.query(
+        `INSERT INTO alertas_romaneio_disparos (alerta_id, veiculo_id, cliente_id, tipo, lat, lng, contexto)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+        [linha.alerta_id, linha.veiculo_id, linha.cliente_id, linha.tipo, linha.lat, linha.lng, JSON.stringify(linha.contexto)]
+      );
+    } catch (e) {
+      avisarTrilha(e);
+    }
+  }
+
   try {
     const hoje = hojeSP();
 
@@ -1090,6 +1318,7 @@ export async function POST(request: Request) {
     // logo abaixo) -- ver comentario de sinalizarRomaneioAusente.
     await sinalizarRomaneioAusente({ pool, admin, hoje, agora, erros });
     await sinalizarRastreadorMudoComCarga({ pool, admin, hoje, agora, erros });
+    await sinalizarSemSinalEmRota({ pool, admin, hoje, agora, erros });
 
     // Só veículos com romaneio utilizável de hoje (ver task-2-brief.md, Step 3).
     // NÃO filtra por geocode_status/lat/lng aqui (removido na task-5, ver
@@ -1098,14 +1327,24 @@ export async function POST(request: Request) {
     // fallback pelo alvo da Unitrac que casa por NF, ou descarta a linha se
     // nem isso existir. Filtrar geocode_status aqui faria a NF sumir ANTES
     // desse fallback rodar, reabrindo o buraco que esta task fecha.
-    const { rows: linhasRomaneio } = await pool.query<LinhaRomaneioPontoDb>(
-      `SELECT veiculo_id, placa, nf, cliente_nome, lat, lng, presenca_confirmada_em
+    //
+    // DSV-06 (03/11): NF retirada num reenvio (removida_em, migration 093)
+    // não é mais destino. Sem a coluna (deploy antes da migration) cai na
+    // leitura antiga com 1 aviso -- o motor nunca para por isso.
+    const SQL_ROMANEIO_DO_DIA = `SELECT veiculo_id, placa, nf, cliente_nome, lat, lng, presenca_confirmada_em
          FROM romaneio_pontos
         WHERE romaneio_data = $1::date
           AND modo_teste = false
-          AND veiculo_id IS NOT NULL`,
-      [hoje]
-    );
+          AND veiculo_id IS NOT NULL`;
+    let linhasRomaneio: LinhaRomaneioPontoDb[];
+    try {
+      ({ rows: linhasRomaneio } = await pool.query<LinhaRomaneioPontoDb>(`${SQL_ROMANEIO_DO_DIA}
+          AND removida_em IS NULL`, [hoje]));
+    } catch (errRemovida) {
+      if ((errRemovida as { code?: string }).code !== "42703") throw errRemovida;
+      erros.push("Aviso: romaneio_pontos sem a coluna removida_em (migration 093 nao aplicada) -- NF retirada no reenvio ainda conta como pendente");
+      ({ rows: linhasRomaneio } = await pool.query<LinhaRomaneioPontoDb>(SQL_ROMANEIO_DO_DIA, [hoje]));
+    }
 
     if (linhasRomaneio.length === 0) {
       return respostaDoCiclo();
@@ -1588,16 +1827,16 @@ export async function POST(request: Request) {
     // ninguém lê `sombra` de volta destas linhas -- ela só entra no insert
     // (Step 9). Anotar explicitamente evita que os dois ramos (com/sem
     // sombra no SELECT) infiram tipos incompatíveis entre si.
-    let alertasAbertosResp: { data: { id: string; veiculo_id: string; tipo: string; nivel: string; contexto: unknown }[] | null; error: { message: string } | null } = await admin
+    let alertasAbertosResp: { data: { id: string; veiculo_id: string; tipo: string; nivel: string; contexto: unknown; desde?: string; lat?: number | null; lng?: number | null; motivo?: string | null }[] | null; error: { message: string } | null } = await admin
       .from("alertas_romaneio")
-      .select("id, veiculo_id, tipo, nivel, contexto, sombra")
+      .select("id, veiculo_id, tipo, nivel, contexto, desde, lat, lng, motivo, sombra")
       .in("veiculo_id", veiculoIds)
       .in("status", ["ativo", "reconhecido"]);
     if (alertasAbertosResp.error) {
       sombraDisponivel = false;
       alertasAbertosResp = await admin
         .from("alertas_romaneio")
-        .select("id, veiculo_id, tipo, nivel, contexto")
+        .select("id, veiculo_id, tipo, nivel, contexto, desde, lat, lng, motivo")
         .in("veiculo_id", veiculoIds)
         .in("status", ["ativo", "reconhecido"]);
     }
@@ -1605,7 +1844,7 @@ export async function POST(request: Request) {
     const alertasAbertosPorVeiculo = new Map<string, AlertaAtivoRow[]>();
     for (const a of (alertasAbertosRows ?? []) as (AlertaAtivoRow & { veiculo_id: string })[]) {
       const lista = alertasAbertosPorVeiculo.get(a.veiculo_id) ?? [];
-      lista.push({ id: a.id, tipo: a.tipo, nivel: a.nivel, contexto: a.contexto });
+      lista.push({ id: a.id, tipo: a.tipo, nivel: a.nivel, contexto: a.contexto, desde: a.desde, lat: a.lat, lng: a.lng, motivo: a.motivo });
       alertasAbertosPorVeiculo.set(a.veiculo_id, lista);
     }
 
@@ -1937,16 +2176,21 @@ export async function POST(request: Request) {
         // "fonte de ponto de entrega" que esta task troca -- entram sempre,
         // senão um caminhão voltando pra base com pendente aberto (situação
         // permanente na Escala do Pão) se afasta de "tudo" e dispara.
+        //
+        // ATUALIZADO 03/11 (DSV-03, decisão do dono): com NF pendente no raio
+        // de 50 km a base SAI da lista (destinosParaDesvio, @/lib/desvio). A
+        // base Penha, central na região, escondia todo desvio que se
+        // aproximasse dela (cenário C2 do lab). Sem pendente no raio a base
+        // volta, e o alerta sai como atenção (DSV-04, ajustarAlertaDesvioRomaneio).
         const centroidesBase = centroideBasePorCliente.get(info.cliente_id) ?? [];
         const escalaDoVeiculo = escalaPorPlaca.get(info.placa) ?? [];
-        const destinosBase: Ponto[] = [
-          ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
-          ...centroidesBase,
-          ...escalaDoVeiculo,
-        ];
-        const destinosRelevantes = destinosBase.filter(
-          (d) => haversineM(latAtual, lngAtual, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M
-        );
+        const noRaio = (d: Ponto) => haversineM(latAtual, lngAtual, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M;
+        const pendentesNoRaio: Ponto[] = pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })).filter(noRaio);
+        const destinosRelevantes = destinosParaDesvio({
+          pendentes: pendentesNoRaio,
+          bases: centroidesBase,
+          escala: escalaDoVeiculo,
+        }).filter(noRaio);
 
         // Gates que suspendem a avaliação -- mesmos da Central (brief Step 1):
         // ruído de GPS/OSRM parado ou quase parado nunca deve alimentar streak.
@@ -2021,7 +2265,9 @@ export async function POST(request: Request) {
           if (Number.isFinite(inicioMs)) {
             paradoMinVeiculo = Math.round((agora.getTime() - inicioMs) / 60000);
           }
-          const emOperacao = emHorarioOperacao(agora);
+          // DSV-07: todo veículo deste loop tem romaneio hoje -- sábado com
+          // operação conta como horário de operação.
+          const emOperacao = emHorarioOperacao(agora, { temRomaneioHoje: true });
           const foraDaBase = !veiculosDentroDeBase.has(veiculoId);
 
           // Pré-condição comum aos 3 detectores (eles a re-checam por dentro;
@@ -2337,6 +2583,11 @@ export async function POST(request: Request) {
               }
             }
 
+            // DSV-04 (03/11): 0 pendente no raio = rota concluída. O alerta
+            // continua saindo (nunca suprime), mas como atenção, origem
+            // sem_destinos e com o texto verdadeiro.
+            alerta = ajustarAlertaDesvioRomaneio(alerta, pendentesNoRaio.length);
+
             // Step 7: corroborações, mesma ordem da Central -- corredor, depois classe viária.
             if (alerta) {
               try {
@@ -2551,8 +2802,19 @@ export async function POST(request: Request) {
         }
 
         for (const candidato of candidatosCiclo) {
-          if (silenciadosVeiculo.has(candidato.tipo)) continue;
+          const ehDesvio = candidato.tipo === "desvio";
+          const linhaDisparo = (alertaId: string | null, decisao: Parameters<typeof montarLinhaDisparoDesvio>[0]["decisao"]) =>
+            montarLinhaDisparoDesvio({
+              alertaId, veiculoId, clienteId: info.cliente_id, lat: latAtual, lng: lngAtual, decisao,
+              streak: afastandoStreakNovo, candidato: candidato as CandidatoDesvio,
+            });
+          if (silenciadosVeiculo.has(candidato.tipo)) {
+            if (ehDesvio) await registrarDisparo(linhaDisparo(null, "silenciado"));
+            continue;
+          }
           const alertaExistente = alertasAbertosVeiculo.find((a) => a.tipo === candidato.tipo);
+          // DSV-01: último disparo ANTES deste (lido antes de gravar o deste ciclo).
+          const ultimoDisparoEm = ehDesvio && alertaExistente ? await ultimoDisparoDesvio(veiculoId) : null;
           // contexto por tipo: desvio leva origem_desvio (insumo da comparação
           // entre os pipelines); parada_fora_tapete leva os mesmos 3 campos
           // que a Central grava (route.ts:3178-3182); as outras paradas levam
@@ -2634,7 +2896,10 @@ export async function POST(request: Request) {
               agoraMs: agora.getTime(),
               ultimoTratamentoTemporal,
             });
-            if (suprimidoPorCooldown) continue;
+            if (suprimidoPorCooldown) {
+              if (ehDesvio) await registrarDisparo(linhaDisparo(null, "cooldown"));
+              continue;
+            }
 
             // CRÍTICO 2 (revisão independente 27/08): se o candidato é de um
             // tipo shadow (TIPOS_SOMBRA) e a coluna `sombra` não está
@@ -2652,7 +2917,17 @@ export async function POST(request: Request) {
               continue;
             }
 
+            // DSV-01: id gerado aqui pra trilha de disparo apontar pro card,
+            // e o desvio já nasce com o 1º episódio em contexto.episodios[].
+            const idNovo = ehDesvio ? randomUUID() : undefined;
+            const contextoInsert = ehDesvio
+              ? planejarDisparoDesvio({
+                  alertaAberto: null, ultimoDisparoEm: null, trilhaOk, candidato: candidato as CandidatoDesvio,
+                  contextoCiclo: contextoAlerta, agoraISO: agora.toISOString(), lat: latAtual, lng: lngAtual,
+                }).contextoInsert ?? contextoAlerta
+              : contextoAlerta;
             const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
+              ...(idNovo ? { id: idNovo } : {}),
               cliente_id: info.cliente_id,
               veiculo_id: veiculoId,
               nivel: candidato.nivel,
@@ -2662,13 +2937,14 @@ export async function POST(request: Request) {
               status: "ativo",
               lat: latAtual,
               lng: lngAtual,
-              contexto: contextoAlerta,
+              contexto: contextoInsert,
               desde: agora.toISOString(),
               // Chega aqui só quando sombraDisponivel=true (ou o tipo não é
               // de shadow, caso em que TIPOS_SOMBRA.has() é false e o
               // spread não adiciona nada) -- o gate acima já garantiu isso.
               ...(TIPOS_SOMBRA.has(candidato.tipo) ? { sombra: true } : {}),
             });
+            if (ehDesvio) await registrarDisparo(linhaDisparo(erroInsert ? null : idNovo ?? null, erroInsert ? "erro_insert" : "novo_alerta"));
             if (erroInsert) {
               erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
             } else if (TIPOS_SOMBRA.has(candidato.tipo)) {
@@ -2680,6 +2956,39 @@ export async function POST(request: Request) {
             } else {
               alertasGerados++;
             }
+          } else if (ehDesvio) {
+            // DSV-01: episódio novo (>= 10 min sem disparo) reabre o card;
+            // dentro do mesmo episódio só escala, como antes.
+            const plano = planejarDisparoDesvio({
+              alertaAberto: {
+                id: alertaExistente.id,
+                nivel: alertaExistente.nivel,
+                desde: alertaExistente.desde ?? agora.toISOString(),
+                lat: alertaExistente.lat ?? null,
+                lng: alertaExistente.lng ?? null,
+                motivo: alertaExistente.motivo ?? null,
+                contexto: (alertaExistente.contexto as Record<string, unknown> | null) ?? null,
+              },
+              ultimoDisparoEm,
+              // Chave da Central (config-clientes) vale aqui também: false
+              // volta ao card congelado no 1º episódio.
+              trilhaOk: trilhaOk && DESVIO_EPISODIO_NOVO_REABRE_ALERTA,
+              candidato: candidato as CandidatoDesvio,
+              contextoCiclo: contextoAlerta,
+              agoraISO: agora.toISOString(),
+              lat: latAtual,
+              lng: lngAtual,
+            });
+            if (plano.patch) {
+              const { error: erroPatch } = await admin.from("alertas_romaneio").update(plano.patch).eq("id", alertaExistente.id);
+              if (erroPatch) {
+                erros.push(`Aviso: falha ao atualizar desvio ${alertaExistente.id} do veiculo ${veiculoId}: ${erroPatch.message}`);
+              } else if (plano.decisao === "novo_episodio") {
+                alertasGerados++;
+                console.log(`desvio-romaneio: episodio_novo veiculo=${veiculoId} alerta=${alertaExistente.id}`);
+              }
+            }
+            await registrarDisparo(linhaDisparo(alertaExistente.id, plano.decisao));
           } else if (alertaExistente.nivel !== "critico" && candidato.nivel === "critico") {
             // contexto vai junto, igual à Central (route.ts:3195-3201): sem
             // isso o contexto ficaria congelado no valor do alerta inicial

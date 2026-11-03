@@ -29,7 +29,11 @@
 //   - motor-romaneio/route.ts: cliente NA lista => os 3 detectores LIGADOS
 // Ou seja, exatamente um dos dois pipelines cobre cada cliente -- nunca zero
 // (falso negativo, o erro caro aqui) e nunca dois (alerta duplicado).
-export const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096"]); // Nutry Max
+// 03/11 (DSV-07): + Rio Quality. Ela tem romaneio desde F2-04 e as paradas
+// (74 a 123 parada_anomala/dia) so' existiam na Central Unitrac, que fica na
+// engrenagem. Os dois lados leem esta lista, entao nao ha' duplicata: a
+// Central Unitrac desliga as 3 paradas do carro da RQ com romaneio hoje.
+export const CLIENTES_COM_MOTOR_ROMANEIO_PARALELO = new Set(["4096", "598"]); // Nutry Max, Rio Quality
 
 // F3-07 (MON-04): o aviso romaneio_ausente (1 card agregado por cliente por
 // dia, @/lib/romaneio-ausente) vale para todo cliente com romaneio, nao so'
@@ -86,6 +90,8 @@ export const GATES_SUPRESSAO_DESVIO_ATIVOS = false;
 // contexto.episodios) em vez de ficar escondido pelo dedupe por tipo. Medido:
 // 445 de 892 episodios de 14-20/09 (50%) estavam escondidos sob alerta velho,
 // contra 270 de 1066 (25%) em 24-28/08.
+// 03/11 (DSV-01): vale tambem pra Central Romaneio (motor-romaneio/route.ts,
+// planejarDisparoDesvio), que congelava o card no 1o episodio do dia.
 export const DESVIO_EPISODIO_NOVO_REABRE_ALERTA = true;
 
 // "Afastando de todos" com ZERO pendente de cliente na lista de destinos (so'
