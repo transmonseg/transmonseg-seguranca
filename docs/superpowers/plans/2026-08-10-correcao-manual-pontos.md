@@ -36,7 +36,7 @@ client, mesmo padrão de `scripts/backtest-desvio/carregar-corpus.mjs`).
   `scripts/backtest-desvio/index.mjs` — nenhum script utilitário deste
   projeto tem teste automatizado).
 - `DATABASE_URL` de produção:
-  `postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg`,
+  `postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg`,
   só acessível de dentro do Contabo (via `ssh transmonseg-vps`).
 
 ---
@@ -181,7 +181,7 @@ import { readFileSync } from "node:fs";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??
-  "postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg";
+  "postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg";
 
 const arquivo = process.argv[2];
 if (!arquivo) {
@@ -264,7 +264,7 @@ git push origin main
 - [ ] **Step 3: Aplicar a migration 034 em produção**
 
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -f /srv/transmonseg/temp/scripts/migrations/contabo/034_fonte_pontos_aprendidos.sql"
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -f /srv/transmonseg/temp/scripts/migrations/contabo/034_fonte_pontos_aprendidos.sql"
 ```
 
 (Rodar DEPOIS do `git pull` no VPS — ver Step 4 — pra garantir que o
@@ -273,7 +273,7 @@ a migration, depois build/restart.)
 
 Expected: sem erro. Confirmar via SQL:
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -c \"select column_name, column_default from information_schema.columns where table_name='pontos_aprendidos' and column_name='fonte';\""
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -c \"select column_name, column_default from information_schema.columns where table_name='pontos_aprendidos' and column_name='fonte';\""
 ```
 Expected: 1 linha, `column_default` mostrando `'aprendido'::text`.
 
@@ -314,7 +314,7 @@ manuais gravadas.`
 
 Confirmar via SQL:
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -c \"select cliente_id, ponto_codigo, lat, lng, fonte from pontos_aprendidos where ponto_codigo=633161;\""
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -c \"select cliente_id, ponto_codigo, lat, lng, fonte from pontos_aprendidos where ponto_codigo=633161;\""
 ```
 Expected: `fonte='manual'`, `lat`/`lng` batendo com o valor de teste
 gravado.
@@ -323,7 +323,7 @@ gravado.
 
 Rodar a função isoladamente (sem esperar até 04:20):
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -c \"select lat, lng, fonte from pontos_aprendidos where ponto_codigo=633161;\" -c \"select aprender_pontos_entrega();\" -c \"select lat, lng, fonte from pontos_aprendidos where ponto_codigo=633161;\""
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -c \"select lat, lng, fonte from pontos_aprendidos where ponto_codigo=633161;\" -c \"select aprender_pontos_entrega();\" -c \"select lat, lng, fonte from pontos_aprendidos where ponto_codigo=633161;\""
 ```
 Expected: `lat`/`lng`/`fonte` idênticos ANTES e DEPOIS de rodar
 `aprender_pontos_entrega()` — a linha de teste não muda, mesmo que
@@ -336,7 +336,7 @@ Como o valor gravado no Step 6 foi só de teste (não é a posição real
 verificada), reverter pra não deixar dado de teste contaminando produção:
 
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -c \"delete from pontos_aprendidos where ponto_codigo=633161 and fonte='manual';\""
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -c \"delete from pontos_aprendidos where ponto_codigo=633161 and fonte='manual';\""
 ```
 
 Confirmar que a linha sumiu (ou, se já existisse uma linha `fonte='aprendido'`

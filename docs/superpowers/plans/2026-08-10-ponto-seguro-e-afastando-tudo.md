@@ -40,7 +40,7 @@ implementação final.
   verificar via `pm2 logs`/query real que o comportamento mudou.
 - `DATABASE_URL` de produção (Contabo, só leitura nas tasks do harness,
   escrita só no Task 1 de verificação manual pós-deploy):
-  `postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg`,
+  `postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg`,
   acessível via `ssh transmonseg-vps "psql '<url>' -c \"...\""`. Fora do
   Contabo (execução local/subagent), não há acesso direto ao Postgres —
   toda query desta plano roda via SSH.
@@ -535,7 +535,7 @@ import { writeFileSync } from "node:fs";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??
-  "postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg";
+  "postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg";
 
 const client = new pg.Client({ connectionString: DATABASE_URL });
 await client.connect();
@@ -975,7 +975,7 @@ Expected: `status: online`, sem stack trace/erro fatal nos últimos logs.
 - [ ] **Step 6: Verificação real do Bug 1 (ponto seguro) — não só ausência de erro**
 
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -c \"select count(*) from placar_desvio_log where criado_em >= now() - interval '10 minutes' and componentes->>'zeradoPorChegada'='true';\""
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -c \"select count(*) from placar_desvio_log where criado_em >= now() - interval '10 minutes' and componentes->>'zeradoPorChegada'='true';\""
 ```
 
 Não é uma comparação antes/depois automática (o número normal inclui
@@ -986,7 +986,7 @@ pós-deploy, sem travar. Reporte o número visto.
 - [ ] **Step 7: Verificação real do Bug 2 (afastando de tudo) — aguardar próximo ciclo real de TTM-7C13/TTH-0G95 se ainda estiverem em rota**
 
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -c \"select v.placa, p.desvio_streak, p.fora_tapete_streak, p.criado_em from posicoes_atuais p join veiculos v on v.id=p.veiculo_id where v.placa in ('TTM-7C13','TTH-0G95');\""
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -c \"select v.placa, p.desvio_streak, p.fora_tapete_streak, p.criado_em from posicoes_atuais p join veiculos v on v.id=p.veiculo_id where v.placa in ('TTM-7C13','TTH-0G95');\""
 ```
 
 Se os veículos ainda estiverem em operação, reportar o `desvio_streak`

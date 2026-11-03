@@ -25,9 +25,11 @@
 import pg from "pg";
 import { pathToFileURL } from "node:url";
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg";
+function databaseUrl() {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL não definida (use --env-file=.env.production)");
+  return url;
+}
 
 // Mesmos limiares do motor ao vivo (raio nominal de entrega, dwell minimo
 // pra "parou de verdade" -- ver BYPASS_ENTREGA_DWELL_MINIMO_SEGUNDOS em
@@ -344,7 +346,7 @@ function sufixoDaAncora(ancora, existente, proxima) {
 const DRY_RUN = process.argv.includes("--dry-run");
 
 async function main() {
-  const pool = new pg.Pool({ connectionString: DATABASE_URL });
+  const pool = new pg.Pool({ connectionString: databaseUrl() });
 
   const { rows: pendentes } = await pool.query(SQL_PENDENTES, [JANELA_DIAS]);
   const { rows: colunaMetodo } = await pool.query(

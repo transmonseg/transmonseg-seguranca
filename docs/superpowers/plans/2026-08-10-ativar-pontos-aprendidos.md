@@ -422,7 +422,7 @@ investigação) para comparar a posição gravada em
 `pendentes_snapshot_log` ANTES e DEPOIS do deploy:
 
 ```bash
-ssh transmonseg-vps "psql 'postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg' -c \"
+ssh transmonseg-vps "psql 'postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg' -c \"
 select criado_em, pt->>'lat' as lat, pt->>'lng' as lng
 from pendentes_snapshot_log, jsonb_array_elements(pendentes) as pt
 where pt->>'codigo' = '563321' and criado_em >= now() - interval '15 minutes'

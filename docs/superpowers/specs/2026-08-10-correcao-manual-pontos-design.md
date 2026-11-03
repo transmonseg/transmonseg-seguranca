@@ -121,7 +121,7 @@ import { readFileSync } from "node:fs";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??
-  "postgres://app_service:5cf0fd1c8cfc0dfdf66a19196d5e6ebc691bbc628d7e637c@localhost:5432/transmonseg";
+  "postgres://app_service:<SENHA_APP_SERVICE>@localhost:5432/transmonseg";
 
 const arquivo = process.argv[2];
 if (!arquivo) {
