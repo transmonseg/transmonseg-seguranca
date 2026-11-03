@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { lerCoordenadasKpi, coordenadaDoKpi } from "@/lib/romaneio-coordenadas-kpi";
 import { separarJaMovidasPorTroca, nfsRemovidas, nfsRestauradas, type LinhaExistente, type NfDaRota } from "@/lib/romaneio-reenvio";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, variantesOZero, resolverPlacaNoCadastro, type LinhaRomaneio } from "@/lib/romaneio";
@@ -231,9 +232,14 @@ export async function POST(request: Request) {
     ? `${(request.headers.get("x-enviado-por") ?? "KPI").slice(0, 80)} (pelo Ao vivo do KPI)`
     : (user?.user_metadata?.nome as string | undefined) ?? user?.email ?? null;
 
+  // GEO3-08 (03/11): ponto confiável que o KPI já resolveu por NF, só pela
+  // ponte do Ao vivo (x-motor-key) e só no romaneio. Linha com ponto entra
+  // "ok" (o cron não regeocodifica); sem ponto, geocodifica como antes.
+  const coordsKpi = viaKpi && origem === "romaneio" ? lerCoordenadasKpi(formData.get("coordenadas")) : new Map();
   const linhasParaInserir = linhasNormalizadas.map((l) => {
     const placaNormalizada = normalizarPlaca(l.placaBruta);
     const veiculo = veiculoPorPlaca.get(placaNormalizada);
+    const pontoKpi = coordenadaDoKpi(coordsKpi, l.placaBruta, l.nf);
     return {
       veiculo_id: veiculo?.id ?? null,
       // F1-05: achou o carro (inclusive pela variante O/0) => grava a placa
@@ -248,9 +254,9 @@ export async function POST(request: Request) {
       endereco_bruto: l.enderecoBruto,
       carga_destino_codigo: l.cargaDestinoCodigo,
       carga_destino_nome: l.cargaDestinoNome,
-      lat: null,
-      lng: null,
-      geocode_status: "pendente",
+      lat: pontoKpi?.lat ?? null,
+      lng: pontoKpi?.lng ?? null,
+      geocode_status: pontoKpi ? "ok" : "pendente",
       modo_teste: modoTeste,
       enviado_por: enviadoPor,
       origem,
