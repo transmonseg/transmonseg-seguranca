@@ -546,8 +546,17 @@ export async function geocodificarEndereco(
   // Variantes da consulta externa (completa -> sem bairro): achado 05/09,
   // o bairro derrubava o match do Nominatim em cidade pequena do interior.
   // Ver montarVariantesParaGeocode.
+  // GEO3-02/03 (auditoria 03/11): sem ponto de referencia da cidade, o
+  // externo devolvia a primeira rua homonima do pais e o resultado ia pro
+  // cache sem expirar ("RUA ANTONIO PIO TEIXEIRA, MAGE" -> MG, 684 km; Paraty
+  // -> PE, 1.867 km). Sem referencia, Google/Photon/Nominatim nao decidem
+  // nada: o endereco fica sem ponto e volta a ser tentado (precisao > cobertura).
+  // Os chamadores carregam a referencia do cache em lote (referencia-cidade.ts).
+  if (!pontoCidade) {
+    console.warn(`[geocode] sem ponto de referencia da cidade -- Google/Photon/Nominatim nao decidem; endereco=${JSON.stringify(enderecoBruto)}`);
+    return null;
+  }
   const variantes = montarVariantesParaGeocode(enderecoBruto);
-  const enderecoParaGeocode = variantes[0];
   // Achado real 12/08 (segunda rodada de melhoria pos-deploy): CNEFE/local
   // acima ja tem checagem de distancia contra pontoCidade
   // (escolherCandidatoMaisProximo, dentro de geocodificarCnefe/geocodificarLocal)
@@ -555,7 +564,7 @@ export async function geocodificarEndereco(
   // resultado direto. Sem pontoCidade (endereco sem cidade reconhecida),
   // nada pra comparar, aceita como sempre.
   const perto = (p: { lat: number; lng: number }) =>
-    !pontoCidade || haversineM(pontoCidade.lat, pontoCidade.lng, p.lat, p.lng) <= DISTANCIA_MAX_MATCH_LOCAL_M;
+    haversineM(pontoCidade.lat, pontoCidade.lng, p.lat, p.lng) <= DISTANCIA_MAX_MATCH_LOCAL_M;
 
   for (const variante of variantes) {
     const google = await deps.geocodificarGoogle(variante);

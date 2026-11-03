@@ -116,3 +116,22 @@ describe("montarDepsTerritorio", () => {
     erroSpy.mockRestore();
   });
 });
+
+// GEO3-07 (03/11): distancia ate o poligono do municipio esperado (migration 095).
+describe("montarDepsTerritorio -- distanciaAoMunicipio (GEO3-07)", () => {
+  it("chama a RPC distancia_ao_municipio com o municipio e devolve metros", async () => {
+    const rpc = vi.fn(async () => ({ data: 684000, error: null }));
+    const deps = montarDepsTerritorio({ rpc } as never);
+    expect(await deps.distanciaAoMunicipio!(-18.6785, -48.1692, "3302502")).toBe(684000);
+    expect(rpc).toHaveBeenCalledWith("distancia_ao_municipio", { p_lat: -18.6785, p_lng: -48.1692, p_municipio: "3302502" });
+  });
+
+  it("RPC ausente (migration 095 nao aplicada) ou erro -> null, com log", async () => {
+    const erro = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rpc = async () => ({ data: null, error: { message: "Could not find the function", code: "PGRST202" } });
+    const deps = montarDepsTerritorio({ rpc } as never);
+    expect(await deps.distanciaAoMunicipio!(0, 0, "3302502")).toBeNull();
+    expect(erro).toHaveBeenCalled();
+    erro.mockRestore();
+  });
+});

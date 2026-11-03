@@ -11,8 +11,9 @@
 // Ver docs/superpowers/specs/2026-09-12-confiabilidade-kpi-nutrimax-design.md,
 // secao "Decisoes de arquitetura".
 //
-// FAIL-OPEN em todo caminho de duvida: sem municipio esperado resolvido, sem
-// poligono contendo o ponto, ou com a consulta falhando, o resultado e' "ok".
+// FAIL-OPEN em todo caminho de duvida: sem municipio esperado resolvido ou com
+// a consulta falhando, o resultado e' "ok". Ponto sem poligono que o contenha
+// deixou de ser duvida em 03/11 (GEO3-07, ver foraDoMunicipioEsperado).
 // Uma coordenada boa nunca pode virar suspeita por falta de dado nosso.
 //
 // Task 4b (mesmo dia, substitui a checagem de bairro das Tasks 4/5/7): a regra
@@ -109,7 +110,44 @@ export type DepsTerritorio = {
     bairroNormalizado: string,
     municipioCodigo: string | null,
   ) => Promise<number | null>;
+  /** GEO3-07 (03/11): distancia em metros do ponto ate o poligono do
+   *  municipio esperado (RPC distancia_ao_municipio, migration 095). Opcional:
+   *  sem ela (ou com a RPC ausente devolvendo null) vale o retangulo do RJ. */
+  distanciaAoMunicipio?: (lat: number, lng: number, municipioCodigo: string) => Promise<number | null>;
 };
+
+// GEO3-07 (auditoria 03/11): ponto fora de qualquer poligono da malha dava
+// real=null e aprovava -- MG, PE e (0,0) passavam como "dentro do territorio"
+// quando o endereco nao tinha bairro (formato RQ) ou o bairro nao tinha hull.
+// Com o municipio esperado conhecido: mais de 2 km do poligono reprova. A folga
+// e' de praia e ilha (Ilha Grande, Marambaia, 10 referencias de bairro fora da
+// malha). Sem a distancia (migration 095 ainda nao aplicada ou RPC falhando),
+// o retangulo do estado do RJ com folga pega o grosso (outro estado, 0,0);
+// vizinho de MG/ES dentro do retangulo so' a distancia pega.
+export const TOLERANCIA_FORA_DA_MALHA_M = 2000;
+const RETANGULO_RJ = { latMin: -23.45, latMax: -20.70, lngMin: -45.0, lngMax: -40.85 };
+
+export function dentroDoRetanguloRJ(p: { lat: number; lng: number }): boolean {
+  return p.lat >= RETANGULO_RJ.latMin && p.lat <= RETANGULO_RJ.latMax
+    && p.lng >= RETANGULO_RJ.lngMin && p.lng <= RETANGULO_RJ.lngMax;
+}
+
+async function foraDoMunicipioEsperado(
+  ponto: { lat: number; lng: number },
+  municipioCodigo: string,
+  deps: DepsTerritorio,
+): Promise<boolean> {
+  let distanciaM: number | null = null;
+  if (deps.distanciaAoMunicipio) {
+    try {
+      distanciaM = await deps.distanciaAoMunicipio(ponto.lat, ponto.lng, municipioCodigo);
+    } catch (err) {
+      console.error("[validarTerritorio] distanciaAoMunicipio falhou -- usando o retangulo do RJ", err);
+    }
+  }
+  if (distanciaM !== null && Number.isFinite(distanciaM)) return distanciaM > TOLERANCIA_FORA_DA_MALHA_M;
+  return !dentroDoRetanguloRJ(ponto);
+}
 
 /** Acima disso o ponto esta longe demais do hull do bairro pedido pra ser
  *  o mesmo lugar. Calibrado originalmente contra 100 casos comprovados por
@@ -195,6 +233,9 @@ export async function validarTerritorio(
       return { ok: true };
     }
     if (real && real !== esperado.municipioCodigo) {
+      return { ok: false, motivo: "municipio_divergente" };
+    }
+    if (real === null && await foraDoMunicipioEsperado(ponto, esperado.municipioCodigo, deps)) {
       return { ok: false, motivo: "municipio_divergente" };
     }
   }

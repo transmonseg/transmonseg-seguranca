@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, normalizarEndereco, escolherPontoReferencia } from "@/lib/romaneio-geocode";
-import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade } from "@/lib/romaneio-geocode-local";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, normalizarEndereco } from "@/lib/romaneio-geocode";
+import { criarReferencias, localDoEndereco, type Ponto } from "@/lib/referencia-cidade";
+import { montarDepsTerritorio } from "../geocode/territorio-deps";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
 
 // Teto de pontos da rua lidos do CNEFE (avenida longa do Rio passa de mil).
@@ -64,6 +65,7 @@ export async function POST(request: Request) {
   }
 
   const admin = createAdminClient();
+  const depsTerritorio = montarDepsTerritorio(admin);
 
   // Achado real 27/07: agora que o job roda mais de uma vez por minuto
   // (ver migration contabo/005), duas invocacoes podem se sobrepor --
@@ -175,7 +177,8 @@ export async function POST(request: Request) {
   };
 
   const buscarCache = async (chaveNormalizada: string) => {
-    const { data } = await admin.from("romaneio_geocode_cache").select("lat, lng, fonte").eq("endereco_normalizado", chaveNormalizada).maybeSingle();
+    // GEO3-11 (03/11): sem `validado` no select, todo hit voltava validado=true.
+    const { data } = await admin.from("romaneio_geocode_cache").select("lat, lng, fonte, validado").eq("endereco_normalizado", chaveNormalizada).maybeSingle();
     return data ?? null;
   };
   // Auditoria 20/10 (GEO-11): grava `validado` -- antes ficava sempre no
@@ -217,89 +220,28 @@ export async function POST(request: Request) {
     return geocodificarNominatimThrottled(termo);
   };
 
-  // Resolve os pontos de referencia de cidade do lote, 1x cada (nao 1x
-  // por endereco) -- cacheados em romaneio_geocode_cache com prefixo
-  // "CIDADE:" pra nao colidir com chaves de endereco completo. Poucas
-  // dezenas por lote no maximo, throttle simples ja basta.
-  // expandirCidadeTruncada ANTES de deduplicar/resolver: achado real 31/07,
-  // o PDF de origem corta o nome da cidade em ~15 caracteres (ex. "SANTA
-  // MARIA MAD") -- mandar isso pro Nominatim como nome de cidade falha
-  // quase sempre. Ver src/lib/romaneio-geocode-local.ts.
-  const cidadesUnicas = [...new Set(
-    pendentes
-      .map((l) => extrairCidadeDoEndereco(l.endereco_bruto))
-      .filter((c): c is string => c !== null)
-      .map(expandirCidadeTruncada)
-  )];
-  // termoBuscaCidade (achado real 27/08, item 3 da blindagem): o nome
-  // PELADO ia pro Nominatim e nome de municipio se repete pelo Brasil
-  // inteiro -- o cache de producao tinha CIDADE:NATIVIDADE apontando pra
-  // Natividade/TO (~1500km), CIDADE:VALENÇA pra Valença/BA, CIDADE:MESQUITA
-  // pra Mesquita/MG, e mais uma duzia iguais, todos EM USO como regua de
-  // validacao de distancia dos outros enderecos. Municipio reconhecido do
-  // RJ agora vai qualificado com ", RJ, Brasil". O termo qualificado e'
-  // tambem a CHAVE de cache, entao as entradas envenenadas antigas
-  // simplesmente deixam de ser lidas -- sem precisar apagar nada do banco.
-  const pontosCidade = new Map<string, { lat: number; lng: number }>();
-  for (const cidade of cidadesUnicas) {
-    const termoCidade = termoBuscaCidade(cidade);
-    const chaveCidade = `CIDADE:${termoCidade.toUpperCase()}`;
-    const doCache = await buscarCache(chaveCidade);
-    if (doCache) {
-      pontosCidade.set(cidade, { lat: doCache.lat, lng: doCache.lng });
-      continue;
-    }
-    const ponto = await resolverPontoComRetry(termoCidade);
-    if (ponto) {
-      await salvarCache(chaveCidade, { ...ponto, fonte: "nominatim" });
-      pontosCidade.set(cidade, ponto);
-    }
-  }
-
-  // Achado real 12/08 (romaneio de hoje, casos SEPETIBA/CAMPOS): o ponto de
-  // cidade acima e' bom pra pegar cidade ERRADA (ex. rua homonima em outro
-  // estado), mas Rio de Janeiro (cidade) e' grande demais pra discriminar
-  // bairro errado DENTRO da cidade certa -- rua comprida sem numero exato
-  // no CNEFE caia no candidato mais proximo do centro da CIDADE, nao do
-  // bairro real do endereco, as vezes dezenas de km errado mesmo "dentro"
-  // do teto de 30km (DISTANCIA_MAX_MATCH_LOCAL_M em romaneio-geocode.ts).
-  // extrairBairroDoEndereco ja existia (usado so pra montar o texto do
-  // Nominatim) -- agora tambem resolve um ponto de referencia mais
-  // apertado (bairro+cidade), mesmo padrao de cache/throttle do ponto de
-  // cidade, chave "BAIRRO:<bairro>:<cidade>" pra nao colidir. Quando falha
-  // (bairro raro sem match no Nominatim) cai pro ponto de cidade, nunca
-  // bloqueia a geocodificacao.
-  const bairroCidadeUnicos = [...new Set(
-    pendentes
-      .map((l) => {
-        const bairro = extrairBairroDoEndereco(l.endereco_bruto);
-        const cidadeBruta = extrairCidadeDoEndereco(l.endereco_bruto);
-        const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
-        return bairro && cidade ? `${bairro}|${cidade}` : null;
-      })
-      .filter((x): x is string => x !== null)
-  )];
-  const pontosBairro = new Map<string, { lat: number; lng: number }>();
-  for (const chave of bairroCidadeUnicos) {
-    const [bairro, cidade] = chave.split("|");
-    // Mesma qualificacao de estado do ponto de cidade acima -- "Centro,
-    // Natividade" sozinho tem a mesma ambiguidade nacional.
-    const termoBairro = `${bairro}, ${termoBuscaCidade(cidade)}`;
-    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${termoBuscaCidade(cidade).toUpperCase()}`;
-    const doCache = await buscarCache(chaveCache);
-    if (doCache) {
-      pontosBairro.set(chave, { lat: doCache.lat, lng: doCache.lng });
-      continue;
-    }
-    // Mesma retentativa do ponto de cidade acima -- mesmo risco (falha
-    // transitoria vira "sem ponto de referencia", que por sua vez vira
-    // "candidato unico aceito sem checagem" em escolherCandidatoMaisProximo).
-    const ponto = await resolverPontoComRetry(termoBairro);
-    if (ponto) {
-      await salvarCache(chaveCache, { ...ponto, fonte: "nominatim" });
-      pontosBairro.set(chave, ponto);
-    }
-  }
+  // Pontos de referencia de cidade/bairro (cache com prefixo "CIDADE:" /
+  // "BAIRRO:<bairro>:<cidade>", termo qualificado com ", RJ, Brasil" -- ver
+  // termoBuscaCidade e o historico em src/lib/referencia-cidade.ts). Achados
+  // que moldaram isto: 31/07 cidade truncada (expandirCidadeTruncada), 27/08
+  // CIDADE:NATIVIDADE em Tocantins (termo qualificado), 12/08 bairro mais
+  // apertado que a cidade no Rio, 03/09 retentativa do Nominatim.
+  // GEO3-02 (03/11): carregados do cache EM LOTE e tambem para as linhas da
+  // retentativa (fase "falhou", mais abaixo) -- antes so' as reivindicadas
+  // neste ciclo tinham referencia, e a retentativa aceitava qualquer ponto.
+  const referencias = criarReferencias({
+    lerCacheEmLote: async (chaves) => {
+      const mapa = new Map<string, Ponto>();
+      for (let i = 0; i < chaves.length; i += 150) {
+        const { data } = await admin.from("romaneio_geocode_cache").select("endereco_normalizado, lat, lng").in("endereco_normalizado", chaves.slice(i, i + 150));
+        for (const row of (data ?? []) as { endereco_normalizado: string; lat: number; lng: number }[]) mapa.set(row.endereco_normalizado, { lat: row.lat, lng: row.lng });
+      }
+      return mapa;
+    },
+    resolverExterno: resolverPontoComRetry,
+    salvar: (chave, ponto) => salvarCache(chave, { ...ponto, fonte: "nominatim" }),
+  });
+  await referencias.carregar(pendentes.map((l) => l.endereco_bruto));
 
   // nome_sem_conectores (nao nome_normalizado direto): achado real 31/07,
   // conectores (de/da/do) aparecem de forma inconsistente entre o romaneio
@@ -376,21 +318,11 @@ export async function POST(request: Request) {
   // exclusivo do loop principal, que tem o contexto (cliente_id) pra
   // decidir a ancora write-once.
   const tentarGeocodeTexto = async (enderecoBruto: string): Promise<{ lat: number; lng: number; fonte: string } | null> => {
-    const cidadeBruta = extrairCidadeDoEndereco(enderecoBruto);
-    const cidade = cidadeBruta ? expandirCidadeTruncada(cidadeBruta) : null;
-    const bairro = extrairBairroDoEndereco(enderecoBruto);
-    const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
-    const municipioCodigo = cidade ? municipioCodigoIbge(cidade) : null;
+    const { municipioCodigo } = localDoEndereco(enderecoBruto);
     // Ponto do bairro so' vale se estiver DENTRO da cidade -- ver
     // escolherPontoReferencia (achado 05/09: "CENTRO, CAMBUCI" resolvia em
-    // Sao Paulo capital e derrubava o endereco certo pelo teto de 30km;
-    // achado 06/09: Rio capital ganha teto maior la' dentro, municipio
-    // gigante onde bairro correto pode ficar bem mais longe do "centro").
-    const referencia = escolherPontoReferencia(
-      (chaveBairro && pontosBairro.get(chaveBairro)) || null,
-      (cidade ? pontosCidade.get(cidade) : null) || null,
-      municipioCodigo,
-    );
+    // Sao Paulo capital; achado 06/09: Rio capital ganha teto maior).
+    const referencia = referencias.referenciaDoEndereco(enderecoBruto);
     const pontoReferencia = referencia?.ponto ?? null;
     const precisaoBairro = referencia?.precisao === "bairro";
     return geocodificarEndereco(enderecoBruto, pontoReferencia, {
@@ -602,6 +534,14 @@ export async function POST(request: Request) {
   // entao ela tem que ser tratada num caminho que nao dependa de
   // `cvsUnicos.length > 0` -- um lote inteiro de linhas orfas deixaria esse
   // `if` vazio e o bloco inteiro de contagem de tentativa seria pulado.
+  // GEO3-02: referencia tambem para a retentativa. Cidade do RJ fora do cache
+  // vai ao Nominatim (sao poucas); bairro so' do cache -- 30 linhas x 2
+  // chamadas de 1,1 s estourariam o maxDuration de 60 s.
+  await referencias.carregar((semGeocode ?? []).map((l) => l.endereco_bruto), {
+    resolverCidadeExterno: (_e, municipioCodigo) => municipioCodigo !== null,
+    resolverBairroExterno: () => false,
+  });
+
   const semGeocodeComVeiculo = (semGeocode ?? []).filter((l): l is LinhaFallback & { veiculo_id: string } => !!l.veiculo_id);
   const semGeocodeOrfaos = (semGeocode ?? []).filter((l) => !l.veiculo_id);
 
@@ -696,7 +636,13 @@ export async function POST(request: Request) {
               // uma coordenada de entrega sob uma chave generica demais.
               const chaveAprendida = normalizarEndereco(linha.endereco_bruto);
               if (chaveAprendida && chaveAprendida.length >= 8 && chaveAprendida.includes(",")) {
-                await salvarCache(chaveAprendida, { lat: alvo.pontolatitude, lng: alvo.pontolongitude, fonte: "unitrac_aprendido" });
+                // GEO3-11 (03/11): so' sai validado=true quando o alvo cai no
+                // municipio do endereco (poligono IBGE). Fora (outro municipio,
+                // outro estado) ou sem municipio conhecido: validado=false --
+                // o default da coluna (true) escondia "PARATI" aprendido em SP.
+                const { municipioCodigo } = localDoEndereco(linha.endereco_bruto);
+                const municipioDoAlvo = municipioCodigo ? await depsTerritorio.municipioDaCoordenada(alvo.pontolatitude, alvo.pontolongitude) : null;
+                await salvarCache(chaveAprendida, { lat: alvo.pontolatitude, lng: alvo.pontolongitude, fonte: "unitrac_aprendido", validado: municipioCodigo !== null && municipioDoAlvo === municipioCodigo });
               }
               continue;
             }

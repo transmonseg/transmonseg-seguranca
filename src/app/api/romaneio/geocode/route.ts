@@ -35,11 +35,12 @@
 // -- chamada servidor-a-servidor, nunca do browser.
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, escolherPontoReferencia, normalizarEndereco } from "@/lib/romaneio-geocode";
-import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, termoBuscaCidade, extrairRuaDoEndereco, normalizarNomeRua, extrairNumeroDoEndereco } from "@/lib/romaneio-geocode-local";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, normalizarEndereco } from "@/lib/romaneio-geocode";
+import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, extrairRuaDoEndereco, normalizarNomeRua, extrairNumeroDoEndereco } from "@/lib/romaneio-geocode-local";
 import { validarTerritorio, cepConfirmaPonto, type MotivoTerritorio } from "@/lib/territorio";
 import { extrairCepDoEndereco } from "@/lib/cnefe-escolha";
 import { montarDepsTerritorio } from "./territorio-deps";
+import { criarReferencias, chaveCidade, chaveBairro } from "@/lib/referencia-cidade";
 import { buscarSimilaridadeLimitada } from "@/lib/cnefe-similaridade-limitada";
 import { buscarCentroideBairro } from "@/lib/cnefe-bairro-centroide";
 
@@ -203,6 +204,8 @@ export async function POST(request: Request) {
   // usa a consulta de rua MAIS AMPLA (sem filtro de numero) como proxy pra
   // "a etapa rua+numero tambem teria achado algo" (subconjunto), e checa
   // similaridade tambem (pega variacao de grafia que o match exato perde).
+  // GEO3-03 (03/11): desde entao so' decide se o BAIRRO fora do cache vai ao
+  // Nominatim; a cidade entra sempre (o Photon tambem usa a referencia).
   async function precisaDePontoReferencia(enderecoBruto: string, municipioCodigo: string | null): Promise<boolean> {
     const rua = extrairRuaDoEndereco(enderecoBruto);
     const nomeNormalizado = normalizarNomeRua(rua);
@@ -269,38 +272,20 @@ export async function POST(request: Request) {
     )
   );
 
-  // Pontos de referencia de cidade/bairro -- mesma tecnica de
-  // processar-geocode/route.ts (achado real 12/08: sem isso, rua homonima
-  // em cidade/municipio errado pode passar como candidato "unico"), so'
-  // que aqui SEM gravar no cache (so' le, se ja existir de um ciclo do
-  // cron de producao).
-  const cidadesUnicas = [...new Set(
-    lista.filter((e) => precisaPorEndereco.get(e)).map((e) => cidadePorEndereco.get(e)).filter((c): c is string => c !== null)
-  )];
-  const bairroCidadeUnicos = [...new Set(
-    lista
-      .filter((e) => precisaPorEndereco.get(e))
-      .map((e) => {
-        const bairro = extrairBairroDoEndereco(e);
-        const cidade = cidadePorEndereco.get(e) ?? null;
-        return bairro && cidade ? `${bairro}|${cidade}` : null;
-      })
-      .filter((x): x is string => x !== null)
-  )];
-
-  // Cache de endereco -- SO' LEITURA aqui (nunca upsert, ver comentario no
-  // topo do arquivo). Reaproveita o que o cron de producao ja resolveu, sem
-  // nunca escrever em cima. Achado real 06/09: era 1 SELECT por chave, em
-  // sequencia (cidade, depois bairro, depois cada endereco do lote
-  // principal) -- puro round-trip de rede pros hits, sem nenhum throttle
-  // envolvido (Nominatim so' entra na chamada QUANDO nao ha cache). Uma
-  // unica leitura em lote (.in()) evita centenas de idas e vindas ao banco
-  // quando o lote e' bem cacheado (cron de producao roda a cada 30s).
+  // Cache de endereco + pontos de referencia -- SO' LEITURA aqui (nunca
+  // upsert, ver comentario no topo do arquivo). Uma unica leitura em lote
+  // (.in()), achado 06/09: era 1 SELECT por chave, em sequencia.
+  // GEO3-03 (auditoria 03/11): a referencia da cidade entra para TODO
+  // endereco, sempre do cache. Antes so' entrava quando o pre-check achava
+  // candidato CNEFE/OSM -- mas o Photon tambem usa a referencia (sem ela,
+  // a primeira rua homonima do pais: Paraty -> PE). O pre-check fica so'
+  // para gastar Nominatim com BAIRRO que nao esta no cache.
   const chavesCache = [
-    ...cidadesUnicas.map((c) => `CIDADE:${termoBuscaCidade(c).toUpperCase()}`),
-    ...bairroCidadeUnicos.map((par) => {
-      const [bairro, cidade] = par.split("|");
-      return `BAIRRO:${bairro.toUpperCase()}:${termoBuscaCidade(cidade).toUpperCase()}`;
+    ...lista.flatMap((e) => {
+      const cidade = cidadePorEndereco.get(e) ?? null;
+      if (!cidade) return [];
+      const bairro = extrairBairroDoEndereco(e);
+      return bairro ? [chaveCidade(cidade), chaveBairro(bairro, cidade)] : [chaveCidade(cidade)];
     }),
     ...lista.map((e) => normalizarEndereco(e)),
   ];
@@ -313,46 +298,18 @@ export async function POST(request: Request) {
   }
   const buscarCache = async (chaveNormalizada: string) => cacheMap.get(chaveNormalizada) ?? null;
 
-  const pontosCidade = new Map<string, { lat: number; lng: number }>();
-  for (const cidade of cidadesUnicas) {
-    // Achado real 03/09 (ver PRAZO_MAXIMO_MS no topo): corta a resolucao
-    // de referencia ANTES do loop principal de enderecos consumir todo o
-    // prazo -- cidade sem ponto de referencia ainda geocodifica (so' sem
-    // a checagem de distancia, comportamento ja existente), nao trava a
-    // resposta inteira.
-    if (prazoEsgotado()) break;
-    // termoBuscaCidade acrescenta ", RJ, Brasil" quando a cidade e' do RJ
-    // -- a rota processar-geocode ja fazia assim; esta (a ponte do KPI)
-    // consultava so' o nome cru, o que joga o Nominatim pra cidade homonima
-    // de outro estado (achado 05/09).
-    const termoCidade = termoBuscaCidade(cidade);
-    const chaveCidade = `CIDADE:${termoCidade.toUpperCase()}`;
-    const doCache = await buscarCache(chaveCidade);
-    if (doCache) {
-      pontosCidade.set(cidade, { lat: doCache.lat, lng: doCache.lng });
-      continue;
-    }
-    const ponto = await resolverPontoComRetry(termoCidade);
-    if (ponto) pontosCidade.set(cidade, ponto);
-  }
-
-  const pontosBairro = new Map<string, { lat: number; lng: number }>();
-  for (const chave of bairroCidadeUnicos) {
-    if (prazoEsgotado()) break;
-    const [bairro, cidade] = chave.split("|");
-    const termoBairro = `${bairro}, ${termoBuscaCidade(cidade)}`;
-    const chaveCache = `BAIRRO:${bairro.toUpperCase()}:${termoBuscaCidade(cidade).toUpperCase()}`;
-    const doCache = await buscarCache(chaveCache);
-    if (doCache) {
-      pontosBairro.set(chave, { lat: doCache.lat, lng: doCache.lng });
-      continue;
-    }
-    // Mesma retentativa do ponto de cidade acima -- mesmo risco (falha
-    // transitoria vira "sem ponto de referencia", que por sua vez vira
-    // "candidato unico aceito sem checagem" em escolherCandidatoMaisProximo).
-    const ponto = await resolverPontoComRetry(termoBairro);
-    if (ponto) pontosBairro.set(chave, ponto);
-  }
+  // Referencia fora do cache: Nominatim com retentativa, cortado pelo prazo
+  // (achado 03/09) -- cidade sempre (sao 92 no RJ, quase todas no cache);
+  // bairro so' quando o pre-check acha que o CNEFE/OSM vai precisar.
+  const referencias = criarReferencias({
+    lerCacheEmLote: async (chaves) => new Map(chaves.flatMap((k) => {
+      const c = cacheMap.get(k);
+      return c ? [[k, { lat: c.lat, lng: c.lng }] as const] : [];
+    })),
+    resolverExterno: resolverPontoComRetry,
+    prazoEsgotado,
+  });
+  await referencias.carregar(lista, { resolverBairroExterno: (e) => precisaPorEndereco.get(e) ?? false });
 
   // Achado real 03/09 (ver PRAZO_MAXIMO_MS no topo): resposta PARCIAL
   // (array mais curto que `lista`) em vez de arriscar a chamada inteira
@@ -392,20 +349,10 @@ export async function POST(request: Request) {
       }
       return r.data;
     };
-    const cidade = cidadePorEndereco.get(enderecoBruto) ?? null;
     const bairro = extrairBairroDoEndereco(enderecoBruto);
-    const chaveBairro = bairro && cidade ? `${bairro}|${cidade}` : null;
-    // Ponto do bairro so' vale se estiver DENTRO da cidade -- ver
-    // escolherPontoReferencia (achado 05/09: "CENTRO, CAMBUCI" resolvia em
-    // Sao Paulo capital e derrubava o endereco certo pelo teto de 30km;
-    // achado 06/09: Rio capital ganha teto maior la' dentro, municipio
-    // gigante onde bairro correto pode ficar bem mais longe do "centro").
     const municipioCodigo = municipioCodigoPorEndereco.get(enderecoBruto) ?? null;
-    const referencia = escolherPontoReferencia(
-      (chaveBairro && pontosBairro.get(chaveBairro)) || null,
-      (cidade ? pontosCidade.get(cidade) : null) || null,
-      municipioCodigo,
-    );
+    // Ponto do bairro so' vale DENTRO da cidade (escolherPontoReferencia).
+    const referencia = referencias.referenciaDaCidade(cidadePorEndereco.get(enderecoBruto) ?? null, bairro);
     const pontoReferencia = referencia?.ponto ?? null;
     const precisaoBairro = referencia?.precisao === "bairro";
 
