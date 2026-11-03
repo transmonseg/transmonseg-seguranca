@@ -2,6 +2,7 @@
 
 import { filtrarEntregas, type FiltroEntregas } from "@/lib/filtro-entregas";
 import { filtrarTransmissao, contarTransmissao, type FiltroTransmissao } from "@/lib/filtro-transmissao";
+import { atrasoDoVeiculo, estadoDoVeiculo, rotuloComunicacao, rotuloVelocidade } from "@/lib/estado-sinal";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -1821,7 +1822,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const metricas: { label: string; value: string; color?: string; wide?: boolean; num?: boolean }[] = [
       {
         label: "VELOCIDADE",
-        value: painel.vmAtual ? `${painel.vmAtual.velocidade} km/h` : "—",
+        // RAS-04: leitura velha mostra "última: X km/h às HH:MM".
+        value: painel.vmAtual ? rotuloVelocidade(painel.vmAtual.velocidade, estadoDoVeiculo(painel.vmAtual), painel.vmAtual.posicao_em) : "—",
         color: painel.vmAtual && painel.vmAtual.velocidade > 80 ? T.yellow : undefined,
         num: true,
       },
@@ -1832,8 +1834,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       },
       {
         label: "COMUNICAÇÃO",
-        value: painel.vmAtual ? (painel.vmAtual.atraso_min > 0 ? `${Math.round(painel.vmAtual.atraso_min)}min` : "ao vivo") : "—",
-        color: painel.vmAtual && painel.vmAtual.atraso_min > 30 ? T.yellow : undefined,
+        // RAS-01: atraso efetivo do servidor (não congela quando o motor
+        // para de gravar). "ao vivo" só para leitura atual (< 5 min).
+        value: painel.vmAtual ? rotuloComunicacao(atrasoDoVeiculo(painel.vmAtual), estadoDoVeiculo(painel.vmAtual)) : "—",
+        color: painel.vmAtual && estadoDoVeiculo(painel.vmAtual) !== "atual" ? T.yellow : undefined,
         num: true,
       },
       { label: "LOCAL", value: painel.vmAtual?.local || "—", wide: true },
@@ -2496,7 +2500,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                         return ([["todos", `Todos ${veiculosMapa.length}`], ["transmitindo", `Transmitindo ${n.transmitindo}`], ["sem", `Sem transmissão ${n.sem}`]] as const).map(([v, rotulo]) => {
                           const ativo = filtroTransm === v;
                           return (
-                            <button key={v} type="button" aria-pressed={ativo} onClick={() => setFiltroTransm(v)} title={v === "sem" ? "Sem posição nova há mais de 1 hora" : v === "transmitindo" ? "Posição recebida na última hora" : undefined} style={{
+                            <button key={v} type="button" aria-pressed={ativo} onClick={() => setFiltroTransm(v)} title={v === "sem" ? "Sem posição nova há mais de 30 min" : v === "transmitindo" ? "Posição recebida nos últimos 30 min" : undefined} style={{
                               height: 24, padding: "0 10px", borderRadius: RAIO.capsule,
                               border: `1px solid ${ativo ? T.accent : T.border}`,
                               background: ativo ? T.accentDim : "transparent",

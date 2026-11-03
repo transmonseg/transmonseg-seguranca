@@ -43,6 +43,21 @@ PROBLEMAS="${PROBLEMAS:-}"
 [ "$CENTRAL" -gt "$LIMITE_MIN" ] && PROBLEMAS="${PROBLEMAS}motor da Central sem iniciar ciclo ha ${CENTRAL} min; "
 [ "$ROMANEIO" -gt "$LIMITE_MIN" ] && PROBLEMAS="${PROBLEMAS}motor-romaneio sem iniciar ciclo ha ${ROMANEIO} min; "
 
+# 4) por cliente ativo (RAS-01, 03/11): max(updated_at) da frota ativa de cada
+# cliente. Se a busca de um cliente falha na Unitrac o motor pula so' ele e o
+# max() da tabela inteira continua novo. WATCHDOG_CLIENTES="nome=min;..." no
+# ambiente pula a consulta (teste). Cliente sem nenhuma posicao ("x") e'
+# ignorado; falha desta consulta nao alerta (os 3 relogios acima cobrem banco fora).
+if [ -z "${WATCHDOG_CLIENTES+x}" ]; then
+  WATCHDOG_CLIENTES=$(sudo -n -u postgres psql -d transmonseg -tAc "SELECT string_agg(nome || '=' || coalesce(min_txt,'x'), ';') FROM (SELECT replace(replace(c.nome,';',','),'=','-') AS nome, round(extract(epoch FROM now()-max(p.updated_at))/60)::text AS min_txt FROM clientes c JOIN veiculos v ON v.cliente_id = c.id AND v.ativo LEFT JOIN posicoes_atuais p ON p.veiculo_id = v.id WHERE c.ativo GROUP BY c.id, c.nome) t" 2>/dev/null)
+fi
+IFS=';' read -r -a PARES_CLIENTES <<< "$WATCHDOG_CLIENTES"
+for par in "${PARES_CLIENTES[@]}"; do
+  NOME_CLI="${par%=*}"; MIN_CLI="${par##*=}"
+  case "$MIN_CLI" in ''|*[!0-9]*) continue;; esac
+  [ "$MIN_CLI" -gt "$LIMITE_MIN" ] && PROBLEMAS="${PROBLEMAS}${NOME_CLI} sem posicao gravada ha ${MIN_CLI} min; "
+done
+
 ALERTA="$(dirname "$0")/alertar-dm.mjs"
 if [ -n "$PROBLEMAS" ]; then
   TEXTO="Motor de desvio parado: ${PROBLEMAS%; }. Sem isso nenhum desvio e' detectado. Conferir pm2 (transmonseg-definitivo) e pg_cron."

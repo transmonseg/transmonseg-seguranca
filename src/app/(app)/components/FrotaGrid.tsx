@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { estadoSinal } from "@/lib/estado-sinal";
 
 type NivelRisco = "verde" | "amarelo" | "vermelho";
 
 /* Limiar a partir do qual o veiculo e considerado sem comunicacao */
-const LIMIAR_SEM_COM_MIN = 60;
+// RAS-04 (03/11): limites em @/lib/estado-sinal (um só critério).
 
 interface FrotaItem {
   id: string;
@@ -117,7 +118,7 @@ function IconClock({ size = 11 }: { size?: number }) {
 /* ------------------------------------------------------------------ */
 
 function CardVeiculo({ item }: { item: FrotaItem }) {
-  const offline = item.atraso_min > LIMIAR_SEM_COM_MIN || item.semComunicacao;
+  const offline = estadoSinal(item.atraso_min) === "sem_sinal" || item.semComunicacao;
 
   /* Nivel visual efetivo: offline anula nivel de risco */
   const nivelEfetivo: "vermelho" | "amarelo" | "verde" | "offline" =
@@ -286,7 +287,7 @@ function CardVeiculo({ item }: { item: FrotaItem }) {
               style={{
                 color: offline
                   ? "var(--text-dim)"
-                  : item.atraso_min > 15
+                  : estadoSinal(item.atraso_min) === "atrasado"
                   ? "var(--amarelo)"
                   : "var(--text)",
                 fontFamily: "var(--font-geist-mono, monospace)",
@@ -322,7 +323,7 @@ export default function FrotaGrid({ itens }: FrotaGridProps) {
   const [filtroNivel, setFiltroNivel] = useState<FiltroNivel>("todos");
 
   const itensFiltrados = itens.filter((i) => {
-    const offline = i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao;
+    const offline = estadoSinal(i.atraso_min) === "sem_sinal" || i.semComunicacao;
     if (filtroNivel === "alerta")  return !offline && i.nivel === "vermelho";
     if (filtroNivel === "atencao") return !offline && i.nivel === "amarelo";
     if (filtroNivel === "em-rota") return !offline && i.ignicao;
@@ -330,8 +331,8 @@ export default function FrotaGrid({ itens }: FrotaGridProps) {
   });
 
   const itensOrdenados = [...itensFiltrados].sort((a, b) => {
-    const aOffline = a.atraso_min > LIMIAR_SEM_COM_MIN || a.semComunicacao;
-    const bOffline = b.atraso_min > LIMIAR_SEM_COM_MIN || b.semComunicacao;
+    const aOffline = estadoSinal(a.atraso_min) === "sem_sinal" || a.semComunicacao;
+    const bOffline = estadoSinal(b.atraso_min) === "sem_sinal" || b.semComunicacao;
 
     if (aOffline && !bOffline) return 1;
     if (!aOffline && bOffline) return -1;
@@ -341,11 +342,11 @@ export default function FrotaGrid({ itens }: FrotaGridProps) {
   });
 
   const totalOffline = itens.filter(
-    (i) => i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao
+    (i) => estadoSinal(i.atraso_min) === "sem_sinal" || i.semComunicacao
   ).length;
 
   const totalVermelho = itens.filter(
-    (i) => !(i.atraso_min > LIMIAR_SEM_COM_MIN || i.semComunicacao) && i.nivel === "vermelho"
+    (i) => !(estadoSinal(i.atraso_min) === "sem_sinal" || i.semComunicacao) && i.nivel === "vermelho"
   ).length;
 
   return (
