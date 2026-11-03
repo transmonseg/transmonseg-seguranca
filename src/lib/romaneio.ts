@@ -89,6 +89,14 @@ export function extrairDataRomaneio(textoCompleto: string): string | null {
 
 const REGEX_CABECALHO = /PLACA\/MOTORISTA:\s*(\S+)\s*\/\s*(.+?)\s+CARGA\/DESTINO:\s*(\S+)\s*\/\s*(.+)/;
 const REGEX_NF_CLIENTE = /^(\S+)\s*\/\s*(\S+)\s*-\s*(.+)$/;
+// 03/11/2026 (carga 101465, RBI1E10): a Nutry mandou o campo da NF vazio --
+// " / 2081 - ESTRELA DOS PAGOS". A linha nao pode sumir (a placa ficava "Sem
+// romaneio hoje"); a NF vira id sintetico estavel, unico por carga+cliente,
+// IGUAL ao do KPI (src/lib/kpi-romaneio/nf-sem-numero.ts).
+const REGEX_NF_VAZIA_CLIENTE = /^\/\s*(\d+)\s*-\s*(.+)$/;
+export function nfSemNumero(carga: string, codigoCliente: string): string {
+  return `SEMNF-${carga}-${codigoCliente}`;
+}
 
 // Extrai todas as linhas de entrega (uma por NF) do texto completo do
 // romaneio (todas as paginas concatenadas, na ordem). Uma secao por veiculo
@@ -111,7 +119,10 @@ export function parseRomaneio(textoCompleto: string): LinhaRomaneio[] {
       };
       continue;
     }
-    const nfMatch = brutas[i].match(REGEX_NF_CLIENTE);
+    const vazia = brutas[i].match(REGEX_NF_VAZIA_CLIENTE);
+    const nfMatch = vazia && atual
+      ? ([brutas[i], nfSemNumero(atual.cargaDestinoCodigo, vazia[1]), vazia[1], vazia[2]] as unknown as RegExpMatchArray)
+      : brutas[i].match(REGEX_NF_CLIENTE);
     if (nfMatch && atual) {
       const enderecoBruto = brutas[i + 1] ?? "";
       linhas.push({

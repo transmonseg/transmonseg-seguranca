@@ -110,6 +110,43 @@ describe("parseRomaneio", () => {
   });
 });
 
+// 03/11/2026: carga 101465 (RBI1E10) veio no romaneio com o campo da NF
+// vazio nos 27 clientes (" / 2081 - ESTRELA DOS PAGOS"). Antes a linha sumia
+// e a placa aparecia "Sem romaneio hoje". Mesmo id do KPI: SEMNF-<carga>-<cliente>.
+// Texto como sai do pdf-parse v2 (tab antes de CARGA/DESTINO).
+describe("parseRomaneio — NF em branco", () => {
+  const texto = [
+    "8012 - Romaneio de Entrega",
+    "03/11/2026 07:18",
+    "PLACA/MOTORISTA: RBI1E10 / NEILSON DE SOUZA SILVA\tCARGA/DESTINO: 101465 / BAIXADA",
+    "AJUDANTE(S): ,",
+    "/ 2081 - ESTRELA DOS PAGOS",
+    "RODOVIA PRESIDENTE DUTRA, 172 - ROCHA SOBRINHO, BELFORD ROXO - KM 9,5 - 26150000",
+    "NF / CLIENTE:",
+    "/ 2898 - AVIARIO DOIS IRMAOS",
+    "RUA PROFESSOR LEOPOLDO MACHADO, 34 - SANTA CECILIA, BELFORD ROXO - * - 26130680",
+    "NF / CLIENTE:",
+    "Total de 2 clientes",
+    "PLACA/MOTORISTA: RBI1F75 / MARCELO HENRIQUE ALVES SANTOS\tCARGA/DESTINO: 101466 / BAIXADA 2",
+    "2456767 / 3147 - MINIMERCADO SAO JORGE",
+    "AVENIDA ABILIO AUGUSTO TAVORA, 5909 - CABUCU, NOVA IGUACU - JARDIM LARANJEIRAS - 26291200",
+  ].join("\n");
+  it("cliente sem numero de NF entra com NF SEMNF-<carga>-<cliente>", () => {
+    const linhas = parseRomaneio(texto);
+    expect(linhas).toHaveLength(3);
+    expect(linhas[0]).toMatchObject({
+      placaBruta: "RBI1E10",
+      cargaDestinoCodigo: "101465",
+      nf: "SEMNF-101465-2081",
+      clienteCodigo: "2081",
+      clienteNome: "ESTRELA DOS PAGOS",
+      enderecoBruto: "RODOVIA PRESIDENTE DUTRA, 172 - ROCHA SOBRINHO, BELFORD ROXO - KM 9,5 - 26150000",
+    });
+    expect(linhas[1].nf).toBe("SEMNF-101465-2898");
+    expect(linhas[2]).toMatchObject({ nf: "2456767", cargaDestinoCodigo: "101466" });
+  });
+});
+
 describe("montarPontosDeRomaneio", () => {
   it("NF com alvo correspondente na Unitrac: pega o status (feito/situacao) de la", () => {
     const romaneio = [{ nf: "2272484", clienteNome: "SUPERMERCADO SANSAO", lat: -21.04, lng: -41.98, presencaConfirmadaEm: null }];
