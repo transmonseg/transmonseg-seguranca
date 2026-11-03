@@ -126,18 +126,34 @@ export const SQL_BALDE = `
 // desta secao JA particionam por status por construcao (aberto/limpo/etc
 // sao, eles mesmos, status), entao aplicar um filtro de status por cima
 // zeraria baldes inteiros sem sentido -- ver nota na UI (/analise).
+// DSV-02 (auditoria 03/11): a /analise lia so' `alertas` (Central Unitrac);
+// o produto e' a Central Romaneio. Padrao = alertas_romaneio, `?fonte=central`
+// mostra a Central antiga. alertas_romaneio nao tem modo_teste: o equivalente
+// e' esconder os tipos sombra (panico/jammer/excesso em teste).
+export type TabelaAlertas = "alertas" | "alertas_romaneio";
+
+export function tabelaDaFonte(fonte: string | null | undefined): TabelaAlertas {
+  return fonte === "central" ? "alertas" : "alertas_romaneio";
+}
+
+export function filtroFonteSql(tabela: TabelaAlertas, alias?: string): string {
+  const p = alias ? `${alias}.` : "";
+  return tabela === "alertas" ? `${p}modo_teste = false` : `${p}sombra = false`;
+}
+
 export async function apurarQualidade(
   dias: number,
   tipo: string | null,
-  nivel: string | null = null
+  nivel: string | null = null,
+  tabela: TabelaAlertas = "alertas"
 ): Promise<ResumoQualidade> {
   const client = new pg.Client({ ...configPoolContabo(process.env.DATABASE_URL) });
   await client.connect();
   try {
     const params = [dias, tipo, nivel];
     const filtroBase = `
-      FROM alertas
-      WHERE modo_teste = false
+      FROM ${tabela}
+      WHERE ${filtroFonteSql(tabela)}
         AND desde >= now() - ($1::int * interval '1 day')
         AND ($2::text IS NULL OR tipo = $2::text)
         AND ($3::text IS NULL OR nivel = $3::text)`;
@@ -164,8 +180,8 @@ export async function apurarQualidade(
         `SELECT coalesce(o.nome, 'sem operador') AS operador,
                 ${SQL_BALDE} AS balde,
                 count(*)::text AS n
-         FROM alertas a LEFT JOIN operadores o ON o.id = a.operador_id
-         WHERE a.modo_teste = false
+         FROM ${tabela} a LEFT JOIN operadores o ON o.id = a.operador_id
+         WHERE ${filtroFonteSql(tabela, "a")}
            AND a.desde >= now() - ($1::int * interval '1 day')
            AND ($2::text IS NULL OR a.tipo = $2::text)
            AND ($3::text IS NULL OR a.nivel = $3::text)

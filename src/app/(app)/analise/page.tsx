@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { acessoDoUsuario } from "@/lib/acesso-cliente";
 import { ehCentral } from "@/lib/acesso-guardas";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { apurarQualidade, type ResumoQualidade } from "@/lib/qualidade-tratamento";
+import { apurarQualidade, filtroFonteSql, tabelaDaFonte, type ResumoQualidade } from "@/lib/qualidade-tratamento";
 
 export const dynamic = "force-dynamic";
 
@@ -144,6 +144,10 @@ export default async function AnalisePage({
   const tipoFiltro  = (params.tipo as string)   || null;
   const nivelFiltro = (params.nivel as string)  || null;
   const statusFiltro = (params.status as string) || null;
+  // DSV-02: padrao = Central Romaneio (a tela do operador); ?fonte=central
+  // mostra a Central Unitrac antiga.
+  const tabela = tabelaDaFonte(params.fonte as string | undefined);
+  const colunaFiltroFonte = filtroFonteSql(tabela).split(" ")[0];
 
   const admin = createAdminClient();
   const agoraMs = Date.now();
@@ -152,16 +156,16 @@ export default async function AnalisePage({
 
   const [atualRes, antRes, operadoresRes] = await Promise.all([
     admin
-      .from("alertas")
+      .from(tabela)
       .select("id, nivel, tipo, status, desde, resolvido_em, motivo, operador_id, veiculos(placa)")
-      .eq("modo_teste", false)
+      .eq(colunaFiltroFonte, false)
       .gte("desde", cutoff)
       .order("desde", { ascending: false })
       .limit(2000),
     admin
-      .from("alertas")
+      .from(tabela)
       .select("nivel, tipo, status, desde")
-      .eq("modo_teste", false)
+      .eq(colunaFiltroFonte, false)
       .gte("desde", cutoffAnterior)
       .lt("desde", cutoff)
       .order("desde", { ascending: false })
@@ -195,7 +199,7 @@ export default async function AnalisePage({
   // normalmente em vez de derrubar a pagina inteira.
   let qualidade: ResumoQualidade | null = null;
   try {
-    qualidade = await apurarQualidade(dias, tipoFiltro, nivelFiltro);
+    qualidade = await apurarQualidade(dias, tipoFiltro, nivelFiltro, tabela);
   } catch (e) {
     console.error("[analise] apurarQualidade falhou:", e instanceof Error ? e.message : String(e));
   }
@@ -321,6 +325,7 @@ export default async function AnalisePage({
     if (ti) p.set("tipo",   ti);
     if (ni) p.set("nivel",  ni);
     if (st) p.set("status", st);
+    if (tabela === "alertas") p.set("fonte", "central");
     return `/analise?${p.toString()}`;
   }
 
@@ -364,7 +369,11 @@ export default async function AnalisePage({
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Análise histórica</h2>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              {total} alerta{total !== 1 ? "s" : ""} nos últimos {dias} dias
+              {tabela === "alertas_romaneio" ? "Central Romaneio" : "Central Unitrac"}: {total} alerta{total !== 1 ? "s" : ""} nos últimos {dias} dias
+              {" · "}
+              <Link href={tabela === "alertas_romaneio" ? `/analise?dias=${dias}&fonte=central` : `/analise?dias=${dias}`} className="underline">
+                {tabela === "alertas_romaneio" ? "ver a Central Unitrac" : "ver a Central Romaneio"}
+              </Link>
               {temFiltroAtivo && (
                 <span style={{ color: "var(--accent)" }}> &bull; filtros ativos</span>
               )}

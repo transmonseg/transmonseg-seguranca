@@ -6,11 +6,8 @@
 // mandar no grupo, sem excecao). Quem decide encaminhar pro grupo e' o
 // usuario.
 //
-// Numeros: reusa SQL_BALDE de src/lib/qualidade-tratamento.ts (mesma
-// metrica validada da pagina /analise), com filtro extra de cliente_id
-// (Nutry Max) que aquele modulo nao tem -- ver [[feedback_monitoramento_foco_nutry_max]].
-// So conta como corretos/falsos os do balde 'individual' (revisao caso a
-// caso), igual ao painel -- resolucao em massa nao entra na taxa.
+// Numeros (03/11, DSV-02): Central Romaneio, um bloco por cliente com
+// romaneio (Nutry Max e Rio Quality) -- ver src/lib/relatorio-diario-desvio.ts.
 //
 // Mudancas do dia: git log do proprio checkout de producao, so' commits
 // que tocaram o motor de desvio (src/lib/desvio.ts, src/app/api/motor/route.ts).
@@ -28,8 +25,13 @@
 import pg from "pg";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { SQL_BALDE } from "../src/lib/qualidade-tratamento.ts";
-import { montarTextoRelatorioDiario } from "../src/lib/relatorio-diario-desvio.ts";
+import {
+  montarTextoRelatorioDiario,
+  agruparRelatorioPorCliente,
+  SQL_RELATORIO_ALERTAS_ROMANEIO,
+  SQL_RELATORIO_DISPAROS_ROMANEIO,
+} from "../src/lib/relatorio-diario-desvio.ts";
+import { CLIENTES_COM_ROMANEIO_AUSENTE } from "../src/lib/config-clientes.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,7 +55,6 @@ function executarComStdin(comando, args, textoStdin) {
 }
 
 const NUMERO_DESTINO = "5571996591404";
-const CLIENTE_ID_NUTRY_MAX = "cfcb52f5-fd01-47c7-988c-d13a10f0d8fd";
 
 const conn = process.env.DATABASE_URL;
 if (!conn) { console.error("DATABASE_URL ausente"); process.exit(1); }
@@ -71,29 +72,23 @@ const { rows: janelaRows } = await client.query(
 const inicioUTC = janelaRows[0].inicio;
 const fimUTC = janelaRows[0].fim;
 
-const { rows: corretoFalsoRows } = await client.query(
-  `SELECT (CASE WHEN status = 'falso_positivo' THEN 'falso' ELSE 'correto' END) AS resultado, count(*)::text AS n
-     FROM alertas
-    WHERE modo_teste = false
-      AND cliente_id = $1
-      AND tipo = 'desvio'
-      AND desde >= $2 AND desde < $3
-      AND ${SQL_BALDE} = 'individual'
-    GROUP BY 1`,
-  [CLIENTE_ID_NUTRY_MAX, inicioUTC, fimUTC]
+// DSV-02 (auditoria 03/11): conta a Central Romaneio (a tela que o operador
+// usa), por cliente com romaneio -- antes era `alertas`/desvio_disparo_log da
+// Central Unitrac, so' Nutry. Consultas e agrupamento em
+// src/lib/relatorio-diario-desvio.ts (testados).
+const { rows: clientesRows } = await client.query(
+  `SELECT id, nome FROM clientes WHERE cod_user_unitrac = ANY($1::text[]) ORDER BY nome`,
+  [[...CLIENTES_COM_ROMANEIO_AUSENTE]]
 );
-const mapaCorretoFalso = Object.fromEntries(corretoFalsoRows.map((r) => [r.resultado, Number(r.n)]));
-
-const { rows: brutosRows } = await client.query(
-  `SELECT count(*)::text AS n
-     FROM desvio_disparo_log d
-     JOIN veiculos v ON v.id = d.veiculo_id
-    WHERE v.cliente_id = $1
-      AND d.tipo_disparo = 'afastando_geral'
-      AND d.criado_em >= $2 AND d.criado_em < $3`,
-  [CLIENTE_ID_NUTRY_MAX, inicioUTC, fimUTC]
-);
-const totalDisparosBrutos = Number(brutosRows[0]?.n ?? 0);
+const { rows: alertasRows } = await client.query(SQL_RELATORIO_ALERTAS_ROMANEIO, [inicioUTC, fimUTC]);
+let disparosRows = [];
+try {
+  ({ rows: disparosRows } = await client.query(SQL_RELATORIO_DISPAROS_ROMANEIO, [inicioUTC, fimUTC]));
+} catch (e) {
+  // Tabela da migration 092 ainda nao criada: relatorio sai sem disparos.
+  console.log(`Aviso: sem alertas_romaneio_disparos (${e.message}) -- relatorio sai sem disparos/episodios.`);
+}
+const porCliente = agruparRelatorioPorCliente(clientesRows, alertasRows, disparosRows);
 
 await client.end();
 
@@ -111,6 +106,7 @@ try {
     "--",
     "src/lib/desvio.ts",
     "src/app/api/motor/route.ts",
+    "src/app/api/motor-romaneio/route.ts",
   ], { cwd: new URL("..", import.meta.url).pathname });
   commits = stdout
     .split("\n")
@@ -123,13 +119,7 @@ try {
   console.log(`Aviso: falha ao ler git log (${e.message}) -- relatorio segue sem a secao de commits.`);
 }
 
-const texto = montarTextoRelatorioDiario({
-  dia: diaAlvo,
-  corretos: mapaCorretoFalso.correto ?? 0,
-  falsos: mapaCorretoFalso.falso ?? 0,
-  totalDisparosBrutos,
-  commits,
-});
+const texto = montarTextoRelatorioDiario(porCliente, { dia: diaAlvo, commits });
 
 console.log("--- Texto do relatorio ---");
 console.log(texto);

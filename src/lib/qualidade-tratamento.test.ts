@@ -64,3 +64,19 @@ describe("percentil90", () => {
     expect(entrada).toEqual([3, 1, 2]);
   });
 });
+
+// DSV-02 (auditoria 03/11): /analise conta a Central Romaneio por padrao.
+import { tabelaDaFonte, filtroFonteSql } from "./qualidade-tratamento";
+describe("fonte da analise", () => {
+  it("padrao e' a Central Romaneio; 'central' volta pra Central Unitrac", () => {
+    expect(tabelaDaFonte(undefined)).toBe("alertas_romaneio");
+    expect(tabelaDaFonte("romaneio")).toBe("alertas_romaneio");
+    expect(tabelaDaFonte("central")).toBe("alertas");
+    expect(tabelaDaFonte("lixo")).toBe("alertas_romaneio");
+  });
+  it("romaneio esconde os tipos sombra; Central filtra modo_teste", () => {
+    expect(filtroFonteSql("alertas_romaneio", "a")).toBe("a.sombra = false");
+    expect(filtroFonteSql("alertas", "a")).toBe("a.modo_teste = false");
+    expect(filtroFonteSql("alertas_romaneio")).toBe("sombra = false");
+  });
+});
