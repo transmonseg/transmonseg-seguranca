@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { separarJaMovidasPorTroca, type LinhaExistente } from "@/lib/romaneio-reenvio";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, variantesOZero, resolverPlacaNoCadastro, type LinhaRomaneio } from "@/lib/romaneio";
 import { parseRomaneioTabular, extrairDataTabular } from "@/lib/romaneio-tabular";
@@ -272,9 +273,24 @@ export async function POST(request: Request) {
   // devolve (RETURNING) as linhas que realmente foram inseridas -- as que
   // bateram em conflito nao aparecem. E' assim que contamos duplicata sem
   // outra query.
+  // 03/11: NF ja movida por troca de veiculo (mesma carga, outra placa) nao
+  // e' recriada na placa do documento -- ver src/lib/romaneio-reenvio.ts.
+  const existentes: LinhaExistente[] = [];
+  for (let de = 0; ; de += 1000) {
+    const { data: pag, error: erroExist } = await admin
+      .from("romaneio_pontos")
+      .select("nf, carga_destino_codigo, placa")
+      .eq("romaneio_data", romaneioData).eq("modo_teste", modoTeste).eq("origem", origem)
+      .order("id").range(de, de + 999);
+    if (erroExist) return Response.json({ ok: false, erro: `Erro ao ler o romaneio do dia: ${erroExist.message}` }, { status: 500 });
+    existentes.push(...((pag ?? []) as LinhaExistente[]));
+    if (!pag || pag.length < 1000) break;
+  }
+  const { inserir, jaMovidas: jaMovidasPorTroca } = separarJaMovidasPorTroca(linhasParaInserir, existentes);
+
   const { data: linhasInseridas, error: erroInsert } = await admin
     .from("romaneio_pontos")
-    .upsert(linhasParaInserir, { onConflict: CHAVE_UNICA_ROMANEIO_PONTOS, ignoreDuplicates: true })
+    .upsert(inserir, { onConflict: CHAVE_UNICA_ROMANEIO_PONTOS, ignoreDuplicates: true })
     .select("id");
   if (erroInsert) {
     return Response.json({ ok: false, erro: `Erro ao salvar: ${erroInsert.message}` }, { status: 500 });
@@ -293,6 +309,7 @@ export async function POST(request: Request) {
     totalLinhas: linhasNormalizadas.length,
     linhasInseridas: totalInseridas,
     linhasDuplicadas,
+    jaMovidasPorTroca,
     placasNaoEncontradas,
     modoTeste,
     origem,

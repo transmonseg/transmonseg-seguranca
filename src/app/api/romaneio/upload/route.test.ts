@@ -64,13 +64,19 @@ const mockUpsert = vi.fn((linhas: unknown[], _opcoes?: unknown) => {
   return { select: mockUpsertSelect };
 });
 const mockSelect = vi.fn();
+// Linhas ja gravadas no dia (leitura antes do upsert, regra de reenvio 03/11).
+let existentesDoDia: { nf: string; carga_destino_codigo: string | null; placa: string }[] = [];
+const cadeiaExistentes = () => {
+  const c = { eq: () => c, order: () => c, range: async () => ({ data: existentesDoDia, error: null }) };
+  return c;
+};
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: (tabela: string) => {
       if (tabela === "veiculos") {
         return { select: () => ({ in: mockSelect }) };
       }
-      return { upsert: mockUpsert };
+      return { upsert: mockUpsert, select: () => cadeiaExistentes() };
     },
   }),
 }));
@@ -99,6 +105,7 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     proximoUpsertResultado = null;
+    existentesDoDia = [];
     mockGetUser.mockResolvedValue({ data: { user: { id: "u1", email: "op@x.com" } } });
     mockExtrairDataRomaneio.mockReturnValue("2026-08-12");
     mockSelect.mockResolvedValue({ data: [] });
@@ -383,6 +390,17 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
     });
   });
 
+  it("03/11: reenvio depois de troca de veiculo nao recria a NF na placa do documento", async () => {
+    mockParseRomaneio.mockReturnValue([linhaRegexValida(), { ...linhaRegexValida(), nf: "2" }]);
+    // NF 1 da carga 1 ja foi movida pela troca pra outra placa.
+    existentesDoDia = [{ nf: "1", carga_destino_codigo: "1", placa: "RQU-2G47" }];
+    const { POST } = await import("./route");
+    const body = await (await POST(criarRequisicao("romaneio.pdf"))).json();
+    expect(mockUpsert.mock.calls[0][0].map((l: { nf: string }) => l.nf)).toEqual(["2"]);
+    expect(body.jaMovidasPorTroca).toBe(1);
+    expect(body.totalLinhas).toBe(2);
+  });
+
   it("reenviar o mesmo arquivo duas vezes: a segunda vez nao insere nenhuma linha nova (upsert devolve 0 linhas) e o retorno reflete isso em linhasDuplicadas", async () => {
     mockParseRomaneio.mockReturnValue([linhaRegexValida(), { ...linhaRegexValida(), nf: "2" }]);
     const { POST } = await import("./route");
@@ -427,6 +445,7 @@ describe("POST /api/romaneio/upload -- repasse do Ao vivo do KPI (06/10)", () =>
   beforeEach(() => {
     vi.clearAllMocks();
     proximoUpsertResultado = null;
+    existentesDoDia = [];
     mockGetUser.mockResolvedValue({ data: { user: null } });
     mockExtrairDataRomaneio.mockReturnValue("2026-10-06");
     mockSelect.mockResolvedValue({ data: [] });
@@ -465,6 +484,7 @@ describe("POST /api/romaneio/upload -- placa O/0 contra o cadastro (DR-05)", () 
   beforeEach(() => {
     vi.clearAllMocks();
     proximoUpsertResultado = null;
+    existentesDoDia = [];
     mockGetUser.mockResolvedValue({ data: { user: { id: "u1", email: "op@x.com" } } });
     mockExtrairDataRomaneio.mockReturnValue("2026-10-15");
   });
