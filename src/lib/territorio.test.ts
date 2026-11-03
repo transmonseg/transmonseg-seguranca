@@ -343,3 +343,66 @@ describe("F4-05: ponto exato confirmado pelo CEP especifico nao reprova por bair
     expect(cepConfirmaPonto({ lat: -22.877232714285714, lng: -42.031452 }, cands, { numero: "88", cep: "28911320" })).toBe(false);
   });
 });
+
+// GEO3-07 (auditoria 03/11): ponto fora de QUALQUER poligono da malha (MG, PE,
+// 0,0) passava como "dentro do territorio" -- real=null aprovava. Agora, com o
+// municipio esperado conhecido, mede a distancia ate o poligono esperado: mais
+// de 2 km reprova. A folga de 2 km e' de praia e ilha (10 referencias de bairro
+// caem fora da malha por isso).
+describe("validarTerritorio - ponto fora da malha (GEO3-07)", () => {
+  const MAGE = { municipioCodigo: "3302502", bairro: null };
+  const foraDaMalha = (distanciaM: number | null) => ({
+    municipioDaCoordenada: async () => null,
+    distanciaAoBairro: async () => null,
+    distanciaAoMunicipio: vi.fn(async () => distanciaM),
+  });
+
+  it("lab G1: ponto em MG (-18.68,-48.17) com Mage esperado, a 684 km do poligono -> reprova", async () => {
+    const deps = foraDaMalha(684_000);
+    const r = await validarTerritorio({ lat: -18.6785, lng: -48.1692 }, MAGE, deps);
+    expect(r).toEqual({ ok: false, motivo: "municipio_divergente" });
+    expect(deps.distanciaAoMunicipio).toHaveBeenCalledWith(-18.6785, -48.1692, "3302502");
+  });
+
+  it("lab G2: (0,0) com bairro sem hull -> reprova", async () => {
+    const r = await validarTerritorio({ lat: 0, lng: 0 }, { municipioCodigo: "3302502", bairro: "CENTRO" }, foraDaMalha(5_000_000));
+    expect(r).toEqual({ ok: false, motivo: "municipio_divergente" });
+  });
+
+  it.each([
+    ["Ilha Grande (Angra)", { lat: -23.1606, lng: -44.2306 }, "3300100", 900],
+    ["Ilha do Governador (Rio)", { lat: -22.8105, lng: -43.2085 }, "3304557", 150],
+    ["Marambaia (Rio/Itaguai)", { lat: -23.0614, lng: -43.8597 }, "3304557", 1_800],
+  ])("%s fora da malha mas a menos de 2 km do municipio esperado -> aprova", async (_n, ponto, municipio, d) => {
+    const r = await validarTerritorio(ponto, { municipioCodigo: municipio, bairro: null }, foraDaMalha(d));
+    expect(r).toEqual({ ok: true });
+  });
+
+  it("sem a consulta de distancia (migration 095 nao aplicada) -- ponto fora do retangulo do RJ reprova", async () => {
+    const deps = { municipioDaCoordenada: async () => null, distanciaAoBairro: async () => null };
+    expect(await validarTerritorio({ lat: -18.6785, lng: -48.1692 }, MAGE, deps)).toEqual({ ok: false, motivo: "municipio_divergente" });
+    expect(await validarTerritorio({ lat: 0, lng: 0 }, MAGE, deps)).toEqual({ ok: false, motivo: "municipio_divergente" });
+    // Sao Paulo capital (caso GEO3-11, "PARATI" aprendido a 198 km)
+    expect(await validarTerritorio({ lat: -23.6055, lng: -46.6118 }, { municipioCodigo: "3303807", bairro: null }, deps)).toEqual({ ok: false, motivo: "municipio_divergente" });
+    // dentro do retangulo (ilha, praia): sem a distancia, nao reprova
+    expect(await validarTerritorio({ lat: -23.1606, lng: -44.2306 }, { municipioCodigo: "3300100", bairro: null }, deps)).toEqual({ ok: true });
+  });
+
+  it("consulta de distancia falhou (RPC ausente/erro -> null) -- cai no retangulo do RJ", async () => {
+    const r = await validarTerritorio({ lat: -18.6785, lng: -48.1692 }, MAGE, foraDaMalha(null));
+    expect(r).toEqual({ ok: false, motivo: "municipio_divergente" });
+  });
+
+  it("consulta de distancia lancou -- loga e cai no retangulo do RJ", async () => {
+    const erro = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deps = { ...foraDaMalha(0), distanciaAoMunicipio: async () => { throw new Error("boom"); } };
+    expect(await validarTerritorio({ lat: -22.95, lng: -43.0 }, { municipioCodigo: "3304557", bairro: null }, deps)).toEqual({ ok: true });
+    expect(erro).toHaveBeenCalled();
+    erro.mockRestore();
+  });
+
+  it("sem municipio esperado: continua aprovando (nada pra comparar)", async () => {
+    const r = await validarTerritorio({ lat: -18.6785, lng: -48.1692 }, { municipioCodigo: null, bairro: null }, foraDaMalha(684_000));
+    expect(r).toEqual({ ok: true });
+  });
+});

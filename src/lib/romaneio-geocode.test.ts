@@ -27,7 +27,7 @@ describe("normalizarEndereco", () => {
 
 describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> nominatim -- SEM fallback pra Unitrac de proposito, ver achado real 15/07)", () => {
   const mockDeps = (overrides: Partial<{
-    buscarCache: () => Promise<{ lat: number; lng: number; fonte: string } | null>;
+    buscarCache: () => Promise<{ lat: number; lng: number; fonte: string; validado?: boolean } | null>;
     salvarCache: () => Promise<void>;
     geocodificarCnefeDep: () => Promise<{ lat: number; lng: number } | null>;
     geocodificarLocalDep: () => Promise<{ lat: number; lng: number } | null>;
@@ -115,7 +115,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
 
   it("CNEFE e local falham, Google funciona: usa Google e salva no cache", async () => {
     const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
-    const r = await geocodificarEndereco("Rua X, 1", null, deps);
+    const r = await geocodificarEndereco("Rua X, 1", { lat: 3, lng: 4 }, deps);
     expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
     expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 3, lng: 4, fonte: "google" }));
     expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
@@ -130,7 +130,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
     const PONTO_CIDADE = { lat: -22.9, lng: -43.2 };
     it("CNEFE/local/Google falham, Photon funciona: usa Photon (fonte photon), salva no cache, nao chama Nominatim", async () => {
       const deps = mockDeps({ geocodificarPhoton: async () => ({ lat: 5, lng: 6 }) });
-      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      const r = await geocodificarEndereco("Rua X, 1", { lat: 5, lng: 6 }, deps);
       expect(r).toMatchObject({ lat: 5, lng: 6, fonte: "photon" });
       expect(deps.salvarCache).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ lat: 5, lng: 6, fonte: "photon" }));
       expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
@@ -138,7 +138,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
 
     it("Google funciona: nao chega a chamar Photon (Google vem antes)", async () => {
       const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }), geocodificarPhoton: async () => ({ lat: 5, lng: 6 }) });
-      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      const r = await geocodificarEndereco("Rua X, 1", { lat: 3, lng: 4 }, deps);
       expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
       expect(deps.geocodificarPhoton).not.toHaveBeenCalled();
     });
@@ -156,7 +156,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
 
     it("dep nao fornecido (undefined): pula Photon, cai direto no Nominatim (comportamento antigo preservado)", async () => {
       const deps = mockDeps({ geocodificarPhoton: undefined, geocodificarNominatim: async () => ({ lat: 1, lng: 2 }) });
-      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      const r = await geocodificarEndereco("Rua X, 1", { lat: 1, lng: 2 }, deps);
       expect(r).toMatchObject({ lat: 1, lng: 2, fonte: "nominatim" });
     });
   });
@@ -184,20 +184,20 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
 
     it("dep nao fornecido (undefined): pula direto pra Google/Nominatim, comportamento antigo preservado", async () => {
       const deps = mockDeps({ geocodificarCnefeBairroDep: undefined, geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
-      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      const r = await geocodificarEndereco("Rua X, 1", { lat: 3, lng: 4 }, deps);
       expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
     });
 
     it("bairro tambem falha (null): cai pra Google normalmente", async () => {
       const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
-      const r = await geocodificarEndereco("Rua X, 1", null, deps);
+      const r = await geocodificarEndereco("Rua X, 1", { lat: 3, lng: 4 }, deps);
       expect(r).toMatchObject({ lat: 3, lng: 4, fonte: "google" });
     });
   });
 
   it("CNEFE, local e Google falham, Nominatim funciona: usa Nominatim e salva no cache", async () => {
     const deps = mockDeps({ geocodificarNominatim: async () => ({ lat: 5, lng: 6 }) });
-    const r = await geocodificarEndereco("Rua X, 1", null, deps);
+    const r = await geocodificarEndereco("Rua X, 1", { lat: 5, lng: 6 }, deps);
     expect(r).toMatchObject({ lat: 5, lng: 6, fonte: "nominatim" });
   });
 
@@ -209,7 +209,7 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
 
   it("Google/Nominatim recebem o endereco LIMPO (sem sufixo de complemento, cidade expandida) -- achado real 31/07, ver montarEnderecoParaGeocode", async () => {
     const deps = mockDeps({ geocodificarGoogle: async () => ({ lat: 3, lng: 4 }) });
-    await geocodificarEndereco("RUA RESENDE, 358 - FLUMINENSE, SAO PEDRO DA AL - LOJA 02", null, deps);
+    await geocodificarEndereco("RUA RESENDE, 358 - FLUMINENSE, SAO PEDRO DA AL - LOJA 02", { lat: 3, lng: 4 }, deps);
     expect(deps.geocodificarGoogle).toHaveBeenCalledWith("RUA RESENDE, 358, FLUMINENSE, São Pedro da Aldeia, RJ, Brasil");
   });
 
@@ -252,10 +252,40 @@ describe("geocodificarEndereco (fallback: cache -> cnefe -> local -> google -> n
       expect(deps.salvarCache).not.toHaveBeenCalled();
     });
 
-    it("sem ponto de referencia (null): aceita qualquer resultado, sem checagem -- comportamento de hoje preservado", async () => {
-      const deps = mockDeps({ geocodificarGoogle: async () => longeDoPontoCidade });
+    // GEO3-02/03 (auditoria 03/11): sem referencia, o externo devolvia a
+    // primeira rua homonima do pais (Mage -> MG a 684 km) e o cache gravava.
+    it("sem ponto de referencia (null): Google/Photon/Nominatim nao decidem nada e o cache nao e' gravado", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const deps = mockDeps({
+        geocodificarGoogle: async () => longeDoPontoCidade,
+        geocodificarPhoton: async () => longeDoPontoCidade,
+        geocodificarNominatim: async () => longeDoPontoCidade,
+      });
       const r = await geocodificarEndereco("Rua X, 1 - Bairro, Cidade - *", null, deps);
-      expect(r).toMatchObject({ ...longeDoPontoCidade, fonte: "google" });
+      expect(r).toBeNull();
+      expect(deps.geocodificarGoogle).not.toHaveBeenCalled();
+      expect(deps.geocodificarPhoton).not.toHaveBeenCalled();
+      expect(deps.geocodificarNominatim).not.toHaveBeenCalled();
+      expect(deps.salvarCache).not.toHaveBeenCalled();
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain("sem ponto de referencia da cidade");
+      warn.mockRestore();
+    });
+
+    it("lab C8: hit de cache com validado=false continua false (GEO3-11)", async () => {
+      const deps = mockDeps({ buscarCache: async () => ({ lat: 1, lng: 2, fonte: "unitrac_aprendido", validado: false }) });
+      expect(await geocodificarEndereco("X, 1 - Y, MAGE - RJ", null, deps)).toMatchObject({ fonte: "unitrac_aprendido", validado: false });
+    });
+
+    it("lab C7: Mage sem referencia e Photon em MG -> null, nada gravado; com a referencia de Mage tambem null", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const mg = { lat: -18.6785, lng: -48.1692 };
+      const refMage = { lat: -22.6043, lng: -43.1081 };
+      for (const ref of [null, refMage]) {
+        const deps = mockDeps({ geocodificarPhoton: async () => mg });
+        expect(await geocodificarEndereco("RUA ANTONIO PIO TEIXEIRA, - , MAGE - RJ", ref, deps)).toBeNull();
+        expect(deps.salvarCache).not.toHaveBeenCalled();
+      }
+      vi.restoreAllMocks();
     });
   });
 
@@ -1044,5 +1074,63 @@ describe("exato sem confirmacao de CEP/bairro (F4-04 GEO-28)", () => {
       geocodificarNominatim: async () => null,
     });
     expect(r).toMatchObject({ fonte: "cnefe", precisao: "exato_nao_confirmado", raioM: 30 });
+  });
+});
+
+// GEO3-05 (auditoria 03/11): timeout/429/5xx do Photon e do Nominatim voltavam
+// o mesmo null de "endereco nao existe" -- na ponte isso virava cache negativo
+// de 48 h no KPI. Agora o provedor diz qual dos tres aconteceu.
+describe("consultarPhoton / consultarNominatim -- falha de rede separada de 'nao achou' (GEO3-05)", () => {
+  const fetchOrig = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = fetchOrig; vi.restoreAllMocks(); });
+  const REF = { lat: -22.6043, lng: -43.1081 };
+  const responder = (r: () => Promise<Response>) => { globalThis.fetch = (async () => r()) as typeof fetch; };
+
+  it.each([
+    ["TimeoutError", async () => { const e = new Error("aborted due to timeout"); e.name = "TimeoutError"; throw e; }, "timeout"],
+    ["HTTP 429", async () => new Response("", { status: 429 }), "http_429"],
+    ["HTTP 503", async () => new Response("", { status: 503 }), "http_5xx"],
+    ["rede caiu", async () => { throw new TypeError("fetch failed"); }, "rede"],
+  ] as const)("%s -> {status:'erro'}", async (_n, r, motivo) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { consultarPhoton, consultarNominatim } = await import("./romaneio-geocode");
+    responder(r as () => Promise<Response>);
+    expect(await consultarPhoton("RUA X, 10 - CENTRO, MAGE - RJ", REF)).toEqual({ status: "erro", motivo });
+    expect(await consultarNominatim("RUA X, 10 - CENTRO, MAGE - RJ")).toEqual({ status: "erro", motivo });
+  });
+
+  it("resposta vazia -> {status:'nao_achou'}; achou -> {status:'ok', lat, lng}", async () => {
+    const { consultarPhoton, consultarNominatim } = await import("./romaneio-geocode");
+    responder(async () => new Response(JSON.stringify({ features: [] }), { status: 200 }));
+    expect(await consultarPhoton("RUA X, 10 - CENTRO, MAGE - RJ", REF)).toEqual({ status: "nao_achou" });
+    responder(async () => new Response("[]", { status: 200 }));
+    expect(await consultarNominatim("RUA X, 10 - CENTRO, MAGE - RJ")).toEqual({ status: "nao_achou" });
+    responder(async () => new Response(JSON.stringify([{ lat: "-22.6", lon: "-43.1" }]), { status: 200 }));
+    expect(await consultarNominatim("RUA X, 10 - CENTRO, MAGE - RJ")).toEqual({ status: "ok", lat: -22.6, lng: -43.1 });
+  });
+
+  it("funcoes antigas (escala, scripts) continuam devolvendo ponto ou null", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { geocodificarPhoton } = await import("./romaneio-geocode");
+    responder(async () => new Response("", { status: 429 }));
+    expect(await geocodificarPhoton("RUA X, 10 - CENTRO, MAGE - RJ", REF)).toBeNull();
+  });
+
+  it("cascata: provedor com erro avisa aoErroExterno e segue para o proximo nivel", async () => {
+    const aoErroExterno = vi.fn();
+    const r = await geocodificarEndereco("RUA X, 10 - CENTRO, MAGE - RJ", REF, {
+      buscarCache: async () => null,
+      salvarCache: async () => {},
+      geocodificarCnefeDep: async () => null,
+      geocodificarLocalDep: async () => null,
+      geocodificarGoogle: async () => null,
+      geocodificarPhoton: async () => ({ status: "erro", motivo: "timeout" }),
+      geocodificarNominatim: async () => ({ status: "ok", lat: REF.lat, lng: REF.lng }),
+      aoErroExterno,
+    });
+    expect(aoErroExterno).toHaveBeenCalledWith("photon", "timeout");
+    expect(r).toMatchObject({ fonte: "nominatim", lat: REF.lat });
   });
 });

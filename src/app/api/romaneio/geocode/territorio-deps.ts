@@ -46,5 +46,16 @@ export function montarDepsTerritorio(admin: SupabaseClient): DepsTerritorio {
       }
       return typeof data === "number" ? data : null;
     },
+    // GEO3-07 (03/11): distancia ate o poligono do municipio esperado, so'
+    // consultada quando o ponto nao caiu em nenhum poligono. Sem a migration
+    // 095 a RPC nao existe: devolve null e validarTerritorio usa o retangulo do RJ.
+    async distanciaAoMunicipio(lat, lng, municipioCodigo) {
+      const { data, error } = await admin.rpc("distancia_ao_municipio", { p_lat: lat, p_lng: lng, p_municipio: municipioCodigo });
+      if (error) {
+        console.error("[territorio-deps] RPC distancia_ao_municipio falhou (migration 095 aplicada?) -- usando o retangulo do RJ", error);
+        return null;
+      }
+      return typeof data === "number" ? data : null;
+    },
   };
 }

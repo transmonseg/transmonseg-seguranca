@@ -423,6 +423,57 @@ export async function geocodificarCnefePorBairro(
 // F4-11 (GEO-08): "cnefe_similaridade" = CNEFE por nome PARECIDO (pg_trgm),
 // separado de "cnefe" (nome exato da rua) para quem decide fonte protegida
 // (F4-03) e precedencia (F4-08) saber a diferenca.
+// GEO3-05 (auditoria 03/11): timeout/429/5xx eram o mesmo null de "endereco
+// nao existe". Agora o provedor diz qual dos tres aconteceu -- a ponte do KPI
+// manda o endereco em `incompletos` (sem cache negativo de 48 h) quando foi
+// rede, e o log conta por motivo.
+export type MotivoErroProvedor = "timeout" | "http_429" | "http_5xx" | "http_4xx" | "rede";
+export type RespostaProvedor<T extends object> = ({ status: "ok" } & T) | { status: "nao_achou" } | { status: "erro"; motivo: MotivoErroProvedor };
+export type ProvedorExterno = "photon" | "nominatim";
+
+function motivoDoErro(err: unknown): MotivoErroProvedor {
+  const nome = (err as { name?: string } | null)?.name;
+  return nome === "TimeoutError" || nome === "AbortError" ? "timeout" : "rede";
+}
+
+function motivoDoHttp(status: number): MotivoErroProvedor {
+  if (status === 429) return "http_429";
+  return status >= 500 ? "http_5xx" : "http_4xx";
+}
+
+// Dep antigo devolve ponto|null; dep novo devolve RespostaProvedor.
+function lerResposta<T extends { lat: number; lng: number }>(
+  r: T | RespostaProvedor<T> | null,
+  provedor: ProvedorExterno,
+  aoErro?: (provedor: ProvedorExterno, motivo: MotivoErroProvedor) => void,
+): T | null {
+  if (!r) return null;
+  if (!("status" in r)) return r;
+  if (r.status === "erro") { aoErro?.(provedor, r.motivo); return null; }
+  if (r.status === "nao_achou") return null;
+  const ponto: Record<string, unknown> = { ...r };
+  delete ponto.status;
+  return ponto as unknown as T;
+}
+
+/** Conta as falhas de rede por provedor e motivo numa requisicao/ciclo, para
+ *  uma linha de log contavel por dia ("[geocode] erros de rede: ..."). */
+export function criarContadorErrosExternos() {
+  const contagem = new Map<string, number>();
+  return {
+    registrar(provedor: ProvedorExterno, motivo: MotivoErroProvedor) {
+      const k = `${provedor} ${motivo}`;
+      contagem.set(k, (contagem.get(k) ?? 0) + 1);
+    },
+    total: () => [...contagem.values()].reduce((a, b) => a + b, 0),
+    logar(contexto: string) {
+      if (contagem.size === 0) return;
+      const partes = [...contagem.entries()].map(([k, n]) => `${k}=${n}`).join(" ");
+      console.warn(`[geocode] erros de rede (${contexto}): ${partes}`);
+    },
+  };
+}
+
 export type FonteGeocode = "google" | "photon" | "nominatim" | "local" | "cnefe" | "cnefe_similaridade" | "cnefe_bairro";
 export type ResultadoGeocode = { lat: number; lng: number; fonte: FonteGeocode; validado: boolean; precisao?: PrecisaoPonto; raioM?: number } | null;
 
@@ -451,8 +502,11 @@ type Deps = {
   // F2-14 (GEO-09): recebe o ponto de cidade para escolher, entre as 5
   // features, a mais perto (nao a primeira). Dep antigo de 1 argumento segue
   // funcionando (ignora o segundo).
-  geocodificarPhoton?: (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto } | null>;
-  geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | null>;
+  // GEO3-05: os dois aceitam tambem a resposta com status (consultarPhoton/
+  // consultarNominatim); erro de rede chega em aoErroExterno.
+  geocodificarPhoton?: (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => Promise<{ lat: number; lng: number; precisao?: PrecisaoPonto } | RespostaProvedor<{ lat: number; lng: number; precisao?: PrecisaoPonto }> | null>;
+  geocodificarNominatim: (enderecoBruto: string) => Promise<{ lat: number; lng: number } | RespostaProvedor<{ lat: number; lng: number }> | null>;
+  aoErroExterno?: (provedor: ProvedorExterno, motivo: MotivoErroProvedor) => void;
 };
 
 // Item 4 da blindagem de geocodificacao (27/08). Quando CNEFE/OSM devolvem
@@ -546,8 +600,17 @@ export async function geocodificarEndereco(
   // Variantes da consulta externa (completa -> sem bairro): achado 05/09,
   // o bairro derrubava o match do Nominatim em cidade pequena do interior.
   // Ver montarVariantesParaGeocode.
+  // GEO3-02/03 (auditoria 03/11): sem ponto de referencia da cidade, o
+  // externo devolvia a primeira rua homonima do pais e o resultado ia pro
+  // cache sem expirar ("RUA ANTONIO PIO TEIXEIRA, MAGE" -> MG, 684 km; Paraty
+  // -> PE, 1.867 km). Sem referencia, Google/Photon/Nominatim nao decidem
+  // nada: o endereco fica sem ponto e volta a ser tentado (precisao > cobertura).
+  // Os chamadores carregam a referencia do cache em lote (referencia-cidade.ts).
+  if (!pontoCidade) {
+    console.warn(`[geocode] sem ponto de referencia da cidade -- Google/Photon/Nominatim nao decidem; endereco=${JSON.stringify(enderecoBruto)}`);
+    return null;
+  }
   const variantes = montarVariantesParaGeocode(enderecoBruto);
-  const enderecoParaGeocode = variantes[0];
   // Achado real 12/08 (segunda rodada de melhoria pos-deploy): CNEFE/local
   // acima ja tem checagem de distancia contra pontoCidade
   // (escolherCandidatoMaisProximo, dentro de geocodificarCnefe/geocodificarLocal)
@@ -555,7 +618,7 @@ export async function geocodificarEndereco(
   // resultado direto. Sem pontoCidade (endereco sem cidade reconhecida),
   // nada pra comparar, aceita como sempre.
   const perto = (p: { lat: number; lng: number }) =>
-    !pontoCidade || haversineM(pontoCidade.lat, pontoCidade.lng, p.lat, p.lng) <= DISTANCIA_MAX_MATCH_LOCAL_M;
+    haversineM(pontoCidade.lat, pontoCidade.lng, p.lat, p.lng) <= DISTANCIA_MAX_MATCH_LOCAL_M;
 
   for (const variante of variantes) {
     const google = await deps.geocodificarGoogle(variante);
@@ -570,7 +633,7 @@ export async function geocodificarEndereco(
   // fornecido; sem ele a cascata e' identica a de antes (Google -> Nominatim).
   if (deps.geocodificarPhoton) {
     for (const variante of variantes) {
-      const photon = await deps.geocodificarPhoton(variante, pontoCidade);
+      const photon = lerResposta(await deps.geocodificarPhoton(variante, pontoCidade), "photon", deps.aoErroExterno);
       if (photon && perto(photon)) {
         await deps.salvarCache(chave, { lat: photon.lat, lng: photon.lng, fonte: "photon", validado: validadoCidade });
         return { lat: photon.lat, lng: photon.lng, fonte: "photon", validado: validadoCidade, precisao: photon.precisao ?? "rua" };
@@ -578,7 +641,7 @@ export async function geocodificarEndereco(
     }
   }
   for (const variante of variantes) {
-    const nominatim = await deps.geocodificarNominatim(variante);
+    const nominatim = lerResposta(await deps.geocodificarNominatim(variante), "nominatim", deps.aoErroExterno);
     if (nominatim && perto(nominatim)) {
       await deps.salvarCache(chave, { ...nominatim, fonte: "nominatim", validado: validadoCidade });
       return { ...nominatim, fonte: "nominatim", validado: validadoCidade };
@@ -666,22 +729,33 @@ export function escolherFeaturePhoton(
   return dentroDoTeto ?? [...validas].sort((a, b) => dist(a) - dist(b))[0];
 }
 
-export async function geocodificarPhoton(enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null = null): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto } | null> {
+export async function consultarPhoton(enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null = null): Promise<RespostaProvedor<{ lat: number; lng: number; precisao: PrecisaoPonto }>> {
   try {
     const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(enderecoBruto)}&limit=5&lang=default`;
     const res = await fetch(url, {
       headers: { "User-Agent": "TransmonsegCentral/1.0" },
       signal: AbortSignal.timeout(3000),
     });
-    if (!res.ok) return null;
+    // GEO3-05: 429/5xx voltava null sem log, igual a "nao achou".
+    if (!res.ok) {
+      const motivo = motivoDoHttp(res.status);
+      console.warn(`geocodificarPhoton: HTTP ${res.status} (${motivo})`);
+      return { status: "erro", motivo };
+    }
     const data = (await res.json()) as { features?: FeaturePhoton[] };
-    return escolherFeaturePhoton(data.features ?? [], enderecoBruto, pontoCidade);
+    const escolha = escolherFeaturePhoton(data.features ?? [], enderecoBruto, pontoCidade);
+    return escolha ? { status: "ok", ...escolha } : { status: "nao_achou" };
   } catch (err) {
     // Mesmo motivo do catch de geocodificarGoogle/Nominatim: degrada pro
     // proximo tier da cascata (Nominatim), com log pra nao sumir silencioso.
     console.error("geocodificarPhoton: falha na chamada:", err);
-    return null;
+    return { status: "erro", motivo: motivoDoErro(err) };
   }
+}
+
+/** Forma antiga (ponto ou null), para quem nao distingue falha de rede. */
+export async function geocodificarPhoton(enderecoBruto: string, pontoCidade: { lat: number; lng: number } | null = null): Promise<{ lat: number; lng: number; precisao: PrecisaoPonto } | null> {
+  return lerResposta(await consultarPhoton(enderecoBruto, pontoCidade), "photon");
 }
 
 // Achado real 27/08 (grupo KPI AJUSTES, "não está identificando os
@@ -695,16 +769,20 @@ export async function geocodificarPhoton(enderecoBruto: string, pontoCidade: { l
 // busca que pediu algo mais especifico que uma cidade inteira.
 const NOMINATIM_TIPOS_AMPLOS_DEMAIS = new Set(["city", "town", "state", "region", "country", "county"]);
 
-export async function geocodificarNominatim(enderecoBruto: string): Promise<{ lat: number; lng: number } | null> {
+export async function consultarNominatim(enderecoBruto: string): Promise<RespostaProvedor<{ lat: number; lng: number }>> {
   try {
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(enderecoBruto)}&format=json&limit=5&countrycodes=br`;
     const res = await fetch(url, {
       headers: { "User-Agent": "TransmonsegCentral/1.0" },
       signal: AbortSignal.timeout(3000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const motivo = motivoDoHttp(res.status);
+      console.warn(`geocodificarNominatim: HTTP ${res.status} (${motivo})`);
+      return { status: "erro", motivo };
+    }
     const data = (await res.json()) as { lat?: string; lon?: string; addresstype?: string }[];
-    if (data.length === 0) return null;
+    if (data.length === 0) return { status: "nao_achou" };
     // So aplica a preferencia quando a query pediu algo mais especifico
     // que uma cidade sozinha (tem virgula, ex: "Centro, Rio de Janeiro"
     // ou um endereco completo) -- busca de CIDADE pura (sem virgula)
@@ -715,11 +793,16 @@ export async function geocodificarNominatim(enderecoBruto: string): Promise<{ la
       ? data.filter(d => !NOMINATIM_TIPOS_AMPLOS_DEMAIS.has(d.addresstype ?? ""))
       : [];
     const escolhido = candidatos[0] ?? data[0];
-    if (!escolhido?.lat || !escolhido?.lon) return null;
-    return { lat: parseFloat(escolhido.lat), lng: parseFloat(escolhido.lon) };
+    if (!escolhido?.lat || !escolhido?.lon) return { status: "nao_achou" };
+    return { status: "ok", lat: parseFloat(escolhido.lat), lng: parseFloat(escolhido.lon) };
   } catch (err) {
     // Achado real 30/08: mesmo motivo do catch de geocodificarGoogle acima.
     console.error("geocodificarNominatim: falha na chamada:", err);
-    return null;
+    return { status: "erro", motivo: motivoDoErro(err) };
   }
+}
+
+/** Forma antiga (ponto ou null), para quem nao distingue falha de rede. */
+export async function geocodificarNominatim(enderecoBruto: string): Promise<{ lat: number; lng: number } | null> {
+  return lerResposta(await consultarNominatim(enderecoBruto), "nominatim");
 }
