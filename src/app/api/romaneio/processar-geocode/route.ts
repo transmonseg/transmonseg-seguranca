@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, normalizarEndereco } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarGoogle, geocodificarNominatim, consultarPhoton, consultarNominatim, criarContadorErrosExternos, normalizarEndereco } from "@/lib/romaneio-geocode";
 import { criarReferencias, localDoEndereco, type Ponto } from "@/lib/referencia-cidade";
 import { montarDepsTerritorio } from "../geocode/territorio-deps";
 import { buscarAlvos, deveCorrigirComRomaneio } from "@/lib/unitrac";
@@ -196,10 +196,17 @@ export async function POST(request: Request) {
 
   // Photon tambem com throttle (API publica do komoot, mesma cortesia do
   // Nominatim). Entrou 14/10 entre Google e Nominatim na cascata.
-  const geocodificarPhotonThrottled = async (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => {
+  // GEO3-05: na cascata, Photon e Nominatim respondem com status; as falhas
+  // de rede (timeout/429/5xx) sao contadas e logadas 1x por ciclo.
+  const consultarPhotonThrottled = async (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => {
     await esperar(ESPERA_ENTRE_CHAMADAS_MS);
-    return geocodificarPhoton(enderecoBruto, pontoCidade ?? null);
+    return consultarPhoton(enderecoBruto, pontoCidade ?? null);
   };
+  const consultarNominatimThrottled = async (enderecoBruto: string) => {
+    await esperar(ESPERA_ENTRE_CHAMADAS_MS);
+    return consultarNominatim(enderecoBruto);
+  };
+  const errosRede = criarContadorErrosExternos();
 
   // Achado real 03/09 (grupo KPI AJUSTES, geocode de Nutry Max do dia,
   // reproduzido via /api/romaneio/geocode -- mesmo risco existe aqui):
@@ -240,6 +247,8 @@ export async function POST(request: Request) {
     },
     resolverExterno: resolverPontoComRetry,
     salvar: (chave, ponto) => salvarCache(chave, { ...ponto, fonte: "nominatim" }),
+    // GEO3-04: referencia fora do municipio esperado nao vira regua.
+    municipioDaCoordenada: depsTerritorio.municipioDaCoordenada,
   });
   await referencias.carregar(pendentes.map((l) => l.endereco_bruto));
 
@@ -335,8 +344,9 @@ export async function POST(request: Request) {
       }, precisaoBairro),
       geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome, precisaoBairro),
       geocodificarGoogle,
-      geocodificarPhoton: geocodificarPhotonThrottled,
-      geocodificarNominatim: geocodificarNominatimThrottled,
+      geocodificarPhoton: consultarPhotonThrottled,
+      geocodificarNominatim: consultarNominatimThrottled,
+      aoErroExterno: errosRede.registrar,
     });
   };
 
@@ -747,5 +757,6 @@ export async function POST(request: Request) {
     }
   }
 
+  errosRede.logar("processar-geocode");
   return Response.json({ processados: pendentes.length, ok, falhou, descartadosLinhaMudou, doCacheClienteCodigo, fallbackUnitrac, corrigidosViaRomaneio, esgotaramTentativas, veiculoIdReatribuido, resolvidoViaRetentativaTexto, limiteTentativasAtivo: tentativasDisponivel });
 }

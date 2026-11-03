@@ -35,7 +35,7 @@
 // -- chamada servidor-a-servidor, nunca do browser.
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarPhoton, geocodificarNominatim, normalizarEndereco } from "@/lib/romaneio-geocode";
+import { geocodificarEndereco, geocodificarLocal, geocodificarCnefe, geocodificarCnefePorBairro, geocodificarGoogle, geocodificarNominatim, consultarPhoton, consultarNominatim, criarContadorErrosExternos, normalizarEndereco } from "@/lib/romaneio-geocode";
 import { extrairCidadeDoEndereco, expandirCidadeTruncada, extrairBairroDoEndereco, municipioCodigoIbge, extrairRuaDoEndereco, normalizarNomeRua, extrairNumeroDoEndereco } from "@/lib/romaneio-geocode-local";
 import { validarTerritorio, cepConfirmaPonto, type MotivoTerritorio } from "@/lib/territorio";
 import { extrairCepDoEndereco } from "@/lib/cnefe-escolha";
@@ -122,10 +122,17 @@ export async function POST(request: Request) {
     return geocodificarNominatim(enderecoBruto);
   };
 
-  const geocodificarPhotonThrottled = async (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => {
+  // GEO3-05: na cascata, Photon e Nominatim respondem com status -- falha de
+  // rede (timeout/429/5xx) manda o endereco em `incompletos`.
+  const consultarPhotonThrottled = async (enderecoBruto: string, pontoCidade?: { lat: number; lng: number } | null) => {
     await esperar(ESPERA_ENTRE_CHAMADAS_MS);
-    return geocodificarPhoton(enderecoBruto, pontoCidade ?? null);
+    return consultarPhoton(enderecoBruto, pontoCidade ?? null);
   };
+  const consultarNominatimThrottled = async (enderecoBruto: string) => {
+    await esperar(ESPERA_ENTRE_CHAMADAS_MS);
+    return consultarNominatim(enderecoBruto);
+  };
+  const errosRede = criarContadorErrosExternos();
 
   const buscarCandidatosPorNome = async (nomeNormalizado: string) => {
     const { data } = await admin.from("vias_nomes").select("lat, lng").eq("nome_sem_conectores", nomeNormalizado);
@@ -301,6 +308,7 @@ export async function POST(request: Request) {
   // Referencia fora do cache: Nominatim com retentativa, cortado pelo prazo
   // (achado 03/09) -- cidade sempre (sao 92 no RJ, quase todas no cache);
   // bairro so' quando o pre-check acha que o CNEFE/OSM vai precisar.
+  const depsTerritorio = montarDepsTerritorio(admin);
   const referencias = criarReferencias({
     lerCacheEmLote: async (chaves) => new Map(chaves.flatMap((k) => {
       const c = cacheMap.get(k);
@@ -308,6 +316,8 @@ export async function POST(request: Request) {
     })),
     resolverExterno: resolverPontoComRetry,
     prazoEsgotado,
+    // GEO3-04: referencia fora do municipio esperado nao vira regua.
+    municipioDaCoordenada: depsTerritorio.municipioDaCoordenada,
   });
   await referencias.carregar(lista, { resolverBairroExterno: (e) => precisaPorEndereco.get(e) ?? false });
 
@@ -328,11 +338,13 @@ export async function POST(request: Request) {
   // antigo que so' le lat/lng continua funcionando igual.
   const resultados: ({ lat: number; lng: number; fonte: string; validado: boolean; motivo?: MotivoTerritorio } | null)[] = [];
   const incompletos: number[] = [];
-  const depsTerritorio = montarDepsTerritorio(admin);
+  // Subconjunto de `incompletos` por falha de rede (campo aditivo: KPI antigo ignora).
+  const incompletosRede: number[] = [];
   for (const enderecoBruto of lista) {
     if (prazoEsgotado()) break;
     let similaridadeIncompleta = false;
     let bairroIncompleto = false;
+    let redeFalhou = false;
     const buscarCnefePorLocalidade = async (bairroBusca: string, municipioBusca: string) => {
       const r = await buscarCentroideBairro(admin, bairroBusca, municipioBusca);
       if (r.status !== "ok") {
@@ -367,12 +379,14 @@ export async function POST(request: Request) {
       geocodificarLocalDep: (endereco, ponto) => geocodificarLocal(endereco, ponto, buscarCandidatosPorNome, precisaoBairro),
       geocodificarCnefeBairroDep: (endereco) => geocodificarCnefePorBairro(endereco, municipioCodigo, buscarCnefePorLocalidade),
       geocodificarGoogle,
-      geocodificarPhoton: geocodificarPhotonThrottled,
-      geocodificarNominatim: geocodificarNominatimThrottled,
+      geocodificarPhoton: consultarPhotonThrottled,
+      geocodificarNominatim: consultarNominatimThrottled,
+      aoErroExterno: (provedor, motivo) => { redeFalhou = true; errosRede.registrar(provedor, motivo); },
     });
 
     if (!geocode) {
-      if (similaridadeIncompleta || bairroIncompleto) incompletos.push(resultados.length);
+      if (similaridadeIncompleta || bairroIncompleto || redeFalhou) incompletos.push(resultados.length);
+      if (redeFalhou) incompletosRede.push(resultados.length);
       resultados.push(null);
       continue;
     }
@@ -406,5 +420,6 @@ export async function POST(request: Request) {
     resultados.push({ lat: geocode.lat, lng: geocode.lng, fonte: geocode.fonte, validado, motivo, ...(geocode.precisao ? { precisao: geocode.precisao, raioM: geocode.raioM } : {}) });
   }
 
-  return Response.json({ resultados, incompletos, buscasSimilaridade });
+  errosRede.logar(`ponte KPI, ${lista.length} endereco(s)`);
+  return Response.json({ resultados, incompletos, incompletosRede, buscasSimilaridade });
 }

@@ -147,3 +147,17 @@ describe("processar-geocode -- unitrac_aprendido com o municipio conferido (GEO3
     expect(aprendido()).toMatchObject({ lat: ponto.pontolatitude, lng: ponto.pontolongitude, validado: esperado });
   });
 });
+
+describe("processar-geocode -- falhas de rede contadas no log do ciclo (GEO3-05)", () => {
+  it("Photon 429 na retentativa: 1 linha de log com a contagem por motivo", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cache[chaveCidade("MAGE")] = { ...MAGE, fonte: "nominatim" };
+    linhasFalhou = [{ id: "p1", nf: "1", placa: "AAA0A00", veiculo_id: null, geocode_tentativas: 0, endereco_bruto: END_MAGE }];
+    globalThis.fetch = (async (u: string) => (String(u).includes("photon") ? new Response("", { status: 429 }) : new Response("[]", { status: 200 }))) as typeof fetch;
+    const { POST } = await import("./route");
+    await POST(req());
+    const linhas = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("[geocode] erros de rede"));
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatch(/photon http_429=\d+/);
+  });
+});

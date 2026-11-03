@@ -8,7 +8,6 @@ import { chaveCidade } from "@/lib/referencia-cidade";
 const PARATY = { lat: -23.2178, lng: -44.7131 };
 const PE = { lat: -7.7981, lng: -37.7944 };
 let cache: Record<string, { lat: number; lng: number }> = {};
-let leiturasCache = 0;
 
 function consulta(tabela: string) {
   const b: Record<string, unknown> = {};
@@ -18,7 +17,6 @@ function consulta(tabela: string) {
   b.abortSignal = () => b;
   b.then = (ok: (v: unknown) => unknown) => {
     if (tabela === "romaneio_geocode_cache" && chaves) {
-      leiturasCache++;
       return ok({ data: chaves.filter((k) => cache[k]).map((k) => ({ endereco_normalizado: k, ...cache[k], fonte: "nominatim", validado: true })), error: null });
     }
     return ok({ data: [], error: null });
@@ -34,7 +32,7 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => admin }));
 const fetchOrig = globalThis.fetch;
 let urls: string[] = [];
 beforeEach(() => {
-  cache = {}; urls = []; leiturasCache = 0;
+  cache = {}; urls = [];
   process.env.MOTOR_SECRET = "s";
   delete process.env.GOOGLE_MAPS_API_KEY;
   // so' o throttle de 1,1 s e' instantaneo; os outros prazos seguem reais
@@ -71,5 +69,46 @@ describe("ponte /api/romaneio/geocode -- referencia da cidade sempre do cache (G
     const { POST } = await import("./route");
     const corpo = await (await POST(req(["RUA JOSE BALBINO DA SILVA, - , PARATY - RJ"]))).json();
     expect(corpo.resultados).toEqual([null]);
+  });
+});
+
+// GEO3-05 (03/11): falha de rede do Photon/Nominatim era o mesmo null de
+// "endereco nao existe" e o KPI gravava cache negativo de 48 h.
+describe("ponte /api/romaneio/geocode -- falha de rede vai em `incompletos` (GEO3-05)", () => {
+  const END = "RUA JOSE BALBINO DA SILVA, - , PARATY - RJ";
+  const comPhoton = (r: () => Promise<Response>) => {
+    globalThis.fetch = (async (u: string) => (String(u).includes("photon") ? r() : new Response("[]", { status: 200 }))) as typeof fetch;
+  };
+
+  it("Photon lanca TimeoutError e nada mais acha: null com o indice em `incompletos` (e em `incompletosRede`)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    cache[chaveCidade("Parati")] = PARATY;
+    comPhoton(async () => { const e = new Error("timeout"); e.name = "TimeoutError"; throw e; });
+    const { POST } = await import("./route");
+    const corpo = await (await POST(req(["RUA SEM PROBLEMA NENHUM, - , PARATY - RJ", END]))).json();
+    expect(corpo.resultados).toEqual([null, null]);
+    expect(corpo.incompletos).toEqual([0, 1]);
+    expect(corpo.incompletosRede).toEqual([0, 1]);
+  });
+
+  it("Photon e Nominatim respondem normalmente sem achar: null fora de `incompletos` (KPI pode gravar o negativo)", async () => {
+    cache[chaveCidade("Parati")] = PARATY;
+    comPhoton(async () => new Response(JSON.stringify({ features: [] }), { status: 200 }));
+    const { POST } = await import("./route");
+    const corpo = await (await POST(req([END]))).json();
+    expect(corpo.resultados).toEqual([null]);
+    expect(corpo.incompletos).toEqual([]);
+  });
+
+  it("429 e' contado no log da requisicao", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cache[chaveCidade("Parati")] = PARATY;
+    comPhoton(async () => new Response("", { status: 429 }));
+    const { POST } = await import("./route");
+    const corpo = await (await POST(req([END]))).json();
+    expect(corpo.incompletos).toEqual([0]);
+    const linhas = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("[geocode] erros de rede"));
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatch(/photon http_429=\d+/);
   });
 });

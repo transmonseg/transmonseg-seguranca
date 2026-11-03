@@ -1076,3 +1076,61 @@ describe("exato sem confirmacao de CEP/bairro (F4-04 GEO-28)", () => {
     expect(r).toMatchObject({ fonte: "cnefe", precisao: "exato_nao_confirmado", raioM: 30 });
   });
 });
+
+// GEO3-05 (auditoria 03/11): timeout/429/5xx do Photon e do Nominatim voltavam
+// o mesmo null de "endereco nao existe" -- na ponte isso virava cache negativo
+// de 48 h no KPI. Agora o provedor diz qual dos tres aconteceu.
+describe("consultarPhoton / consultarNominatim -- falha de rede separada de 'nao achou' (GEO3-05)", () => {
+  const fetchOrig = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = fetchOrig; vi.restoreAllMocks(); });
+  const REF = { lat: -22.6043, lng: -43.1081 };
+  const responder = (r: () => Promise<Response>) => { globalThis.fetch = (async () => r()) as typeof fetch; };
+
+  it.each([
+    ["TimeoutError", async () => { const e = new Error("aborted due to timeout"); e.name = "TimeoutError"; throw e; }, "timeout"],
+    ["HTTP 429", async () => new Response("", { status: 429 }), "http_429"],
+    ["HTTP 503", async () => new Response("", { status: 503 }), "http_5xx"],
+    ["rede caiu", async () => { throw new TypeError("fetch failed"); }, "rede"],
+  ] as const)("%s -> {status:'erro'}", async (_n, r, motivo) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { consultarPhoton, consultarNominatim } = await import("./romaneio-geocode");
+    responder(r as () => Promise<Response>);
+    expect(await consultarPhoton("RUA X, 10 - CENTRO, MAGE - RJ", REF)).toEqual({ status: "erro", motivo });
+    expect(await consultarNominatim("RUA X, 10 - CENTRO, MAGE - RJ")).toEqual({ status: "erro", motivo });
+  });
+
+  it("resposta vazia -> {status:'nao_achou'}; achou -> {status:'ok', lat, lng}", async () => {
+    const { consultarPhoton, consultarNominatim } = await import("./romaneio-geocode");
+    responder(async () => new Response(JSON.stringify({ features: [] }), { status: 200 }));
+    expect(await consultarPhoton("RUA X, 10 - CENTRO, MAGE - RJ", REF)).toEqual({ status: "nao_achou" });
+    responder(async () => new Response("[]", { status: 200 }));
+    expect(await consultarNominatim("RUA X, 10 - CENTRO, MAGE - RJ")).toEqual({ status: "nao_achou" });
+    responder(async () => new Response(JSON.stringify([{ lat: "-22.6", lon: "-43.1" }]), { status: 200 }));
+    expect(await consultarNominatim("RUA X, 10 - CENTRO, MAGE - RJ")).toEqual({ status: "ok", lat: -22.6, lng: -43.1 });
+  });
+
+  it("funcoes antigas (escala, scripts) continuam devolvendo ponto ou null", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { geocodificarPhoton } = await import("./romaneio-geocode");
+    responder(async () => new Response("", { status: 429 }));
+    expect(await geocodificarPhoton("RUA X, 10 - CENTRO, MAGE - RJ", REF)).toBeNull();
+  });
+
+  it("cascata: provedor com erro avisa aoErroExterno e segue para o proximo nivel", async () => {
+    const aoErroExterno = vi.fn();
+    const r = await geocodificarEndereco("RUA X, 10 - CENTRO, MAGE - RJ", REF, {
+      buscarCache: async () => null,
+      salvarCache: async () => {},
+      geocodificarCnefeDep: async () => null,
+      geocodificarLocalDep: async () => null,
+      geocodificarGoogle: async () => null,
+      geocodificarPhoton: async () => ({ status: "erro", motivo: "timeout" }),
+      geocodificarNominatim: async () => ({ status: "ok", lat: REF.lat, lng: REF.lng }),
+      aoErroExterno,
+    });
+    expect(aoErroExterno).toHaveBeenCalledWith("photon", "timeout");
+    expect(r).toMatchObject({ fonte: "nominatim", lat: REF.lat });
+  });
+});

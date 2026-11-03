@@ -38,7 +38,26 @@ export type DepsReferencias = {
   /** So' o cron (processar-geocode) grava; a ponte e' so' leitura. */
   salvar?: (chave: string, ponto: Ponto) => Promise<void>;
   prazoEsgotado?: () => boolean;
+  /** GEO3-04: codigo IBGE do poligono que contem o ponto (null = nenhum).
+   *  Sem ele a referencia nao e' validada (comportamento antigo). */
+  municipioDaCoordenada?: (lat: number, lng: number) => Promise<string | null>;
 };
+
+// GEO3-04 (auditoria 03/11): CIDADE:/BAIRRO: vinham do Nominatim sem checagem
+// e o cache nunca expira -- "CIDADE:QUISSAMA, RJ, BRASIL" e' o bairro Quissama
+// de Petropolis (179 km), 57 bairros em municipio errado (36 viravam regua).
+// Cidade: descartada quando cai em OUTRO municipio (fora da malha fica, com
+// log: o centro da cidade do Nominatim fica em terra). Bairro: so' vale dentro
+// do proprio municipio. A linha ruim do cache NAO e' regravada aqui (limpeza
+// com OK do dono, scripts/diagnostico/pontos-fora-do-municipio.mjs).
+const memoMunicipio = new Map<string, string | null>();
+const avisados = new Set<string>();
+
+function avisarUmaVez(chave: string, msg: string): void {
+  if (avisados.has(chave)) return;
+  avisados.add(chave);
+  console.warn(msg);
+}
 
 export type OpcoesCarga = {
   /** Cidade fora do cache vai ao Nominatim? Padrao: sim. */
@@ -48,6 +67,41 @@ export type OpcoesCarga = {
 };
 
 export function criarReferencias(deps: DepsReferencias) {
+  async function municipioDe(p: Ponto): Promise<string | null | undefined> {
+    if (!deps.municipioDaCoordenada) return undefined;
+    const k = `${p.lat},${p.lng}`;
+    if (memoMunicipio.has(k)) return memoMunicipio.get(k);
+    try {
+      const m = await deps.municipioDaCoordenada(p.lat, p.lng);
+      memoMunicipio.set(k, m);
+      return m;
+    } catch (err) {
+      console.error("[referencia-cidade] municipioDaCoordenada falhou -- referencia sem validar", err);
+      return undefined;
+    }
+  }
+
+  async function cidadeValida(chave: string, p: Ponto, esperado: string | null): Promise<boolean> {
+    if (!esperado) return true;
+    const real = await municipioDe(p);
+    if (real === undefined) return true;
+    if (real === null) {
+      avisarUmaVez(`nulo|${chave}`, `[referencia-cidade] ${chave} fora da malha (${p.lat},${p.lng}) -- mantida`);
+      return true;
+    }
+    if (real === esperado) return true;
+    avisarUmaVez(`div|${chave}|${p.lat}`, `[referencia-cidade] ${chave} em ${p.lat},${p.lng} cai no municipio ${real}, esperado ${esperado} -- descartada`);
+    return false;
+  }
+
+  async function bairroValido(chave: string, p: Ponto, esperado: string | null): Promise<boolean> {
+    if (!esperado) return true;
+    const real = await municipioDe(p);
+    if (real === undefined || real === esperado) return true;
+    avisarUmaVez(`div|${chave}|${p.lat}`, `[referencia-cidade] ${chave} em ${p.lat},${p.lng} fora do municipio ${esperado} (caiu em ${real ?? "nenhum"}) -- descartada, vale a da cidade`);
+    return false;
+  }
+
   const pontosCidade = new Map<string, Ponto>();
   const pontosBairro = new Map<string, Ponto>();
   const tentadas = new Set<string>();
@@ -78,26 +132,32 @@ export function criarReferencias(deps: DepsReferencias) {
 
     for (const cidade of novasCidades) {
       const chave = chaveCidade(cidade);
+      const esperado = municipioCodigoIbge(cidade);
       const p = doCache.get(chave);
-      if (p) { pontosCidade.set(cidade, p); continue; }
+      if (p && await cidadeValida(chave, p, esperado)) { pontosCidade.set(cidade, p); continue; }
       const endereco = cidades.get(cidade)!;
-      const pode = opcoes.resolverCidadeExterno?.(endereco, municipioCodigoIbge(cidade)) ?? true;
+      const pode = opcoes.resolverCidadeExterno?.(endereco, esperado) ?? true;
       if (!pode || !deps.resolverExterno || deps.prazoEsgotado?.()) continue;
       const resolvido = await deps.resolverExterno(termoBuscaCidade(cidade));
-      if (!resolvido) continue;
+      if (!resolvido || !await cidadeValida(chave, resolvido, esperado)) continue;
       pontosCidade.set(cidade, resolvido);
-      await deps.salvar?.(chave, resolvido);
+      // Linha ruim no cache: usa a nova so' em memoria (nao regrava por cima).
+      if (!p) await deps.salvar?.(chave, resolvido);
     }
 
     for (const k of novosBairros) {
       const { bairro, cidade, endereco } = bairros.get(k)!;
       const chave = chaveBairro(bairro, cidade);
+      const esperado = municipioCodigoIbge(cidade);
       const p = doCache.get(chave);
-      if (p) { pontosBairro.set(k, p); continue; }
+      if (p) {
+        if (await bairroValido(chave, p, esperado)) pontosBairro.set(k, p);
+        continue; // bairro ruim no cache: vale a da cidade (nao tenta de novo)
+      }
       const pode = opcoes.resolverBairroExterno?.(endereco) ?? true;
       if (!pode || !deps.resolverExterno || deps.prazoEsgotado?.()) continue;
       const resolvido = await deps.resolverExterno(`${bairro}, ${termoBuscaCidade(cidade)}`);
-      if (!resolvido) continue;
+      if (!resolvido || !await bairroValido(chave, resolvido, esperado)) continue;
       pontosBairro.set(k, resolvido);
       await deps.salvar?.(chave, resolvido);
     }
