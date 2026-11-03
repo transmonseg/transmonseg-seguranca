@@ -7,6 +7,33 @@ import type { AcessoCliente } from "./acesso-cliente";
 export type PontoRastro = { lat: number; lng: number; em: string };
 export type Coord = { lat: number; lng: number };
 
+/** RAS-03 (03/11): linha de posicoes_historico -> ponto com a hora do GPS.
+ *  O motor grava a cada 30 s mesmo quando a Unitrac devolve a leitura velha;
+ *  a hora real da posição é criado_em - atraso_min (nunca datagps, frente H). */
+export function pontoDoHistorico(l: { lat: number; lng: number; criado_em: string; atraso_min: number | null }): PontoRastro {
+  const atraso = l.atraso_min != null && Number.isFinite(Number(l.atraso_min)) ? Math.max(0, Number(l.atraso_min)) : 0;
+  return { lat: Number(l.lat), lng: Number(l.lng), em: new Date(Date.parse(l.criado_em) - atraso * 60_000).toISOString() };
+}
+
+/** Acima disso o último ponto é "último sinal", não "agora". */
+export const ENTREGA_SEM_SINAL_MIN = 15;
+
+function hhmmBR(iso: string): string {
+  return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso));
+}
+
+/** Último ponto do dia com o rótulo certo. `agora` é o relógio do servidor (SSR). */
+export function posicaoAtual(pontos: PontoRastro[], agora: Date): (PontoRastro & { semSinal: boolean; rotulo: string }) | null {
+  if (!pontos.length) return null;
+  const ult = pontos.reduce((a, b) => (Date.parse(b.em) >= Date.parse(a.em) ? b : a));
+  const idadeMin = (agora.getTime() - Date.parse(ult.em)) / 60_000;
+  const semSinal = idadeMin > ENTREGA_SEM_SINAL_MIN;
+  if (!semSinal) return { ...ult, semSinal, rotulo: `Agora (${hhmmBR(ult.em)})` };
+  const min = Math.round(idadeMin);
+  const ha = min < 60 ? `${min} min` : `${Math.floor(min / 60)} h`;
+  return { ...ult, semSinal, rotulo: `Último sinal às ${hhmmBR(ult.em)} (há ${ha})` };
+}
+
 /** Dia AAAA-MM-DD em BRT -> intervalo [inicio, fim) em UTC. */
 export function janelaDiaBR(data: string): { inicio: string; fim: string } {
   const inicio = new Date(`${data}T00:00:00-03:00`);
