@@ -721,3 +721,12 @@ describe("planejarDisparoDesvio (episodio novo reabre o card)", () => {
     expect(plano.patch?.desde).toBe(iso(20));
   });
 });
+
+// DSV-07 (auditoria 03/11): a Rio Quality tem romaneio e ficava sem parada na
+// Central Romaneio (so' "4096" na lista). A Central Unitrac le a MESMA lista
+// para desligar as 3 paradas do carro com romaneio, entao nao duplica.
+describe("decidirEscopoDoVeiculo -- Rio Quality (DSV-07)", () => {
+  it('cliente "598" avalia paradas aqui', () => {
+    expect(decidirEscopoDoVeiculo({ qtdAlvosUnitracDoVeiculo: 0, codUserUnitrac: "598" }).avaliaParadas).toBe(true);
+  });
+});

@@ -2265,7 +2265,9 @@ export async function POST(request: Request) {
           if (Number.isFinite(inicioMs)) {
             paradoMinVeiculo = Math.round((agora.getTime() - inicioMs) / 60000);
           }
-          const emOperacao = emHorarioOperacao(agora);
+          // DSV-07: todo veículo deste loop tem romaneio hoje -- sábado com
+          // operação conta como horário de operação.
+          const emOperacao = emHorarioOperacao(agora, { temRomaneioHoje: true });
           const foraDaBase = !veiculosDentroDeBase.has(veiculoId);
 
           // Pré-condição comum aos 3 detectores (eles a re-checam por dentro;

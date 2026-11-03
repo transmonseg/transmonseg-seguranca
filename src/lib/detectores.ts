@@ -289,7 +289,11 @@ export function detectarExcessoVelocidade(p: PosicaoNormalizada): Alerta | null 
 
 // Retorna true se a data estiver em horario de operacao:
 // dia util (segunda a sexta) E entre 6h e 20h no fuso America/Sao_Paulo.
-export function emHorarioOperacao(d: Date): boolean {
+// DSV-07 (03/11): com `temRomaneioHoje` (Central Romaneio: o carro tem NF no
+// dia) qualquer dia da semana vale -- sabados com operacao (Nutry 24 e 31/10)
+// tinham 0 parada. A janela de 6 a 20 h continua. Sem a opcao (Central
+// Unitrac) fica seg-sex como sempre.
+export function emHorarioOperacao(d: Date, opts?: { temRomaneioHoje?: boolean }): boolean {
   const fmt = new Intl.DateTimeFormat("pt-BR", {
     timeZone: "America/Sao_Paulo",
     weekday: "short",
@@ -306,7 +310,7 @@ export function emHorarioOperacao(d: Date): boolean {
     weekday.toLowerCase().startsWith(dia)
   );
 
-  return diaUtil && hora >= 6 && hora < 20;
+  return (diaUtil || opts?.temRomaneioHoje === true) && hora >= 6 && hora < 20;
 }
 
 export function detectarParadaCliente(ctx: {
