@@ -25,6 +25,9 @@ import {
   decidirEscopoDoVeiculo,
   deveAvaliarSinalA,
   suprimidoPorCooldownCandidato,
+  planejarDisparoDesvio,
+  montarLinhaDisparoDesvio,
+  type AlertaDesvioAberto,
 } from "./route";
 import { montarPontosDeRomaneio } from "@/lib/romaneio";
 import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS } from "@/lib/config-clientes";
@@ -616,5 +619,105 @@ describe("suprimidoPorCooldownCandidato", () => {
         ultimoTratamentoTemporal: { resolvidoEm: "2026-08-27T11:50:00Z" },
       })
     ).toBe(false);
+  });
+});
+
+// DSV-01 + DSV-02 (auditoria 03/11): episodio novo de desvio reabre o card da
+// Central Romaneio e todo disparo vira uma linha em alertas_romaneio_disparos.
+describe("planejarDisparoDesvio (episodio novo reabre o card)", () => {
+  const T0 = Date.parse("2026-10-30T14:01:00.000Z");
+  const iso = (min: number) => new Date(T0 + min * 60_000).toISOString();
+  const candidato = { nivel: "critico" as const, tipo: "desvio", motivo: "Afastando de todos os clientes pendentes e da base (distância real de rua)", score: 60, origemDesvio: "afastando_geral" };
+
+  // Simula o banco: 1 alerta por veiculo + a trilha de disparos.
+  function cenario() {
+    let alerta: AlertaDesvioAberto | null = null;
+    const disparos: Record<string, unknown>[] = [];
+    function disparo(min: number, lat: number, lng: number) {
+      const ultimo = disparos.length ? String(disparos[disparos.length - 1].criado_em) : null;
+      const plano = planejarDisparoDesvio({
+        alertaAberto: alerta, ultimoDisparoEm: ultimo, trilhaOk: true, candidato,
+        contextoCiclo: { origem_desvio: "afastando_geral" }, agoraISO: iso(min), lat, lng,
+      });
+      if (plano.decisao === "novo_alerta") {
+        alerta = { id: "a1", nivel: candidato.nivel, desde: iso(min), lat, lng, motivo: candidato.motivo, contexto: plano.contextoInsert };
+      } else if (plano.patch && alerta) {
+        alerta = { ...alerta, ...(plano.patch as Partial<AlertaDesvioAberto>) };
+      }
+      disparos.push({ ...montarLinhaDisparoDesvio({ alertaId: alerta?.id ?? null, veiculoId: "v1", clienteId: "c1", lat, lng, decisao: plano.decisao, streak: 2, candidato }), criado_em: iso(min) });
+      return plano;
+    }
+    return { disparo, get alerta() { return alerta; }, disparos };
+  }
+
+  it("2o episodio 15 min depois: desde e lat mudam, 2 episodios no contexto, 1 linha de disparo por disparo", () => {
+    const c = cenario();
+    c.disparo(0, -22.90, -43.40);
+    const p2 = c.disparo(15, -22.80, -43.30);
+    expect(p2.decisao).toBe("novo_episodio");
+    expect(c.alerta?.desde).toBe(iso(15));
+    expect(c.alerta?.lat).toBe(-22.80);
+    expect(c.alerta?.lng).toBe(-43.30);
+    const eps = (c.alerta?.contexto as { episodios: { desde: string; lat: number }[] }).episodios;
+    expect(eps).toHaveLength(2);
+    expect(eps[0].desde).toBe(iso(0));
+    expect(eps[1]).toMatchObject({ desde: iso(15), lat: -22.80, lng: -43.30, motivo: candidato.motivo });
+    expect(c.disparos).toHaveLength(2);
+    expect(c.disparos.every((d) => d.alerta_id === "a1" && d.tipo === "desvio")).toBe(true);
+    expect((c.alerta as unknown as { status?: string }).status ?? "ativo").toBe("ativo");
+  });
+
+  it("2o disparo 5 min depois: nada muda no alerta, mas o disparo fica na trilha", () => {
+    const c = cenario();
+    c.disparo(0, -22.90, -43.40);
+    const antes = JSON.stringify(c.alerta);
+    const p2 = c.disparo(5, -22.89, -43.39);
+    expect(p2.decisao).toBe("mesmo_episodio");
+    expect(p2.patch).toBeNull();
+    expect(JSON.stringify(c.alerta)).toBe(antes);
+    expect(c.disparos).toHaveLength(2);
+  });
+
+  it("disparos seguidos a cada 30 s nao reabrem; parar 10+ min e voltar reabre", () => {
+    const c = cenario();
+    c.disparo(0, -22.9, -43.4);
+    for (let m = 0.5; m <= 4; m += 0.5) expect(c.disparo(m, -22.9, -43.4).decisao).toBe("mesmo_episodio");
+    expect(c.disparo(14.5, -22.7, -43.2).decisao).toBe("novo_episodio");
+  });
+
+  it("alerta antigo sem lista de episodios (gravado antes da mudanca): o 1o episodio vem do proprio card", () => {
+    const plano = planejarDisparoDesvio({
+      alertaAberto: { id: "x", nivel: "critico", desde: iso(0), lat: -22.9, lng: -43.4, motivo: "m0", contexto: { origem_desvio: "afastando_geral" } },
+      ultimoDisparoEm: null, trilhaOk: true, candidato, contextoCiclo: { origem_desvio: "afastando_geral" },
+      agoraISO: iso(30), lat: -22.8, lng: -43.3,
+    });
+    const eps = (plano.patch?.contexto as { episodios: unknown[] }).episodios;
+    expect(eps).toEqual([
+      { desde: iso(0), lat: -22.9, lng: -43.4, motivo: "m0" },
+      { desde: iso(30), lat: -22.8, lng: -43.3, motivo: candidato.motivo },
+    ]);
+  });
+
+  it("trilha indisponivel (tabela 092 ausente/consulta falhou): nunca reabre, so' escala como antes", () => {
+    const plano = planejarDisparoDesvio({
+      alertaAberto: { id: "x", nivel: "atencao", desde: iso(0), lat: 0, lng: 0, motivo: "m", contexto: {} },
+      ultimoDisparoEm: null, trilhaOk: false, candidato, contextoCiclo: { origem_desvio: "afastando_geral" },
+      agoraISO: iso(60), lat: 1, lng: 1,
+    });
+    expect(plano.decisao).toBe("mesmo_episodio");
+    expect(plano.patch).toMatchObject({ nivel: "critico", score: 60 });
+    expect(plano.patch).not.toHaveProperty("desde");
+  });
+
+  it("episodio novo mais fraco (atencao) sobre card critico: reabre sem rebaixar o nivel", () => {
+    const plano = planejarDisparoDesvio({
+      alertaAberto: { id: "x", nivel: "critico", desde: iso(0), lat: 0, lng: 0, motivo: "m", contexto: { episodios: [{ desde: iso(0) }] } },
+      ultimoDisparoEm: iso(0), trilhaOk: true,
+      candidato: { ...candidato, nivel: "atencao", score: 30, origemDesvio: "sem_destinos", motivo: "Rota concluída: sem cliente pendente a 50 km" },
+      contextoCiclo: { origem_desvio: "sem_destinos" }, agoraISO: iso(20), lat: 1, lng: 1,
+    });
+    expect(plano.decisao).toBe("novo_episodio");
+    expect({ nivel: "critico", ...plano.patch }.nivel).toBe("critico");
+    expect(plano.patch?.desde).toBe(iso(20));
   });
 });

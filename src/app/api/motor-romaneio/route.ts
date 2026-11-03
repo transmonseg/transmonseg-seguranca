@@ -52,6 +52,7 @@
 // (linha do lease + expiração/retenção de alertas_romaneio).
 
 import pg from "pg";
+import { randomUUID } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { atrasoEfetivoMin } from "@/lib/frescor-posicao";
@@ -104,7 +105,7 @@ import {
   type Alerta,
 } from "@/lib/detectores";
 import { temPOIProximo } from "@/lib/overpass";
-import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS, CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, CLIENTES_COM_ROMANEIO_AUSENTE, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
+import { CENTRAL_ROMANEIO_DESVIO_TODOS_VEICULOS, CLIENTES_COM_MOTOR_ROMANEIO_PARALELO, DESVIO_EPISODIO_NOVO_REABRE_ALERTA, CLIENTES_COM_ROMANEIO_AUSENTE, GATES_SUPRESSAO_DESVIO_ATIVOS, PARADA_CENTRAL_LIGADA_PARA_FROTA_INTEIRA } from "@/lib/config-clientes";
 import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
@@ -128,6 +129,7 @@ import {
   type ClasseViaria,
 } from "@/lib/classe-viaria-confirmacao";
 import { celulaDe, vizinhanca3x3 } from "@/lib/celulas";
+import { decidirEpisodio, type DecisaoEpisodio } from "@/lib/desvio-episodio";
 import { dataSP, datagpsPlausivelComoMarco, estadoEhDeOutroDiaSP } from "@/lib/motor-romaneio-estado";
 import { corrigirPosicoesComMatch, type ResultadoMatch } from "@/lib/osrm-match";
 
@@ -457,6 +459,124 @@ export function deveAvaliarSinalA(ctx: {
   );
 }
 
+// ─── DSV-01 + DSV-02 (auditoria 03/11): episódio de desvio e trilha ────────
+// Até 03/11 o Step 9 deduplicava por tipo e, com alerta aberto, só subia o
+// nível: o 1º desvio do dia congelava o card (local, hora e motivo do 1º
+// episódio) e todo episódio seguinte ficava invisível até a expiração das
+// 01:30 (replay de 30/10: 113 de 175 episódios da Nutry, 227 de 298 da RQ).
+// Agora, com >= 10 min sem disparo do mesmo veículo (decidirEpisodio,
+// @/lib/desvio-episodio), o card é REABERTO: sobe `desde`, troca lat/lng/
+// motivo e anexa o episódio em contexto.episodios[]. Nada é fechado nem
+// silenciado (recall > precisão). Todo disparo de desvio vira 1 linha em
+// alertas_romaneio_disparos (migration 092), que também é a fonte do
+// "último disparo". Sem a tabela (trilhaOk=false) o comportamento é o antigo.
+export type AlertaDesvioAberto = {
+  id: string;
+  nivel: "critico" | "atencao";
+  desde: string;
+  lat: number | null;
+  lng: number | null;
+  motivo: string | null;
+  contexto: Record<string, unknown> | null;
+};
+
+type CandidatoDesvio = { nivel: "critico" | "atencao"; motivo: string; score: number; origemDesvio?: string };
+
+function episodiosDoContexto(a: AlertaDesvioAberto): Record<string, unknown>[] {
+  const bruto = a.contexto?.episodios;
+  if (Array.isArray(bruto)) return bruto as Record<string, unknown>[];
+  // Card gravado antes desta mudança: o 1º episódio é o próprio card.
+  return [{ desde: a.desde, lat: a.lat, lng: a.lng, motivo: a.motivo }];
+}
+
+export function planejarDisparoDesvio(p: {
+  alertaAberto: AlertaDesvioAberto | null;
+  ultimoDisparoEm: string | null;
+  trilhaOk: boolean;
+  candidato: CandidatoDesvio;
+  contextoCiclo: Record<string, unknown>;
+  agoraISO: string;
+  lat: number;
+  lng: number;
+}): { decisao: DecisaoEpisodio; contextoInsert: Record<string, unknown> | null; patch: Record<string, unknown> | null } {
+  const { alertaAberto, candidato, agoraISO, lat, lng } = p;
+  const episodio = { desde: agoraISO, lat, lng, motivo: candidato.motivo };
+  if (!alertaAberto) {
+    return { decisao: "novo_alerta", contextoInsert: { ...p.contextoCiclo, episodios: [episodio] }, patch: null };
+  }
+  const decisao: DecisaoEpisodio = p.trilhaOk
+    ? decidirEpisodio({ desde: alertaAberto.desde, ultimoDisparoEm: p.ultimoDisparoEm }, agoraISO)
+    : "mesmo_episodio";
+  const escala = alertaAberto.nivel !== "critico" && candidato.nivel === "critico";
+  const rebaixaria = alertaAberto.nivel === "critico" && candidato.nivel !== "critico";
+  const anteriores = episodiosDoContexto(alertaAberto);
+  if (decisao === "novo_episodio") {
+    return {
+      decisao,
+      contextoInsert: null,
+      patch: {
+        desde: agoraISO,
+        lat,
+        lng,
+        motivo: candidato.motivo,
+        status: "ativo",
+        // Nunca rebaixa: episódio novo mais fraco sobre card crítico reabre
+        // o card e mantém o vermelho (e o score dele).
+        ...(rebaixaria ? {} : { nivel: candidato.nivel, score: candidato.score }),
+        contexto: {
+          ...(alertaAberto.contexto ?? {}),
+          ...p.contextoCiclo,
+          episodios: [...anteriores, episodio],
+          desde_primeiro_episodio: (anteriores[0]?.desde as string | undefined) ?? alertaAberto.desde,
+          reaberto_em: agoraISO,
+        },
+      },
+    };
+  }
+  if (escala) {
+    // Escalação de sempre; o contexto é mesclado (antes era sobrescrito e
+    // perderia a lista de episódios).
+    return {
+      decisao,
+      contextoInsert: null,
+      patch: {
+        nivel: candidato.nivel,
+        motivo: candidato.motivo,
+        score: candidato.score,
+        contexto: { ...(alertaAberto.contexto ?? {}), ...p.contextoCiclo, episodios: anteriores },
+      },
+    };
+  }
+  return { decisao, contextoInsert: null, patch: null };
+}
+
+export function montarLinhaDisparoDesvio(p: {
+  alertaId: string | null;
+  veiculoId: string;
+  clienteId: string;
+  lat: number;
+  lng: number;
+  decisao: DecisaoEpisodio | "silenciado" | "cooldown" | "erro_insert";
+  streak: number;
+  candidato: CandidatoDesvio;
+}): Record<string, unknown> {
+  return {
+    alerta_id: p.alertaId,
+    veiculo_id: p.veiculoId,
+    cliente_id: p.clienteId,
+    tipo: "desvio",
+    lat: p.lat,
+    lng: p.lng,
+    contexto: {
+      decisao: p.decisao,
+      streak: p.streak,
+      nivel: p.candidato.nivel,
+      origem_desvio: p.candidato.origemDesvio ?? null,
+      motivo: p.candidato.motivo,
+    },
+  };
+}
+
 // Trava de execução única deste ciclo -- MESMO mecanismo da Central
 // (motor/route.ts:497-528): lease com expiração por UPDATE atômico em
 // motor_lease. Motivo medido na Central (comentário dela em 247-264): sem
@@ -594,6 +714,12 @@ type AlertaAtivoRow = {
   // apagaria origem_desvio, que é o insumo da comparação entre os dois
   // pipelines.
   contexto: Record<string, unknown> | null;
+  // DSV-01: o episódio novo de desvio reabre o card e guarda o episódio
+  // anterior -- precisa do desde/lat/lng/motivo atuais do card.
+  desde?: string;
+  lat?: number | null;
+  lng?: number | null;
+  motivo?: string | null;
 };
 
 // Fecha alertas_romaneio POR AÇÃO DA MÁQUINA, marcando contexto.auto_resolvido.
@@ -1082,6 +1208,43 @@ export async function POST(request: Request) {
   // Orçamento de correção via /match compartilhado pelo ciclo inteiro --
   // mesmo padrão de contadorCorrecoesMatch em route.ts:548.
   const contadorCorrecoesMatch = { valor: 0 };
+
+  // DSV-02: trilha de disparos (alertas_romaneio_disparos, migration 092).
+  // Falha (tabela ainda não criada, banco lento) desliga a trilha no resto do
+  // ciclo, com 1 aviso -- e sem trilha o episódio novo não reabre o card
+  // (comportamento anterior), nunca o contrário.
+  let trilhaOk = true;
+  function avisarTrilha(e: unknown) {
+    if (trilhaOk) erros.push(`Aviso: trilha alertas_romaneio_disparos indisponivel neste ciclo (migration 092?): ${String(e)}`);
+    trilhaOk = false;
+  }
+  async function ultimoDisparoDesvio(veiculoId: string): Promise<string | null> {
+    if (!trilhaOk) return null;
+    try {
+      const { rows } = await pool.query<{ t: Date | string | null }>(
+        `SELECT max(criado_em) AS t FROM alertas_romaneio_disparos
+          WHERE veiculo_id = $1 AND tipo = 'desvio' AND criado_em >= now() - interval '1 day'`,
+        [veiculoId]
+      );
+      const t = rows[0]?.t;
+      return t == null ? null : new Date(t).toISOString();
+    } catch (e) {
+      avisarTrilha(e);
+      return null;
+    }
+  }
+  async function registrarDisparo(linha: Record<string, unknown>): Promise<void> {
+    if (!trilhaOk) return;
+    try {
+      await pool.query(
+        `INSERT INTO alertas_romaneio_disparos (alerta_id, veiculo_id, cliente_id, tipo, lat, lng, contexto)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+        [linha.alerta_id, linha.veiculo_id, linha.cliente_id, linha.tipo, linha.lat, linha.lng, JSON.stringify(linha.contexto)]
+      );
+    } catch (e) {
+      avisarTrilha(e);
+    }
+  }
 
   try {
     const hoje = hojeSP();
@@ -1588,16 +1751,16 @@ export async function POST(request: Request) {
     // ninguém lê `sombra` de volta destas linhas -- ela só entra no insert
     // (Step 9). Anotar explicitamente evita que os dois ramos (com/sem
     // sombra no SELECT) infiram tipos incompatíveis entre si.
-    let alertasAbertosResp: { data: { id: string; veiculo_id: string; tipo: string; nivel: string; contexto: unknown }[] | null; error: { message: string } | null } = await admin
+    let alertasAbertosResp: { data: { id: string; veiculo_id: string; tipo: string; nivel: string; contexto: unknown; desde?: string; lat?: number | null; lng?: number | null; motivo?: string | null }[] | null; error: { message: string } | null } = await admin
       .from("alertas_romaneio")
-      .select("id, veiculo_id, tipo, nivel, contexto, sombra")
+      .select("id, veiculo_id, tipo, nivel, contexto, desde, lat, lng, motivo, sombra")
       .in("veiculo_id", veiculoIds)
       .in("status", ["ativo", "reconhecido"]);
     if (alertasAbertosResp.error) {
       sombraDisponivel = false;
       alertasAbertosResp = await admin
         .from("alertas_romaneio")
-        .select("id, veiculo_id, tipo, nivel, contexto")
+        .select("id, veiculo_id, tipo, nivel, contexto, desde, lat, lng, motivo")
         .in("veiculo_id", veiculoIds)
         .in("status", ["ativo", "reconhecido"]);
     }
@@ -1605,7 +1768,7 @@ export async function POST(request: Request) {
     const alertasAbertosPorVeiculo = new Map<string, AlertaAtivoRow[]>();
     for (const a of (alertasAbertosRows ?? []) as (AlertaAtivoRow & { veiculo_id: string })[]) {
       const lista = alertasAbertosPorVeiculo.get(a.veiculo_id) ?? [];
-      lista.push({ id: a.id, tipo: a.tipo, nivel: a.nivel, contexto: a.contexto });
+      lista.push({ id: a.id, tipo: a.tipo, nivel: a.nivel, contexto: a.contexto, desde: a.desde, lat: a.lat, lng: a.lng, motivo: a.motivo });
       alertasAbertosPorVeiculo.set(a.veiculo_id, lista);
     }
 
@@ -2551,8 +2714,19 @@ export async function POST(request: Request) {
         }
 
         for (const candidato of candidatosCiclo) {
-          if (silenciadosVeiculo.has(candidato.tipo)) continue;
+          const ehDesvio = candidato.tipo === "desvio";
+          const linhaDisparo = (alertaId: string | null, decisao: Parameters<typeof montarLinhaDisparoDesvio>[0]["decisao"]) =>
+            montarLinhaDisparoDesvio({
+              alertaId, veiculoId, clienteId: info.cliente_id, lat: latAtual, lng: lngAtual, decisao,
+              streak: afastandoStreakNovo, candidato: candidato as CandidatoDesvio,
+            });
+          if (silenciadosVeiculo.has(candidato.tipo)) {
+            if (ehDesvio) await registrarDisparo(linhaDisparo(null, "silenciado"));
+            continue;
+          }
           const alertaExistente = alertasAbertosVeiculo.find((a) => a.tipo === candidato.tipo);
+          // DSV-01: último disparo ANTES deste (lido antes de gravar o deste ciclo).
+          const ultimoDisparoEm = ehDesvio && alertaExistente ? await ultimoDisparoDesvio(veiculoId) : null;
           // contexto por tipo: desvio leva origem_desvio (insumo da comparação
           // entre os pipelines); parada_fora_tapete leva os mesmos 3 campos
           // que a Central grava (route.ts:3178-3182); as outras paradas levam
@@ -2634,7 +2808,10 @@ export async function POST(request: Request) {
               agoraMs: agora.getTime(),
               ultimoTratamentoTemporal,
             });
-            if (suprimidoPorCooldown) continue;
+            if (suprimidoPorCooldown) {
+              if (ehDesvio) await registrarDisparo(linhaDisparo(null, "cooldown"));
+              continue;
+            }
 
             // CRÍTICO 2 (revisão independente 27/08): se o candidato é de um
             // tipo shadow (TIPOS_SOMBRA) e a coluna `sombra` não está
@@ -2652,7 +2829,17 @@ export async function POST(request: Request) {
               continue;
             }
 
+            // DSV-01: id gerado aqui pra trilha de disparo apontar pro card,
+            // e o desvio já nasce com o 1º episódio em contexto.episodios[].
+            const idNovo = ehDesvio ? randomUUID() : undefined;
+            const contextoInsert = ehDesvio
+              ? planejarDisparoDesvio({
+                  alertaAberto: null, ultimoDisparoEm: null, trilhaOk, candidato: candidato as CandidatoDesvio,
+                  contextoCiclo: contextoAlerta, agoraISO: agora.toISOString(), lat: latAtual, lng: lngAtual,
+                }).contextoInsert ?? contextoAlerta
+              : contextoAlerta;
             const { error: erroInsert } = await admin.from("alertas_romaneio").insert({
+              ...(idNovo ? { id: idNovo } : {}),
               cliente_id: info.cliente_id,
               veiculo_id: veiculoId,
               nivel: candidato.nivel,
@@ -2662,13 +2849,14 @@ export async function POST(request: Request) {
               status: "ativo",
               lat: latAtual,
               lng: lngAtual,
-              contexto: contextoAlerta,
+              contexto: contextoInsert,
               desde: agora.toISOString(),
               // Chega aqui só quando sombraDisponivel=true (ou o tipo não é
               // de shadow, caso em que TIPOS_SOMBRA.has() é false e o
               // spread não adiciona nada) -- o gate acima já garantiu isso.
               ...(TIPOS_SOMBRA.has(candidato.tipo) ? { sombra: true } : {}),
             });
+            if (ehDesvio) await registrarDisparo(linhaDisparo(erroInsert ? null : idNovo ?? null, erroInsert ? "erro_insert" : "novo_alerta"));
             if (erroInsert) {
               erros.push(`Aviso: falha ao inserir alertas_romaneio pro veiculo ${veiculoId}: ${erroInsert.message}`);
             } else if (TIPOS_SOMBRA.has(candidato.tipo)) {
@@ -2680,6 +2868,39 @@ export async function POST(request: Request) {
             } else {
               alertasGerados++;
             }
+          } else if (ehDesvio) {
+            // DSV-01: episódio novo (>= 10 min sem disparo) reabre o card;
+            // dentro do mesmo episódio só escala, como antes.
+            const plano = planejarDisparoDesvio({
+              alertaAberto: {
+                id: alertaExistente.id,
+                nivel: alertaExistente.nivel,
+                desde: alertaExistente.desde ?? agora.toISOString(),
+                lat: alertaExistente.lat ?? null,
+                lng: alertaExistente.lng ?? null,
+                motivo: alertaExistente.motivo ?? null,
+                contexto: (alertaExistente.contexto as Record<string, unknown> | null) ?? null,
+              },
+              ultimoDisparoEm,
+              // Chave da Central (config-clientes) vale aqui também: false
+              // volta ao card congelado no 1º episódio.
+              trilhaOk: trilhaOk && DESVIO_EPISODIO_NOVO_REABRE_ALERTA,
+              candidato: candidato as CandidatoDesvio,
+              contextoCiclo: contextoAlerta,
+              agoraISO: agora.toISOString(),
+              lat: latAtual,
+              lng: lngAtual,
+            });
+            if (plano.patch) {
+              const { error: erroPatch } = await admin.from("alertas_romaneio").update(plano.patch).eq("id", alertaExistente.id);
+              if (erroPatch) {
+                erros.push(`Aviso: falha ao atualizar desvio ${alertaExistente.id} do veiculo ${veiculoId}: ${erroPatch.message}`);
+              } else if (plano.decisao === "novo_episodio") {
+                alertasGerados++;
+                console.log(`desvio-romaneio: episodio_novo veiculo=${veiculoId} alerta=${alertaExistente.id}`);
+              }
+            }
+            await registrarDisparo(linhaDisparo(alertaExistente.id, plano.decisao));
           } else if (alertaExistente.nivel !== "critico" && candidato.nivel === "critico") {
             // contexto vai junto, igual à Central (route.ts:3195-3201): sem
             // isso o contexto ficaria congelado no valor do alerta inicial
