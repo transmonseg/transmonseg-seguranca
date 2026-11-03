@@ -82,6 +82,21 @@ describe("executarTrocaVeiculo", () => {
     expect(upd.params).toEqual([origem.map((o) => o.id), "v-tos", "TOS-5E38"]);
   });
 
+  it("DSV-06: a linha movida grava trocado_em e a placa de onde saiu (o reenvio so' pula NF marcada)", async () => {
+    const { cliente, chamadas } = clienteFalso({
+      "FOR UPDATE": { rows: [{ id: "a", veiculo_id: "v-old", nf: "1" }] },
+      "DELETE FROM romaneio_pontos": { rows: [] },
+      "UPDATE romaneio_pontos": { rows: [{ id: "a" }] },
+    });
+    await executarTrocaVeiculo(cliente, { data: "2026-11-03", origens: ["TOS0G53"], nfs: null, para });
+    const upd = chamadas.find((c) => c.sql.includes("UPDATE romaneio_pontos"))!;
+    expect(upd.sql).toContain("trocado_em = now()");
+    expect(upd.sql).toContain("trocado_de = COALESCE(trocado_de, placa)");
+    // colisao: a linha que ja estava no destino tambem fica marcada como trocada
+    const del = chamadas.find((c) => c.sql.includes("DELETE FROM romaneio_pontos"))!;
+    expect(del.sql).toMatch(/trocado_em = now\(\)/);
+  });
+
   it("0 linhas de origem com NFs: ROLLBACK e nada movido (a rota responde ok:false)", async () => {
     const { cliente, chamadas } = clienteFalso({ "FOR UPDATE": { rows: [] } });
     const r = await executarTrocaVeiculo(cliente, { data: "2026-10-23", origens: ["RQO5E38"], nfs: ["1"], para });

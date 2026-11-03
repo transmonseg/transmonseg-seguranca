@@ -76,6 +76,7 @@ export const SQL_CARGA_DO_DIA_COM_POSICAO = `SELECT v.id AS veiculo_id, v.client
                 WHERE romaneio_data = $1::date
                   AND modo_teste = false
                   AND veiculo_id IS NOT NULL
+                  AND removida_em IS NULL
                 GROUP BY veiculo_id) rp
          JOIN veiculos v ON v.id = rp.veiculo_id AND v.ativo
          JOIN clientes c ON c.id = v.cliente_id AND c.ativo
@@ -234,6 +235,7 @@ export const SQL_CARGA_DO_DIA_SEM_SINAL = `SELECT v.id AS veiculo_id, v.cliente_
                 WHERE romaneio_data = $1::date
                   AND modo_teste = false
                   AND veiculo_id IS NOT NULL
+                  AND removida_em IS NULL
                 GROUP BY veiculo_id) rp
          JOIN veiculos v ON v.id = rp.veiculo_id AND v.ativo
          JOIN clientes c ON c.id = v.cliente_id AND c.ativo

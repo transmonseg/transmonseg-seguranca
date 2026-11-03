@@ -38,7 +38,9 @@ export async function GET(request: Request) {
     .select(clienteId ? "id, veiculos!inner(cliente_id)" : "id", { count: "exact", head: true })
     .eq("romaneio_data", data)
     .eq("modo_teste", false)
-    .eq("origem", "romaneio");
+    .eq("origem", "romaneio")
+    // DSV-06: NF retirada num reenvio (removida_em, migration 093) nao conta.
+    .is("removida_em", null);
   if (clienteId) consulta = consulta.eq("veiculos.cliente_id", clienteId);
   const { count, error } = await consulta;
   // Erro de consulta nao vira "zero linhas": o KPI trata como desconhecido e nao reenvia.
@@ -46,7 +48,7 @@ export async function GET(request: Request) {
   let linhas = count ?? 0;
   if (rq) {
     const semVeiculo = () => admin.from("romaneio_pontos").select("id", { count: "exact", head: true })
-      .eq("romaneio_data", data).eq("modo_teste", false).eq("origem", "romaneio").is("veiculo_id", null);
+      .eq("romaneio_data", data).eq("modo_teste", false).eq("origem", "romaneio").is("veiculo_id", null).is("removida_em", null);
     const [antigo, novo] = await Promise.all([
       semVeiculo().eq("enviado_por", ENVIADO_POR_RQ_ANTIGO),
       semVeiculo().like("enviado_por", `%${SUFIXO_ENVIADO_POR_RQ}`),

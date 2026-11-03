@@ -1327,14 +1327,24 @@ export async function POST(request: Request) {
     // fallback pelo alvo da Unitrac que casa por NF, ou descarta a linha se
     // nem isso existir. Filtrar geocode_status aqui faria a NF sumir ANTES
     // desse fallback rodar, reabrindo o buraco que esta task fecha.
-    const { rows: linhasRomaneio } = await pool.query<LinhaRomaneioPontoDb>(
-      `SELECT veiculo_id, placa, nf, cliente_nome, lat, lng, presenca_confirmada_em
+    //
+    // DSV-06 (03/11): NF retirada num reenvio (removida_em, migration 093)
+    // não é mais destino. Sem a coluna (deploy antes da migration) cai na
+    // leitura antiga com 1 aviso -- o motor nunca para por isso.
+    const SQL_ROMANEIO_DO_DIA = `SELECT veiculo_id, placa, nf, cliente_nome, lat, lng, presenca_confirmada_em
          FROM romaneio_pontos
         WHERE romaneio_data = $1::date
           AND modo_teste = false
-          AND veiculo_id IS NOT NULL`,
-      [hoje]
-    );
+          AND veiculo_id IS NOT NULL`;
+    let linhasRomaneio: LinhaRomaneioPontoDb[];
+    try {
+      ({ rows: linhasRomaneio } = await pool.query<LinhaRomaneioPontoDb>(`${SQL_ROMANEIO_DO_DIA}
+          AND removida_em IS NULL`, [hoje]));
+    } catch (errRemovida) {
+      if ((errRemovida as { code?: string }).code !== "42703") throw errRemovida;
+      erros.push("Aviso: romaneio_pontos sem a coluna removida_em (migration 093 nao aplicada) -- NF retirada no reenvio ainda conta como pendente");
+      ({ rows: linhasRomaneio } = await pool.query<LinhaRomaneioPontoDb>(SQL_ROMANEIO_DO_DIA, [hoje]));
+    }
 
     if (linhasRomaneio.length === 0) {
       return respostaDoCiclo();

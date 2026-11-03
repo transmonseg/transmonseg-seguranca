@@ -54,6 +54,19 @@ describe("GET /api/romaneio/contagem", () => {
     expect(filtros).toEqual([["romaneio_data", "2026-10-10"], ["modo_teste", false], ["origem", "romaneio"]]);
   });
 
+  it("DSV-06: NF retirada num reenvio (removida_em) nao conta", async () => {
+    resultado = { count: 40, error: null };
+    await GET(req("?data=2026-10-10"));
+    expect(consultas[0]).toContainEqual(["is:removida_em", null]);
+  });
+
+  it("DSV-06: na conta da RQ as linhas sem veiculo tambem ignoram as retiradas", async () => {
+    contagemPorConsulta = () => 1;
+    await GET(req("?data=2026-10-10&cod=598&rq=1"));
+    expect(consultas.length).toBe(3);
+    for (const c of consultas) expect(c).toContainEqual(["is:removida_em", null]);
+  });
+
   it("erro de consulta: 500, nunca zero", async () => {
     resultado = { count: null, error: { message: "x" } };
     expect((await GET(req("?data=2026-10-10"))).status).toBe(500);

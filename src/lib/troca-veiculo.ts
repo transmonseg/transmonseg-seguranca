@@ -117,17 +117,28 @@ export async function executarTrocaVeiculo(
     // derrubava o UPDATE inteiro quando o destino ja tinha a NF. A NF ja esta
     // no carro certo, entao a linha da origem e' a duplicata que sai.
     const ids = origem.map((o) => o.id);
+    // DSV-06 (03/11): a linha que fica no destino e' marcada como trocada
+    // (trocado_em/trocado_de, migration 093) -- e' isso que faz o reenvio do
+    // documento (que ainda traz a placa antiga) nao recriar a NF la'.
     const { rows: removidas } = await cliente.query(
-      `DELETE FROM romaneio_pontos o
-         USING romaneio_pontos d
-        WHERE o.id = ANY($1::uuid[])
-          AND d.id <> o.id
-          AND d.romaneio_data = o.romaneio_data
-          AND d.placa = $2
-          AND d.nf = o.nf
-          AND d.modo_teste = o.modo_teste
-          AND d.origem IS NOT DISTINCT FROM o.origem
-        RETURNING o.id`,
+      `WITH apagadas AS (
+         DELETE FROM romaneio_pontos o
+           USING romaneio_pontos d
+          WHERE o.id = ANY($1::uuid[])
+            AND d.id <> o.id
+            AND d.romaneio_data = o.romaneio_data
+            AND d.placa = $2
+            AND d.nf = o.nf
+            AND d.modo_teste = o.modo_teste
+            AND d.origem IS NOT DISTINCT FROM o.origem
+          RETURNING o.id, d.id AS destino_id, o.placa AS placa_origem
+       ), marcadas AS (
+         update romaneio_pontos x
+            set trocado_em = now(), trocado_de = COALESCE(x.trocado_de, a.placa_origem)
+           from apagadas a
+          where x.id = a.destino_id
+       )
+       SELECT id FROM apagadas`,
       [ids, para.placa],
     );
     const removidasIds = new Set((removidas as { id: string }[]).map((r) => r.id));
@@ -136,7 +147,8 @@ export async function executarTrocaVeiculo(
     let movidos = 0;
     if (restantes.length > 0) {
       const { rows: atualizadas } = await cliente.query(
-        `UPDATE romaneio_pontos SET veiculo_id = $2, placa = $3
+        `UPDATE romaneio_pontos SET veiculo_id = $2, placa = $3,
+                trocado_em = now(), trocado_de = COALESCE(trocado_de, placa)
           WHERE id = ANY($1::uuid[])
           RETURNING id`,
         [restantes, para.id, para.placa],

@@ -16,6 +16,8 @@ const st = vi.hoisted(() => ({
   ultimoDisparo: null as string | null,
   trilhaQuebrada: false,
   presenca: null as string | null,
+  sqlRomaneio: [] as string[],
+  semColuna093: false,
   base: null as { lat: number; lng: number } | null,
 }));
 
@@ -68,6 +70,8 @@ vi.mock("pg", () => {
       return { rows: st.base ? [{ cliente_id: CLIENTE_ID, ...st.base }] : [] };
     }
     if (/from\s+romaneio_pontos/i.test(sql)) {
+      st.sqlRomaneio.push(sql);
+      if (st.semColuna093 && /removida_em/.test(sql)) throw Object.assign(new Error('column "removida_em" does not exist'), { code: "42703" });
       return { rows: [{ veiculo_id: VEICULO_ID, placa: "TOS-4J82", nf: "1", cliente_nome: "CLIENTE", lat: -21.9, lng: -43.0, presenca_confirmada_em: st.presenca }] };
     }
     if (/from\s+romaneio_desvio_estado/i.test(sql)) {
@@ -112,7 +116,7 @@ beforeEach(() => {
   st.agora = new Date();
   st.alertasAbertos = []; st.inserts = []; st.updates = []; st.disparos = [];
   st.ultimoDisparo = null; st.trilhaQuebrada = false;
-  st.presenca = null; st.base = null;
+  st.presenca = null; st.base = null; st.sqlRomaneio = []; st.semColuna093 = false;
 });
 
 describe("POST /api/motor-romaneio -- episodio de desvio e trilha (DSV-01/02)", () => {
@@ -179,5 +183,19 @@ describe("POST /api/motor-romaneio -- base e rota concluida (DSV-03/04)", () => 
     expect(d!.nivel).toBe("atencao");
     expect(d!.motivo).toBe("Rota concluída: sem cliente pendente a 50 km");
     expect((d!.contexto as { origem_desvio: string }).origem_desvio).toBe("sem_destinos");
+  });
+});
+
+describe("POST /api/motor-romaneio -- NF retirada (DSV-06)", () => {
+  it("a leitura do romaneio do dia ignora NF com removida_em", async () => {
+    await POST(req());
+    const principal = st.sqlRomaneio.find((q) => /presenca_confirmada_em/.test(q))!;
+    expect(principal).toMatch(/removida_em IS NULL/);
+  });
+  it("sem a coluna (migration 093 ainda nao aplicada) o motor segue com a leitura antiga e avisa", async () => {
+    st.semColuna093 = true;
+    const r = await (await POST(req())).json();
+    expect(r.veiculosProcessados).toBe(1);
+    expect(r.erros.join("\n")).toMatch(/093/);
   });
 });

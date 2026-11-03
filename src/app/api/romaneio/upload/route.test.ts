@@ -65,9 +65,24 @@ const mockUpsert = vi.fn((linhas: unknown[], _opcoes?: unknown) => {
 });
 const mockSelect = vi.fn();
 // Linhas ja gravadas no dia (leitura antes do upsert, regra de reenvio 03/11).
-let existentesDoDia: { nf: string; carga_destino_codigo: string | null; placa: string }[] = [];
-const cadeiaExistentes = () => {
-  const c = { eq: () => c, order: () => c, range: async () => ({ data: existentesDoDia, error: null }) };
+let existentesDoDia: { nf: string; carga_destino_codigo: string | null; placa: string; trocado_em?: string | null; removida_em?: string | null }[] = [];
+// DSV-06: updates em romaneio_pontos (removida_em) com os filtros usados.
+const updatesPontos: { patch: Record<string, unknown>; filtros: [string, string, unknown][] }[] = [];
+const cadeiaUpdate = (patch: Record<string, unknown>) => {
+  const reg = { patch, filtros: [] as [string, string, unknown][] };
+  updatesPontos.push(reg);
+  const c = {
+    eq: (col: string, v: unknown) => { reg.filtros.push(["eq", col, v]); return c; },
+    in: (col: string, v: unknown) => { reg.filtros.push(["in", col, v]); return c; },
+    is: (col: string, v: unknown) => { reg.filtros.push(["is", col, v]); return c; },
+    then: (ok: (r: unknown) => unknown) => Promise.resolve({ error: null }).then(ok),
+  };
+  return c;
+};
+let semColunas093 = false;
+const cadeiaExistentes = (cols = "") => {
+  const erro = semColunas093 && cols.includes("trocado_em") ? { message: "column romaneio_pontos.trocado_em does not exist" } : null;
+  const c = { eq: () => c, order: () => c, range: async () => (erro ? { data: null, error: erro } : { data: existentesDoDia, error: null }) };
   return c;
 };
 vi.mock("@/lib/supabase/admin", () => ({
@@ -76,7 +91,7 @@ vi.mock("@/lib/supabase/admin", () => ({
       if (tabela === "veiculos") {
         return { select: () => ({ in: mockSelect }) };
       }
-      return { upsert: mockUpsert, select: () => cadeiaExistentes() };
+      return { upsert: mockUpsert, select: (cols?: string) => cadeiaExistentes(cols), update: cadeiaUpdate };
     },
   }),
 }));
@@ -393,12 +408,55 @@ describe("POST /api/romaneio/upload -- roteamento de extracao", () => {
   it("03/11: reenvio depois de troca de veiculo nao recria a NF na placa do documento", async () => {
     mockParseRomaneio.mockReturnValue([linhaRegexValida(), { ...linhaRegexValida(), nf: "2" }]);
     // NF 1 da carga 1 ja foi movida pela troca pra outra placa.
-    existentesDoDia = [{ nf: "1", carga_destino_codigo: "1", placa: "RQU-2G47" }];
+    existentesDoDia = [{ nf: "1", carga_destino_codigo: "1", placa: "RQU-2G47", trocado_em: "2026-11-03T14:00:00Z" }];
     const { POST } = await import("./route");
     const body = await (await POST(criarRequisicao("romaneio.pdf"))).json();
     expect(mockUpsert.mock.calls[0][0].map((l: { nf: string }) => l.nf)).toEqual(["2"]);
     expect(body.jaMovidasPorTroca).toBe(1);
     expect(body.totalLinhas).toBe(2);
+    // a linha trocada nao e' marcada como removida
+    expect(updatesPontos.filter((u) => u.patch.removida_em)).toEqual([]);
+  });
+
+  it("DSV-06: reenvio corrigido sem troca move a NF e a linha da placa antiga sai da rota (marcada, nao apagada)", async () => {
+    updatesPontos.length = 0;
+    mockParseRomaneio.mockReturnValue([{ ...linhaRegexValida(), placaBruta: "BBB-2B22" }]);
+    existentesDoDia = [{ nf: "1", carga_destino_codigo: "1", placa: "AAA-1A11", trocado_em: null, removida_em: null }];
+    const { POST } = await import("./route");
+    const body = await (await POST(criarRequisicao("romaneio.pdf"))).json();
+    expect((mockUpsert.mock.calls[0][0] as { placa: string }[]).map((l) => l.placa)).toEqual(["BBB-2B22"]);
+    expect(body.nfsRetiradas).toBe(1);
+    const marcadas = updatesPontos.filter((u) => typeof u.patch.removida_em === "string");
+    expect(marcadas).toHaveLength(1);
+    expect(marcadas[0].filtros).toEqual(expect.arrayContaining([["eq", "placa", "AAA-1A11"], ["eq", "carga_destino_codigo", "1"], ["in", "nf", ["1"]], ["is", "removida_em", null], ["is", "trocado_em", null]]));
+  });
+
+  it("DSV-06: antes da migration 093 o upload nao para e segue a regra antiga", async () => {
+    updatesPontos.length = 0;
+    semColunas093 = true;
+    try {
+      mockParseRomaneio.mockReturnValue([{ ...linhaRegexValida(), placaBruta: "BBB-2B22" }]);
+      existentesDoDia = [{ nf: "1", carga_destino_codigo: "1", placa: "AAA-1A11" }];
+      const { POST } = await import("./route");
+      const res = await POST(criarRequisicao("romaneio.pdf"));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.jaMovidasPorTroca).toBe(1);
+      expect(body.nfsRetiradas).toBe(0);
+      expect(updatesPontos).toEqual([]);
+    } finally {
+      semColunas093 = false;
+    }
+  });
+
+  it("DSV-06: NF que volta num reenvio volta pra rota", async () => {
+    updatesPontos.length = 0;
+    mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
+    existentesDoDia = [{ nf: "1", carga_destino_codigo: "1", placa: "ABC1D23", trocado_em: null, removida_em: "2026-11-03T15:00:00Z" }];
+    const { POST } = await import("./route");
+    const body = await (await POST(criarRequisicao("romaneio.pdf"))).json();
+    expect(body.nfsDevolvidas).toBe(1);
+    expect(updatesPontos.some((u) => u.patch.removida_em === null)).toBe(true);
   });
 
   it("reenviar o mesmo arquivo duas vezes: a segunda vez nao insere nenhuma linha nova (upsert devolve 0 linhas) e o retorno reflete isso em linhasDuplicadas", async () => {

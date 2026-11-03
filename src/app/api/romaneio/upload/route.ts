@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import { separarJaMovidasPorTroca, type LinhaExistente } from "@/lib/romaneio-reenvio";
+import { separarJaMovidasPorTroca, nfsRemovidas, nfsRestauradas, type LinhaExistente, type NfDaRota } from "@/lib/romaneio-reenvio";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseRomaneio, extrairDataRomaneio, normalizarPlaca, variantesOZero, resolverPlacaNoCadastro, type LinhaRomaneio } from "@/lib/romaneio";
 import { parseRomaneioTabular, extrairDataTabular } from "@/lib/romaneio-tabular";
@@ -275,17 +275,32 @@ export async function POST(request: Request) {
   // outra query.
   // 03/11: NF ja movida por troca de veiculo (mesma carga, outra placa) nao
   // e' recriada na placa do documento -- ver src/lib/romaneio-reenvio.ts.
-  const existentes: LinhaExistente[] = [];
-  for (let de = 0; ; de += 1000) {
-    const { data: pag, error: erroExist } = await admin
-      .from("romaneio_pontos")
-      .select("nf, carga_destino_codigo, placa")
-      .eq("romaneio_data", romaneioData).eq("modo_teste", modoTeste).eq("origem", origem)
-      .order("id").range(de, de + 999);
-    if (erroExist) return Response.json({ ok: false, erro: `Erro ao ler o romaneio do dia: ${erroExist.message}` }, { status: 500 });
-    existentes.push(...((pag ?? []) as LinhaExistente[]));
-    if (!pag || pag.length < 1000) break;
+  // DSV-06: sem as colunas da migration 093 (deploy antes da migration), cai
+  // na regra antiga: toda NF em outra placa conta como trocada e nada e'
+  // marcado como retirado -- o upload nunca para por causa disso.
+  async function lerExistentes(colunas: string): Promise<{ linhas: LinhaExistente[]; erro: string | null }> {
+    const linhas: LinhaExistente[] = [];
+    for (let de = 0; ; de += 1000) {
+      const { data: pag, error } = await admin
+        .from("romaneio_pontos")
+        .select(colunas)
+        .eq("romaneio_data", romaneioData).eq("modo_teste", modoTeste).eq("origem", origem)
+        .order("id").range(de, de + 999);
+      if (error) return { linhas, erro: error.message };
+      linhas.push(...((pag ?? []) as unknown as LinhaExistente[]));
+      if (!pag || pag.length < 1000) break;
+    }
+    return { linhas, erro: null };
   }
+  let colunasNovas = true;
+  let lidas = await lerExistentes("nf, carga_destino_codigo, placa, trocado_em, removida_em");
+  if (lidas.erro && /trocado_em|removida_em/.test(lidas.erro)) {
+    colunasNovas = false;
+    lidas = await lerExistentes("nf, carga_destino_codigo, placa");
+    lidas.linhas = lidas.linhas.map((l) => ({ ...l, trocado_em: "antes-da-093", removida_em: null }));
+  }
+  if (lidas.erro) return Response.json({ ok: false, erro: `Erro ao ler o romaneio do dia: ${lidas.erro}` }, { status: 500 });
+  const existentes = lidas.linhas;
   const { inserir, jaMovidas: jaMovidasPorTroca } = separarJaMovidasPorTroca(linhasParaInserir, existentes);
 
   const { data: linhasInseridas, error: erroInsert } = await admin
@@ -296,6 +311,41 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, erro: `Erro ao salvar: ${erroInsert.message}` }, { status: 500 });
   }
   const totalInseridas = linhasInseridas?.length ?? 0;
+
+  // DSV-06 (auditoria 03/11): NF que sumiu da versao nova da MESMA carga
+  // (retirada, ou carga corrigida para outro carro sem troca) sai da rota:
+  // removida_em, nunca DELETE -- a linha continua no banco para auditoria e o
+  // KPI. NF que volta num reenvio (versao anterior reenviada) volta pra rota.
+  // Regras e limites em src/lib/romaneio-reenvio.ts.
+  async function marcar(lista: NfDaRota[], removidaEm: string | null): Promise<string | null> {
+    const grupos = new Map<string, { placa: string; carga: string | null; nfs: string[] }>();
+    for (const r of lista) {
+      const k = `${r.placa}::${r.carga ?? ""}`;
+      const g = grupos.get(k) ?? { placa: r.placa, carga: r.carga, nfs: [] };
+      g.nfs.push(r.nf);
+      grupos.set(k, g);
+    }
+    for (const g of grupos.values()) {
+      let q = admin
+        .from("romaneio_pontos")
+        .update({ removida_em: removidaEm })
+        .eq("romaneio_data", romaneioData).eq("modo_teste", modoTeste).eq("origem", origem)
+        .eq("placa", g.placa);
+      q = g.carga == null ? q.is("carga_destino_codigo", null) : q.eq("carga_destino_codigo", g.carga);
+      q = q.in("nf", g.nfs);
+      if (removidaEm) q = q.is("removida_em", null).is("trocado_em", null);
+      const { error } = await q;
+      if (error) return error.message;
+    }
+    return null;
+  }
+  const retiradas = colunasNovas ? nfsRemovidas(linhasParaInserir, existentes) : [];
+  const devolvidas = colunasNovas ? nfsRestauradas(linhasParaInserir, existentes) : [];
+  const erroRetirada =
+    (await marcar(retiradas, new Date().toISOString())) ?? (await marcar(devolvidas, null));
+  if (erroRetirada) {
+    return Response.json({ ok: false, erro: `Romaneio salvo, mas falhou ao atualizar notas retiradas: ${erroRetirada}` }, { status: 500 });
+  }
   const linhasDuplicadas = linhasParaInserir.length - totalInseridas;
 
   // Geocodificacao roda em background (ver /api/romaneio/processar-geocode,
@@ -310,6 +360,8 @@ export async function POST(request: Request) {
     linhasInseridas: totalInseridas,
     linhasDuplicadas,
     jaMovidasPorTroca,
+    nfsRetiradas: retiradas.length,
+    nfsDevolvidas: devolvidas.length,
     placasNaoEncontradas,
     modoTeste,
     origem,
