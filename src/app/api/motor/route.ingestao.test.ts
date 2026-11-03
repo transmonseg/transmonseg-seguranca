@@ -4,7 +4,7 @@
 // caminho em teste responde vazio.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const estado = vi.hoisted(() => ({ sqls: [] as { sql: string; params: unknown[] }[], latB: "-22.9", lngB: "-43.2" }));
+const estado = vi.hoisted(() => ({ sqls: [] as { sql: string; params: unknown[] }[], latB: "-22.9", lngB: "-43.2", velB: "30" }));
 
 vi.mock("pg", () => {
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
@@ -54,7 +54,7 @@ const fetchFalso = vi.fn(async (url: string, init?: { body?: string }) => {
     if (cvs.includes("100")) return new Response(JSON.stringify({}), { status: 200 }); // cliente A: resposta sem Posicoes
     return new Response(JSON.stringify({ Posicoes: [{
       veicucodigo: "200", veicuplaca: "BBB1B11", posiclatitude: estado.latB, posiclongitude: estado.lngB,
-      posicvelocidade: "30", posicignicao: "1", atraso: "0", datagps: "03/11/2026 14:00:00",
+      posicvelocidade: estado.velB, posicignicao: "1", atraso: "0", datagps: "03/11/2026 14:00:00",
     }] }), { status: 200 });
   }
   if (String(url).includes("/mapa_servicos/alvos")) return new Response(JSON.stringify([]), { status: 200 });
@@ -62,7 +62,7 @@ const fetchFalso = vi.fn(async (url: string, init?: { body?: string }) => {
 });
 
 beforeEach(() => {
-  estado.sqls = []; estado.latB = "-22.9"; estado.lngB = "-43.2";
+  estado.sqls = []; estado.latB = "-22.9"; estado.lngB = "-43.2"; estado.velB = "30";
   process.env.MOTOR_SECRET = "s";
   vi.stubGlobal("fetch", fetchFalso);
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -89,5 +89,14 @@ describe("motor: um cliente com resposta ruim não derruba os outros", () => {
     const corpo = await r.json();
     expect(estado.sqls.find((q) => /INSERT INTO posicoes_atuais/i.test(q.sql))).toBeUndefined();
     expect(corpo.leiturasDescartadas).toBe(1);
+  });
+
+  it("GEO3-01: carro parado, geocode reverso falhando => rótulo velho é limpo (local = null)", async () => {
+    estado.velB = "0";
+    const { POST } = await import("./route");
+    await POST(new Request("http://x/api/motor", { method: "POST", headers: { "x-motor-key": "s" } }));
+    const upd = estado.sqls.find((q) => /UPDATE posicoes_atuais p\s+SET local = c.local/i.test(q.sql));
+    expect(upd).toBeDefined();
+    expect(upd!.params).toEqual([["vei-B"], [null]]);
   });
 });
