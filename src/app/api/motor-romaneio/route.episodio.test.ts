@@ -15,6 +15,8 @@ const st = vi.hoisted(() => ({
   disparos: [] as unknown[][],
   ultimoDisparo: null as string | null,
   trilhaQuebrada: false,
+  presenca: null as string | null,
+  base: null as { lat: number; lng: number } | null,
 }));
 
 vi.mock("@/lib/supabase/admin", () => {
@@ -62,8 +64,11 @@ vi.mock("pg", () => {
       st.disparos.push(params);
       return { rows: [] };
     }
+    if (/ST_Centroid/i.test(sql)) {
+      return { rows: st.base ? [{ cliente_id: CLIENTE_ID, ...st.base }] : [] };
+    }
     if (/from\s+romaneio_pontos/i.test(sql)) {
-      return { rows: [{ veiculo_id: VEICULO_ID, placa: "TOS-4J82", nf: "1", cliente_nome: "CLIENTE", lat: -21.9, lng: -43.0, presenca_confirmada_em: null }] };
+      return { rows: [{ veiculo_id: VEICULO_ID, placa: "TOS-4J82", nf: "1", cliente_nome: "CLIENTE", lat: -21.9, lng: -43.0, presenca_confirmada_em: st.presenca }] };
     }
     if (/from\s+romaneio_desvio_estado/i.test(sql)) {
       return { rows: [{ veiculo_id: VEICULO_ID, afastando_streak: 1, rua_rara_streak: 0, ultima_via_principal_em: null, saiu_parada_confirmada_em: null, atualizado_em: st.agora, ultimo_datagps: null }] };
@@ -107,6 +112,7 @@ beforeEach(() => {
   st.agora = new Date();
   st.alertasAbertos = []; st.inserts = []; st.updates = []; st.disparos = [];
   st.ultimoDisparo = null; st.trilhaQuebrada = false;
+  st.presenca = null; st.base = null;
 });
 
 describe("POST /api/motor-romaneio -- episodio de desvio e trilha (DSV-01/02)", () => {
@@ -151,5 +157,27 @@ describe("POST /api/motor-romaneio -- episodio de desvio e trilha (DSV-01/02)", 
     expect(st.updates.filter((u) => u.id === "alerta-1")).toEqual([]);
     expect(r.erros.filter((e: string) => e.includes("alertas_romaneio_disparos"))).toHaveLength(1);
     expect(r.veiculosProcessados).toBe(1);
+  });
+});
+
+describe("POST /api/motor-romaneio -- base e rota concluida (DSV-03/04)", () => {
+  it("entrega pendente + carro indo PRA base (longe do cliente): dispara critico (a base nao encobre)", async () => {
+    // carro anda de -22.00 para -22.01 (sul); pendente ao norte (-21.9) e base ao sul (-22.3)
+    st.base = { lat: -22.3, lng: -43.0 };
+    await POST(req());
+    const d = st.inserts.find((i) => i.tipo === "desvio");
+    expect(d?.nivel).toBe("critico");
+    expect(String(d?.motivo)).toMatch(/Afastando de todos/);
+  });
+
+  it("rota concluida (0 pendente), afastando da base: alerta sai como atencao com texto verdadeiro", async () => {
+    st.presenca = new Date().toISOString();
+    st.base = { lat: -21.95, lng: -43.0 };
+    await POST(req());
+    const d = st.inserts.find((i) => i.tipo === "desvio");
+    expect(d).toBeDefined();
+    expect(d!.nivel).toBe("atencao");
+    expect(d!.motivo).toBe("Rota concluída: sem cliente pendente a 50 km");
+    expect((d!.contexto as { origem_desvio: string }).origem_desvio).toBe("sem_destinos");
   });
 });

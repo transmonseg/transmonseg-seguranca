@@ -110,7 +110,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
-import { avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, RETORNO_BASE_JANELA_S, type LeituraRetornoBase } from "@/lib/desvio";
+import { ajustarAlertaDesvioRomaneio, destinosParaDesvio, avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, RETORNO_BASE_JANELA_S, type LeituraRetornoBase } from "@/lib/desvio";
 import {
   GATE_SAIDA_BASE_ATIVO,
   PERIODO_CICLO_MOTOR_S,
@@ -2100,16 +2100,21 @@ export async function POST(request: Request) {
         // "fonte de ponto de entrega" que esta task troca -- entram sempre,
         // senão um caminhão voltando pra base com pendente aberto (situação
         // permanente na Escala do Pão) se afasta de "tudo" e dispara.
+        //
+        // ATUALIZADO 03/11 (DSV-03, decisão do dono): com NF pendente no raio
+        // de 50 km a base SAI da lista (destinosParaDesvio, @/lib/desvio). A
+        // base Penha, central na região, escondia todo desvio que se
+        // aproximasse dela (cenário C2 do lab). Sem pendente no raio a base
+        // volta, e o alerta sai como atenção (DSV-04, ajustarAlertaDesvioRomaneio).
         const centroidesBase = centroideBasePorCliente.get(info.cliente_id) ?? [];
         const escalaDoVeiculo = escalaPorPlaca.get(info.placa) ?? [];
-        const destinosBase: Ponto[] = [
-          ...pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
-          ...centroidesBase,
-          ...escalaDoVeiculo,
-        ];
-        const destinosRelevantes = destinosBase.filter(
-          (d) => haversineM(latAtual, lngAtual, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M
-        );
+        const noRaio = (d: Ponto) => haversineM(latAtual, lngAtual, d.lat, d.lng) <= LIMIAR_DESTINO_RELEVANTE_M;
+        const pendentesNoRaio: Ponto[] = pendentes.map((pt) => ({ lat: pt.lat, lng: pt.lng })).filter(noRaio);
+        const destinosRelevantes = destinosParaDesvio({
+          pendentes: pendentesNoRaio,
+          bases: centroidesBase,
+          escala: escalaDoVeiculo,
+        }).filter(noRaio);
 
         // Gates que suspendem a avaliação -- mesmos da Central (brief Step 1):
         // ruído de GPS/OSRM parado ou quase parado nunca deve alimentar streak.
@@ -2499,6 +2504,11 @@ export async function POST(request: Request) {
                 erros.push(`Aviso: falha ao avaliar gates de supressao pro veiculo ${veiculoId}: ${String(errSupressao)}`);
               }
             }
+
+            // DSV-04 (03/11): 0 pendente no raio = rota concluída. O alerta
+            // continua saindo (nunca suprime), mas como atenção, origem
+            // sem_destinos e com o texto verdadeiro.
+            alerta = ajustarAlertaDesvioRomaneio(alerta, pendentesNoRaio.length);
 
             // Step 7: corroborações, mesma ordem da Central -- corredor, depois classe viária.
             if (alerta) {
