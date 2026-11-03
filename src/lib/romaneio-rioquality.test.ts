@@ -13,7 +13,8 @@ describe("montarEnderecoRQ (F2-02, GEO-21)", () => {
   it('"RUA DOUTOR SOUZA NUNES, VALENCA - RJ" deixava num="VALENCA" e cidade null; o texto novo da cidade e municipio certos', () => {
     // como chegava ate' 23/10 (enviar-monitoramento-rq.ts juntava rua, bairro vazio e "cidade - UF")
     expect(extrairNumeroDoEndereco("RUA DOUTOR SOUZA NUNES, VALENCA - RJ")).toBe("VALENCA");
-    expect(extrairCidadeDoEndereco("RUA DOUTOR SOUZA NUNES, VALENCA - RJ")).toBeNull();
+    // Revisão 03/11: o extrator passou a ler o formato curto também.
+    expect(extrairCidadeDoEndereco("RUA DOUTOR SOUZA NUNES, VALENCA - RJ")).toBe("VALENCA");
     const e = montarEnderecoRQ({ rua: "RUA DOUTOR SOUZA NUNES", bairro: "", cidade: "VALENCA", uf: "RJ" });
     expect(e).toBe("RUA DOUTOR SOUZA NUNES, - , VALENCA - RJ");
     expect(extrairNumeroDoEndereco(e)).toBeNull();

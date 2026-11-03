@@ -56,14 +56,35 @@ describe("criarPoll", () => {
     p.parar();
   });
 
-  it("401 => avisa sessão vencida e para o poll", async () => {
+  it("3 respostas 401 seguidas => avisa sessão vencida e para o poll", async () => {
     const f = vi.fn(async () => new Response("{}", { status: 401 }));
     const resultados: string[] = [];
     criarPoll({ url: () => "/api/mapa", intervaloMs: 30_000, fetch: f, aoReceber: () => {}, aoResultado: (r) => resultados.push(r), doc: docFalso() });
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(120_000);
-    expect(resultados).toEqual(["sessao_vencida"]);
-    expect(f).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(resultados).toEqual(["falha", "falha", "sessao_vencida"]);
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  it("um 401 isolado (renovação da sessão falhou uma vez) não para o poll", async () => {
+    let n = 0;
+    const f = vi.fn(async () => (++n === 1 ? new Response("{}", { status: 401 }) : ok({ a: 1 })));
+    const resultados: string[] = [];
+    const p = criarPoll({ url: () => "/x", intervaloMs: 30_000, fetch: f, aoReceber: () => {}, aoResultado: (r) => resultados.push(r), doc: docFalso() });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(resultados).toEqual(["falha", "ok", "ok"]);
+    p.parar();
+  });
+
+  it("poll de alertas (pausarComAbaOculta=false) continua com a aba escondida: é ele que toca o som", async () => {
+    const f = vi.fn(async () => ok({ a: 1 }));
+    const doc = docFalso(true);
+    const p = criarPoll({ url: () => "/x", intervaloMs: 30_000, fetch: f, aoReceber: () => {}, aoResultado: () => {}, doc, pausarComAbaOculta: false });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f).toHaveBeenCalledTimes(3);
+    p.parar();
   });
 
   it("pausa com document.hidden e volta (com 1 poll na hora) quando a aba aparece", async () => {

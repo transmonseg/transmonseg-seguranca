@@ -52,6 +52,9 @@ type DocMinimo = {
   removeEventListener(t: "visibilitychange", f: () => void): void;
 };
 
+/** Respostas 401 seguidas antes de considerar a sessão vencida e parar o poll. */
+export const LIMITE_401_SEGUIDOS = 3;
+
 export function criarPoll<T>(o: {
   url: () => string;
   intervaloMs: number;
@@ -59,9 +62,14 @@ export function criarPoll<T>(o: {
   aoResultado: (r: ResultadoPoll) => void;
   fetch?: (url: string, init?: RequestInit) => Promise<Response>;
   doc?: DocMinimo;
+  /** false = continua rodando com a aba escondida (poll de alertas: é ele que toca o som de pânico/desvio). */
+  pausarComAbaOculta?: boolean;
 }): { parar(): void } {
   const f = o.fetch ?? ((u, i) => fetch(u, i));
-  const doc = o.doc ?? (typeof document !== "undefined" ? document : undefined);
+  const doc = o.pausarComAbaOculta === false
+    ? undefined
+    : (o.doc ?? (typeof document !== "undefined" ? document : undefined));
+  let seguidos401 = 0;
   let seq = 0;
   let aplicado = 0;
   let parado = false;
@@ -74,10 +82,16 @@ export function criarPoll<T>(o: {
       const res = await f(o.url(), { signal: AbortSignal.timeout(TIMEOUT_POLL_MS) });
       if (parado) return;
       if (res.status === 401) {
-        parar();
-        o.aoResultado("sessao_vencida");
+        // Uma renovação de sessão que falha uma vez (ex.: login reiniciando) não pode parar o poll de vez.
+        if (++seguidos401 >= LIMITE_401_SEGUIDOS) {
+          parar();
+          o.aoResultado("sessao_vencida");
+        } else {
+          o.aoResultado("falha");
+        }
         return;
       }
+      seguidos401 = 0;
       if (!res.ok) { o.aoResultado("falha"); return; }
       const dados = (await res.json()) as T;
       if (parado || meu < aplicado) return; // resposta mais velha que uma já aplicada

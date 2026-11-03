@@ -1024,6 +1024,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const p = criarPoll<{ alertas?: AlertaEnriquecido[] }>({
       url: () => `${endpointAlertas}?cliente=${encodeURIComponent(cliente)}`,
       intervaloMs: 30_000,
+      // Não pausa com a aba escondida: este poll toca o som de pânico/desvio.
+      pausarComAbaOculta: false,
       aoReceber,
       aoResultado: (r) => setSaudeTransporte(s => registrarPoll(s, "alertas", r, Date.now())),
     });

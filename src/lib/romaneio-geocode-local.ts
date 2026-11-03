@@ -42,7 +42,13 @@ export function extrairCidadeDoEndereco(enderecoBruto: string): string | null {
   // virava "cidade" -- geocode por sorte caiu perto, mas era coincidencia).
   if (idxTraco === -1) return null;
   const resto = enderecoBruto.slice(idxTraco + 3).split(",");
-  if (resto.length < 2) return null;
+  if (resto.length < 2) {
+    // Formato curto da Fusion/Rio Quality (revisão 03/11): "RUA X, CIDADE - RJ",
+    // sem número nem bairro. O " - " achado é o da UF; a cidade é o último
+    // segmento antes dele. Só com UF de 2 letras no fim, pra não pegar bairro.
+    const curto = /,\s*([^,]+?)\s+-\s+[A-Z]{2}\s*$/.exec(enderecoBruto);
+    return curto?.[1]?.trim() || null;
+  }
   const cidade = resto[1].split(" - ")[0]?.trim();
   return cidade || null;
 }

@@ -1376,12 +1376,22 @@ export async function POST(request: Request) {
         // QUALQUER linha, geocodificada ou nao. romaneioPontosPorPlaca (usado
         // pra distancia/presenca) continua so' com as geocodificadas, filtrado
         // em JS abaixo.
-        const { data: linhasRomaneio, error: erroRomaneio } = await supabase
-          .from("romaneio_pontos")
-          .select("placa, nf, cliente_nome, lat, lng, presenca_confirmada_em")
-          .eq("romaneio_data", dataHojeSP)
-          .eq("modo_teste", false)
-          .in("veiculo_id", veiculoIdsDoCliente);
+        // DSV-06 (03/11): NF retirada num reenvio (removida_em, migration 093)
+        // não conta como romaneio — senão o carro que perdeu a carga fica sem
+        // parada nas duas Centrais. Sem a coluna, cai na consulta antiga.
+        const consultaRomaneio = (comRemovida: boolean) => {
+          const q = supabase
+            .from("romaneio_pontos")
+            .select("placa, nf, cliente_nome, lat, lng, presenca_confirmada_em")
+            .eq("romaneio_data", dataHojeSP)
+            .eq("modo_teste", false)
+            .in("veiculo_id", veiculoIdsDoCliente);
+          return comRemovida ? q.is("removida_em", null) : q;
+        };
+        let { data: linhasRomaneio, error: erroRomaneio } = await consultaRomaneio(true);
+        if (erroRomaneio && /removida_em/.test(erroRomaneio.message ?? "")) {
+          ({ data: linhasRomaneio, error: erroRomaneio } = await consultaRomaneio(false));
+        }
         for (const l of linhasRomaneio ?? []) {
           placasComRomaneioHoje.add(l.placa);
           if (l.lat == null || l.lng == null) continue;

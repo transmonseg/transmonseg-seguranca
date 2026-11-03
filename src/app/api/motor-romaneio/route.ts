@@ -2980,7 +2980,9 @@ export async function POST(request: Request) {
               lng: lngAtual,
             });
             if (plano.patch) {
-              const { error: erroPatch } = await admin.from("alertas_romaneio").update(plano.patch).eq("id", alertaExistente.id);
+              // Só reabre card ainda aberto: se o operador resolveu/marcou falso positivo
+              // no meio do ciclo, o episódio novo não ressuscita o card (vira card novo no próximo ciclo).
+              const { error: erroPatch } = await admin.from("alertas_romaneio").update(plano.patch).eq("id", alertaExistente.id).in("status", ["ativo", "reconhecido"]);
               if (erroPatch) {
                 erros.push(`Aviso: falha ao atualizar desvio ${alertaExistente.id} do veiculo ${veiculoId}: ${erroPatch.message}`);
               } else if (plano.decisao === "novo_episodio") {

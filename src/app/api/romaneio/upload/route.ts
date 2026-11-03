@@ -339,7 +339,10 @@ export async function POST(request: Request) {
     }
     return null;
   }
-  const retiradas = colunasNovas ? nfsRemovidas(linhasParaInserir, existentes) : [];
+  // Revisão 03/11: só leitura determinística do PDF (regex) pode retirar NF.
+  // A extração por IA pode "esquecer" notas e isso não pode tirá-las da rota.
+  const extracaoConfiavel = fonteExtracao === "regex" || fonteExtracao === "regex_tabular";
+  const retiradas = colunasNovas && extracaoConfiavel ? nfsRemovidas(linhasParaInserir, existentes) : [];
   const devolvidas = colunasNovas ? nfsRestauradas(linhasParaInserir, existentes) : [];
   const erroRetirada =
     (await marcar(retiradas, new Date().toISOString())) ?? (await marcar(devolvidas, null));

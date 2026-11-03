@@ -20,6 +20,15 @@ describe("extrairRuaDoEndereco", () => {
 });
 
 describe("extrairCidadeDoEndereco", () => {
+  it("formato curto da Fusion (RUA, CIDADE - UF) devolve a cidade", () => {
+    expect(extrairCidadeDoEndereco("RUA VENCESLAU, RIO DE JANEIRO - RJ")).toBe("RIO DE JANEIRO");
+    expect(extrairCidadeDoEndereco("AVENIDA TANCREDO NEVES, CAMPOS DOS GOYTACAZES - RJ")).toBe("CAMPOS DOS GOYTACAZES");
+    expect(extrairCidadeDoEndereco("RUA BARATA RIBEIRO, - , RIO DE JANEIRO - RJ")).toBe("RIO DE JANEIRO");
+  });
+  it("número com bairro sem cidade continua sem cidade (não confunde bairro com cidade)", () => {
+    expect(extrairCidadeDoEndereco("ESTRADA DO CAFUNDA, 10 - TAQUARA")).toBeNull();
+  });
+
   // Achado real da auditoria 27/08 (194 linhas / 50 enderecos distintos
   // nos ultimos 30 dias): o sufixo de complemento de entrega as vezes tem
   // virgula, e ai a cidade nao e' o ultimo segmento -- e' sempre o
