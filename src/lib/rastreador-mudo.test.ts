@@ -242,3 +242,108 @@ describe("semAlertasInternos (alerta e' interno: conta do cliente nao ve)", () =
     expect(sqlTiposInternosFora("a")).toBe("a.tipo NOT IN ('rastreador_mudo_com_carga', 'romaneio_ausente')");
   });
 });
+
+// ─── DSV-05 (auditoria 03/11): sem sinal entre 60 min e 24 h ─────────────────
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import {
+  TIPO_SEM_SINAL_EM_ROTA,
+  planejarSemSinal,
+  planejarCardsSemSinal,
+  SQL_CARGA_DO_DIA_SEM_SINAL,
+  type CargaSemSinal,
+} from "./rastreador-mudo";
+
+describe("planejarSemSinal", () => {
+  const ok = { temCargaHoje: true, naBase: false };
+  it("limites de atraso", () => {
+    expect(planejarSemSinal({ ...ok, atrasoMin: 59 })).toBe("nada");
+    expect(planejarSemSinal({ ...ok, atrasoMin: 60 })).toBe("abrir");
+    expect(planejarSemSinal({ ...ok, atrasoMin: 61 })).toBe("abrir");
+    expect(planejarSemSinal({ ...ok, atrasoMin: 1439 })).toBe("abrir");
+    // 24 h ou mais e' o rastreador_mudo_com_carga (interno)
+    expect(planejarSemSinal({ ...ok, atrasoMin: 1440 })).toBe("nada");
+    expect(planejarSemSinal({ ...ok, atrasoMin: null })).toBe("nada");
+  });
+  it("na base ou sem carga: nada", () => {
+    expect(planejarSemSinal({ atrasoMin: 120, temCargaHoje: true, naBase: true })).toBe("nada");
+    expect(planejarSemSinal({ atrasoMin: 120, temCargaHoje: false, naBase: false })).toBe("nada");
+  });
+});
+
+describe("planejarCardsSemSinal (1 card por episodio, fecha quando o sinal volta)", () => {
+  const agora = new Date("2026-10-30T17:00:00Z"); // 14:00 BRT
+  const hoje = "2026-10-30";
+  const carga = (o: Partial<CargaSemSinal> = {}): CargaSemSinal => ({
+    veiculo_id: "v1", cliente_id: "c1", placa: "TOS-1H26", nfs: 12, tem_posicao: true,
+    lat: -22.9, lng: -43.4, atraso_min: 90, updated_at: "2026-10-30T16:59:30Z", na_base: false, ...o,
+  });
+  const vivo = carga({ veiculo_id: "v2", placa: "AAA-1A11", atraso_min: 1 });
+
+  it("carro fora da base com carga e 90 min sem sinal: abre 1 card de atencao", () => {
+    const p = planejarCardsSemSinal({ cargas: [carga(), vivo], existentes: [], hoje, agora });
+    expect(p.inserir.map((c) => c.veiculo_id)).toEqual(["v1"]);
+    expect(p.resolver).toEqual([]);
+  });
+  it("ja tem card aberto: nao abre outro", () => {
+    const p = planejarCardsSemSinal({
+      cargas: [carga(), vivo],
+      existentes: [{ id: "a", veiculo_id: "v1", status: "ativo", desde: "2026-10-30T16:00:00Z", lat: -22.9, lng: -43.4, contexto: {} }],
+      hoje, agora,
+    });
+    expect(p.inserir).toEqual([]);
+    expect(p.resolver).toEqual([]);
+  });
+  it("sinal voltou: fecha com 'voltou a X km de onde sumiu'", () => {
+    const p = planejarCardsSemSinal({
+      cargas: [carga({ atraso_min: 0, lat: -22.9, lng: -43.3 }), vivo],
+      existentes: [{ id: "a", veiculo_id: "v1", status: "ativo", desde: "2026-10-30T16:00:00Z", lat: -22.9, lng: -43.4, contexto: { nfs: 12 } }],
+      hoje, agora,
+    });
+    expect(p.inserir).toEqual([]);
+    expect(p.resolver).toHaveLength(1);
+    expect(p.resolver[0].id).toBe("a");
+    expect(p.resolver[0].contexto).toMatchObject({ nfs: 12, auto_resolvido: true });
+    expect(String(p.resolver[0].contexto.voltou)).toMatch(/^voltou a 10,2 km de onde sumiu$/);
+  });
+  it("carro na base sem sinal: nenhum card", () => {
+    expect(planejarCardsSemSinal({ cargas: [carga({ na_base: true }), vivo], existentes: [], hoje, agora }).inserir).toEqual([]);
+  });
+  it("cliente com todas as posicoes paradas (motor sem gravar): nao abre (falha do sistema, nao do carro)", () => {
+    const parado = "2026-10-30T15:00:00Z";
+    const p = planejarCardsSemSinal({ cargas: [carga({ updated_at: parado }), { ...vivo, updated_at: parado }], existentes: [], hoje, agora });
+    expect(p.inserir).toEqual([]);
+  });
+  it("card de outro dia fecha sozinho", () => {
+    const p = planejarCardsSemSinal({
+      cargas: [vivo],
+      existentes: [{ id: "velho", veiculo_id: "v1", status: "ativo", desde: "2026-10-29T16:00:00Z", lat: 0, lng: 0, contexto: {} }],
+      hoje, agora,
+    });
+    expect(p.resolver.map((r) => r.id)).toEqual(["velho"]);
+  });
+  it("SQL traz se o carro esta dentro da base", () => {
+    expect(SQL_CARGA_DO_DIA_SEM_SINAL).toMatch(/ST_Contains/);
+    expect(SQL_CARGA_DO_DIA_SEM_SINAL).toMatch(/AS na_base/);
+  });
+});
+
+describe("card sem sinal nao vai pro WhatsApp", () => {
+  it("nenhum script/rota que manda WhatsApp conhece o tipo novo", () => {
+    const raiz = join(__dirname, "..", "..");
+    const arquivos: string[] = [];
+    const andar = (d: string) => {
+      for (const n of readdirSync(d)) {
+        if (n === "node_modules" || n.startsWith(".")) continue;
+        const p = join(d, n);
+        if (statSync(p).isDirectory()) andar(p);
+        else if (/\.(m?[jt]sx?|sh)$/.test(n) && !/\.test\./.test(n)) arquivos.push(p);
+      }
+    };
+    andar(join(raiz, "src")); andar(join(raiz, "scripts"));
+    const enviam = arquivos.filter((p) => /whatsapp-send|send-dm|alertar-dm|sendText/i.test(readFileSync(p, "utf8")));
+    expect(enviam.length).toBeGreaterThan(0);
+    for (const p of enviam) expect(readFileSync(p, "utf8")).not.toContain(TIPO_SEM_SINAL_EM_ROTA);
+    expect(TIPO_SEM_SINAL_EM_ROTA).toBe("sem_sinal_em_rota");
+  });
+});

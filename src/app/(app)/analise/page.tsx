@@ -24,6 +24,9 @@ const LABEL_TIPO: Record<string, string> = {
   excesso: "Excesso de velocidade",
   excesso_velocidade: "Excesso de velocidade",
   sem_comunicacao: "Sem comunicação",
+  sem_sinal_em_rota: "Sem sinal em rota",
+  rastreador_mudo_com_carga: "Rastreador mudo com carga",
+  romaneio_ausente: "Sem romaneio hoje",
 };
 
 const COR_TIPO: Record<string, string> = {

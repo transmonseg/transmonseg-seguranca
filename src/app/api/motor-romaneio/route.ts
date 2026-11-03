@@ -74,6 +74,12 @@ import {
   ultimaComunicacaoEstimada,
   type CargaComPosicao,
   type AlertaRastreadorExistente,
+  TIPO_SEM_SINAL_EM_ROTA,
+  SQL_CARGA_DO_DIA_SEM_SINAL,
+  planejarCardsSemSinal,
+  motivoSemSinal,
+  type CargaSemSinal,
+  type AlertaSemSinalExistente,
 } from "@/lib/rastreador-mudo";
 import {
   haversineM,
@@ -694,7 +700,9 @@ const TIPOS_SOMBRA = new Set(["panico", "jammer", "excesso"]);
 // Revisão F3-07 (R4): romaneio_ausente é 1 card por CLIENTE, preso a um carro
 // representativo; o Step 9 desse carro (que já tem romaneio) fechava o card na
 // hora e furava a carência de 30 min de sinalizarRomaneioAusente.
-const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer", TIPO_RASTREADOR_MUDO, TIPO_ROMANEIO_AUSENTE]);
+// DSV-05 (03/11): sem_sinal_em_rota também -- fecha só quando o sinal volta
+// (sinalizarSemSinalEmRota), nunca pelo Step 9.
+const TIPOS_GERENCIADOS_FORA_DO_STEP9 = new Set(["jammer", TIPO_RASTREADOR_MUDO, TIPO_ROMANEIO_AUSENTE, TIPO_SEM_SINAL_EM_ROTA]);
 
 type EstadoAnterior = {
   afastando_streak: number;
@@ -1090,6 +1098,63 @@ export async function sinalizarRastreadorMudoComCarga(ctx: {
   }
 }
 
+// DSV-05 (auditoria 03/11): carro com carga do dia, fora da base, sem sinal
+// de 60 min a 24 h não gerava nada visível -- o loop abaixo pula quem não é
+// fresco. Card de atenção, 1 por carro por episódio, fecha quando o sinal
+// volta ("voltou a X km de onde sumiu"). Só a tela da Central Romaneio: não
+// entra em nenhum envio de WhatsApp. Regra em @/lib/rastreador-mudo.
+export async function sinalizarSemSinalEmRota(ctx: {
+  pool: pg.Pool;
+  admin: ReturnType<typeof createAdminClient>;
+  hoje: string;
+  agora: Date;
+  erros: string[];
+}): Promise<void> {
+  const { pool, admin, hoje, agora, erros } = ctx;
+  try {
+    const { rows: cargas } = await pool.query<CargaSemSinal>(SQL_CARGA_DO_DIA_SEM_SINAL, [hoje]);
+    const { data, error } = await admin
+      .from("alertas_romaneio")
+      .select("id, veiculo_id, status, desde, lat, lng, contexto")
+      .eq("tipo", TIPO_SEM_SINAL_EM_ROTA)
+      .in("status", ["ativo", "reconhecido"]);
+    if (error) {
+      erros.push(`Aviso: falha ao checar ${TIPO_SEM_SINAL_EM_ROTA} existentes: ${error.message}`);
+      return;
+    }
+    const plano = planejarCardsSemSinal({ cargas, existentes: (data ?? []) as AlertaSemSinalExistente[], hoje, agora });
+    for (const c of plano.inserir) {
+      const { error: e } = await admin.from("alertas_romaneio").insert({
+        cliente_id: c.cliente_id,
+        veiculo_id: c.veiculo_id,
+        nivel: "atencao",
+        tipo: TIPO_SEM_SINAL_EM_ROTA,
+        motivo: motivoSemSinal(c),
+        score: 20,
+        status: "ativo",
+        lat: c.lat,
+        lng: c.lng,
+        contexto: {
+          nfs: Number(c.nfs),
+          atraso_min: c.atraso_min,
+          ultima_comunicacao: ultimaComunicacaoEstimada(c.atraso_min, c.updated_at)?.toISOString() ?? null,
+        },
+        desde: agora.toISOString(),
+      });
+      if (e) erros.push(`Aviso: falha ao inserir ${TIPO_SEM_SINAL_EM_ROTA} pro veiculo ${c.veiculo_id}: ${e.message}`);
+    }
+    for (const { id, contexto } of plano.resolver) {
+      const { error: e } = await admin
+        .from("alertas_romaneio")
+        .update({ status: "resolvido", resolvido_em: agora.toISOString(), contexto })
+        .eq("id", id);
+      if (e) erros.push(`Aviso: falha ao resolver ${TIPO_SEM_SINAL_EM_ROTA} ${id}: ${e.message}`);
+    }
+  } catch (e) {
+    erros.push(`Aviso: ${TIPO_SEM_SINAL_EM_ROTA} desligado neste ciclo: ${String(e)}`);
+  }
+}
+
 export async function POST(request: Request) {
   // Marco de duração do ciclo -- tomado ANTES do lease, porque a espera de
   // conexão do pool também consome o orçamento de maxDuration.
@@ -1253,6 +1318,7 @@ export async function POST(request: Request) {
     // logo abaixo) -- ver comentario de sinalizarRomaneioAusente.
     await sinalizarRomaneioAusente({ pool, admin, hoje, agora, erros });
     await sinalizarRastreadorMudoComCarga({ pool, admin, hoje, agora, erros });
+    await sinalizarSemSinalEmRota({ pool, admin, hoje, agora, erros });
 
     // Só veículos com romaneio utilizável de hoje (ver task-2-brief.md, Step 3).
     // NÃO filtra por geocode_status/lat/lng aqui (removido na task-5, ver
