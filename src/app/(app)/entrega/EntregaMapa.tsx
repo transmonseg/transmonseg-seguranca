@@ -24,7 +24,7 @@ export type PropsEntregaMapa = {
   rota: PontoRota[];
   alvo: Coord | null;
   parada: Coord | null;
-  atual: { lat: number; lng: number; em: string } | null;
+  atual: { lat: number; lng: number; em: string; semSinal: boolean; rotulo: string } | null;
 };
 
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
@@ -136,7 +136,7 @@ export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }:
           {parada && <Marker position={parada} icon={iconeCirculo("#22c55e", 16, true)} title={`Parada da entrega ${info.chegada ?? ""}${info.saida ? `–${info.saida}` : ""}`} zIndex={20} />}
           {info.perto && <Marker position={info.perto} icon={iconeCirculo("#f59e0b", 12, true)} title={`Mais perto: ${metros(info.perto.distM)} às ${hhmm(info.perto.em)}`} zIndex={20} />}
           {alvo && <Marker position={alvo} icon={iconeEntrega(daNf?.ordem ?? 0, COR_SITUACAO[info.situacao] ?? "#ffffff", true)} title={info.nome} zIndex={30} />}
-          {atual && <Marker position={atual} icon={iconeCirculo("#38bdf8", 8)} title={`Agora (${hhmm(atual.em)})`} zIndex={40} />}
+          {atual && <Marker position={{ lat: atual.lat, lng: atual.lng }} icon={iconeCirculo(atual.semSinal ? "#9ca3af" : "#38bdf8", 8)} title={atual.rotulo} zIndex={40} />}
         </GoogleMap>
       )}
 
@@ -176,6 +176,11 @@ export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }:
             <p className="mt-3 text-[13px]" style={{ color: "var(--text)" }}>{alvo ? "Sem parada de entrega registrada." : "O endereço desta nota não tem coordenada."}</p>
           )}
           {info.status && info.situacao !== "entregue" && <p className="mt-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={{ backgroundColor: "rgba(245,158,11,0.12)", color: "#f5b443" }}>{info.status}</p>}
+          {atual?.semSinal && (
+            <p className="mt-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={{ backgroundColor: "rgba(245,158,11,0.12)", color: "#f5b443" }}>
+              {atual.rotulo}. O ponto cinza no mapa é onde o rastreador mandou a última posição, não onde o caminhão está agora.
+            </p>
+          )}
           {(info.rastroTravado || info.semRastro) && !info.semVeiculo && (
             <p className="mt-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={{ backgroundColor: "rgba(239,68,68,0.12)", color: "#f87171" }}>
               {info.semRastro ? "Sem posição do rastreador no monitoramento nesse dia." : "O rastreador desta placa ficou parado no mesmo ponto o dia todo no monitoramento; o trajeto não aparece. A parada mostrada é a da Unitrac, a mesma que o KPI usou."}

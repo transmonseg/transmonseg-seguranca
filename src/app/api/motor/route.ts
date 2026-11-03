@@ -25,6 +25,8 @@ import pg from "pg";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { SQL_VEICULOS_EM_FAVELA, veiculosFavelaDoCiclo } from "@/lib/frescor-posicao";
+import { SQL_GUARDA_ORDEM_DATAGPS } from "@/lib/posicoes-upsert";
+import { geocodeReverso, atualizacaoDeLocais, limiteGeocodesNovos, chaveGeocode, type ResultadoGeocodeReverso } from "@/lib/geocode-reverso";
 import { RAIO_ESCALA_M } from "@/lib/escala-geocode";
 import {
   agruparAlvosPorPlaca,
@@ -36,6 +38,9 @@ import {
   pontoRomaneioMaisProximoParaConfirmarPresenca,
   pontoPendenteMaisProximoParaConfirmarPresenca,
   normalizar,
+  leituraAproveitavel,
+  coordenadaValida,
+  extrairPosicoes,
   centroideGeo,
   distanciaAoSegmentoM,
   suspenderPorChegada,
@@ -130,8 +135,9 @@ const TIMEOUT_UNITRAC_MS = 20_000;
 // Com a chave do Google (cota alta), geocodamos bem mais por ciclo — inclusive
 // veículos em movimento que estão em alerta. Sem ela, caímos no Nominatim, que
 // é restrito a partir de datacenter, então poucos por ciclo.
-const TEM_GOOGLE_GEOCODE = !!process.env.GOOGLE_MAPS_API_KEY;
-const LIMITE_GEOCODES_NOVOS = TEM_GOOGLE_GEOCODE ? 30 : 3;
+// GEO3-01 (03/11): o limite agora depende de o Google estar respondendo de
+// verdade (billing desligado = REQUEST_DENIED), ver limiteGeocodesNovos em
+// @/lib/geocode-reverso.
 
 // Teto de correcoes via /match (OSRM) BEM-SUCEDIDAS por ciclo do motor
 // (achado real 13/08, revisao final de branch). Cada chamada individual ja
@@ -414,8 +420,9 @@ async function buscarPosicoesComTimeout(cvs: string[]): Promise<unknown[]> {
     if (!res.ok) {
       throw new Error(`buscarPosicoes HTTP ${res.status}`);
     }
-    const data = (await res.json()) as { Posicoes: unknown[] };
-    return data.Posicoes;
+    // RAS-05 (03/11): HTTP 200 sem `Posicoes` vira erro DESTE cliente (cai
+    // no "buscarPosicoes falhou" e pula so' ele), nao TypeError do ciclo todo.
+    return extrairPosicoes(await res.json());
   } finally {
     clearTimeout(timer);
   }
@@ -462,11 +469,6 @@ async function buscarAlvosComTimeout(cvs: string[]): Promise<{
 // DESTE ciclo via join com unnest, nao a tabela inteira. cacheGeocode agora
 // e um Map comum (nao module-level), populado por cliente e reusado dentro
 // do mesmo ciclo -- sem TTL entre ciclos, porque o payload ja e pequeno.
-function chaveGeocode(lat: number, lng: number): string {
-  const latR = Math.round(lat * 10000) / 10000;
-  const lngR = Math.round(lng * 10000) / 10000;
-  return `${latR}:${lngR}`;
-}
 
 async function preencherGeocodeCacheCandidatos(
   pool: pg.Pool,
@@ -498,74 +500,7 @@ async function preencherGeocodeCacheCandidatos(
   }
 }
 
-// ─── Geocode reverso via Nominatim com cache em memoria + banco ───────────
-// Retorna o endereco formatado (3 primeiras partes do display_name) ou null.
-async function geocodeReverso(
-  lat: number,
-  lng: number,
-  pool: pg.Pool,
-  contadorNovos: { valor: number },
-  cacheGeocode: Map<string, string>
-): Promise<string | null> {
-  const chave = chaveGeocode(lat, lng);
-  const latR = Math.round(lat * 10000) / 10000;
-  const lngR = Math.round(lng * 10000) / 10000;
-
-  const doCache = cacheGeocode.get(chave);
-  if (doCache !== undefined) return doCache;
-
-  // Cache miss: verificar orçamento antes de chamar Nominatim
-  if (contadorNovos.valor >= LIMITE_GEOCODES_NOVOS) {
-    return null;
-  }
-  contadorNovos.valor += 1;
-
-  try {
-    let endereco: string | null = null;
-    const chaveGoogle = process.env.GOOGLE_MAPS_API_KEY;
-
-    if (chaveGoogle) {
-      // Google Geocoding (reverso): preciso e com cota alta. Pega rua + bairro.
-      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&language=pt-BR&key=${chaveGoogle}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-      if (res.ok) {
-        const data = (await res.json()) as { results?: { formatted_address?: string }[] };
-        const fa = data.results?.[0]?.formatted_address;
-        if (fa) endereco = fa.split(",").map((p) => p.trim()).slice(0, 2).join(", ");
-      }
-    } else {
-      // Nominatim (OpenStreetMap): grátis, mas restrito de datacenter.
-      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=pt-BR`;
-      const res = await fetch(url, {
-        headers: { "User-Agent": "TransmonsegCentral/1.0" },
-        signal: AbortSignal.timeout(3000),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as { display_name?: string };
-        if (data.display_name) endereco = data.display_name.split(",").map((p) => p.trim()).slice(0, 3).join(", ");
-      }
-    }
-    if (!endereco) return null;
-
-    // Salvar no cache (banco + memoria, pra outro veiculo no MESMO ciclo e
-    // mesma celula ~11m nao repetir a chamada externa).
-    cacheGeocode.set(chave, endereco);
-    const pgSave = await pool.connect();
-    try {
-      await pgSave.query(
-        `INSERT INTO geocode_cache (lat, lng, endereco) VALUES ($1, $2, $3)
-         ON CONFLICT (lat, lng) DO NOTHING`,
-        [latR, lngR, endereco]
-      );
-    } finally {
-      pgSave.release();
-    }
-
-    return endereco;
-  } catch {
-    return null;
-  }
-}
+// Geocode reverso: @/lib/geocode-reverso (GEO3-01, fallback Nominatim).
 
 // ─── Point-in-polygon (ray casting) para checar se o veículo está na base ───
 // As bases são polígonos reais (perímetro de onde a frota estaciona), não
@@ -1100,6 +1035,7 @@ export async function POST(request: Request) {
 
     // 4. Buscar posicoes de TODOS os CVs de uma vez por cliente
     let totalProcessados = 0;
+    let leiturasDescartadas = 0;
     let totalFrescos = 0;
     let totalAlertasAtivos = 0;
 
@@ -1510,7 +1446,7 @@ export async function POST(request: Request) {
       for (const raw of posicoesRaw) {
         try {
           const p = normalizar(raw as Record<string, unknown>);
-          if (p.fresco && p.lat != null && p.lng != null) {
+          if (p.fresco && coordenadaValida(p.lat, p.lng)) {
             posicoesFrescasComVelocidade.push({ lat: p.lat, lng: p.lng, velocidade: p.velocidade });
             for (const c of vizinhanca3x3(p.lat, p.lng)) celulasCandidatasTapete.add(c);
             chavesCandidatasGeocode.add(chaveGeocode(p.lat, p.lng));
@@ -1702,8 +1638,16 @@ export async function POST(request: Request) {
       }));
       for (const { raw } of posicoesComVeiculoId) {
         try {
-          const pos = normalizar(raw as Record<string, unknown>);
+          const lida = normalizar(raw as Record<string, unknown>);
           totalProcessados++;
+          // RAS-05 (03/11): atraso desconhecido, 0,0, NaN ou fora do Brasil
+          // nao entra em posicoes_atuais nem no historico (DM-19). O carro
+          // fica com a ultima leitura boa e o atraso efetivo cresce no mapa.
+          if (!leituraAproveitavel(lida)) {
+            leiturasDescartadas++;
+            continue;
+          }
+          const pos = lida;
 
           const entrada = mapaCv.get(pos.cv);
           if (!entrada) continue;
@@ -4283,7 +4227,8 @@ export async function POST(request: Request) {
              no_raio_desde       = EXCLUDED.no_raio_desde,
              no_raio_dwell_segundos = EXCLUDED.no_raio_dwell_segundos,
              perto_sem_marcacao_codigo = EXCLUDED.perto_sem_marcacao_codigo,
-             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos`,
+             perto_sem_marcacao_segundos = EXCLUDED.perto_sem_marcacao_segundos
+           WHERE ${SQL_GUARDA_ORDEM_DATAGPS}`,
           [
             posicoesCiclo.map((p) => p.veiculo_id),
             posicoesCiclo.map((p) => p.lat),
@@ -4609,13 +4554,13 @@ export async function POST(request: Request) {
     // destinos" quando rota concluida + chegou na base -- ver
     // Geocodes pendentes (cache-miss do loop): resolvidos AGORA, em paralelo
     // (lotes de 8), fora do caminho critico da deteccao -- ver comentario na
-    // fila geocodesPendentes. Mesmo orcamento de sempre (LIMITE_GEOCODES_NOVOS
+    // fila geocodesPendentes. Mesmo orcamento de sempre (limiteGeocodesNovos
     // via contadorGeocodesNovos, aplicado dentro de geocodeReverso). O rotulo
     // chega via UPDATE proprio; ate la a tela mostra o rotulo anterior
     // (COALESCE no upsert acima).
     if (geocodesPendentes.length > 0) {
       const TAMANHO_LOTE_GEOCODE = 8;
-      const resolvidos: { veiculo_id: string; local: string }[] = [];
+      const resolvidos: { veiculo_id: string; r: ResultadoGeocodeReverso }[] = [];
       for (let i = 0; i < geocodesPendentes.length; i += TAMANHO_LOTE_GEOCODE) {
         const lote = geocodesPendentes.slice(i, i + TAMANHO_LOTE_GEOCODE);
         const resultados = await Promise.allSettled(
@@ -4623,15 +4568,17 @@ export async function POST(request: Request) {
         );
         for (let j = 0; j < lote.length; j++) {
           const r = resultados[j];
-          if (r.status === "fulfilled" && r.value) {
-            resolvidos.push({ veiculo_id: lote[j].veiculo_id, local: r.value });
-          }
+          resolvidos.push({ veiculo_id: lote[j].veiculo_id, r: r.status === "fulfilled" ? r.value : { status: "falhou" } });
         }
         // Orcamento estourou: o resto fica pro proximo ciclo (cache do banco
         // ja vai ter parte deles preenchida pelas chamadas deste lote).
-        if (contadorGeocodesNovos.valor >= LIMITE_GEOCODES_NOVOS) break;
+        if (contadorGeocodesNovos.valor >= limiteGeocodesNovos()) break;
       }
-      if (resolvidos.length > 0) {
+      // GEO3-01: endereco resolvido grava; Google e Nominatim falhando LIMPA o
+      // rotulo (null) -- antes o COALESCE mantinha "Em deslocamento" ou a rua
+      // de horas atras num carro parado. Sem orcamento: tenta no proximo ciclo.
+      const { veiculoIds, locais } = atualizacaoDeLocais(resolvidos);
+      if (veiculoIds.length > 0) {
         const pgLocais = await pool.connect();
         try {
           await pgLocais.query(
@@ -4639,7 +4586,7 @@ export async function POST(request: Request) {
              SET local = c.local
              FROM unnest($1::uuid[], $2::text[]) AS c(veiculo_id, local)
              WHERE p.veiculo_id = c.veiculo_id`,
-            [resolvidos.map((r) => r.veiculo_id), resolvidos.map((r) => r.local)]
+            [veiculoIds, locais]
           );
         } catch (errLocais) {
           console.warn(`Aviso: erro ao atualizar locais geocodados: ${String(errLocais)}`);
@@ -4992,8 +4939,12 @@ export async function POST(request: Request) {
       });
     } catch { /* nao critico: fallback de poll lento cobre */ }
 
+    if (leiturasDescartadas > 0) {
+      console.warn(`[motor] ${leiturasDescartadas} leitura(s) da Unitrac descartada(s): atraso desconhecido ou coordenada invalida (0,0 / fora do Brasil)`);
+    }
     return Response.json({
       processados: totalProcessados,
+      leiturasDescartadas,
       frescos: totalFrescos,
       alertas_ativos: totalAlertasAtivos,
       geocodes_novos: contadorGeocodesNovos.valor,

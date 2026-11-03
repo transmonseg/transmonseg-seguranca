@@ -19,6 +19,10 @@ export type PosicaoNormalizada = {
   evento: string | null; // tipevnome bruto da Unitrac (ex.: "IGNIÇÃO LIGADA", "BAÚ TRAVADO", "TRANSMISSÃO TEMPORIZADA")
 };
 
+// RAS-05 (03/11): leitura como veio da Unitrac. `atraso` nulo = campo
+// ausente, vazio ou texto -- antes virava 0 ("ao vivo"), fail-open.
+export type PosicaoLida = Omit<PosicaoNormalizada, "atraso"> & { atraso: number | null };
+
 // Retorna lista de veículos de um codUser Unitrac.
 // GET /veiculos/masn/{cod}
 export async function buscarVeiculos(cod: string): Promise<unknown[]> {
@@ -763,8 +767,10 @@ export function centroideGeo(
 
 // Normaliza uma posição bruta da Unitrac para o tipo interno.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function normalizar(p: Record<string, any>): PosicaoNormalizada {
-  const atraso = parseInt(p.atraso as string) || 0;
+export function normalizar(p: Record<string, any>): PosicaoLida {
+  // RAS-05: só número inteiro de verdade; o resto é "não sei" (nunca fresco).
+  const atrasoTxt = typeof p.atraso === "number" ? String(p.atraso) : typeof p.atraso === "string" ? p.atraso.trim() : "";
+  const atraso = /^\d+$/.test(atrasoTxt) ? parseInt(atrasoTxt, 10) : null;
   return {
     cv: String(p.veicucodigo),
     placa: p.veicuplaca as string,
@@ -776,7 +782,32 @@ export function normalizar(p: Record<string, any>): PosicaoNormalizada {
     panico: p.panico === "1",
     bau: p.bauForaPonto === "1",
     datagps: p.datagps as string,
-    fresco: atraso < 60,
+    fresco: atraso != null && atraso < 60,
     evento: typeof p.tipevnome === "string" && p.tipevnome.trim() ? p.tipevnome.trim() : null,
   };
+}
+
+// RAS-05 (03/11): caixa aproximada do Brasil. Leitura fora dela (0,0 cai no
+// Golfo da Guiné; lat/lng vazios viram NaN e o PostGIS aceita) não entra no
+// mapa nem no histórico. DM-19.
+const BRASIL = { latMin: -34, latMax: 6, lngMin: -74.5, lngMax: -34 };
+
+export function coordenadaValida(lat: number, lng: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (lat === 0 && lng === 0) return false;
+  return lat >= BRASIL.latMin && lat <= BRASIL.latMax && lng >= BRASIL.lngMin && lng <= BRASIL.lngMax;
+}
+
+/** Leitura que o motor pode gravar: atraso conhecido e coordenada no Brasil. */
+export function leituraAproveitavel(p: PosicaoLida): p is PosicaoNormalizada {
+  return p.atraso != null && coordenadaValida(p.lat, p.lng);
+}
+
+/** RAS-05: HTTP 200 sem `Posicoes` derrubava o ciclo de TODOS os clientes
+ *  (TypeError fora do try por cliente). Agora vira erro da busca daquele
+ *  cliente, que o motor trata como "posições falharam" (pula só ele). */
+export function extrairPosicoes(data: unknown): unknown[] {
+  const lista = (data as { Posicoes?: unknown } | null)?.Posicoes;
+  if (!Array.isArray(lista)) throw new Error("resposta da Unitrac sem lista Posicoes");
+  return lista;
 }

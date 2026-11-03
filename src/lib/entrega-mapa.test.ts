@@ -97,3 +97,40 @@ describe("selo e círculo de incerteza do ponto (F4-07)", () => {
     expect(seloDoPonto("exato", "abc")).toEqual({ rotulo: "Número exato", raioM: null });
   });
 });
+
+// RAS-03 (auditoria 03/11): o histórico grava a cada 30 s mesmo com a leitura
+// velha da Unitrac; a hora do ponto é a do GPS (criado_em - atraso_min), não
+// a da gravação. RQQ-5B81 em 03/11: último GPS 12:07, gravado até 17:19.
+import { pontoDoHistorico, posicaoAtual } from "./entrega-mapa";
+
+describe("RAS-03: hora do GPS na Entrega no mapa", () => {
+  const linha = (hhmm: string, lat: number, atraso_min: number) =>
+    ({ lat, lng: -43.2, criado_em: `2026-11-03T${hhmm}:00-03:00`, atraso_min });
+  // anda até 12:07 e congela: a mesma coordenada continua sendo gravada com atraso crescente
+  const serie = [linha("12:05", -22.90, 0), linha("12:07", -22.91, 0), linha("13:07", -22.91, 60), linha("17:19", -22.91, 312)]
+    .map(pontoDoHistorico);
+
+  it("em = criado_em - atraso_min", () => {
+    expect(Date.parse(serie[3].em)).toBe(Date.parse("2026-11-03T12:07:00-03:00"));
+    expect(Date.parse(serie[2].em)).toBe(Date.parse("2026-11-03T12:07:00-03:00"));
+    expect(Date.parse(serie[0].em)).toBe(Date.parse("2026-11-03T12:05:00-03:00"));
+  });
+  it("atraso ausente = hora da gravação", () => {
+    const p = pontoDoHistorico({ lat: -22.9, lng: -43.2, criado_em: "2026-11-03T12:00:00-03:00", atraso_min: null });
+    expect(Date.parse(p.em)).toBe(Date.parse("2026-11-03T12:00:00-03:00"));
+  });
+  it("posição atual com sinal velho: semSinal e 'Último sinal às 12:07', nunca 'Agora'", () => {
+    const a = posicaoAtual(serie, new Date("2026-11-03T17:19:30-03:00"))!;
+    expect(Date.parse(a.em)).toBe(Date.parse("2026-11-03T12:07:00-03:00"));
+    expect(a.semSinal).toBe(true);
+    expect(a.rotulo.startsWith("Último sinal às 12:07")).toBe(true);
+    expect(a.rotulo).toContain("há 5 h");
+    expect(a.rotulo).not.toContain("Agora");
+  });
+  it("leitura recente: 'Agora (HH:MM)' e semSinal false", () => {
+    const a = posicaoAtual([linha("17:18", -22.9, 1)].map(pontoDoHistorico), new Date("2026-11-03T17:19:30-03:00"))!;
+    expect(a.semSinal).toBe(false);
+    expect(a.rotulo).toBe("Agora (17:17)");
+  });
+  it("sem pontos => null", () => expect(posicaoAtual([], new Date())).toBeNull());
+});

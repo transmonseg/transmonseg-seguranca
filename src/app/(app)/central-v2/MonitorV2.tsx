@@ -2,6 +2,8 @@
 
 import { filtrarEntregas, type FiltroEntregas } from "@/lib/filtro-entregas";
 import { filtrarTransmissao, contarTransmissao, type FiltroTransmissao } from "@/lib/filtro-transmissao";
+import { atrasoDoVeiculo, estadoDoVeiculo, rotuloComunicacao, rotuloVelocidade } from "@/lib/estado-sinal";
+import { criarPoll, saudeInicial, registrarPoll, avisoTransporte, type SaudeTransporte } from "./transporte-poll";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -701,7 +703,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // Guarda o timestamp do último poll bem-sucedido (qualquer um dos dois) --
   // usado só pra mostrar um aviso discreto quando passa muito tempo sem
   // atualização real, não muda nenhum comportamento de dado/detecção.
-  const [ultimoPollOk, setUltimoPollOk] = useState<number>(Date.now());
+  // RAS-06 (03/11): saúde POR FONTE (mapa e alertas), ver ./transporte-poll.
+  const [saudeTransporte, setSaudeTransporte] = useState<SaudeTransporte>(() => saudeInicial(Date.now()));
   // Tick só pra forçar reavaliação do indicador de dado desatualizado --
   // se os polls ficarem falhando, nenhum outro setState dispara re-render
   // pra mostrar que o tempo parado está crescendo.
@@ -710,8 +713,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const t = setInterval(() => forcarTick(x => x + 1), 20_000);
     return () => clearInterval(t);
   }, []);
-  const LIMIAR_DADO_DESATUALIZADO_MS = 90_000;
-  const dadoDesatualizado = Date.now() - ultimoPollOk > LIMIAR_DADO_DESATUALIZADO_MS;
+  const avisoDadoParado = avisoTransporte(saudeTransporte, Date.now());
 
   // Filtro por tipo de alerta (sidebar) — multi-select
   const [filtroTipos, setFiltroTipos] = useState<Set<string>>(new Set());
@@ -995,11 +997,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // sem precisar recriar o Realtime na nova stack.
   useEffect(() => {
     const endpointAlertas = fonteAlertas === "romaneio" ? "/api/alertas-romaneio" : "/api/alertas";
-    const poll = async () => {
-      try {
-        const res = await fetch(`${endpointAlertas}?cliente=${encodeURIComponent(cliente)}`);
-        if (!res.ok) return;
-        const data: { alertas?: AlertaEnriquecido[] } = await res.json();
+    const aoReceber = (data: { alertas?: AlertaEnriquecido[] }) => {
         const novos = data.alertas ?? [];
         const tiposQueNotificam = TIPOS_NOTIFICAM_POR_CLIENTE[cliente] ?? [];
         const ehNotificavel = (a: AlertaEnriquecido) => a.tipo === "panico" || tiposQueNotificam.includes(a.tipo);
@@ -1022,12 +1020,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         }
         alertasRef.current = novos;
         setAlertas(novos);
-        setUltimoPollOk(Date.now());
-      } catch { /* ignore -- ver ultimoPollOk pro indicador de dado desatualizado */ }
     };
-    poll();
-    const t = setInterval(poll, 30_000);
-    return () => clearInterval(t);
+    const p = criarPoll<{ alertas?: AlertaEnriquecido[] }>({
+      url: () => `${endpointAlertas}?cliente=${encodeURIComponent(cliente)}`,
+      intervaloMs: 30_000,
+      aoReceber,
+      aoResultado: (r) => setSaudeTransporte(s => registrarPoll(s, "alertas", r, Date.now())),
+    });
+    return () => p.parar();
   }, [cliente, fonteAlertas]);
 
   // Mapa: a fonte do alerta que colore o marcador acompanha a fonte da tela
@@ -1038,11 +1038,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
   // fontes.
   useEffect(() => {
     const qsFonte = fonteAlertas === "romaneio" ? "&fonte=romaneio" : "";
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/mapa?cliente=${encodeURIComponent(cliente)}${qsFonte}`);
-        if (!res.ok) return;
-        const data: { veiculos?: VeiculoMapa[] } = await res.json();
+    const aoReceber = (data: { veiculos?: VeiculoMapa[] }) => {
         const vs = data.veiculos ?? [];
         // `nivel` vem de posicoes_atuais, escrito SÓ pelo motor da Central
         // (tabela somente-leitura pra este pipeline — nunca escrever lá).
@@ -1056,12 +1052,14 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
         // 1016), então `tipo` — que agora vem de alertas_romaneio — passa a
         // ser a ÚNICA fonte de cor nesta tela.
         setVeiculosMapa(fonteAlertas === "romaneio" ? vs.map(v => ({ ...v, nivel: null })) : vs);
-        setUltimoPollOk(Date.now());
-      } catch { /* ignore -- ver ultimoPollOk pro indicador de dado desatualizado */ }
     };
-    poll();
-    const t = setInterval(poll, 30_000);
-    return () => clearInterval(t);
+    const p = criarPoll<{ veiculos?: VeiculoMapa[] }>({
+      url: () => `/api/mapa?cliente=${encodeURIComponent(cliente)}${qsFonte}`,
+      intervaloMs: 30_000,
+      aoReceber,
+      aoResultado: (r) => setSaudeTransporte(s => registrarPoll(s, "mapa", r, Date.now())),
+    });
+    return () => p.parar();
   }, [cliente, fonteAlertas]);
 
   // Grupos de frota Unitrac (gvc/gvn) — fetcha uma vez por cliente
@@ -1822,7 +1820,8 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
     const metricas: { label: string; value: string; color?: string; wide?: boolean; num?: boolean }[] = [
       {
         label: "VELOCIDADE",
-        value: painel.vmAtual ? `${painel.vmAtual.velocidade} km/h` : "—",
+        // RAS-04: leitura velha mostra "última: X km/h às HH:MM".
+        value: painel.vmAtual ? rotuloVelocidade(painel.vmAtual.velocidade, estadoDoVeiculo(painel.vmAtual), painel.vmAtual.posicao_em) : "—",
         color: painel.vmAtual && painel.vmAtual.velocidade > 80 ? T.yellow : undefined,
         num: true,
       },
@@ -1833,8 +1832,10 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
       },
       {
         label: "COMUNICAÇÃO",
-        value: painel.vmAtual ? (painel.vmAtual.atraso_min > 0 ? `${Math.round(painel.vmAtual.atraso_min)}min` : "ao vivo") : "—",
-        color: painel.vmAtual && painel.vmAtual.atraso_min > 30 ? T.yellow : undefined,
+        // RAS-01: atraso efetivo do servidor (não congela quando o motor
+        // para de gravar). "ao vivo" só para leitura atual (< 5 min).
+        value: painel.vmAtual ? rotuloComunicacao(atrasoDoVeiculo(painel.vmAtual), estadoDoVeiculo(painel.vmAtual)) : "—",
+        color: painel.vmAtual && estadoDoVeiculo(painel.vmAtual) !== "atual" ? T.yellow : undefined,
         num: true,
       },
       { label: "LOCAL", value: painel.vmAtual?.local || "—", wide: true },
@@ -2497,7 +2498,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                         return ([["todos", `Todos ${veiculosMapa.length}`], ["transmitindo", `Transmitindo ${n.transmitindo}`], ["sem", `Sem transmissão ${n.sem}`]] as const).map(([v, rotulo]) => {
                           const ativo = filtroTransm === v;
                           return (
-                            <button key={v} type="button" aria-pressed={ativo} onClick={() => setFiltroTransm(v)} title={v === "sem" ? "Sem posição nova há mais de 1 hora" : v === "transmitindo" ? "Posição recebida na última hora" : undefined} style={{
+                            <button key={v} type="button" aria-pressed={ativo} onClick={() => setFiltroTransm(v)} title={v === "sem" ? "Sem posição nova há mais de 30 min" : v === "transmitindo" ? "Posição recebida nos últimos 30 min" : undefined} style={{
                               height: 24, padding: "0 10px", borderRadius: RAIO.capsule,
                               border: `1px solid ${ativo ? T.accent : T.border}`,
                               background: ativo ? T.accentDim : "transparent",
@@ -2681,9 +2682,9 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
             </div>
           )}
 
-          {dadoDesatualizado && (
-            <div style={{ padding: "5px 8px", fontSize: 12, color: T.yellow, borderBottom: `1px solid ${T.border}` }}>
-              ⚠ Sem atualização desde {new Date(ultimoPollOk).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} — os dados na tela podem estar desatualizados.
+          {avisoDadoParado && (
+            <div role="alert" style={{ padding: "5px 8px", fontSize: 12, color: avisoDadoParado.tipo === "sessao_vencida" ? "#f87171" : T.yellow, borderBottom: `1px solid ${T.border}` }}>
+              {avisoDadoParado.texto}
             </div>
           )}
 

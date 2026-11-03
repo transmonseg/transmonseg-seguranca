@@ -5,6 +5,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { GoogleMap, Marker, Polyline, Circle, Polygon, InfoWindow, TrafficLayer, useJsApiLoader } from "@react-google-maps/api";
 import { type MapTokens } from "./tokens";
 import { instalarDetectorCotaGoogle } from "@/lib/deteccao-cota-google";
+import { aparenciaMarcador, estadoDoVeiculo } from "@/lib/estado-sinal";
 
 export interface VeiculoMapa {
   placa: string;
@@ -13,6 +14,10 @@ export interface VeiculoMapa {
   velocidade: number;
   ignicao: boolean;
   atraso_min: number;
+  // RAS-01 (03/11): atraso efetivo e hora estimada da leitura, calculados no
+  // Postgres pelo /api/mapa. Opcionais só para resposta de versão antiga.
+  atraso_efetivo_min?: number | null;
+  posicao_em?: string | null;
   tipo: string | null;
   lat: number | null;
   lng: number | null;
@@ -145,6 +150,8 @@ export const DARK_STYLES: google.maps.MapTypeStyle[] = [
 function corVeiculo(v: VeiculoMapa, tok: MapTokens): string {
   if (v.nivel === "vermelho" || (v.tipo !== null && v.tipo !== "")) return tok.red;
   if (v.nivel === "amarelo") return tok.yellow;
+  // RAS-04: leitura velha nunca aparece verde "em movimento".
+  if (estadoDoVeiculo(v) !== "atual") return tok.dim;
   if (v.ignicao && v.velocidade > 0) return tok.green;
   if (v.ignicao && v.velocidade === 0) return tok.parado;
   return tok.dim;
@@ -249,8 +256,11 @@ function encodeForSvg(s: string): string {
 // mexer na geometria interna do SVG).
 function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showLabel: boolean): google.maps.Icon {
   const cor = corVeiculo(vm, tok);
-  const semComm = vm.atraso_min > 60;
-  const temSeta = vm.velocidade > 5 && vm.rumo != null;
+  // RAS-04 (03/11): um só critério (estadoSinal). Seta só para leitura
+  // atual; atrasado = cinza tracejado; sem sinal = meio apagado.
+  const aparencia = aparenciaMarcador({ estado: estadoDoVeiculo(vm), velocidade: vm.velocidade, rumo: vm.rumo });
+  const temSeta = aparencia.seta;
+  const tracejado = aparencia.tracejado ? ` stroke-dasharray="3 2"` : "";
 
   if (selecionado) {
     // V1: círculo 44×44 com fundo escuro e borda colorida
@@ -285,7 +295,7 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
   }
 
   // V1: teardrop 30×38, caminho exato, truck translate(4,4) scale(0.85) stroke-width=3, stroke branco
-  const alpha = semComm ? "0.5" : "1";
+  const alpha = String(aparencia.opacidade);
 
   if (showLabel) {
     // Canvas 64×52: teardrop centrado em x=32, pill larga o suficiente para placa Mercosul
@@ -299,7 +309,7 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
         `<circle cx="${x2}" cy="${y2}" r="2" fill="white" opacity="0.95"/>`;
     }
     const svgLabel = `<svg width="64" height="52" viewBox="0 0 64 52" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
-      <polygon points="19,2 45,2 45,22 32,36 19,22" fill="${cor}" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
+      <polygon points="19,2 45,2 45,22 32,36 19,22" fill="${cor}" stroke="white" stroke-width="1.5" stroke-linejoin="round"${tracejado}/>
       <g transform="translate(21,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
         <rect x="1" y="3" width="15" height="13"/>
         <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
@@ -330,7 +340,7 @@ function criarIcone(vm: VeiculoMapa, selecionado: boolean, tok: MapTokens, showL
   }
 
   const svg = `<svg width="30" height="38" viewBox="0 0 30 38" xmlns="http://www.w3.org/2000/svg" opacity="${alpha}">
-    <polygon points="3,2 27,2 27,22 15,36 3,22" fill="${cor}" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
+    <polygon points="3,2 27,2 27,22 15,36 3,22" fill="${cor}" stroke="white" stroke-width="1.5" stroke-linejoin="round"${tracejado}/>
     <g transform="translate(4,4) scale(0.85)" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
       <rect x="1" y="3" width="15" height="13"/>
       <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>

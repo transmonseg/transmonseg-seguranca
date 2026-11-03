@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { acessoDoUsuario } from "@/lib/acesso-cliente";
-import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, codUnitracDaFrota, clienteDaEntrega, seloDoPonto, type PontoRastro } from "@/lib/entrega-mapa";
+import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, codUnitracDaFrota, clienteDaEntrega, seloDoPonto, pontoDoHistorico, posicaoAtual, type PontoRastro } from "@/lib/entrega-mapa";
 import EntregaMapaWrapper from "./EntregaMapaWrapper";
 
 // "Entrega no mapa" (05/10): aberta pelo botão "Ver no monitoramento" de cada
@@ -52,11 +52,11 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   async function posicoesDoDia(veiculoId: string): Promise<PontoRastro[]> {
     const out: PontoRastro[] = [];
     for (let de = 0; de < 20000; de += 1000) {
-      const { data: lote, error } = await admin.from("posicoes_historico").select("lat, lng, criado_em")
+      const { data: lote, error } = await admin.from("posicoes_historico").select("lat, lng, criado_em, atraso_min")
         .eq("veiculo_id", veiculoId).gte("criado_em", inicio).lt("criado_em", fim)
         .order("criado_em", { ascending: true }).range(de, de + 999);
       if (error || !lote?.length) break;
-      for (const p of lote) if (p.lat != null && p.lng != null && (p.lat !== 0 || p.lng !== 0)) out.push({ lat: Number(p.lat), lng: Number(p.lng), em: p.criado_em as string });
+      for (const p of lote) if (p.lat != null && p.lng != null && (p.lat !== 0 || p.lng !== 0)) out.push(pontoDoHistorico({ lat: Number(p.lat), lng: Number(p.lng), criado_em: p.criado_em as string, atraso_min: p.atraso_min as number | null }));
       if (lote.length < 1000) break;
     }
     return out;
@@ -79,7 +79,9 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   // Rastreador travado/sem posição: o ponto da parada da Unitrac (vem do KPI).
   const parada = (!rastroTravado ? paradaDaEntrega(pontos, data, chegada, saida) : null) ?? paradaKpi;
   const perto = alvo && !parada ? maisPerto(pontos, alvo) : null;
-  const atual = data === hoje() && pontos.length && !rastroTravado ? pontos[pontos.length - 1] : null;
+  // RAS-03 (03/11): a hora é a do GPS (criado_em - atraso_min); leitura com
+  // mais de 15 min vira "Último sinal às HH:MM", nunca "Agora".
+  const atual = data === hoje() && !rastroTravado ? posicaoAtual(pontos, new Date()) : null;
 
   return (
     <EntregaMapaWrapper

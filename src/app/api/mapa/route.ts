@@ -5,6 +5,7 @@ import { buscarAlvos, agruparPontosPorPlaca, corrigirComPontoAprendido } from "@
 import { createClient } from "@/lib/supabase/server";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { sqlTiposInternosFora } from "@/lib/rastreador-mudo";
+import { sqlAtrasoEfetivo } from "@/lib/frescor-posicao";
 
 export const dynamic = "force-dynamic";
 
@@ -169,6 +170,12 @@ export async function GET(request: Request) {
         `select v.placa, v.cv, p.lat, p.lng, p.nivel, p.velocidade, p.ignicao,
                 p.local, p.entregas_feitas, p.entregas_total, p.atraso_min,
                 p.rumo, p.parado_desde, al.tipo,
+                -- RAS-01 (03/11): frescor real, no relógio do Postgres. O
+                -- atraso_min congela quando o motor para de gravar o cliente.
+                ${sqlAtrasoEfetivo("p")} as atraso_efetivo_min,
+                -- hora estimada da leitura (gravação - atraso da Unitrac);
+                -- nunca datagps (3 h deslocado, frente H)
+                (p.updated_at - make_interval(mins => coalesce(p.atraso_min, 0)::int)) as posicao_em,
                 exists (
                   select 1 from romaneio_pontos rp
                   where rp.veiculo_id = v.id and rp.romaneio_data = $2
