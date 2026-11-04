@@ -20,7 +20,7 @@ const FOLGA_FUTURO_MS = 5 * 60 * 1000;
  * só faz o motor reprocessar leituras; um corte tarde demais faria valores já
  * certos ganharem +3 h (a guarda de datagpsReal segura quase todos os casos).
  */
-export const DATAGPS_CORRIGIDO_DESDE = "2026-11-04T00:45:00Z";
+export const DATAGPS_CORRIGIDO_DESDE = "2026-11-04T00:55:00Z";
 
 function montar(y: number, mo: number, d: number, hh: number, mi: number, ss: number): string | null {
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || hh > 23 || mi > 59 || ss > 59) return null;
