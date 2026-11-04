@@ -32,9 +32,9 @@
 // leitura de GPS.
 //
 // Fix de produção 22/08 (mesmo dia, achado ao vivo): a checagem de
-// idempotência comparava datagps (relógio da Unitrac, deslocado ~3h pro
-// passado por um bug de fuso em parseDatagps da Central, ver comentário no
-// gate abaixo) contra atualizado_em (relógio real do Postgres) -- nunca
+// idempotência comparava datagps (relógio da Unitrac; até a Frente H, 03/11,
+// deslocado 3h pro passado por um bug de fuso em parseDatagps, ver comentário
+// no gate abaixo) contra atualizado_em (relógio real do Postgres) -- nunca
 // passava depois do primeiro ciclo, o motor parava de vez. Corrigido pra
 // comparar datagps-contra-datagps (nova coluna ultimo_datagps, migration
 // 056) -- mesmo offset dos dois lados, deixa de importar.
@@ -137,6 +137,7 @@ import {
 import { celulaDe, vizinhanca3x3 } from "@/lib/celulas";
 import { decidirEpisodio, type DecisaoEpisodio } from "@/lib/desvio-episodio";
 import { dataSP, datagpsPlausivelComoMarco, estadoEhDeOutroDiaSP } from "@/lib/motor-romaneio-estado";
+import { datagpsReal } from "@/lib/datagps";
 import { corrigirPosicoesComMatch, type ResultadoMatch } from "@/lib/osrm-match";
 
 // Função serverless -- pode levar tempo com OSRM/Unitrac, mesmo teto que a Central.
@@ -2016,31 +2017,27 @@ export async function POST(request: Request) {
           : estadoGravado;
 
         // I3 (revisado 22/08 -- achado real em produção, ver task-2-report.md):
-        // idempotência por leitura de GPS, mas comparando datagps-CONTRA-
-        // datagps, NUNCA datagps contra now()/atualizado_em. Motivo concreto:
-        // parseDatagps (src/app/api/motor/route.ts:226-237) grava o horário
-        // de Brasília que a Unitrac devolve com sufixo "Z" (UTC) -- isso
-        // desloca TODO datagps ~3h pro passado, sistematicamente (não é
-        // atraso real; a Unitrac responde ao vivo em segundos). Pra Central
-        // isso é inofensivo (ela usa atraso_min, nunca compara datagps com
-        // now()); comparando esse datagps deslocado contra now()/
-        // atualizado_em (relógio real do Postgres) essa checagem NUNCA
-        // passava depois do primeiro ciclo -- o motor pulava TODO veículo pra
-        // sempre (produção, 22/08). Guardando o ÚLTIMO datagps já processado
-        // (ultimo_datagps, migration 056) e comparando datagps-contra-datagps,
-        // o mesmo offset aparece dos dois lados e deixa de importar. NÃO
-        // "simplificar" isso de volta pra comparar com now()/atualizado_em --
-        // é exatamente o bug que já aconteceu uma vez. NÃO corrigir
-        // parseDatagps em vez disso: é função da Central, em produção, mudar
-        // o fuso do dado gravado lá é risco desnecessário pro que precisamos
-        // aqui. Pula só quando ultimo_datagps é conhecido E a leitura atual
-        // não é mais nova que ele; processa quando é mais nova ou quando
-        // ultimo_datagps ainda é null (nunca processado, ou posAtual.datagps
-        // ausente -- fail-open, nunca bloqueia por falta de dado).
+        // idempotência por leitura de GPS, comparando datagps-CONTRA-
+        // datagps, NUNCA datagps contra now()/atualizado_em (o datagps é a
+        // hora da leitura, que pode ter horas de atraso; contra now() o gate
+        // pulava todo veículo, produção 22/08). NÃO "simplificar" isso.
+        //
+        // Frente H (03/11): parseDatagps passou a ler -03:00. Até o deploy,
+        // todo datagps (e portanto todo ultimo_datagps já gravado) estava
+        // 3 h atrás. posicoes_atuais é corrigida pelo próprio motor no
+        // primeiro ciclo (+ migration 096 pros parados), mas
+        // romaneio_desvio_estado NÃO é migrada: datagpsReal soma as 3 h no
+        // marco gravado antes do corte. Sem isso o marco antigo fica 3 h
+        // menor e o primeiro ciclo reprocessa leitura repetida (a leitura
+        // repetida passa por mesmoPonto e zera streak: FN).
+        // Pula só quando o marco é conhecido E a leitura atual não é mais
+        // nova que ele; processa quando é mais nova ou quando o marco é null
+        // (nunca processado, ou posAtual.datagps ausente -- fail-open).
+        const ultimoDatagpsReal = datagpsReal(estadoAnterior.ultimo_datagps, estadoAnterior.atualizado_em);
         if (
           posAtual.datagps != null &&
-          estadoAnterior.ultimo_datagps != null &&
-          new Date(posAtual.datagps).getTime() <= estadoAnterior.ultimo_datagps.getTime()
+          ultimoDatagpsReal != null &&
+          new Date(posAtual.datagps).getTime() <= ultimoDatagpsReal.getTime()
         ) {
           continue;
         }
@@ -2648,16 +2645,14 @@ export async function POST(request: Request) {
         // avançam quando o dado novo é conhecido).
         //
         // datagpsPlausivelComoMarco (@/lib/motor-romaneio-estado, com teste
-        // unitário e o raciocínio numérico completo): a Central grava
-        // `parseDatagps(pos.datagps) ?? agora.toISOString()`
-        // (motor/route.ts:2982), então um payload da Unitrac sem datagps
-        // envenena posicoes_atuais.datagps com o UTC REAL, ~3h à frente de
-        // todos os outros valores da coluna. Guardar esse valor como marco
-        // travaria este veículo por ~3h (`datagps <= ultimo_datagps` a cada
-        // 30s), silenciosamente. O veículo é processado normalmente; só a
-        // leitura implausível não vira marco -- o marco antigo fica, e o
-        // COALESCE abaixo o preserva.
-        const datagpsMarco = datagpsPlausivelComoMarco(posAtual.datagps, agora) ? posAtual.datagps : null;
+        // unitário): só vira marco datagps que não está no futuro em relação
+        // à gravação da linha (updated_at + 5 min). Um valor no futuro
+        // (relógio do aparelho errado) travaria este veículo até o relógio
+        // alcançar (`datagps <= ultimo_datagps` a cada 30s), silenciosamente.
+        // O veículo é processado normalmente; só a leitura implausível não
+        // vira marco -- o marco antigo fica, e o COALESCE abaixo o preserva.
+        // Sem updated_at (não deveria acontecer), a referência é `agora`.
+        const datagpsMarco = datagpsPlausivelComoMarco(posAtual.datagps, posAtual.updated_at ?? agora) ? posAtual.datagps : null;
         try {
           await pool.query(
             `INSERT INTO romaneio_desvio_estado (veiculo_id, afastando_streak, rua_rara_streak, ultima_via_principal_em, saiu_parada_confirmada_em, ultimo_datagps, atualizado_em)

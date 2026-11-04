@@ -26,6 +26,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { configPoolContabo } from "@/lib/supabase/contabo-ca";
 import { SQL_VEICULOS_EM_FAVELA, veiculosFavelaDoCiclo } from "@/lib/frescor-posicao";
 import { SQL_GUARDA_ORDEM_DATAGPS } from "@/lib/posicoes-upsert";
+import { parseDatagps } from "@/lib/datagps";
 import { geocodeReverso, atualizacaoDeLocais, limiteGeocodesNovos, chaveGeocode, type ResultadoGeocodeReverso } from "@/lib/geocode-reverso";
 import { RAIO_ESCALA_M } from "@/lib/escala-geocode";
 import {
@@ -316,19 +317,8 @@ const ENTREGA_PRESENCA_MIN_SEG = 120;
 const ultimoSnapshotPendentesPorVeiculo = new Map<string, number>();
 const SNAPSHOT_PENDENTES_INTERVALO_MS = 5 * 60 * 1000;
 
-// ─── Converte datagps da Unitrac (DD/MM/YYYY HH:MM:SS) para ISO ou null ───
-function parseDatagps(raw: string | undefined | null): string | null {
-  if (!raw) return null;
-  // Formato possivel: "22/06/2026 15:57:56" ou ISO "2026-06-22T..."
-  const match = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
-  if (match) {
-    const [, d, m, y, hh, mm, ss] = match;
-    return `${y}-${m}-${d}T${hh}:${mm}:${ss}Z`;
-  }
-  // Tentar parsear direto (pode ser ISO)
-  const ts = Date.parse(raw);
-  return isNaN(ts) ? null : new Date(ts).toISOString();
-}
+// parseDatagps mora em @/lib/datagps (Frente H, 03/11): hora de Brasília
+// (-03:00), vazio/inválido => null.
 
 // ─── Pool pg (necessário para ST_MakePoint no upsert de posicoes_atuais) ───
 function criaPgPool() {
@@ -1152,7 +1142,7 @@ export async function POST(request: Request) {
     type LinhaPosicaoCiclo = {
       veiculo_id: string; lat: number; lng: number; velocidade: number; ignicao: boolean;
       atraso_min: number; panico: boolean; bau_aberto: boolean; nivel: string; motivo: string | null;
-      datagps: string; parado_desde: string | null; updated_at: string; entregas_feitas: number;
+      datagps: string | null; parado_desde: string | null; updated_at: string; entregas_feitas: number;
       entregas_total: number; local: string | null; rumo: number | null;
       ultimo_evento: string | null;
       no_raio_alvo_codigo: number | null; no_raio_desde: string | null; no_raio_dwell_segundos: number;
@@ -3793,7 +3783,10 @@ export async function POST(request: Request) {
             bau_aberto: pos.bau,
             nivel,
             motivo,
-            datagps: parseDatagps(pos.datagps) ?? agora.toISOString(),
+            // Frente H: sem datagps válido grava null (nunca "agora"). null
+            // libera a guarda de ordem e o gate do motor-romaneio (fail-open);
+            // "agora" travaria as leituras seguintes até o relógio alcançar.
+            datagps: parseDatagps(pos.datagps),
             parado_desde,
             updated_at: agora.toISOString(),
             entregas_feitas,

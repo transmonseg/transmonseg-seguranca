@@ -20,40 +20,46 @@ describe("dataSP", () => {
 });
 
 describe("datagpsPlausivelComoMarco", () => {
-  const agora = new Date("2026-08-22T20:00:00Z");
+  // Frente H / DSV-08: com o parse certo (-03:00) o datagps é o instante
+  // real. Plausível = não está no futuro em relação à gravação da linha
+  // (updated_at de posicoes_atuais), com 5 min de folga pro relógio do
+  // aparelho. Independe do deslocamento de fuso: o valor antigo (3 h atrás)
+  // também passa, então a transição não congela o marco.
+  const updatedAt = new Date("2026-11-03T20:00:00Z");
 
-  it("aceita o datagps normal desta base (~3h atras por causa do offset de fuso)", () => {
-    expect(datagpsPlausivelComoMarco("2026-08-22T17:00:00Z", agora)).toBe(true);
+  it("aceita o datagps certo de uma leitura ao vivo (segundos antes da gravação)", () => {
+    expect(datagpsPlausivelComoMarco("2026-11-03T19:59:40Z", updatedAt)).toBe(true);
+  });
+
+  it("aceita o datagps antigo, 3 h atrás (gravado antes da correção)", () => {
+    expect(datagpsPlausivelComoMarco("2026-11-03T17:00:00Z", updatedAt)).toBe(true);
   });
 
   it("aceita leitura antiga (GPS atrasado de verdade)", () => {
-    expect(datagpsPlausivelComoMarco("2026-08-22T09:00:00Z", agora)).toBe(true);
+    expect(datagpsPlausivelComoMarco("2026-11-03T09:00:00Z", updatedAt)).toBe(true);
   });
 
-  it("REJEITA o valor envenenado (agora.toISOString() do fallback da Central)", () => {
-    expect(datagpsPlausivelComoMarco(agora.toISOString(), agora)).toBe(false);
+  it("aceita até updated_at + 5 min (relógio do aparelho um pouco adiantado)", () => {
+    const borda = new Date(updatedAt.getTime() + MARGEM_DATAGPS_PLAUSIVEL_MS).toISOString();
+    expect(MARGEM_DATAGPS_PLAUSIVEL_MS).toBe(5 * 60 * 1000);
+    expect(datagpsPlausivelComoMarco(borda, updatedAt)).toBe(true);
   });
 
-  it("REJEITA valor no futuro", () => {
-    expect(datagpsPlausivelComoMarco("2026-08-22T23:00:00Z", agora)).toBe(false);
+  it("REJEITA updated_at + 10 min (futuro)", () => {
+    expect(datagpsPlausivelComoMarco("2026-11-03T20:10:00Z", updatedAt)).toBe(false);
   });
 
-  it("REJEITA valor dentro da margem de 2h", () => {
-    expect(datagpsPlausivelComoMarco("2026-08-22T18:30:00Z", agora)).toBe(false);
-  });
-
-  it("aceita exatamente na borda da margem", () => {
-    const borda = new Date(agora.getTime() - MARGEM_DATAGPS_PLAUSIVEL_MS).toISOString();
-    expect(datagpsPlausivelComoMarco(borda, agora)).toBe(true);
-  });
-
-  it("aceita objeto Date, nao so' string", () => {
-    expect(datagpsPlausivelComoMarco(new Date("2026-08-22T17:00:00Z"), agora)).toBe(true);
+  it("aceita objeto Date e referência em texto", () => {
+    expect(datagpsPlausivelComoMarco(new Date("2026-11-03T19:59:00Z"), "2026-11-03T20:00:00Z")).toBe(true);
   });
 
   it("null e data invalida nunca viram marco", () => {
-    expect(datagpsPlausivelComoMarco(null, agora)).toBe(false);
-    expect(datagpsPlausivelComoMarco("nao e uma data", agora)).toBe(false);
+    expect(datagpsPlausivelComoMarco(null, updatedAt)).toBe(false);
+    expect(datagpsPlausivelComoMarco("nao e uma data", updatedAt)).toBe(false);
+  });
+
+  it("referência inválida: não vira marco (fail-open, o carro continua sendo processado)", () => {
+    expect(datagpsPlausivelComoMarco("2026-11-03T19:59:00Z", "lixo")).toBe(false);
   });
 });
 
