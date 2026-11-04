@@ -20,4 +20,5 @@
     notifempty
     copytruncate
     maxsize 20M
+    su root syslog
 }
