@@ -82,6 +82,15 @@ describe("motor: um cliente com resposta ruim não derruba os outros", () => {
     expect(corpo.erros.join(" ")).toMatch(/cli-A.*sem lista Posicoes/);
   });
 
+  it("Frente H: datagps da Unitrac (hora de Brasília) vai para posicoes_atuais como instante real (-03:00)", async () => {
+    const { POST } = await import("./route");
+    await POST(new Request("http://x/api/motor", { method: "POST", headers: { "x-motor-key": "s" } }));
+    const upsert = estado.sqls.find((q) => /INSERT INTO posicoes_atuais/i.test(q.sql));
+    expect(upsert).toBeDefined();
+    // "03/11/2026 14:00:00" BRT = 17:00Z (antes da correção ia 14:00Z)
+    expect(upsert!.params[10]).toEqual(["2026-11-03T17:00:00.000Z"]);
+  });
+
   it("leitura 0,0 do cliente B é descartada e contada, nada vai para posicoes_atuais", async () => {
     estado.latB = "0"; estado.lngB = "0";
     const { POST } = await import("./route");

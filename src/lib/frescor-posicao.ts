@@ -6,7 +6,8 @@
 // API -- TTJ-0F00, TTP-0H36, TTI-6D27, TTT-1E20), o numero congela baixo e o
 // carro parece fresco para sempre: 1 alerta de favela a cada 30 s por carro
 // (28.400 em 24 h). O frescor passa a ser max(atraso_min, idade do
-// updated_at), relogio do Postgres na gravacao. Nunca datagps (3 h deslocado).
+// updated_at), relogio do Postgres na gravacao. Nunca datagps (hora da leitura,
+// e ate a Frente H, 03/11, gravado 3 h atras).
 //
 // Efeito no desvio: nenhum carro com leitura nova muda (updated_at de quem a
 // API devolve tem segundos); so' carro congelado deixa de ser "fresco", e

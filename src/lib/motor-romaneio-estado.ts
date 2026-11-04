@@ -16,46 +16,32 @@ export function dataSP(d: Date): string {
 }
 
 // ─── Marco de idempotência (ultimo_datagps) ────────────────────────────────
-// Achado da revisão final de 22/08 (buraco LATENTE -- nenhuma linha nesse
-// estado hoje, mas o `??` que o causa está no código da Central desde
-// sempre): src/app/api/motor/route.ts:2982 grava
-// `datagps: parseDatagps(pos.datagps) ?? agora.toISOString()`. Quando o
-// payload da Unitrac vem sem datagps (ou num formato que parseDatagps não
-// casa), posicoes_atuais.datagps recebe o **UTC real** -- enquanto TODOS os
-// outros valores dessa coluna são hora de Brasília rotulada como "Z", ou
-// seja UTC_real - 3h (medido em produção 22/08: o datagps mais fresco da
-// tabela inteira estava 3,01h "atrás" de now(), e essa distância é o piso
-// estrutural, não atraso de GPS).
+// Histórico (22/08): a Central gravava `parseDatagps(pos.datagps) ?? agora`
+// com o parse colando "Z" na hora de Brasília, ou seja, todo datagps ficava
+// 3 h atrás e o fallback gravava o UTC real. A guarda antiga exigia
+// `datagps <= agora - 2h` pra recusar o valor envenenado; ela dependia do
+// deslocamento de 3 h e congelaria o marco no dia em que o parse fosse
+// corrigido (DSV-08, auditoria 03/11).
 //
-// Sem guarda, um único ciclo envenenado grava ultimo_datagps = UTC_real; no
-// ciclo seguinte a Unitrac volta ao normal, datagps volta a ser
-// UTC_real - 3h, o gate de idempotência vê `datagps <= ultimo_datagps` e
-// PULA o veículo a cada 30s pelas ~3h seguintes -- sem streak, sem alerta,
-// sem nada em erros[]. atraso_min não denuncia (vem do campo `atraso` da
-// Unitrac, não é derivado de datagps). Perda de recall silenciosa, que é
-// exatamente o que este produto não pode ter
-// ([[feedback_desvio_priorizar_recall]]).
-//
-// Critério: um datagps plausível desta base está SEMPRE pelo menos ~3h
-// atrás de now(). Aceitamos como marco só o que estiver a 2h ou mais no
-// passado -- 1h inteira de folga sobre o piso medido de 3,01h, e ainda
-// assim longe do sintoma (o valor envenenado fica a ~0h de now(), e um
-// valor futuro fica negativo). O veículo continua sendo PROCESSADO
+// Frente H (03/11): parseDatagps lê -03:00 e devolve null em vez de "agora"
+// (@/lib/datagps). Critério novo, independente do fuso: o datagps não pode
+// estar no futuro em relação à gravação da própria linha (updated_at de
+// posicoes_atuais), com 5 min de folga pro relógio do aparelho. Leitura real
+// é sempre anterior à gravação. O valor antigo (3 h atrás) também passa, então
+// a transição não congela nada. Valor no futuro (relógio do aparelho errado)
+// não vira marco: guardá-lo faria o gate `datagps <= ultimo_datagps` pular o
+// veículo até o relógio alcançar, perda de recall silenciosa
+// ([[feedback_desvio_priorizar_recall]]). O veículo continua sendo PROCESSADO
 // normalmente com a leitura suspeita; só não deixamos ela virar marco.
-//
-// Modo de falha desta guarda, de propósito: se um dia parseDatagps for
-// corrigido e datagps passar a ser UTC real pra todo mundo, TODA leitura
-// vira "implausível", ultimo_datagps para de avançar e o gate de
-// idempotência nunca mais pula ninguém -- o motor reprocessa o mesmo
-// veículo a cada ciclo. Custo: trabalho repetido. Nunca: alerta perdido.
-// Fail-open é o lado certo pra errar aqui.
-export const MARGEM_DATAGPS_PLAUSIVEL_MS = 2 * 60 * 60 * 1000;
+// Referência inválida: não vira marco (fail-open).
+export const MARGEM_DATAGPS_PLAUSIVEL_MS = 5 * 60 * 1000;
 
-export function datagpsPlausivelComoMarco(datagps: string | Date | null, agora: Date): boolean {
-  if (datagps === null) return false;
+export function datagpsPlausivelComoMarco(datagps: string | Date | null, referencia: string | Date | null): boolean {
+  if (datagps === null || referencia === null) return false;
   const t = datagps instanceof Date ? datagps.getTime() : new Date(datagps).getTime();
-  if (!Number.isFinite(t)) return false;
-  return t <= agora.getTime() - MARGEM_DATAGPS_PLAUSIVEL_MS;
+  const r = referencia instanceof Date ? referencia.getTime() : new Date(referencia).getTime();
+  if (!Number.isFinite(t) || !Number.isFinite(r)) return false;
+  return t <= r + MARGEM_DATAGPS_PLAUSIVEL_MS;
 }
 
 // ─── Estado que atravessou o dia ───────────────────────────────────────────
