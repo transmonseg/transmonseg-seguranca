@@ -660,3 +660,25 @@ export function ajustarAlertaDesvioRomaneio(alerta: Alerta | null, pendentesNoRa
   if (nivelDesvio(pendentesNoRaio) === "critico") return alerta;
   return { ...alerta, nivel: "atencao", motivo: MOTIVO_ROTA_CONCLUIDA, origemDesvio: "sem_destinos" };
 }
+
+// 07/11 (plano de correcao, item 1.3, carta branca do dono): caminhao que, a
+// partir das 14:30, esta' claramente voltando pra base (mesma regra do gate
+// ehRetornoABaseHorarioAvancado) com cliente pendente ainda no raio virava
+// "desvio CRITICO afastando de todos" -- quase todo carro, todo fim de tarde
+// (06/11: 88 de 147 episodios da Nutry eram volta pra base). Nao suprime
+// (recall): rebaixa pra atencao e diz o que e', com a quantidade de clientes
+// sem entrega confirmada. Origem continua afastando_geral (episodio/reabertura
+// iguais). Critico existente nunca e' rebaixado (deveReabrirDesvio).
+export function motivoVoltandoBaseComPendente(pendentes: number): string {
+  return `Voltando para a base com ${pendentes} cliente${pendentes === 1 ? "" : "s"} sem entrega confirmada`;
+}
+
+export function ajustarAlertaRetornoBaseComPendente(
+  alerta: Alerta | null,
+  args: { leituras: LeituraRetornoBase[] | null; agoraLocal: { hora: number; minuto: number }; pendentesNoRaio: number }
+): Alerta | null {
+  if (!alerta || alerta.tipo !== "desvio" || alerta.origemDesvio !== "afastando_geral") return alerta;
+  if (args.pendentesNoRaio <= 0 || !args.leituras) return alerta;
+  if (!ehRetornoABaseHorarioAvancado(args.leituras, args.agoraLocal)) return alerta;
+  return { ...alerta, nivel: "atencao", motivo: motivoVoltandoBaseComPendente(args.pendentesNoRaio) };
+}

@@ -116,7 +116,7 @@ import { obterRouboCarga } from "@/lib/roubocarga";
 import { buscarTiroteiosRJ, obterPerfilHorario, type Tiroteio } from "@/lib/fogocruzado";
 import { montarPontosDeRomaneio, type LinhaRomaneioGeocodificada } from "@/lib/romaneio";
 import { buscarDistanciasReais } from "@/lib/distancia-real";
-import { ajustarAlertaDesvioRomaneio, destinosParaDesvio, avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, RETORNO_BASE_JANELA_S, type LeituraRetornoBase } from "@/lib/desvio";
+import { ajustarAlertaDesvioRomaneio, ajustarAlertaRetornoBaseComPendente, destinosParaDesvio, avaliarAfastandoDeTudo, avaliarRuaRara, montarAlertaDesvio, LIMIAR_CARENCIA_BASE_M, RETORNO_BASE_JANELA_S, type LeituraRetornoBase } from "@/lib/desvio";
 import {
   GATE_SAIDA_BASE_ATIVO,
   PERIODO_CICLO_MOTOR_S,
@@ -2584,6 +2584,42 @@ export async function POST(request: Request) {
             // continua saindo (nunca suprime), mas como atenção, origem
             // sem_destinos e com o texto verdadeiro.
             alerta = ajustarAlertaDesvioRomaneio(alerta, pendentesNoRaio.length);
+
+            // 07/11 (item 1.3): depois das 14:30, voltando pra base com
+            // pendente no raio = atencao "Voltando para a base com N clientes
+            // sem entrega confirmada" (nunca suprime). Janela so' e' lida
+            // quando pode agir. Fail-open: erro deixa o alerta como esta'.
+            if (alerta?.origemDesvio === "afastando_geral" && alerta.nivel === "critico" && centroidesBase.length > 0) {
+              const partesTarde = new Intl.DateTimeFormat("pt-BR", {
+                timeZone: "America/Sao_Paulo", hour: "numeric", minute: "numeric", hour12: false,
+              }).formatToParts(agora);
+              const agoraLocal = {
+                hora: parseInt(partesTarde.find((p) => p.type === "hour")?.value ?? "0", 10),
+                minuto: parseInt(partesTarde.find((p) => p.type === "minute")?.value ?? "0", 10),
+              };
+              if (agoraLocal.hora * 60 + agoraLocal.minuto >= 14 * 60 + 30) {
+                try {
+                  const { rows: janelaTarde } = await pool.query<{ lat: number; lng: number; criado_em: Date }>(
+                    `SELECT lat, lng, criado_em FROM posicoes_historico
+                      WHERE veiculo_id = $1
+                        AND criado_em >= now() - ($2 || ' seconds')::interval
+                        AND lat IS NOT NULL AND lng IS NOT NULL
+                      ORDER BY criado_em ASC`,
+                    [veiculoId, String(RETORNO_BASE_JANELA_S)]
+                  );
+                  const leituras = montarLeiturasRetornoBase(
+                    [
+                      ...janelaTarde.map((r) => ({ lat: r.lat, lng: r.lng, t: new Date(r.criado_em).getTime() / 1000 })),
+                      { lat: latAtual, lng: lngAtual, t: agora.getTime() / 1000 },
+                    ],
+                    centroidesBase
+                  );
+                  alerta = ajustarAlertaRetornoBaseComPendente(alerta, { leituras, agoraLocal, pendentesNoRaio: pendentesNoRaio.length });
+                } catch (errTarde) {
+                  erros.push(`Aviso: falha ao ler janela de volta pra base pro veiculo ${veiculoId}: ${String(errTarde)}`);
+                }
+              }
+            }
 
             // Step 7: corroborações, mesma ordem da Central -- corredor, depois classe viária.
             if (alerta) {
