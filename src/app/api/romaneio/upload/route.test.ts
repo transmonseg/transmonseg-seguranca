@@ -527,6 +527,22 @@ describe("POST /api/romaneio/upload -- repasse do Ao vivo do KPI (06/10)", () =>
     expect(mockUpsert).toHaveBeenCalled();
   });
 
+  it("07/11: escala do pao pela ponte usa o ponto do KPI (Coelho da Rocha saia no Recreio)", async () => {
+    mockParseRomaneio.mockReturnValue([{ ...linhaRegexValida(), nf: "218095" }, { ...linhaRegexValida(), nf: "218096" }]);
+    const { POST } = await import("./route");
+    const req = criarRequisicao("pao.pdf", "conteudo", {
+      origem: "escala_pao",
+      coordenadas: JSON.stringify([{ placa: "ABC1D23", nf: "218095", lat: -22.785, lng: -43.37 }]),
+    });
+    const headers = new Headers(req.headers);
+    headers.set("x-motor-key", "segredo-teste");
+    const res = await POST(new Request(req, { headers }));
+    expect(res.status).toBe(200);
+    const linhas = mockUpsert.mock.calls[0][0] as Array<{ nf: string; lat: number | null; geocode_status: string; origem: string }>;
+    expect(linhas.find((l) => l.nf === "218095")).toMatchObject({ lat: -22.785, geocode_status: "ok", origem: "escala_pao" });
+    expect(linhas.find((l) => l.nf === "218096")).toMatchObject({ lat: null, geocode_status: "pendente" });
+  });
+
   it("chave errada e sem sessao: 401, nao grava nada", async () => {
     mockParseRomaneio.mockReturnValue([linhaRegexValida()]);
     const { POST } = await import("./route");

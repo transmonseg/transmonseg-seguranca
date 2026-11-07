@@ -233,9 +233,10 @@ export async function POST(request: Request) {
     : (user?.user_metadata?.nome as string | undefined) ?? user?.email ?? null;
 
   // GEO3-08 (03/11): ponto confiável que o KPI já resolveu por NF, só pela
-  // ponte do Ao vivo (x-motor-key) e só no romaneio. Linha com ponto entra
-  // "ok" (o cron não regeocodifica); sem ponto, geocodifica como antes.
-  const coordsKpi = viaKpi && origem === "romaneio" ? lerCoordenadasKpi(formData.get("coordenadas")) : new Map();
+  // ponte do Ao vivo (x-motor-key). Linha com ponto entra "ok" (o cron não
+  // regeocodifica); sem ponto, geocodifica como antes. 07/11: vale também pro
+  // pão (Feira Nova Coelho da Rocha, NF 218095, saía no Recreio, 19 km da loja).
+  const coordsKpi = viaKpi ? lerCoordenadasKpi(formData.get("coordenadas")) : new Map();
   const linhasParaInserir = linhasNormalizadas.map((l) => {
     const placaNormalizada = normalizarPlaca(l.placaBruta);
     const veiculo = veiculoPorPlaca.get(placaNormalizada);
