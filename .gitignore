@@ -60,3 +60,4 @@ scripts/backtest-desvio/corpus.json
 
 # Workspace de sessao do subagent-driven-development (ledger/briefs/reviews)
 .superpowers/sdd/
+.superpowers/brainstorm/
