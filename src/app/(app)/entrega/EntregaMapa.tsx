@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Marker, useJsApiLoader } from "@react-google-maps/api";
 import { DARK_STYLES } from "../central-v2/MapaLeafletV2";
 import { COR_SITUACAO_ENTREGA, ROTULO_SITUACAO_ENTREGA } from "@/lib/entrega-mapa";
+import type { ConferenciaKpi, FrotaKpi } from "@/lib/conferencia-kpi";
 
 // "Entrega no mapa" (05/10): mesmo Google Maps da Central (estilo escuro,
 // satélite, rastro com setas), com a rota inteira da placa e a entrega da NF
@@ -19,6 +20,8 @@ export type PropsEntregaMapa = {
     perto: { lat: number; lng: number; em: string; distM: number } | null;
     /** F4-07 (GEO-24): selo de precisão do ponto e raio do círculo de incerteza. */
     selo?: { rotulo: string; raioM: number | null } | null;
+    /** 09/11: botão "Confirmar entrega" (grava no KPI). null = conta/NF sem conferência. */
+    conferir?: { frota: FrotaKpi; conferencia: ConferenciaKpi } | null;
   };
   rastro: [number, number][];
   rota: PontoRota[];
@@ -66,7 +69,74 @@ function fechar(volta: string) {
   window.history.back();
 }
 
-export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }: PropsEntregaMapa) {
+const CONFIRMATORIAS = new Set(["confirmada_operacao", "entregue", "entregue_tempo_conferido", "entregue_rastro_oscilante", "entregue_outra_placa"]);
+
+/** 09/11: confirmar a entrega aqui (pedido do dono: conferir em qualquer tela). */
+function ConferirEntrega({ info, conf, onConf }: { info: PropsEntregaMapa["info"]; conf: ConferenciaKpi; onConf: (c: ConferenciaKpi) => void }) {
+  const [aberto, setAberto] = useState(false);
+  const [obs, setObs] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  if (!info.conferir) return null;
+  const frota = info.conferir.frota;
+  async function enviar(acao: "confirmar" | "desfazer") {
+    setEnviando(true); setErro(null);
+    try {
+      const r = await fetch("/api/entrega/conferir", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ frota, data: info.data, nf: info.nf, acao, observacao: obs }) });
+      const j = (await r.json().catch(() => ({}))) as { ok?: boolean; conferencia?: ConferenciaKpi; erro?: string };
+      if (!r.ok || !j.ok) { setErro(j.erro ?? "Não deu para gravar. Tente de novo."); return; }
+      onConf(acao === "desfazer" ? null : j.conferencia ?? null);
+      setAberto(false); setObs("");
+    } catch {
+      setErro("Sem conexão com o servidor. Tente de novo.");
+    } finally {
+      setEnviando(false);
+    }
+  }
+  const botao = "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition-colors disabled:opacity-50";
+  if (conf && CONFIRMATORIAS.has(conf.resolucao)) {
+    return (
+      <div className="mt-2 rounded-lg px-2.5 py-2 text-[12px]" style={{ backgroundColor: "rgba(34,197,94,0.12)", color: "#4ade80" }}>
+        <p><strong className="font-semibold">Entrega confirmada</strong> por {conf.responsavel} às {hhmm(conf.criadoEm)}.{conf.observacao ? ` ${conf.observacao}` : ""}</p>
+        <p className="mt-0.5" style={{ color: "var(--text-muted)" }}>Já conta no KPI Ao vivo.</p>
+        <button type="button" disabled={enviando} onClick={() => void enviar("desfazer")} className="mt-1 font-semibold underline-offset-2 hover:underline disabled:opacity-50" style={{ color: "var(--text)" }}>
+          {enviando ? "Desfazendo…" : "Desfazer"}
+        </button>
+        {erro && <p role="alert" className="mt-1" style={{ color: "#f87171" }}>{erro}</p>}
+      </div>
+    );
+  }
+  if (info.situacao === "entregue" || info.situacao === "sem_rastreador") return null;
+  if (!aberto) {
+    return (
+      <button type="button" onClick={() => setAberto(true)} className={`mt-3 ${botao}`} style={{ backgroundColor: "#22c55e", color: "#0a0a0a" }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>
+        Confirmar entrega
+      </button>
+    );
+  }
+  return (
+    <div className="mt-3 flex flex-col gap-2 rounded-lg p-2.5" style={{ border: "1px solid var(--border)" }}>
+      <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>Conferiu na Unitrac, com o motorista ou com o cliente? A nota vira entregue no KPI agora, com o seu nome.</p>
+      <input value={obs} onChange={e => setObs(e.target.value)} maxLength={300} placeholder="Como conferiu (opcional)"
+        className="h-8 rounded-md px-2 text-[12.5px] outline-none" style={{ border: "1px solid var(--border)", backgroundColor: "transparent", color: "var(--text)" }} />
+      <div className="flex items-center gap-3">
+        <button type="button" disabled={enviando} onClick={() => void enviar("confirmar")} className={botao} style={{ backgroundColor: "#22c55e", color: "#0a0a0a" }}>
+          {enviando ? "Confirmando…" : "Confirmar entrega"}
+        </button>
+        <button type="button" onClick={() => { setAberto(false); setErro(null); }} className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>Cancelar</button>
+      </div>
+      {erro && <p role="alert" className="text-[12px]" style={{ color: "#f87171" }}>{erro}</p>}
+    </div>
+  );
+}
+
+export default function EntregaMapa({ info: infoProps, rastro, rota: rotaProps, alvo, parada, atual }: PropsEntregaMapa) {
+  // 09/11: conferência feita aqui muda a nota na hora (cor, status, rota).
+  const [conf, setConf] = useState<ConferenciaKpi>(infoProps.conferir?.conferencia ?? null);
+  const confirmada = !!conf && CONFIRMATORIAS.has(conf.resolucao);
+  const info = confirmada ? { ...infoProps, situacao: "entregue" } : infoProps;
+  const rota = useMemo(() => (confirmada ? rotaProps.map(p => (p.nf === infoProps.nf ? { ...p, situacao: "entregue" } : p)) : rotaProps), [rotaProps, confirmada, infoProps.nf]);
   const { isLoaded } = useJsApiLoader({ googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "", id: "transmonseg-google-maps" });
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [satelite, setSatelite] = useState(true);
@@ -176,6 +246,7 @@ export default function EntregaMapa({ info, rastro, rota, alvo, parada, atual }:
             <p className="mt-3 text-[13px]" style={{ color: "var(--text)" }}>{alvo ? "Sem parada de entrega registrada." : "O endereço desta nota não tem coordenada."}</p>
           )}
           {info.status && info.situacao !== "entregue" && <p className="mt-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={{ backgroundColor: "rgba(245,158,11,0.12)", color: "#f5b443" }}>{info.status}</p>}
+          <ConferirEntrega info={infoProps} conf={conf} onConf={setConf} />
           {atual?.semSinal && (
             <p className="mt-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={{ backgroundColor: "rgba(245,158,11,0.12)", color: "#f5b443" }}>
               {atual.rotulo}. O ponto cinza no mapa é onde o rastreador mandou a última posição, não onde o caminhão está agora.

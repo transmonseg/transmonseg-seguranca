@@ -2,6 +2,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { acessoDoUsuario } from "@/lib/acesso-cliente";
 import { janelaDiaBR, paradaDaEntrega, maisPerto, afinarRastro, distanciaM, normPlacaVariantes, codUnitracDaFrota, clienteDaEntrega, seloDoPonto, pontoDoHistorico, posicaoAtual, type PontoRastro } from "@/lib/entrega-mapa";
 import EntregaMapaWrapper from "./EntregaMapaWrapper";
+import { frotaKpi, nfConferivel, lerConferenciaKpi } from "@/lib/conferencia-kpi";
 
 // "Entrega no mapa" (05/10): aberta pelo botão "Ver no monitoramento" de cada
 // NF no KPI ao vivo. Mostra o rastro do dia da placa, o endereço do cliente,
@@ -82,6 +83,10 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
   // RAS-03 (03/11): a hora é a do GPS (criado_em - atraso_min); leitura com
   // mais de 15 min vira "Último sinal às HH:MM", nunca "Agora".
   const atual = data === hoje() && !rastroTravado ? posicaoAtual(pontos, new Date()) : null;
+  // 09/11: "Confirmar entrega" aqui mesmo (grava no KPI, vale na hora no Ao vivo).
+  const frota = frotaKpi(txt(q.frota));
+  const podeConferir = !!frota && !!cliFrota && daEntrega.tipo !== "nenhum" && nfConferivel(frota, cliente.nf);
+  const conferencia = podeConferir && frota ? await lerConferenciaKpi(frota, data, cliente.nf) : null;
 
   return (
     <EntregaMapaWrapper
@@ -91,6 +96,7 @@ export default async function EntregaPage({ searchParams }: { searchParams: Prom
         distParadaM: parada && alvo ? Math.round(distanciaM(parada, alvo)) : null,
         perto: perto ? { lat: perto.lat, lng: perto.lng, em: perto.em, distM: Math.round(perto.distM) } : null,
         selo,
+        conferir: podeConferir && frota ? { frota, conferencia } : null,
       }}
       rastro={rastroTravado ? [] : afinarRastro(pontos, 2500).map(p => [p.lat, p.lng] as [number, number])}
       rota={rota}

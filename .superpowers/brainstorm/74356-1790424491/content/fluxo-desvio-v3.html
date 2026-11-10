@@ -1,0 +1,70 @@
+<h2>É assim? O desvio chegando, passo a passo</h2>
+<p class="subtitle">Sem escurecer, sem zoom automático. O zoom no caminhão só acontece quando você clica.</p>
+
+<style>
+  .card-image{aspect-ratio:auto!important;display:block!important}
+  .mk{background:#0b0d10;width:100%;height:300px;position:relative;overflow:hidden;font-family:ui-sans-serif,system-ui;color:#e6e6e6;border-radius:10px 10px 0 0}
+  .mk .map{position:absolute;inset:0;background:radial-gradient(circle at 30% 60%,#1f3a2a 0,#101820 45%,#0b0d10 100%)}
+  .mk .dot{position:absolute;width:8px;height:8px;border-radius:50%;background:#f5b72e;opacity:.8}
+  .mk .dotr{position:absolute;width:10px;height:10px;border-radius:3px;background:#ef4444}
+  .mk .sw{position:absolute;top:10px;left:50%;transform:translateX(-50%);display:flex;gap:2px;background:#15181d;border:1px solid #2a2f37;border-radius:9px;padding:3px;font-size:9px;letter-spacing:.06em;white-space:nowrap}
+  .mk .sw span{padding:4px 8px;border-radius:6px;color:#9aa3ad}
+  .mk .sw span.on{background:#8fb4ff;color:#0b0d10;font-weight:700}
+  .mk .boxes{position:absolute;top:44px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+  .mk .gbox{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:7px;background:#0f2a1a;border:1px solid #1f7a45;color:#6ee7a0;font-size:10px;font-weight:700;letter-spacing:.05em}
+  .mk .gbox .n{background:#1f7a45;color:#e8fff1;border-radius:4px;padding:1px 5px}
+  .mk .banner{position:absolute;top:82px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;background:#1a0b0c;border:1px solid #ef4444;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 0 0 4px rgba(239,68,68,.18)}
+  .mk .pulse{width:9px;height:9px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 5px rgba(239,68,68,.25)}
+  .mk .link{position:absolute;top:82px;left:50%;transform:translateX(-50%);padding:6px 12px;border-radius:999px;background:#15181d;border:1px solid #7f1d1d;color:#fca5a5;font-size:11px;font-weight:700;white-space:nowrap}
+  .mk .panel{position:absolute;top:82px;left:50%;transform:translateX(-50%);width:280px;background:#12151a;border:1px solid #2a2f37;border-radius:10px;padding:8px;box-shadow:0 14px 30px rgba(0,0,0,.5)}
+  .mk .row{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-radius:7px;font-size:11px}
+  .mk .row b{font-family:ui-monospace,monospace}
+  .mk .row.h{background:#1a0b0c;border:1px solid #7f1d1d}
+  .mk .row small{color:#9aa3ad}
+  .mk .ring{position:absolute;width:30px;height:30px;border-radius:50%;border:2px solid #ef4444;box-shadow:0 0 16px rgba(239,68,68,.6)}
+  .mk .cap{position:absolute;left:8px;right:8px;bottom:8px;font-size:10.5px;color:#9aa3ad;background:rgba(11,13,16,.88);border:1px dashed #2a2f37;border-radius:6px;padding:6px 8px}
+  .mk .step{position:absolute;top:8px;left:8px;background:#8fb4ff;color:#0b0d10;font-weight:800;font-size:11px;border-radius:6px;padding:2px 7px}
+</style>
+
+<div class="cards">
+
+  <div class="card"><div class="card-image"><div class="mk">
+    <div class="map"></div><div class="dot" style="left:20%;top:60%"></div><div class="dot" style="left:40%;top:72%"></div><div class="dot" style="left:70%;top:58%"></div><div class="dotr" style="left:55%;top:66%"></div>
+    <span class="step">1</span>
+    <div class="sw"><span class="on">TODOS</span><span>AMBOS</span><span>SELEC.</span><span>ROMANEIO</span></div>
+    <div class="boxes"><div class="gbox">DESVIOS <span class="n">2</span></div><div class="gbox">AVISOS <span class="n">12</span></div></div>
+    <div class="cap">Tela calma: só o seletor e os dois quadrados verdes. Nada listado em cima do mapa.</div>
+  </div></div><div class="card-body"><h3>1 · Normal</h3><p>Sem chips no topo.</p></div></div>
+
+  <div class="card"><div class="card-image"><div class="mk">
+    <div class="map"></div><div class="dot" style="left:20%;top:60%"></div><div class="dot" style="left:40%;top:72%"></div><div class="dot" style="left:70%;top:58%"></div><div class="dotr" style="left:55%;top:66%"></div>
+    <span class="step">2</span>
+    <div class="sw"><span class="on">TODOS</span><span>AMBOS</span><span>SELEC.</span><span>ROMANEIO</span></div>
+    <div class="boxes"><div class="gbox">DESVIOS <span class="n">3</span></div><div class="gbox">AVISOS <span class="n">12</span></div></div>
+    <div class="banner"><span class="pulse"></span>RQU-9D10 em desvio agora</div>
+    <div class="cap">Desvio novo: aparece esse aviso em cima e apita por alguns segundos. O mapa não mexe, não escurece.</div>
+  </div></div><div class="card-body"><h3>2 · Desvio chega</h3><p>Aviso no topo + apito.</p></div></div>
+
+  <div class="card"><div class="card-image"><div class="mk">
+    <div class="map"></div><div class="dot" style="left:20%;top:60%"></div><div class="dot" style="left:40%;top:72%"></div><div class="dot" style="left:70%;top:58%"></div><div class="dotr" style="left:55%;top:66%"></div>
+    <span class="step">3</span>
+    <div class="sw"><span class="on">TODOS</span><span>AMBOS</span><span>SELEC.</span><span>ROMANEIO</span></div>
+    <div class="boxes"><div class="gbox">DESVIOS <span class="n">3</span></div><div class="gbox">AVISOS <span class="n">12</span></div></div>
+    <div class="link">Ver mais desvios (3) ▾</div>
+    <div class="cap">Depois de alguns segundos o aviso encolhe e vira "Ver mais desvios".</div>
+  </div></div><div class="card-body"><h3>3 · Minimiza</h3><p>Vira "Ver mais desvios".</p></div></div>
+
+  <div class="card"><div class="card-image"><div class="mk">
+    <div class="map"></div><div class="dot" style="left:20%;top:60%"></div><div class="dot" style="left:40%;top:72%"></div><div class="dot" style="left:70%;top:58%"></div><div class="dotr" style="left:55%;top:78%"></div><div class="ring" style="left:calc(55% - 10px);top:calc(78% - 10px)"></div>
+    <span class="step">4</span>
+    <div class="sw"><span class="on">TODOS</span><span>AMBOS</span><span>SELEC.</span><span>ROMANEIO</span></div>
+    <div class="boxes"><div class="gbox">DESVIOS <span class="n">3</span></div><div class="gbox">AVISOS <span class="n">12</span></div></div>
+    <div class="panel">
+      <div class="row h"><span><b>RQU-9D10</b> <small>agora</small></span><small>ver no mapa →</small></div>
+      <div class="row"><span><b>TOS-4J82</b> <small>6 min</small></span><small>ver no mapa →</small></div>
+      <div class="row"><span><b>RBI-1J86</b> <small>14 min</small></span><small>ver no mapa →</small></div>
+    </div>
+    <div class="cap">Clicou: abre a lista. Só quando clica em "ver no mapa" o mapa vai até o caminhão.</div>
+  </div></div><div class="card-body"><h3>4 · Clicou</h3><p>Lista abre; zoom só se clicar no caminhão.</p></div></div>
+
+</div>
