@@ -2500,7 +2500,7 @@ export default function MonitorV2({ cliente, clientes, clienteAtivoId, veiculos:
                         return ([["todos", `Todos ${veiculosMapa.length}`], ["transmitindo", `Transmitindo ${n.transmitindo}`], ["sem", `Sem transmissão ${n.sem}`]] as const).map(([v, rotulo]) => {
                           const ativo = filtroTransm === v;
                           return (
-                            <button key={v} type="button" aria-pressed={ativo} onClick={() => setFiltroTransm(v)} title={v === "sem" ? "Sem posição nova há mais de 30 min" : v === "transmitindo" ? "Posição recebida nos últimos 30 min" : undefined} style={{
+                            <button key={v} type="button" aria-pressed={ativo} onClick={() => { setFiltroTransm(v); /* 12/11 (Érica): filtrou, o mapa vai até os carros filtrados */ setGatilhoFrota(g => g + 1); }} title={v === "sem" ? "Sem posição nova há mais de 30 min" : v === "transmitindo" ? "Posição recebida nos últimos 30 min" : undefined} style={{
                               height: 24, padding: "0 10px", borderRadius: RAIO.capsule,
                               border: `1px solid ${ativo ? T.accent : T.border}`,
                               background: ativo ? T.accentDim : "transparent",

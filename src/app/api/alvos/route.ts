@@ -66,7 +66,8 @@ async function buscarRomaneioPorPlaca(placas: string[]): Promise<Map<string, Lin
          FROM romaneio_pontos rp
         WHERE rp.romaneio_data = $2::date
           AND rp.modo_teste = false
-          AND rp.placa = ANY($1::text[])`,
+          AND rp.placa = ANY($1::text[])
+          AND rp.removida_em IS NULL`,
       [placas, hojeSP()]
     );
     for (const r of rows) {
@@ -77,6 +78,41 @@ async function buscarRomaneioPorPlaca(placas: string[]): Promise<Map<string, Lin
     return mapa;
   } catch {
     // Falha de leitura -> mapa vazio -> comportamento anterior (so Unitrac).
+    return mapa;
+  } finally {
+    cliente.release();
+  }
+}
+
+// 12/11 (KPI AJUSTES, RQU7G48 "no monitoramento aparece 20 notas, no Ao vivo
+// 04"): o alvo da Unitrac fica preso na placa da escala. Depois de uma troca
+// (romaneio_pontos.trocado_de) ou de uma NF retirada num reenvio
+// (removida_em), o alvo antigo continuava no carro -- 4 notas dele + 16 que
+// foram pro outro = "3/20". Esta lista diz quais NFs SAIRAM de cada placa.
+async function buscarNfsQueSairam(placas: string[]): Promise<Map<string, Set<string>>> {
+  const mapa = new Map<string, Set<string>>();
+  if (placas.length === 0) return mapa;
+  const cliente = await pool.connect();
+  try {
+    const { rows } = await cliente.query<{ placa: string; nf: string }>(
+      `SELECT rp.trocado_de AS placa, rp.nf
+         FROM romaneio_pontos rp
+        WHERE rp.romaneio_data = $2::date AND rp.modo_teste = false
+          AND rp.trocado_de = ANY($1::text[]) AND rp.placa <> rp.trocado_de
+       UNION ALL
+       SELECT rp.placa, rp.nf
+         FROM romaneio_pontos rp
+        WHERE rp.romaneio_data = $2::date AND rp.modo_teste = false
+          AND rp.placa = ANY($1::text[]) AND rp.removida_em IS NOT NULL`,
+      [placas, hojeSP()]
+    );
+    for (const r of rows) {
+      const s = mapa.get(r.placa) ?? new Set<string>();
+      s.add(normalizarNf(r.nf));
+      mapa.set(r.placa, s);
+    }
+    return mapa;
+  } catch {
     return mapa;
   } finally {
     cliente.release();
@@ -177,10 +213,11 @@ export async function GET(request: Request) {
     const raw = await buscarAlvos(cvs);
     const mapa = agruparPontosPorPlaca(raw);
     const placas = [...mapa.keys()];
-    const [romaneioPorPlaca, presenca, pontosAprendidos] = await Promise.all([
+    const [romaneioPorPlaca, presenca, pontosAprendidos, nfsQueSairam] = await Promise.all([
       buscarRomaneioPorPlaca(placas),
       buscarPresencaPorPlaca(placas),
       buscarPontosAprendidos(cvs),
+      buscarNfsQueSairam(placas),
     ]);
 
     const todos: PontoEntrega[] = [];
@@ -196,6 +233,9 @@ export async function GET(request: Request) {
         const entreguePorParada =
           pt.pontoCodigo != null && presenca.has(`${placa}:${pt.pontoCodigo}`);
         const r = porNf.get(normalizarNf(pt.documento));
+        // NF que foi pra outro carro (troca) ou saiu do romaneio: o alvo da
+        // Unitrac nao e' mais deste carro.
+        if (!r && nfsQueSairam.get(placa)?.has(normalizarNf(pt.documento))) continue;
         if (!r) {
           todos.push(entreguePorParada ? { ...pt, feito: true } : pt);
           continue;
